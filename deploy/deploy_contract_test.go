@@ -1,0 +1,95 @@
+package deploy
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestSystemdUnitIsUnprivilegedAndHardened(t *testing.T) {
+	unit := readAsset(t, "systemd/aimili-gateway.service")
+	for _, required := range []string{
+		"User=aimili-gateway",
+		"Group=aimili-gateway",
+		"NoNewPrivileges=true",
+		"PrivateTmp=true",
+		"ProtectSystem=strict",
+		"ProtectHome=true",
+		"ReadWritePaths=/var/lib/aimili-gateway",
+		"CapabilityBoundingSet=",
+		"LoadCredentialEncrypted=gateway-master-key:",
+		"Environment=GATEWAY_CONFIG=/etc/aimili-gateway/config.json",
+		"Environment=GATEWAY_MASTER_KEY_FILE=%d/gateway-master-key",
+	} {
+		if !strings.Contains(unit, required) {
+			t.Fatalf("systemd unit missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"User=root", "/bin/sh", "/bin/bash", "systemctl", "caddy reload", "sudo"} {
+		if strings.Contains(unit, forbidden) {
+			t.Fatalf("systemd unit contains forbidden capability %q", forbidden)
+		}
+	}
+}
+
+func TestExampleConfigUsesOnlyLoopbackAndPlaceholders(t *testing.T) {
+	contents := readAsset(t, "config/config.example.json")
+	var config struct {
+		ListenAddress string `json:"listenAddress"`
+		PublicOrigin  string `json:"publicOrigin"`
+		AimiliAddress string `json:"aimiliAddress"`
+		XUIBaseURL    string `json:"xuiBaseUrl"`
+		ExpertModeURL string `json:"expertModeUrl"`
+	}
+	if err := json.Unmarshal([]byte(contents), &config); err != nil {
+		t.Fatal(err)
+	}
+	if config.ListenAddress != "127.0.0.1:9080" || !strings.HasPrefix(config.AimiliAddress, "127.0.0.1:") || !strings.HasPrefix(config.XUIBaseURL, "http://127.0.0.1:") {
+		t.Fatal("example configuration exposes a non-loopback service")
+	}
+	if config.PublicOrigin != "https://gateway.example.invalid" {
+		t.Fatal("example public origin is not the reserved placeholder")
+	}
+	if config.ExpertModeURL != "/EXISTING_3X_UI_ROUTE/" || !strings.Contains(config.XUIBaseURL, "EXISTING_3X_UI_BASE_PATH") {
+		t.Fatal("example configuration does not use explicit path placeholders")
+	}
+}
+
+func TestCaddyFragmentPreservesExistingRoutesBeforeGatewayFallback(t *testing.T) {
+	fragment := readAsset(t, "caddy/AimiliGateway.Caddyfile")
+	expert := strings.Index(fragment, "# EXISTING_3X_UI_EXPERT_ROUTE")
+	subscription := strings.Index(fragment, "# EXISTING_SUBSCRIPTION_ROUTE")
+	api := strings.Index(fragment, "handle /api/v1/*")
+	fallback := strings.LastIndex(fragment, "handle {")
+	if expert < 0 || subscription < 0 || api < 0 || fallback < 0 || expert > api || subscription > api || api > fallback {
+		t.Fatal("Caddy route order is unsafe")
+	}
+	for _, required := range []string{
+		"reverse_proxy 127.0.0.1:9080",
+		"X-Content-Type-Options nosniff",
+		"X-Frame-Options DENY",
+		"Referrer-Policy no-referrer",
+		"frame-ancestors 'none'",
+	} {
+		if !strings.Contains(fragment, required) {
+			t.Fatalf("Caddy fragment missing %q", required)
+		}
+	}
+	lower := strings.ToLower(fragment)
+	for _, forbidden := range []string{"basic_auth", "basicauth", "single sign-on", "true sso"} {
+		if strings.Contains(lower, forbidden) {
+			t.Fatalf("Caddy fragment contains forbidden claim or behavior %q", forbidden)
+		}
+	}
+}
+
+func readAsset(t *testing.T, relativePath string) string {
+	t.Helper()
+	contents, err := os.ReadFile(filepath.FromSlash(relativePath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(contents)
+}

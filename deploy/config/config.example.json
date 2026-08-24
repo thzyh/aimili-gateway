@@ -1,0 +1,9 @@
+{
+  "listenAddress": "127.0.0.1:9080",
+  "publicOrigin": "https://gateway.example.invalid",
+  "databasePath": "/var/lib/aimili-gateway/aimili-gateway.db",
+  "masterKeyFile": "/run/credentials/aimili-gateway.service/gateway-master-key",
+  "aimiliAddress": "127.0.0.1:8787",
+  "xuiBaseUrl": "http://127.0.0.1:2001/EXISTING_3X_UI_BASE_PATH/",
+  "expertModeUrl": "/EXISTING_3X_UI_ROUTE/"
+}
