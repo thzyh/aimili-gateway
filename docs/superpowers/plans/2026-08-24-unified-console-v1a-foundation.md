@@ -21,6 +21,7 @@
 - 未经新的明确授权，不连接或修改生产 VPS。
 - 当前机器没有可用的 Go 工具链；用户已明确授权下载官方 Go 1.26.x 到 `E:\SoftWare\Go` 统一管理，并允许配置用户级全局环境供其他任务复用。官方发布元数据已确认当前稳定版为 `go1.26.7`。
 - 安装采用 `E:\SoftWare\Go\versions\go1.26.7` 版本目录和 `E:\SoftWare\Go\current` 稳定入口；用户 PATH 只追加 `E:\SoftWare\Go\current\bin`，设置 `GOTOOLCHAIN=local` 和 `GOPATH=E:\SoftWare\Go\gopath`，不设置 `GOROOT`。
+- 普通 Codex 沙箱不能向 `E:` 写缓存，因此全局 Go shim 将 `GOCACHE` 和 `GOMODCACHE` 指向 Git 已忽略的 `D:\CodexProject\Github\aimili-gateway\.worktrees\.go-cache`；这不改变 Go 二进制和版本的统一安装位置。
 - `go env GOTOOLCHAIN=local` 必须生效，避免 Go 自动下载其他版本。
 - 第一次执行 `go mod download` 或 `npm install` 前，集中取得下载本文已声明依赖的授权。
 - 每个任务遵循测试先行、最小实现、完整验证和独立提交。
