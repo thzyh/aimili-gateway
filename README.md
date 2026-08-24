@@ -4,15 +4,18 @@ Aimili Gateway 是 AimiliVPN 与 3x-ui 的轻量统一控制台项目。统一�
 
 ## 当前阶段
 
-项目目前处于架构设计审核阶段，只包含设计文档，不包含可执行代码、部署脚本或生产配置。正式设计再次获得批准后，才会编写实施计划并开始开发。
+项目设计已经批准，目前处于实施计划审核阶段，只包含设计和计划文档，不包含可执行代码、部署脚本或生产配置。实施方式获得确认后才开始开发。
 
 ## 重要文件
 
 - `docs/superpowers/specs/2026-08-24-unified-console-design.md`：统一控制台 V1 的需求、架构、认证、安全、适配器、兼容性和验收设计。
+- `docs/superpowers/plans/2026-08-24-unified-console-v1a-foundation.md`：单管理员登录、只读探测、统一状态页和专家模式入口。
+- `docs/superpowers/plans/2026-08-24-unified-console-v1b-aimili-management.md`：AimiliVPN 版本化控制 API、适配器和日常管理功能。
+- `docs/superpowers/plans/2026-08-24-unified-console-v1c-3xui-binding.md`：3x-ui 管理、客户端操作和跨服务出口绑定。
 
 ## 使用方法
 
-请先阅读并审核上述设计文档。当前阶段没有构建或运行命令。
+设计文档已经批准。实施时应依次执行 V1-A、V1-B、V1-C 三份计划，并在每个阶段的完成门槛取得新鲜验证结果后再进入下一阶段。当前仓库仍没有可构建的业务代码。
 
 ## 验证
 
