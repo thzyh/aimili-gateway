@@ -169,10 +169,14 @@ type authTestEnvironment struct {
 }
 
 func newAuthTestEnvironment(t *testing.T) *authTestEnvironment {
-	return newAuthTestEnvironmentWithAdmin(t, true)
+	return newAuthTestEnvironmentConfigured(t, true, nil)
 }
 
 func newAuthTestEnvironmentWithAdmin(t *testing.T, initializeAdmin bool) *authTestEnvironment {
+	return newAuthTestEnvironmentConfigured(t, initializeAdmin, nil)
+}
+
+func newAuthTestEnvironmentConfigured(t *testing.T, initializeAdmin bool, configure func(*Dependencies)) *authTestEnvironment {
 	t.Helper()
 	ctx := context.Background()
 	database, err := store.Open(ctx, filepath.Join(t.TempDir(), "gateway.db"))
@@ -203,12 +207,16 @@ func newAuthTestEnvironmentWithAdmin(t *testing.T, initializeAdmin bool) *authTe
 
 	server := httptest.NewUnstartedServer(nil)
 	origin := "https://" + server.Listener.Addr().String()
-	server.Config.Handler = NewServer(Dependencies{
+	dependencies := Dependencies{
 		Store:      database,
 		MasterKey:  masterKey,
 		TestOrigin: origin,
 		Now:        clock.Now,
-	})
+	}
+	if configure != nil {
+		configure(&dependencies)
+	}
+	server.Config.Handler = NewServer(dependencies)
 	server.StartTLS()
 	jar, err := cookiejar.New(nil)
 	if err != nil {

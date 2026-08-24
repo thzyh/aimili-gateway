@@ -6,17 +6,21 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/thzyh/aimili-gateway/internal/adapters"
 	"github.com/thzyh/aimili-gateway/internal/store"
 )
 
 const sessionCookieName = "aimili_gateway_session"
 
 type Dependencies struct {
-	Store        *store.Store
-	MasterKey    []byte
-	PublicOrigin string
-	TestOrigin   string
-	Now          func() time.Time
+	Store         *store.Store
+	MasterKey     []byte
+	PublicOrigin  string
+	TestOrigin    string
+	Now           func() time.Time
+	AimiliProbe   adapters.Prober
+	XUIProbe      adapters.Prober
+	ExpertModeURL string
 }
 
 type server struct {
@@ -25,6 +29,9 @@ type server struct {
 	allowedOrigin string
 	now           func() time.Time
 	limiter       *loginLimiter
+	aimiliProbe   adapters.Prober
+	xuiProbe      adapters.Prober
+	expertModeURL string
 }
 
 func NewServer(dependencies Dependencies) http.Handler {
@@ -51,12 +58,17 @@ func NewServer(dependencies Dependencies) http.Handler {
 		allowedOrigin: origin,
 		now:           now,
 		limiter:       newLoginLimiter(),
+		aimiliProbe:   dependencies.AimiliProbe,
+		xuiProbe:      dependencies.XUIProbe,
+		expertModeURL: dependencies.ExpertModeURL,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/auth/login", server.handleLogin)
 	mux.HandleFunc("POST /api/v1/auth/logout", server.handleLogout)
 	mux.HandleFunc("GET /api/v1/auth/session", server.handleSession)
 	mux.HandleFunc("POST /api/v1/auth/reauth", server.handleReauthenticate)
+	mux.HandleFunc("GET /api/v1/overview", server.handleOverview)
+	mux.HandleFunc("GET /api/v1/navigation", server.handleNavigation)
 	return noStore(mux)
 }
 
