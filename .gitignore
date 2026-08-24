@@ -1,1 +1,11 @@
 .worktrees/
+/bin/
+/data/
+/web/node_modules/
+/internal/webassets/dist/
+*.db
+*.db-shm
+*.db-wal
+.env
+*.credential
+*.credentials
