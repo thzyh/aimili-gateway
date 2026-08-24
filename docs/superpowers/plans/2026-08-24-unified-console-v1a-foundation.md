@@ -20,6 +20,7 @@
 - 不记录或提交密码、Cookie、令牌、TOTP 秘钥、私钥、UUID、随机后台路径或完整订阅链接。
 - 未经新的明确授权，不连接或修改生产 VPS。
 - 当前机器没有可用的 Go 工具链。执行 Task 1 前必须一次性取得安装 Go 1.26.x 的明确授权；不得自动下载工具链。
+- 获得授权后优先把官方 Go 压缩包解压到仓库忽略的 `.tools/go`，只为当前任务会话追加 PATH；不运行系统安装器、不修改全局 PATH 或其他项目环境。
 - `go env GOTOOLCHAIN=local` 必须生效，避免 Go 自动下载其他版本。
 - 第一次执行 `go mod download` 或 `npm install` 前，集中取得下载本文已声明依赖的授权。
 - 每个任务遵循测试先行、最小实现、完整验证和独立提交。
@@ -110,7 +111,7 @@ go version
 go env GOTOOLCHAIN
 ```
 
-Expected: Go reports `go1.26.x` and `GOTOOLCHAIN` is `local`. If `go` is missing, stop and request the already identified installation authorization; do not continue with Node-only substitution.
+Expected: Go reports `go1.26.x` and `GOTOOLCHAIN` is `local`. If `go` is missing, stop and request the already identified authorization to download the official archive into `.tools/go`; do not continue with Node-only substitution or modify the global environment.
 
 - [ ] **Step 2: Create the module manifest**
 
@@ -127,7 +128,7 @@ require (
 )
 ```
 
-Create `.gitignore` with `/bin/`, `/data/`, `/web/node_modules/`, `/internal/webassets/dist/`, `*.db`, `*.db-shm`, `*.db-wal`, `.env`, and secret credential files.
+Create `.gitignore` with `/.tools/`, `/bin/`, `/data/`, `/web/node_modules/`, `/internal/webassets/dist/`, `*.db`, `*.db-shm`, `*.db-wal`, `.env`, and secret credential files.
 
 - [ ] **Step 3: Write failing configuration tests**
 
