@@ -25,7 +25,12 @@ func (s *Store) CreateAdmin(ctx context.Context, admin Admin) error {
 	if admin.Username == "" || len(admin.PasswordHash) == 0 || len(admin.TOTPSecretCiphertext) == 0 {
 		return errors.New("administrator fields are required")
 	}
-	_, err := s.db.ExecContext(ctx, `
+	transaction, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin administrator transaction: %w", err)
+	}
+	defer transaction.Rollback()
+	_, err = transaction.ExecContext(ctx, `
 		INSERT INTO admin(id, username, password_hash, totp_secret_ciphertext, created_at, security_updated_at)
 		VALUES(1, ?, ?, ?, ?, ?)`,
 		admin.Username,
@@ -35,11 +40,15 @@ func (s *Store) CreateAdmin(ctx context.Context, admin Admin) error {
 		admin.SecurityUpdatedAt.UTC().UnixMilli(),
 	)
 	if err != nil {
+		_ = transaction.Rollback()
 		var exists int
 		if queryErr := s.db.QueryRowContext(ctx, `SELECT 1 FROM admin WHERE id = 1`).Scan(&exists); queryErr == nil {
 			return ErrAdminExists
 		}
 		return fmt.Errorf("create administrator: %w", err)
+	}
+	if err := transaction.Commit(); err != nil {
+		return fmt.Errorf("commit administrator: %w", err)
 	}
 	return nil
 }
