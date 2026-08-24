@@ -60,6 +60,16 @@ func (s *Store) TouchSession(ctx context.Context, id int64, now time.Time) error
 	return requireChanged(result)
 }
 
+func (s *Store) ReauthenticateSession(ctx context.Context, id int64, now time.Time) error {
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET reauthenticated_at = ? WHERE id = ? AND revoked_at IS NULL AND expires_at > ?`,
+		now.UTC().UnixMilli(), id, now.UTC().UnixMilli())
+	if err != nil {
+		return fmt.Errorf("reauthenticate session: %w", err)
+	}
+	return requireChanged(result)
+}
+
 func (s *Store) RevokeSession(ctx context.Context, tokenHash [32]byte) error {
 	result, err := s.db.ExecContext(ctx,
 		`UPDATE sessions SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL`,
