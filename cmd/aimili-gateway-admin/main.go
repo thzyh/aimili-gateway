@@ -11,13 +11,13 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/thzyh/aimili-gateway/internal/auth"
 	"github.com/thzyh/aimili-gateway/internal/config"
+	"github.com/thzyh/aimili-gateway/internal/securefile"
 	"github.com/thzyh/aimili-gateway/internal/store"
 )
 
@@ -191,25 +191,7 @@ func loadOrCreateMasterKey(path string) ([]byte, error) {
 }
 
 func loadMasterKey(path string) ([]byte, error) {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, errors.New("master key must be a regular file")
-	}
-	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
-		return nil, errors.New("master key permissions must not allow group or world access")
-	}
-	key, err := os.ReadFile(path)
-	if err != nil {
-		return nil, errors.New("read master key")
-	}
-	if len(key) != 32 {
-		clear(key)
-		return nil, errors.New("master key must be exactly 32 bytes")
-	}
-	return key, nil
+	return securefile.ReadMasterKey(path)
 }
 
 func equalBytes(left, right []byte) bool {

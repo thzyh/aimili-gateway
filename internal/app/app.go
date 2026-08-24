@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"os"
-	"runtime"
 	"sync"
 	"time"
 
@@ -15,6 +13,7 @@ import (
 	"github.com/thzyh/aimili-gateway/internal/adapters/xui"
 	"github.com/thzyh/aimili-gateway/internal/config"
 	"github.com/thzyh/aimili-gateway/internal/httpapi"
+	"github.com/thzyh/aimili-gateway/internal/securefile"
 	"github.com/thzyh/aimili-gateway/internal/store"
 	"github.com/thzyh/aimili-gateway/internal/webassets"
 )
@@ -30,7 +29,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	masterKey, err := readMasterKey(cfg.MasterKeyFile)
+	masterKey, err := securefile.ReadMasterKey(cfg.MasterKeyFile)
 	if err != nil {
 		return nil, err
 	}
@@ -81,28 +80,6 @@ func (a *App) Close() error {
 		}
 	})
 	return a.closeErr
-}
-
-func readMasterKey(path string) ([]byte, error) {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return nil, errors.New("read gateway master key")
-	}
-	if !info.Mode().IsRegular() {
-		return nil, errors.New("gateway master key must be a regular file")
-	}
-	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
-		return nil, errors.New("gateway master key permissions are too broad")
-	}
-	masterKey, err := os.ReadFile(path)
-	if err != nil {
-		return nil, errors.New("read gateway master key")
-	}
-	if len(masterKey) != 32 {
-		clear(masterKey)
-		return nil, errors.New("gateway master key must be exactly 32 bytes")
-	}
-	return masterKey, nil
 }
 
 func newXUIProbe(baseURL string) (adapters.Prober, error) {
