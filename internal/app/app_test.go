@@ -47,6 +47,18 @@ func TestNewProvidesHealthHandlerAndClosesIdempotently(t *testing.T) {
 	}
 }
 
+func TestAPIRouteTakesPrecedenceOverSPAFallback(t *testing.T) {
+	application := newTestApplication(t)
+	response := httptest.NewRecorder()
+	application.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/missing", nil))
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("status = %d", response.Code)
+	}
+	if strings.Contains(response.Body.String(), `<div id="app"></div>`) {
+		t.Fatal("missing API route was served by SPA fallback")
+	}
+}
+
 func TestNewRejectsInvalidMasterKeyLength(t *testing.T) {
 	directory := t.TempDir()
 	masterKeyPath := filepath.Join(directory, "master.key")
@@ -95,4 +107,26 @@ func TestNewSupportsExplicitLocalTestConfiguration(t *testing.T) {
 	if err := application.Close(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func newTestApplication(t *testing.T) *App {
+	t.Helper()
+	directory := t.TempDir()
+	masterKeyPath := filepath.Join(directory, "master.key")
+	if err := os.WriteFile(masterKeyPath, []byte(strings.Repeat("k", 32)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	application, err := New(t.Context(), config.Config{
+		ListenAddress: "127.0.0.1:9080",
+		PublicOrigin:  "https://console.example.test",
+		DatabasePath:  filepath.Join(directory, "gateway.db"),
+		MasterKeyFile: masterKeyPath,
+		AimiliAddress: "127.0.0.1:8787",
+		XUIBaseURL:    "http://127.0.0.1:2001/panel-fixture/",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = application.Close() })
+	return application
 }

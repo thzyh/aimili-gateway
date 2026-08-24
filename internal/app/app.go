@@ -16,6 +16,7 @@ import (
 	"github.com/thzyh/aimili-gateway/internal/config"
 	"github.com/thzyh/aimili-gateway/internal/httpapi"
 	"github.com/thzyh/aimili-gateway/internal/store"
+	"github.com/thzyh/aimili-gateway/internal/webassets"
 )
 
 type App struct {
@@ -61,7 +62,8 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		response.Header().Set("Content-Type", "application/json; charset=utf-8")
 		_ = json.NewEncoder(response).Encode(map[string]string{"status": "ok"})
 	})
-	mux.Handle("/", apiHandler)
+	mux.Handle("/api/v1/", apiHandler)
+	mux.Handle("/", webassets.Handler())
 	return &App{handler: mux, store: database}, nil
 }
 
