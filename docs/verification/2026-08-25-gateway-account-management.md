@@ -74,3 +74,13 @@ sudo aimili-gateway-account
 
 - 功能与本地验证：`8fb1e84`。
 - Linux 脚本 LF 行尾契约修复：`8f447cd`。
+
+## 重复运行缺陷修复
+
+- 用户原路径复现：再次执行 `sudo aimili-gateway-account` 时，`systemd-run` 报告同名服务已经加载或存在 fragment file，账户管理程序尚未启动。
+- 根因证据：`aimili-gateway-account.service` 为 `/run/systemd/transient/` 下已成功退出但仍处于 loaded 状态的瞬态 unit；入口脚本同时固定传入 `--unit=aimili-gateway-account`，第二次创建同名 unit 被 systemd 拒绝。该故障与账户、密码、TOTP、SQLite 和 Gateway 常驻服务无关。
+- 回归测试：部署契约先明确因入口包含固定 `--unit=` 而失败；移除固定命名后定向测试通过。
+- 最小修复：保留 `--wait --collect --pty`、`aimili-gateway` 受限用户、加密凭据加载和全部安全隔离属性，仅让 `systemd-run` 为每次调用自动生成唯一 unit 名。
+- 本地验证：在提交 `6b53335` 上重新执行 `scripts\verify-v1a.ps1`，Vue 11 项测试、前端生产构建、Go race、Go vet、两个二进制构建、Bash 语法、Git 空白检查和敏感产物扫描均通过。
+- VPS 部署：上传文件、安装文件与本地脚本 SHA-256 一致；连续两次按用户原命令进入中文菜单并选择退出，退出码均为 0，没有执行账户查询、密码重置或 TOTP 变更。
+- 部署后健康检查：Gateway、AimiliVPN、3x-ui 和 Caddy 均为 `active/running`，failed unit 为空；`https://ny.zouyunhui.cc.cd/` 返回 200，认证选项仍为 `totpRequired: false`。

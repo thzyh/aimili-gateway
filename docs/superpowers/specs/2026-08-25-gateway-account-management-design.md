@@ -613,7 +613,7 @@ export interface AuthOptionsPayload {
 - 修改：`scripts/verify-v1a.sh`
 - 修改：`README.md`
 
-**入口契约：** `deploy/bin/aimili-gateway-account` 是 root 所有的 Bash 脚本，最终安装到 `/usr/local/sbin/aimili-gateway-account`。脚本只执行 `systemd-run --pty --wait --collect`，以 `aimili-gateway` 用户运行 `/usr/local/bin/aimili-gateway-admin account`，加载 `/etc/credstore.encrypted/aimili-gateway-master-key`，传入既有配置位置，并设置与常驻服务相称的文件系统、权限和网络隔离。
+**入口契约：** `deploy/bin/aimili-gateway-account` 是 root 所有的 Bash 脚本，最终安装到 `/usr/local/sbin/aimili-gateway-account`。脚本只执行 `systemd-run --pty --wait --collect`，以 `aimili-gateway` 用户运行 `/usr/local/bin/aimili-gateway-admin account`，加载 `/etc/credstore.encrypted/aimili-gateway-master-key`，传入既有配置位置，并设置与常驻服务相称的文件系统、权限和网络隔离。入口不得为可重复调用的瞬态服务指定固定 unit 名，必须由 `systemd-run` 为每次调用生成唯一名称并在退出后收集，避免已加载的旧瞬态 unit 阻断后续调用。
 
 - [ ] **Step 1：编写部署契约失败测试**
 
