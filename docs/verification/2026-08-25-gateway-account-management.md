@@ -43,12 +43,34 @@ powershell -ExecutionPolicy Bypass -File scripts\verify-v1a.ps1
 
 本机 Go module 缓存在受限目录中尝试写入统计缓存时输出权限警告，但两个构建命令均以退出码 0 完成；编译缓存已改用系统临时目录，未改变全局 Go 配置。
 
-## 待完成的授权部署验证
+## `ny` 授权部署验证
 
-以下项目在合并回本地 `main` 并部署 `ny` 后补充最新证据：
+- 部署前 Gateway、AimiliVPN、3x-ui/Xray 和 Caddy 均为 `active`，HTTPS 返回 200。
+- 在 root 专用 `0700` 目录创建旧 Gateway、管理员工具和 SQLite 一致性备份。
+- 备份数据库与部署后数据库的 `PRAGMA integrity_check` 均为 `ok`。
+- 上传产物与本机构建 SHA-256 一致；Gateway 和管理员工具为 Linux `x86-64` 静态 ELF。
+- 数据库迁移版本 2 只存在一次，既有账户迁移时先保持 TOTP 启用。
+- 通过 `sudo aimili-gateway-account` 真实查询账户状态；输出只包含用户名、TOTP 状态和时间字段。
+- 通过同一命令关闭 Gateway TOTP 后，`totp_enabled = 0`、加密密文为空、未撤销会话数量为 0。
+- `/api/v1/auth/options` 返回 `totpRequired: false`。
+- 真实浏览器登录页只有用户名和密码各一个输入框，TOTP 输入框数量为 0，登录按钮可用，浏览器警告和错误日志为空。
+- HTTPS 返回 200，CSP、`X-Frame-Options`、`X-Content-Type-Options` 和 `Referrer-Policy` 保持生效。
+- Gateway、AimiliVPN、3x-ui/Xray 和 Caddy 均为 `active`，没有 failed unit；Gateway、AimiliVPN 和 3x-ui 管理端继续监听回环地址。
+- Gateway 和 Caddy 自本次部署后的 warning 级日志为空；账户瞬态单元日志未匹配到 32 字符随机密码模式。
 
-- 数据库一致性备份与迁移 002。
-- `sudo aimili-gateway-account` 真实交互和 TOTP 关闭。
-- 登录页不显示动态验证码及密码模式真实登录。
-- Gateway、AimiliVPN、3x-ui/Xray、Caddy 四服务状态和独立认证边界。
-- 部署后二进制哈希、HTTPS、安全响应头和日志脱敏检查。
+## 最新边界与待用户动作
+
+真实测试已经执行过“生成随机新密码”，从而验证安全信息更新时间、TOTP 关闭状态保持和全部会话撤销；随机值未输出到本记录或对话，也没有保存供后续使用。因此当前 Gateway 管理员密码是用户未知的一次性随机值。
+
+为避免再次传播测试密码，本次未声称真实密码登录已经完成。用户应执行：
+
+```bash
+sudo aimili-gateway-account
+```
+
+选择“设置自定义新密码”，隐藏输入两次。设置后旧随机密码失效、全部会话再次撤销；登录页继续不要求动态验证码。该待用户动作不影响四个服务运行，也不改变 3x-ui 专家模式的独立账户和认证设置。
+
+## 部署提交
+
+- 功能与本地验证：`8fb1e84`。
+- Linux 脚本 LF 行尾契约修复：`8f447cd`。
