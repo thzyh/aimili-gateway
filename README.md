@@ -4,7 +4,7 @@ Aimili Gateway 是 AimiliVPN 与 3x-ui 的轻量统一控制台项目。统一�
 
 ## 当前阶段
 
-V1-B 单代理组闭环已经进入真实部署验收：在 V1-A 个人单管理员、可选 TOTP、服务端会话和独立 3x-ui 专家模式基础上，增加国家候选目录、住宅/机房分类、AimiliVPN 槽位与 `agw-` Xray 资源编排、VLESS Reality、mixed/SOCKS5H、同类型换 IP、反向补偿和真实协议验证器。
+V1-B 单代理组闭环已于 2026-08-26 完成真实 VPS 端到端验收：在 V1-A 个人单管理员、可选 TOTP、服务端会话和独立 3x-ui 专家模式基础上，增加国家候选目录、住宅/机房分类、AimiliVPN 槽位与 `agw-` Xray 资源编排、VLESS Reality、mixed/SOCKS5H、同类型换 IP、反向补偿和真实协议验证器。验收证据见 `docs/verification/2026-08-26-ny-v1b.md`。
 
 统一控制台页面可执行启用、检测、换 IP、禁用、mixed 来源 CIDR 设置，以及重新认证后的连接信息显示和复制。Gateway 只管理 `agw-` 命名空间；不接管非受管 3x-ui/Xray 资源，也不直接写 `x-ui.db`。
 
