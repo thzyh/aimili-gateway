@@ -1,0 +1,151 @@
+package aimili
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+)
+
+func TestClientCandidatesSendsBearerTokenAndDecodesSafeFields(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet || request.URL.Path != "/control/v1/candidates" {
+			t.Fatalf("unexpected request %s %s", request.Method, request.URL.Path)
+		}
+		if request.Header.Get("Authorization") != "Bearer test-token" {
+			t.Fatal("missing control bearer token")
+		}
+		response.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(response, `{"data":[{"id":"node-safe","country_short":"JP","country":"Japan","ip":"198.51.100.10","proxy_type":"datacenter","owner":"Example","asn":"AS64500","as_name":"Example","latency_ms":42,"score":9,"probe_status":"available","last_probe_at":1700000000}]}`)
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewClient(server.URL+"/", []byte("test-token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidates, err := client.Candidates(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 || candidates[0].ProxyType != "datacenter" || candidates[0].CountryCode != "JP" {
+		t.Fatalf("unexpected candidates: %#v", candidates)
+	}
+}
+
+func TestClientCreateSlotUsesClosedRequestAndResponseTypes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || request.URL.Path != "/control/v1/slots" {
+			t.Fatalf("unexpected request %s %s", request.Method, request.URL.Path)
+		}
+		response.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(response, `{"data":{"slot":2,"country":"JP","country_name":"Japan","proxy_type":"residential","port":17930,"status":"up","node_id":"node-safe","candidate_ip":"198.51.100.10","exit_ip":"203.0.113.5","egress_ok":true,"latency_ms":42,"checked_at":1700000000}}`)
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewClient(server.URL+"/", []byte("test-token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	slot, err := client.CreateSlot(context.Background(), CreateSlotRequest{Country: "JP", ProxyType: "residential"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slot.Number != 2 || slot.Port != 17930 || slot.ExitIP != "203.0.113.5" {
+		t.Fatalf("unexpected slot: %#v", slot)
+	}
+}
+
+func TestClientMapsUpstreamErrorWithoutExposingResponseBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.WriteHeader(http.StatusConflict)
+		fmt.Fprint(response, `{"error":{"code":"no_matching_candidate"},"secret":"must-not-leak"}`)
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewClient(server.URL+"/", []byte("test-token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.CreateSlot(context.Background(), CreateSlotRequest{Country: "JP", ProxyType: "datacenter"})
+	var adapterError *AdapterError
+	if !errors.As(err, &adapterError) || adapterError.Code != "no_matching_candidate" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(err.Error(), "must-not-leak") {
+		t.Fatal("adapter error exposed upstream response")
+	}
+}
+
+func TestClientRejectsOversizedAndUnknownResponses(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "oversized", body: `{"data":[]}` + strings.Repeat(" ", 17<<10)},
+		{name: "unknown field", body: `{"data":[],"unexpected":true}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+				fmt.Fprint(response, test.body)
+			}))
+			t.Cleanup(server.Close)
+			client, err := NewClient(server.URL+"/", []byte("test-token"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := client.Candidates(context.Background()); err == nil {
+				t.Fatal("invalid response was accepted")
+			}
+		})
+	}
+}
+
+func TestClientRejectsNonLoopbackURLAndEmptyToken(t *testing.T) {
+	if _, err := NewClient("http://192.0.2.10:8790/", []byte("token")); err == nil {
+		t.Fatal("non-loopback control URL was accepted")
+	}
+	if _, err := NewClient("http://127.0.0.1:8790/", nil); err == nil {
+		t.Fatal("empty token was accepted")
+	}
+}
+
+func TestReadTokenFileReturnsTrimmedSecretAndRejectsEmptyFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "control.token")
+	if err := os.WriteFile(path, []byte("file-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	token, err := ReadTokenFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(token) != "file-token" {
+		t.Fatalf("unexpected token length %d", len(token))
+	}
+	if err := os.WriteFile(path, []byte(" \n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadTokenFile(path); err == nil {
+		t.Fatal("empty control token was accepted")
+	}
+}
+
+func TestReadTokenFileRejectsBroadUnixPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not expose Unix permission bits")
+	}
+	path := filepath.Join(t.TempDir(), "control.token")
+	if err := os.WriteFile(path, []byte("file-token\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadTokenFile(path); err == nil {
+		t.Fatal("broad token file permissions were accepted")
+	}
+}

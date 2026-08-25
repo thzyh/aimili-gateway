@@ -14,31 +14,36 @@ import (
 )
 
 const (
-	defaultListenAddress = "127.0.0.1:9080"
-	defaultAimiliAddress = "127.0.0.1:8787"
-	defaultXUIBaseURL    = "http://127.0.0.1:2001/"
+	defaultListenAddress    = "127.0.0.1:9080"
+	defaultAimiliAddress    = "127.0.0.1:8787"
+	defaultAimiliControlURL = "http://127.0.0.1:8790/"
+	defaultXUIBaseURL       = "http://127.0.0.1:2001/"
 )
 
 type Config struct {
-	ListenAddress string `json:"listenAddress"`
-	PublicOrigin  string `json:"publicOrigin"`
-	DatabasePath  string `json:"databasePath"`
-	MasterKeyFile string `json:"masterKeyFile"`
-	AimiliAddress string `json:"aimiliAddress"`
-	XUIBaseURL    string `json:"xuiBaseUrl"`
-	ExpertModeURL string `json:"expertModeUrl"`
+	ListenAddress          string `json:"listenAddress"`
+	PublicOrigin           string `json:"publicOrigin"`
+	DatabasePath           string `json:"databasePath"`
+	MasterKeyFile          string `json:"masterKeyFile"`
+	AimiliAddress          string `json:"aimiliAddress"`
+	AimiliControlURL       string `json:"aimiliControlUrl"`
+	AimiliControlTokenFile string `json:"aimiliControlTokenFile"`
+	XUIBaseURL             string `json:"xuiBaseUrl"`
+	ExpertModeURL          string `json:"expertModeUrl"`
 
 	localTest bool
 }
 
 func Load(path string) (Config, error) {
 	cfg := Config{
-		ListenAddress: defaultListenAddress,
-		DatabasePath:  filepath.FromSlash("data/aimili-gateway.db"),
-		MasterKeyFile: filepath.FromSlash("data/master.key"),
-		AimiliAddress: defaultAimiliAddress,
-		XUIBaseURL:    defaultXUIBaseURL,
-		localTest:     path == "",
+		ListenAddress:          defaultListenAddress,
+		DatabasePath:           filepath.FromSlash("data/aimili-gateway.db"),
+		MasterKeyFile:          filepath.FromSlash("data/master.key"),
+		AimiliAddress:          defaultAimiliAddress,
+		AimiliControlURL:       defaultAimiliControlURL,
+		AimiliControlTokenFile: filepath.FromSlash("data/aimili-control.token"),
+		XUIBaseURL:             defaultXUIBaseURL,
+		localTest:              path == "",
 	}
 
 	if path != "" {
@@ -60,6 +65,12 @@ func (c Config) Validate() error {
 	}
 	if err := validateLoopbackEndpoint(c.AimiliAddress); err != nil {
 		return fmt.Errorf("aimiliAddress must use a loopback endpoint: %w", err)
+	}
+	if err := validateLoopbackURL("aimiliControlUrl", c.AimiliControlURL); err != nil {
+		return err
+	}
+	if strings.TrimSpace(c.AimiliControlTokenFile) == "" {
+		return errors.New("aimiliControlTokenFile is required")
 	}
 	if strings.TrimSpace(c.DatabasePath) == "" {
 		return errors.New("databasePath is required")
@@ -122,6 +133,8 @@ func applyEnvironment(cfg *Config) {
 		{name: "GATEWAY_DATABASE_PATH", target: &cfg.DatabasePath},
 		{name: "GATEWAY_MASTER_KEY_FILE", target: &cfg.MasterKeyFile},
 		{name: "GATEWAY_AIMILI_ADDRESS", target: &cfg.AimiliAddress},
+		{name: "GATEWAY_AIMILI_CONTROL_URL", target: &cfg.AimiliControlURL},
+		{name: "GATEWAY_AIMILI_CONTROL_TOKEN_FILE", target: &cfg.AimiliControlTokenFile},
 		{name: "GATEWAY_XUI_BASE_URL", target: &cfg.XUIBaseURL},
 		{name: "GATEWAY_EXPERT_MODE_URL", target: &cfg.ExpertModeURL},
 	}

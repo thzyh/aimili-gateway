@@ -27,6 +27,12 @@ func TestLoadAppliesSafeLocalDefaults(t *testing.T) {
 	if cfg.AimiliAddress != "127.0.0.1:8787" {
 		t.Fatalf("Aimili address = %q", cfg.AimiliAddress)
 	}
+	if cfg.AimiliControlURL != "http://127.0.0.1:8790/" {
+		t.Fatalf("Aimili control URL = %q", cfg.AimiliControlURL)
+	}
+	if cfg.AimiliControlTokenFile != filepath.FromSlash("data/aimili-control.token") {
+		t.Fatalf("Aimili control token file = %q", cfg.AimiliControlTokenFile)
+	}
 	if cfg.XUIBaseURL != "http://127.0.0.1:2001/" {
 		t.Fatalf("3x-ui base URL = %q", cfg.XUIBaseURL)
 	}
@@ -35,6 +41,16 @@ func TestLoadAppliesSafeLocalDefaults(t *testing.T) {
 func TestValidateRejectsPublicListenAddress(t *testing.T) {
 	cfg := validProductionConfig()
 	cfg.ListenAddress = "0.0.0.0:9080"
+
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "loopback") {
+		t.Fatalf("expected loopback validation error, got %v", err)
+	}
+}
+
+func TestValidateRejectsNonLoopbackAimiliControlURL(t *testing.T) {
+	cfg := validProductionConfig()
+	cfg.AimiliControlURL = "http://192.0.2.10:8790/"
 
 	err := cfg.Validate()
 	if err == nil || !strings.Contains(err.Error(), "loopback") {
@@ -94,6 +110,8 @@ func TestLoadAppliesDocumentedEnvironmentOverrides(t *testing.T) {
 	t.Setenv("GATEWAY_LISTEN_ADDRESS", "[::1]:9191")
 	t.Setenv("GATEWAY_DATABASE_PATH", filepath.FromSlash("custom/gateway.db"))
 	t.Setenv("GATEWAY_AIMILI_ADDRESS", "[::1]:8787")
+	t.Setenv("GATEWAY_AIMILI_CONTROL_URL", "http://[::1]:8899/")
+	t.Setenv("GATEWAY_AIMILI_CONTROL_TOKEN_FILE", filepath.FromSlash("secrets/aimili.token"))
 
 	cfg, err := Load("")
 	if err != nil {
@@ -108,17 +126,25 @@ func TestLoadAppliesDocumentedEnvironmentOverrides(t *testing.T) {
 	if cfg.AimiliAddress != "[::1]:8787" {
 		t.Fatalf("Aimili address = %q", cfg.AimiliAddress)
 	}
+	if cfg.AimiliControlURL != "http://[::1]:8899/" {
+		t.Fatalf("Aimili control URL = %q", cfg.AimiliControlURL)
+	}
+	if cfg.AimiliControlTokenFile != filepath.FromSlash("secrets/aimili.token") {
+		t.Fatalf("Aimili control token file = %q", cfg.AimiliControlTokenFile)
+	}
 }
 
 func validProductionConfig() Config {
 	return Config{
-		ListenAddress: "127.0.0.1:9080",
-		PublicOrigin:  "https://console.example.test",
-		DatabasePath:  filepath.FromSlash("data/gateway.db"),
-		MasterKeyFile: filepath.FromSlash("data/master.key"),
-		AimiliAddress: "127.0.0.1:8787",
-		XUIBaseURL:    "http://127.0.0.1:2001/",
-		ExpertModeURL: "/expert/",
+		ListenAddress:          "127.0.0.1:9080",
+		PublicOrigin:           "https://console.example.test",
+		DatabasePath:           filepath.FromSlash("data/gateway.db"),
+		MasterKeyFile:          filepath.FromSlash("data/master.key"),
+		AimiliAddress:          "127.0.0.1:8787",
+		AimiliControlURL:       "http://127.0.0.1:8790/",
+		AimiliControlTokenFile: filepath.FromSlash("data/aimili-control.token"),
+		XUIBaseURL:             "http://127.0.0.1:2001/",
+		ExpertModeURL:          "/expert/",
 	}
 }
 
@@ -130,6 +156,8 @@ func clearConfigEnvironment(t *testing.T) {
 		"GATEWAY_DATABASE_PATH",
 		"GATEWAY_MASTER_KEY_FILE",
 		"GATEWAY_AIMILI_ADDRESS",
+		"GATEWAY_AIMILI_CONTROL_URL",
+		"GATEWAY_AIMILI_CONTROL_TOKEN_FILE",
 		"GATEWAY_XUI_BASE_URL",
 		"GATEWAY_EXPERT_MODE_URL",
 	} {
