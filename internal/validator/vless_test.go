@@ -35,6 +35,15 @@ func TestBuildVLESSClientConfigUsesOnlyLoopbackServerAndLocalSOCKS(t *testing.T)
 	if err := json.Unmarshal(encoded, &document); err != nil {
 		t.Fatal(err)
 	}
+	outbound := document["outbounds"].([]any)[0].(map[string]any)
+	stream := outbound["streamSettings"].(map[string]any)
+	reality := stream["realitySettings"].(map[string]any)
+	if reality["password"] != "test-public-key" {
+		t.Fatalf("Reality password = %#v", reality["password"])
+	}
+	if _, exists := reality["publicKey"]; exists {
+		t.Fatal("legacy Reality publicKey field was emitted")
+	}
 }
 
 func TestBuildVLESSClientConfigRejectsNonLoopbackServer(t *testing.T) {

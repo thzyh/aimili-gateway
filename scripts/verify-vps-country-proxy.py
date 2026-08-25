@@ -117,6 +117,18 @@ def wait_port(port: int, process: subprocess.Popen[bytes]) -> None:
     raise RuntimeError("validation Xray did not listen in time")
 
 
+def build_vless_document(parsed: urllib.parse.SplitResult, required: dict[str, str], port: int) -> dict[str, object]:
+    return {
+        "log": {"loglevel": "none"},
+        "inbounds": [{"listen": "127.0.0.1", "port": port, "protocol": "socks", "settings": {"udp": False}}],
+        "outbounds": [{
+            "protocol": "vless",
+            "settings": {"vnext": [{"address": parsed.hostname, "port": parsed.port, "users": [{"id": parsed.username, "encryption": "none", "flow": required["flow"]}]}]},
+            "streamSettings": {"network": "tcp", "security": "reality", "realitySettings": {"fingerprint": required["fp"], "serverName": required["sni"], "password": required["pbk"], "shortId": required["sid"], "spiderX": "/"}},
+        }],
+    }
+
+
 def validate_vless(uri: str, expected_exit: str, xray_path: str) -> None:
     parsed = urllib.parse.urlsplit(uri)
     query = urllib.parse.parse_qs(parsed.query)
@@ -124,15 +136,7 @@ def validate_vless(uri: str, expected_exit: str, xray_path: str) -> None:
     if parsed.scheme != "vless" or not parsed.username or not parsed.hostname or not parsed.port:
         raise RuntimeError("invalid VLESS connection document")
     port = reserve_port()
-    document = {
-        "log": {"loglevel": "none"},
-        "inbounds": [{"listen": "127.0.0.1", "port": port, "protocol": "socks", "settings": {"udp": False}}],
-        "outbounds": [{
-            "protocol": "vless",
-            "settings": {"vnext": [{"address": parsed.hostname, "port": parsed.port, "users": [{"id": parsed.username, "encryption": "none", "flow": required["flow"]}]}]},
-            "streamSettings": {"network": "tcp", "security": "reality", "realitySettings": {"fingerprint": required["fp"], "serverName": required["sni"], "publicKey": required["pbk"], "shortId": required["sid"], "spiderX": "/"}},
-        }],
-    }
+    document = build_vless_document(parsed, required, port)
     descriptor, config_path = tempfile.mkstemp(prefix="aimili-public-vless-", suffix=".json")
     os.fchmod(descriptor, 0o600)
     try:

@@ -118,7 +118,7 @@ func buildVLESSClientConfig(target VLESSTarget, localPort int, username, passwor
 		"outbounds": []any{map[string]any{
 			"tag": "validation-vless", "protocol": "vless",
 			"settings":       map[string]any{"vnext": []any{map[string]any{"address": host, "port": serverPort, "users": []any{map[string]any{"id": target.ClientID, "encryption": "none", "flow": "xtls-rprx-vision"}}}}},
-			"streamSettings": map[string]any{"network": "tcp", "security": "reality", "realitySettings": map[string]any{"fingerprint": "chrome", "serverName": target.ServerName, "publicKey": target.PublicKey, "shortId": target.ShortID, "spiderX": "/"}},
+			"streamSettings": map[string]any{"network": "tcp", "security": "reality", "realitySettings": map[string]any{"fingerprint": "chrome", "serverName": target.ServerName, "password": target.PublicKey, "shortId": target.ShortID, "spiderX": "/"}},
 		}},
 		"routing": map[string]any{"domainStrategy": "AsIs", "rules": []any{map[string]any{"type": "field", "inboundTag": []any{"validation-socks"}, "outboundTag": "validation-vless"}}},
 	}
