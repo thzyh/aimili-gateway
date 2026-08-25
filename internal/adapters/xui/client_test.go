@@ -212,6 +212,25 @@ func TestEnsureManagedGroupRejectsConflictingNamespacedOutbound(t *testing.T) {
 	}
 }
 
+func TestEnsureManagedGroupRejectsUnmanagedPortConflict(t *testing.T) {
+	fixture := &xuiFixture{inbounds: []map[string]any{{
+		"id": float64(9), "tag": "user-vless", "remark": "User inbound", "protocol": "vless", "port": float64(20000),
+	}}}
+	client := newXUIFixtureClient(t, fixture)
+	_, err := client.EnsureManagedGroup(context.Background(), DesiredGroup{
+		ResourceName: "agw-jp-dc", SOCKSPort: 17930, VLESSPort: 20000, MixedPort: 30000,
+		VLESSClientID: "test-client-id", MixedUsername: "proxy-user", MixedPassword: "proxy-password",
+		MixedSourceCIDRs: []string{"198.51.100.0/24"},
+	})
+	var adapterError *AdapterError
+	if !errors.As(err, &adapterError) || adapterError.Code != "port_conflict" {
+		t.Fatalf("unexpected port error: %v", err)
+	}
+	if fixture.updatedXray != nil {
+		t.Fatal("port conflict changed Xray")
+	}
+}
+
 func TestDeleteManagedGroupRemovesOnlyNamedResources(t *testing.T) {
 	fixture := &xuiFixture{}
 	client := newXUIFixtureClient(t, fixture)

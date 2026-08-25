@@ -131,13 +131,15 @@ func (c *Client) EnsureManagedGroup(ctx context.Context, desired DesiredGroup) (
 	vlessTag := desired.ResourceName + "-vless"
 	mixedTag := desired.ResourceName + "-mixed"
 	for _, inbound := range snapshot.Inbounds {
-		if inbound.Tag != vlessTag && inbound.Tag != mixedTag {
-			continue
+		if inbound.Tag == vlessTag || inbound.Tag == mixedTag {
+			if !strings.HasPrefix(inbound.Remark, "Aimili Gateway ") {
+				return ManagedGroup{}, &AdapterError{Code: "ownership_conflict"}
+			}
+			return ManagedGroup{}, &AdapterError{Code: "managed_resource_exists"}
 		}
-		if !strings.HasPrefix(inbound.Remark, "Aimili Gateway ") {
-			return ManagedGroup{}, &AdapterError{Code: "ownership_conflict"}
+		if inbound.Port == desired.VLESSPort || inbound.Port == desired.MixedPort {
+			return ManagedGroup{}, &AdapterError{Code: "port_conflict"}
 		}
-		return ManagedGroup{}, &AdapterError{Code: "managed_resource_exists"}
 	}
 
 	privateKey, publicKey, err := c.newX25519(ctx)
