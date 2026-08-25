@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
-import { apiFetch } from '../api/client'
+import { apiFetch, type AuthOptionsPayload } from '../api/client'
 
 const router = useRouter()
 const username = ref('')
@@ -10,29 +10,45 @@ const password = ref('')
 const totp = ref('')
 const errorMessage = ref('')
 const submitting = ref(false)
+const optionsLoaded = ref(false)
+const totpRequired = ref(false)
+
+onMounted(async () => {
+  try {
+    const options = await apiFetch<AuthOptionsPayload>('/api/v1/auth/options')
+    totpRequired.value = options.totpRequired
+    optionsLoaded.value = true
+  } catch {
+    errorMessage.value = '暂时无法获取登录方式，请稍后重试。'
+  }
+})
 
 async function submit(): Promise<void> {
+  if (!optionsLoaded.value) return
   errorMessage.value = ''
-  if (!/^\d{6}$/.test(totp.value)) {
+  if (totpRequired.value && !/^\d{6}$/.test(totp.value)) {
     errorMessage.value = '请输入 6 位动态验证码。'
     return
   }
   submitting.value = true
   try {
+    const credentials: Record<string, string> = {
+      username: username.value,
+      password: password.value,
+    }
+    if (totpRequired.value) credentials.totp = totp.value
     await apiFetch('/api/v1/auth/login', {
       method: 'POST',
-      body: JSON.stringify({
-        username: username.value,
-        password: password.value,
-        totp: totp.value,
-      }),
+      body: JSON.stringify(credentials),
     })
-    password.value = ''
-    totp.value = ''
     await router.push('/')
   } catch {
-    errorMessage.value = '登录失败，请检查账户、密码和动态验证码。'
+    errorMessage.value = totpRequired.value
+      ? '登录失败，请检查账户、密码或动态验证码。'
+      : '登录失败，请检查账户或密码。'
   } finally {
+    password.value = ''
+    totp.value = ''
     submitting.value = false
   }
 }
@@ -53,12 +69,12 @@ async function submit(): Promise<void> {
           密码
           <input v-model="password" name="password" type="password" autocomplete="current-password" required />
         </label>
-        <label>
+        <label v-if="totpRequired">
           动态验证码
           <input v-model="totp" name="totp" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" required />
         </label>
         <p v-if="errorMessage" class="form-error" role="alert">{{ errorMessage }}</p>
-        <button type="submit" :disabled="submitting">{{ submitting ? '正在登录…' : '登录' }}</button>
+        <button type="submit" :disabled="submitting || !optionsLoaded">{{ submitting ? '正在登录…' : '登录' }}</button>
       </form>
     </section>
   </main>

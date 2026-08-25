@@ -25,6 +25,10 @@ export interface SessionPayload {
   expiresAt: string
 }
 
+export interface AuthOptionsPayload {
+  totpRequired: boolean
+}
+
 export class APIError extends Error {
   constructor(
     public readonly status: number,
