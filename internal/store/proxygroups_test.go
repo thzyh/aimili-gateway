@@ -77,6 +77,35 @@ func TestProxyGroupCountryAndTypeAreUnique(t *testing.T) {
 	}
 }
 
+func TestProxyGroupsAllowMultipleCandidatesInOneCountryAndType(t *testing.T) {
+	database := openTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	first, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter, "candidate-one")
+	second, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter, "candidate-two")
+	for index, group := range []*domain.ProxyGroup{&first, &second} {
+		group.AimiliSlot = index + 1
+		group.VLESSPort = 20100 + index
+		group.MixedPort = 30100 + index
+		group.CandidateIP = "198.51.100.10"
+		group.CandidateLatencyMS = 25 + index
+		group.VLESSLatencyMS = 80 + index
+		group.SOCKSLatencyMS = 70 + index
+		group.CreatedAt = now
+		group.UpdatedAt = now
+		if err := database.CreateProxyGroup(ctx, *group); err != nil {
+			t.Fatalf("create candidate %d: %v", index, err)
+		}
+	}
+	groups, err := database.ListProxyGroups(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(groups) != 2 || groups[1].CandidateID != "candidate-two" || groups[1].SOCKSLatencyMS != 71 {
+		t.Fatalf("unexpected stored candidates: %#v", groups)
+	}
+}
+
 func TestCredentialEncryptionUsesPurposeContextAndNeverStoresPlaintext(t *testing.T) {
 	database := openTestStore(t)
 	ctx := context.Background()

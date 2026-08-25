@@ -58,6 +58,18 @@ func TestValidateRejectsUnsafeProxyRuntimeRanges(t *testing.T) {
 	}
 }
 
+func TestValidateSupportsAtMostSixtyFourOnlineEgresses(t *testing.T) {
+	cfg := validProductionConfig()
+	cfg.MaxProxyGroups = 64
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("64 online egresses rejected: %v", err)
+	}
+	cfg.MaxProxyGroups = 65
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("65 online egresses accepted")
+	}
+}
+
 func TestValidateRejectsPublicListenAddress(t *testing.T) {
 	cfg := validProductionConfig()
 	cfg.ListenAddress = "0.0.0.0:9080"

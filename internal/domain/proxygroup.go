@@ -1,7 +1,9 @@
 package domain
 
 import (
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 	"time"
@@ -28,34 +30,40 @@ const (
 var countryCodePattern = regexp.MustCompile(`^[A-Z]{2}$`)
 
 type ProxyGroup struct {
-	ID                string
-	ResourceName      string
-	CountryCode       string
-	CountryName       string
-	ProxyType         ProxyType
-	Status            ProxyGroupStatus
-	AimiliSlot        int
-	VLESSPort         int
-	MixedPort         int
-	ExitIP            string
-	ConfigFingerprint string
-	VLESSInboundID    int64
-	MixedInboundID    int64
-	RealityPublicKey  string
-	RealityShortID    string
-	RealityServerName string
-	LastErrorCode     string
-	RecoveryState     string
-	Version           int64
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
-	LastCheckedAt     time.Time
-	LastRotatedAt     time.Time
+	ID                 string
+	ResourceName       string
+	CountryCode        string
+	CountryName        string
+	ProxyType          ProxyType
+	CandidateID        string
+	CandidateIP        string
+	CandidateLatencyMS int
+	VLESSLatencyMS     int
+	SOCKSLatencyMS     int
+	Status             ProxyGroupStatus
+	AimiliSlot         int
+	VLESSPort          int
+	MixedPort          int
+	ExitIP             string
+	ConfigFingerprint  string
+	VLESSInboundID     int64
+	MixedInboundID     int64
+	RealityPublicKey   string
+	RealityShortID     string
+	RealityServerName  string
+	LastErrorCode      string
+	RecoveryState      string
+	Version            int64
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	LastCheckedAt      time.Time
+	LastRotatedAt      time.Time
+	LastSeenAt         time.Time
 }
 
-func NewProxyGroupIdentity(country string, proxyType ProxyType) (ProxyGroup, error) {
+func NewProxyGroupIdentity(country string, proxyType ProxyType, candidateIDs ...string) (ProxyGroup, error) {
 	country = strings.ToUpper(strings.TrimSpace(country))
-	if !countryCodePattern.MatchString(country) || !proxyType.Valid() {
+	if !countryCodePattern.MatchString(country) || !proxyType.Valid() || len(candidateIDs) > 1 {
 		return ProxyGroup{}, errors.New("invalid proxy group identity")
 	}
 	suffix := "res"
@@ -63,11 +71,21 @@ func NewProxyGroupIdentity(country string, proxyType ProxyType) (ProxyGroup, err
 		suffix = "dc"
 	}
 	name := "agw-" + strings.ToLower(country) + "-" + suffix
+	candidateID := ""
+	if len(candidateIDs) == 1 {
+		candidateID = strings.TrimSpace(candidateIDs[0])
+		if candidateID == "" || len(candidateID) > 256 {
+			return ProxyGroup{}, errors.New("invalid proxy group candidate")
+		}
+		digest := sha256.Sum256([]byte(candidateID))
+		name = fmt.Sprintf("%s-%x", name, digest[:5])
+	}
 	return ProxyGroup{
 		ID:           name,
 		ResourceName: name,
 		CountryCode:  country,
 		ProxyType:    proxyType,
+		CandidateID:  candidateID,
 		Status:       ProxyGroupProvisioning,
 		Version:      1,
 	}, nil

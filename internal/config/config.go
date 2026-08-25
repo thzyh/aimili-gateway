@@ -133,7 +133,7 @@ func (c Config) Validate() error {
 	if err := validateExpertModeURL(c.ExpertModeURL); err != nil {
 		return err
 	}
-	if c.MaxProxyGroups < 1 || c.MaxProxyGroups > 4 || c.VLESSPortStart < 1 || c.VLESSPortEnd > 65535 ||
+	if c.MaxProxyGroups < 1 || c.MaxProxyGroups > 64 || c.VLESSPortStart < 1 || c.VLESSPortEnd > 65535 ||
 		c.VLESSPortEnd < c.VLESSPortStart || c.MixedPortStart < 1 || c.MixedPortEnd > 65535 || c.MixedPortEnd < c.MixedPortStart ||
 		!(c.VLESSPortEnd < c.MixedPortStart || c.MixedPortEnd < c.VLESSPortStart) {
 		return errors.New("invalid proxy group capacity or port ranges")

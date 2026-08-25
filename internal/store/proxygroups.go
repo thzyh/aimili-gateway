@@ -23,20 +23,22 @@ func (s *Store) CreateProxyGroup(ctx context.Context, group domain.ProxyGroup) e
 	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO proxy_groups(
-			id, resource_name, country_code, country_name, proxy_type, status,
+			id, resource_name, country_code, country_name, proxy_type,
+			candidate_id, candidate_ip, candidate_latency_ms, vless_latency_ms, socks_latency_ms, status,
 			aimili_slot, vless_port, mixed_port, exit_ip, config_fingerprint,
 			vless_inbound_id, mixed_inbound_id, reality_public_key, reality_short_id, reality_server_name,
 			last_error_code, recovery_state, version, created_at, updated_at,
-			last_checked_at, last_rotated_at
-		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
+			last_checked_at, last_rotated_at, last_seen_at
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		group.ID, group.ResourceName, group.CountryCode, group.CountryName,
-		group.ProxyType, group.Status, group.AimiliSlot, group.VLESSPort,
+		group.ProxyType, group.CandidateID, group.CandidateIP, group.CandidateLatencyMS,
+		group.VLESSLatencyMS, group.SOCKSLatencyMS, group.Status, group.AimiliSlot, group.VLESSPort,
 		group.MixedPort, group.ExitIP, group.ConfigFingerprint,
 		group.VLESSInboundID, group.MixedInboundID, group.RealityPublicKey,
 		group.RealityShortID, group.RealityServerName,
-		group.LastErrorCode, group.RecoveryState, group.CreatedAt.UTC().UnixMilli(),
+		group.LastErrorCode, group.RecoveryState, group.Version, group.CreatedAt.UTC().UnixMilli(),
 		group.UpdatedAt.UTC().UnixMilli(), unixMillis(group.LastCheckedAt),
-		unixMillis(group.LastRotatedAt),
+		unixMillis(group.LastRotatedAt), unixMillis(group.LastSeenAt),
 	)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "constraint") {
@@ -49,22 +51,24 @@ func (s *Store) CreateProxyGroup(ctx context.Context, group domain.ProxyGroup) e
 
 func (s *Store) GetProxyGroup(ctx context.Context, id string) (domain.ProxyGroup, error) {
 	return scanProxyGroup(s.db.QueryRowContext(ctx, `
-		SELECT id, resource_name, country_code, country_name, proxy_type, status,
+		SELECT id, resource_name, country_code, country_name, proxy_type,
+			candidate_id, candidate_ip, candidate_latency_ms, vless_latency_ms, socks_latency_ms, status,
 			aimili_slot, vless_port, mixed_port, exit_ip, config_fingerprint,
 			vless_inbound_id, mixed_inbound_id, reality_public_key, reality_short_id, reality_server_name,
 			last_error_code, recovery_state, version, created_at, updated_at,
-			last_checked_at, last_rotated_at
+			last_checked_at, last_rotated_at, last_seen_at
 		FROM proxy_groups WHERE id = ?`, id))
 }
 
 func (s *Store) ListProxyGroups(ctx context.Context) ([]domain.ProxyGroup, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, resource_name, country_code, country_name, proxy_type, status,
+		SELECT id, resource_name, country_code, country_name, proxy_type,
+			candidate_id, candidate_ip, candidate_latency_ms, vless_latency_ms, socks_latency_ms, status,
 			aimili_slot, vless_port, mixed_port, exit_ip, config_fingerprint,
 			vless_inbound_id, mixed_inbound_id, reality_public_key, reality_short_id, reality_server_name,
 			last_error_code, recovery_state, version, created_at, updated_at,
-			last_checked_at, last_rotated_at
-		FROM proxy_groups ORDER BY country_code, proxy_type`)
+			last_checked_at, last_rotated_at, last_seen_at
+		FROM proxy_groups ORDER BY country_code, proxy_type, candidate_latency_ms, id`)
 	if err != nil {
 		return nil, fmt.Errorf("list proxy groups: %w", err)
 	}
@@ -89,16 +93,18 @@ func (s *Store) UpdateProxyGroup(ctx context.Context, group domain.ProxyGroup, e
 	}
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE proxy_groups SET
-			country_name = ?, status = ?, aimili_slot = ?, vless_port = ?, mixed_port = ?,
+			country_name = ?, candidate_ip = ?, candidate_latency_ms = ?, vless_latency_ms = ?, socks_latency_ms = ?,
+			status = ?, aimili_slot = ?, vless_port = ?, mixed_port = ?,
 			exit_ip = ?, config_fingerprint = ?, vless_inbound_id = ?, mixed_inbound_id = ?,
 			reality_public_key = ?, reality_short_id = ?, reality_server_name = ?, last_error_code = ?, recovery_state = ?,
-			version = version + 1, updated_at = ?, last_checked_at = ?, last_rotated_at = ?
+			version = version + 1, updated_at = ?, last_checked_at = ?, last_rotated_at = ?, last_seen_at = ?
 		WHERE id = ? AND version = ?`,
-		group.CountryName, group.Status, group.AimiliSlot, group.VLESSPort,
+		group.CountryName, group.CandidateIP, group.CandidateLatencyMS, group.VLESSLatencyMS, group.SOCKSLatencyMS,
+		group.Status, group.AimiliSlot, group.VLESSPort,
 		group.MixedPort, group.ExitIP, group.ConfigFingerprint, group.VLESSInboundID,
 		group.MixedInboundID, group.RealityPublicKey, group.RealityShortID, group.RealityServerName, group.LastErrorCode,
 		group.RecoveryState, group.UpdatedAt.UTC().UnixMilli(),
-		unixMillis(group.LastCheckedAt), unixMillis(group.LastRotatedAt),
+		unixMillis(group.LastCheckedAt), unixMillis(group.LastRotatedAt), unixMillis(group.LastSeenAt),
 		group.ID, expectedVersion,
 	)
 	if err != nil {
@@ -135,15 +141,16 @@ type rowScanner interface {
 
 func scanProxyGroup(row rowScanner) (domain.ProxyGroup, error) {
 	var group domain.ProxyGroup
-	var createdAt, updatedAt, checkedAt, rotatedAt int64
+	var createdAt, updatedAt, checkedAt, rotatedAt, seenAt int64
 	err := row.Scan(
 		&group.ID, &group.ResourceName, &group.CountryCode, &group.CountryName,
-		&group.ProxyType, &group.Status, &group.AimiliSlot, &group.VLESSPort,
+		&group.ProxyType, &group.CandidateID, &group.CandidateIP, &group.CandidateLatencyMS,
+		&group.VLESSLatencyMS, &group.SOCKSLatencyMS, &group.Status, &group.AimiliSlot, &group.VLESSPort,
 		&group.MixedPort, &group.ExitIP, &group.ConfigFingerprint,
 		&group.VLESSInboundID, &group.MixedInboundID, &group.RealityPublicKey,
 		&group.RealityShortID, &group.RealityServerName,
 		&group.LastErrorCode, &group.RecoveryState, &group.Version,
-		&createdAt, &updatedAt, &checkedAt, &rotatedAt,
+		&createdAt, &updatedAt, &checkedAt, &rotatedAt, &seenAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.ProxyGroup{}, ErrProxyGroupNotFound
@@ -155,6 +162,7 @@ func scanProxyGroup(row rowScanner) (domain.ProxyGroup, error) {
 	group.UpdatedAt = time.UnixMilli(updatedAt).UTC()
 	group.LastCheckedAt = timeFromUnixMillis(checkedAt)
 	group.LastRotatedAt = timeFromUnixMillis(rotatedAt)
+	group.LastSeenAt = timeFromUnixMillis(seenAt)
 	return group, nil
 }
 
@@ -163,6 +171,7 @@ func validateProxyGroup(group domain.ProxyGroup) error {
 		len(group.CountryCode) != 2 || !group.ProxyType.Valid() || !group.Status.Valid() ||
 		group.AimiliSlot < 0 || group.VLESSPort < 1 || group.VLESSPort > 65535 ||
 		group.MixedPort < 1 || group.MixedPort > 65535 || group.Version < 1 ||
+		len(group.CandidateID) > 256 || group.CandidateLatencyMS < 0 || group.VLESSLatencyMS < 0 || group.SOCKSLatencyMS < 0 ||
 		group.CreatedAt.IsZero() || group.UpdatedAt.IsZero() {
 		return errors.New("invalid proxy group")
 	}

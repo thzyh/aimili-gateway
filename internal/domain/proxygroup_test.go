@@ -2,6 +2,29 @@ package domain
 
 import "testing"
 
+func TestNewProxyGroupIdentityDistinguishesCandidatesInTheSameClassification(t *testing.T) {
+	first, err := NewProxyGroupIdentity("JP", ProxyTypeDatacenter, "candidate-one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewProxyGroupIdentity("JP", ProxyTypeDatacenter, "candidate-two")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID == second.ID || first.CandidateID != "candidate-one" || second.CandidateID != "candidate-two" {
+		t.Fatalf("candidate identities collided: %#v %#v", first, second)
+	}
+	if first.ResourceName != first.ID || len(first.ID) > 63 {
+		t.Fatalf("invalid managed resource identity: %#v", first)
+	}
+}
+
+func TestNewProxyGroupIdentityRejectsExplicitEmptyCandidate(t *testing.T) {
+	if _, err := NewProxyGroupIdentity("JP", ProxyTypeResidential, ""); err == nil {
+		t.Fatal("explicit empty candidate was accepted")
+	}
+}
+
 func TestNewProxyGroupIdentityNormalizesCountryAndType(t *testing.T) {
 	group, err := NewProxyGroupIdentity("jp", ProxyTypeDatacenter)
 	if err != nil {
