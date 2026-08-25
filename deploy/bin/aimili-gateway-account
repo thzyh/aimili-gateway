@@ -15,7 +15,6 @@ exec /usr/bin/systemd-run \
     --wait \
     --collect \
     --pty \
-    --unit=aimili-gateway-account \
     --service-type=exec \
     --property=User=aimili-gateway \
     --property=Group=aimili-gateway \

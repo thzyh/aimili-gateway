@@ -109,7 +109,7 @@ func TestAccountCommandUsesRestrictedTransientUnit(t *testing.T) {
 			t.Fatalf("account command missing %q", required)
 		}
 	}
-	for _, forbidden := range []string{"bash -c", "sh -c", "eval ", "curl ", "wget ", "$@"} {
+	for _, forbidden := range []string{"bash -c", "sh -c", "eval ", "curl ", "wget ", "$@", "--unit="} {
 		if strings.Contains(script, forbidden) {
 			t.Fatalf("account command contains unsafe behavior %q", forbidden)
 		}
