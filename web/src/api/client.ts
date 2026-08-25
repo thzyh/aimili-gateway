@@ -35,7 +35,8 @@ export type ProxyGroupStatus = 'provisioning' | 'ready' | 'rotating' | 'degraded
 export interface CountryPayload { code: string; name: string; residentialCount: number; datacenterCount: number }
 export interface ProxyGroupPayload {
   id: string; countryCode: string; countryName: string; proxyType: ProxyType; status: ProxyGroupStatus
-  vlessPort: number; mixedPort: number; exitIp: string; lastErrorCode?: string; version: number; lastCheckedAt?: string
+  vlessPort: number; mixedPort: number; exitIp: string; candidateLatencyMs: number; vlessLatencyMs: number; socksLatencyMs: number
+  lastErrorCode?: string; version: number; lastCheckedAt?: string
 }
 export interface ConnectionsPayload { vlessUri: string; socks5hUri: string }
 
@@ -116,6 +117,32 @@ export async function apiFetch<T = void>(path: string, init: RequestInit = {}): 
     csrfToken = payload.csrfToken
   }
   return payload as T
+}
+
+export async function apiDownloadText(path: string): Promise<string> {
+  const response = await fetch(path, { method: 'GET', credentials: 'same-origin' })
+  if (response.status === 401) {
+    csrfToken = null
+    unauthorizedHandler()
+  }
+  if (!response.ok) {
+    const contentType = response.headers.get('Content-Type') ?? ''
+    if (contentType.toLowerCase().includes('application/json')) {
+      try {
+        const payload: unknown = await response.json()
+        const code = isRecord(payload) && typeof payload.error === 'string' ? payload.error : 'request_failed'
+        throw new APIError(response.status, code)
+      } catch (error) {
+        if (error instanceof APIError) throw error
+      }
+    }
+    throw new APIError(response.status, 'request_failed')
+  }
+  const contentType = response.headers.get('Content-Type') ?? ''
+  if (!contentType.toLowerCase().startsWith('text/plain')) {
+    throw new APIError(response.status, 'invalid_response')
+  }
+  return response.text()
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

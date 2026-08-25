@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/netip"
 	"testing"
+	"time"
 
 	"github.com/thzyh/aimili-gateway/internal/domain"
 	"github.com/thzyh/aimili-gateway/internal/orchestrator"
@@ -68,6 +69,46 @@ func TestConnectionsRequireReadyGroupAndRecentReauthentication(t *testing.T) {
 	}
 }
 
+func TestProxyPoolFiltersAndExposesProtocolLatenciesWithoutSecrets(t *testing.T) {
+	manager := &fakeProxyManager{groups: []domain.ProxyGroup{
+		{ID: "agw-jp-dc-one", CountryCode: "JP", CountryName: "日本", ProxyType: domain.ProxyTypeDatacenter, Status: domain.ProxyGroupReady, ExitIP: "203.0.113.10", VLESSLatencyMS: 82, SOCKSLatencyMS: 71, Version: 2, LastCheckedAt: time.Unix(1_700_000_000, 0).UTC()},
+		{ID: "agw-kr-res-one", CountryCode: "KR", CountryName: "韩国", ProxyType: domain.ProxyTypeResidential, Status: domain.ProxyGroupReady, ExitIP: "203.0.113.11", VLESSLatencyMS: 95, SOCKSLatencyMS: 88, Version: 2},
+	}}
+	environment := newAuthTestEnvironmentConfigured(t, true, func(dependencies *Dependencies) { dependencies.ProxyManager = manager })
+	assertResponseStatus(t, environment.login(t), http.StatusNoContent)
+	response := environment.request(t, http.MethodGet, "/api/v1/proxy-groups?country=JP&proxyType=datacenter&status=ready", nil, "", "")
+	defer response.Body.Close()
+	var groups []proxyGroupResponse
+	if err := json.NewDecoder(response.Body).Decode(&groups); err != nil {
+		t.Fatal(err)
+	}
+	if len(groups) != 1 || groups[0].VLESSLatencyMS != 82 || groups[0].SOCKSLatencyMS != 71 {
+		t.Fatalf("unexpected filtered pool: %#v", groups)
+	}
+}
+
+func TestPoolExportRequiresRecentReauthenticationAndExportsOnlyReadyFilteredRows(t *testing.T) {
+	manager := &fakeProxyManager{groups: []domain.ProxyGroup{
+		{ID: "ready-jp", CountryCode: "JP", ProxyType: domain.ProxyTypeDatacenter, Status: domain.ProxyGroupReady},
+		{ID: "broken-jp", CountryCode: "JP", ProxyType: domain.ProxyTypeDatacenter, Status: domain.ProxyGroupDegraded},
+	}}
+	environment := newAuthTestEnvironmentConfigured(t, true, func(dependencies *Dependencies) { dependencies.ProxyManager = manager })
+	assertResponseStatus(t, environment.login(t), http.StatusNoContent)
+	path := "/api/v1/proxy-groups/export?protocol=vless&country=JP&proxyType=datacenter"
+	assertResponseStatus(t, environment.request(t, http.MethodGet, path, nil, "", ""), http.StatusPreconditionRequired)
+	csrf := environment.session(t).CSRFToken
+	assertResponseStatus(t, environment.request(t, http.MethodPost, "/api/v1/auth/reauth", map[string]string{"password": "local-only-test-password", "totp": "287082"}, environment.origin, csrf), http.StatusNoContent)
+	response := environment.request(t, http.MethodGet, path, nil, "", "")
+	defer response.Body.Close()
+	var body string
+	raw := make([]byte, 256)
+	n, _ := response.Body.Read(raw)
+	body = string(raw[:n])
+	if response.StatusCode != http.StatusOK || response.Header.Get("Content-Type") != "text/plain; charset=utf-8" || body != "vless://masked-test\n" {
+		t.Fatalf("status=%d type=%q body=%q", response.StatusCode, response.Header.Get("Content-Type"), body)
+	}
+}
+
 func TestIdempotencyCacheKeyKeepsLargeSessionIDsDistinct(t *testing.T) {
 	left := idempotencyCacheKey(0x110000, http.MethodPost, "/api/v1/proxy-groups", "same")
 	right := idempotencyCacheKey(0x110001, http.MethodPost, "/api/v1/proxy-groups", "same")
@@ -89,13 +130,16 @@ func (e *authTestEnvironment) requestWithHeaders(t *testing.T, method, path stri
 	return response
 }
 
-type fakeProxyManager struct{ enableCalls int }
+type fakeProxyManager struct {
+	enableCalls int
+	groups      []domain.ProxyGroup
+}
 
 func (*fakeProxyManager) Countries(context.Context) ([]orchestrator.Country, error) {
 	return []orchestrator.Country{{Code: "JP", Name: "日本", DatacenterCount: 2}}, nil
 }
-func (*fakeProxyManager) List(context.Context) ([]domain.ProxyGroup, error) {
-	return []domain.ProxyGroup{}, nil
+func (m *fakeProxyManager) List(context.Context) ([]domain.ProxyGroup, error) {
+	return append([]domain.ProxyGroup(nil), m.groups...), nil
 }
 func (m *fakeProxyManager) Enable(_ context.Context, request orchestrator.EnableRequest) (domain.ProxyGroup, error) {
 	m.enableCalls++
@@ -115,3 +159,6 @@ func (*fakeProxyManager) Connections(context.Context, string) (orchestrator.Conn
 	return orchestrator.Connections{VLESSURI: "vless://masked-test", SOCKS5HURI: "socks5h://masked-test"}, nil
 }
 func (*fakeProxyManager) SetMixedCIDRs(context.Context, []netip.Prefix) error { return nil }
+func (*fakeProxyManager) Reconcile(context.Context) orchestrator.ReconcileResult {
+	return orchestrator.ReconcileResult{Discovered: 1, Ready: 1}
+}

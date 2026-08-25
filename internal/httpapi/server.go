@@ -38,6 +38,7 @@ type ProxyManager interface {
 	Disable(context.Context, string) error
 	Connections(context.Context, string) (orchestrator.Connections, error)
 	SetMixedCIDRs(context.Context, []netip.Prefix) error
+	Reconcile(context.Context) orchestrator.ReconcileResult
 }
 
 type server struct {
@@ -94,7 +95,9 @@ func NewServer(dependencies Dependencies) http.Handler {
 	mux.HandleFunc("GET /api/v1/navigation", server.handleNavigation)
 	mux.HandleFunc("GET /api/v1/countries", server.handleCountries)
 	mux.HandleFunc("GET /api/v1/proxy-groups", server.handleProxyGroups)
+	mux.HandleFunc("GET /api/v1/proxy-groups/export", server.handleProxyGroupExport)
 	mux.HandleFunc("POST /api/v1/proxy-groups", server.handleEnableProxyGroup)
+	mux.HandleFunc("POST /api/v1/proxy-groups/reconcile", server.handleReconcileProxyGroups)
 	mux.HandleFunc("POST /api/v1/proxy-groups/{id}/check", server.handleCheckProxyGroup)
 	mux.HandleFunc("POST /api/v1/proxy-groups/{id}/rotate", server.handleRotateProxyGroup)
 	mux.HandleFunc("DELETE /api/v1/proxy-groups/{id}", server.handleDisableProxyGroup)

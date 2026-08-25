@@ -47,6 +47,16 @@ it('invokes the unauthorized handler on HTTP 401', async () => {
   expect(unauthorized).toHaveBeenCalledOnce()
 })
 
+it('downloads authenticated text exports without treating them as invalid JSON', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('vless://masked\n', {
+    status: 200,
+    headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+  })))
+  const { apiDownloadText } = await import('./client')
+
+  await expect(apiDownloadText('/api/v1/proxy-groups/export?protocol=vless')).resolves.toBe('vless://masked\n')
+})
+
 function jsonResponse(payload: unknown, status = 200): Response {
   return new Response(JSON.stringify(payload), {
     status,
