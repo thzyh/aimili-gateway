@@ -4,9 +4,9 @@ Aimili Gateway 是 AimiliVPN 与 3x-ui 的轻量统一控制台项目。统一�
 
 ## 当前阶段
 
-项目设计与 V1-A 实施计划已经批准。V1-A 可运行基础已经实现：个人单管理员、密码与 TOTP 登录、服务端会话、只读服务探测、统一状态页和独立的 3x-ui 专家模式入口。
+项目设计与 V1-A 实施计划已经批准。V1-A 可运行基础已经实现：个人单管理员、密码登录与可选 TOTP、服务端会话、只读服务探测、统一状态页和独立的 3x-ui 专家模式入口。
 
-V1-A 的 Gateway 代码不修改 AimiliVPN 或 3x-ui 配置，也不包含 V1-B/V1-C 的管理写操作。`2026-08-25` 在用户明确授权后，完整测试栈已部署到 `ny` 并通过真实域名验收；验证记录见 `docs/verification/2026-08-25-ny-v1a.md`。
+V1-A 的 Gateway 代码不修改 AimiliVPN 或 3x-ui 配置，也不包含 V1-B/V1-C 的管理写操作。`2026-08-25` 在用户明确授权后，完整测试栈已部署到 `ny`；基础验收见 `docs/verification/2026-08-25-ny-v1a.md`，账户管理和可选 TOTP 的最新部署证据见 `docs/verification/2026-08-25-gateway-account-management.md`。
 
 ## 重要文件
 
