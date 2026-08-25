@@ -11,9 +11,10 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"runtime"
 	"strings"
 	"time"
+
+	"github.com/thzyh/aimili-gateway/internal/securefile"
 )
 
 const (
@@ -86,7 +87,7 @@ func ReadTokenFile(path string) ([]byte, error) {
 	if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > 4096 {
 		return nil, errors.New("invalid Aimili control token file")
 	}
-	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
+	if !securefile.RestrictedPermissions(path, info.Mode()) {
 		return nil, errors.New("Aimili control token file permissions are too broad")
 	}
 	raw, err := os.ReadFile(path)

@@ -15,11 +15,12 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/thzyh/aimili-gateway/internal/securefile"
 )
 
 const (
@@ -43,7 +44,7 @@ func ReadCredentialsFile(path string) (Credentials, error) {
 	if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > 16<<10 {
 		return Credentials{}, errors.New("invalid 3x-ui credentials file")
 	}
-	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
+	if !securefile.RestrictedPermissions(path, info.Mode()) {
 		return Credentials{}, errors.New("3x-ui credentials file permissions are too broad")
 	}
 	file, err := os.Open(path)
