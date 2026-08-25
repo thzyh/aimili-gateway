@@ -1,6 +1,8 @@
 # Aimili Gateway V1-B AimiliVPN 管理 Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Do not dispatch subagents for this project.
+> **状态：已废止，不得执行。** 用户于 2026-08-25 将后续目标修订为国家代理目录和 VLESS＋mixed 成对编排。本计划被 `docs/superpowers/specs/2026-08-25-country-proxy-console-design.md` 取代；新设计书面批准后重新编写实施计划。
+
+> 本文件只作历史记录，不得调用实施计划流程或执行其中任何复选步骤。
 
 **Goal:** 在 V1-A 可运行控制台上增加版本化 AimiliVPN 控制 API、完整的 AimiliVPN 适配器、节点与路由管理、多出口管理及每次写操作后的真实状态验证。
 

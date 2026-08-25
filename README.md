@@ -4,16 +4,19 @@ Aimili Gateway 是 AimiliVPN 与 3x-ui 的轻量统一控制台项目。统一�
 
 ## 当前阶段
 
-项目设计与 V1-A 实施计划已经批准。V1-A 可运行基础已经实现：个人单管理员、密码登录与可选 TOTP、服务端会话、只读服务探测、统一状态页和独立的 3x-ui 专家模式入口。
+V1-A 可运行基础已经实现：个人单管理员、密码登录与可选 TOTP、服务端会话、只读服务探测、统一状态页和独立的 3x-ui 专家模式入口。
 
-V1-A 的 Gateway 代码不修改 AimiliVPN 或 3x-ui 配置，也不包含 V1-B/V1-C 的管理写操作。`2026-08-25` 在用户明确授权后，完整测试栈已部署到 `ny`；基础验收见 `docs/verification/2026-08-25-ny-v1a.md`，账户管理和可选 TOTP 的最新部署证据见 `docs/verification/2026-08-25-gateway-account-management.md`。
+V1-A 的 Gateway 代码不修改 AimiliVPN 或 3x-ui 配置。`2026-08-25` 在用户明确授权后，完整测试栈已部署到 `ny`；基础验收见 `docs/verification/2026-08-25-ny-v1a.md`，账户管理和可选 TOTP 的最新部署证据见 `docs/verification/2026-08-25-gateway-account-management.md`。
+
+用户已将后续产品目标修订为按国家展示 AimiliVPN 有效出口，并为启用的国家和住宅/机房类型自动编排一对 VLESS 与 mixed 入站。新书面设计正在等待审核；审核批准前不执行新的 V1-B/V1-C 代码或生产部署。
 
 ## 重要文件
 
-- `docs/superpowers/specs/2026-08-24-unified-console-design.md`：统一控制台 V1 的需求、架构、认证、安全、适配器、兼容性和验收设计。
+- `docs/superpowers/specs/2026-08-25-country-proxy-console-design.md`：当前后续设计，定义国家代理目录、VLESS＋mixed 成对编排、容量、安全、统一高级设置和真实出口验收。
+- `docs/superpowers/specs/2026-08-24-unified-console-design.md`：V1-A 历史设计基线；其中未实施的旧 V1-B/V1-C 已被取代。
 - `docs/superpowers/plans/2026-08-24-unified-console-v1a-foundation.md`：单管理员登录、只读探测、统一状态页和专家模式入口。
-- `docs/superpowers/plans/2026-08-24-unified-console-v1b-aimili-management.md`：AimiliVPN 版本化控制 API、适配器和日常管理功能。
-- `docs/superpowers/plans/2026-08-24-unified-console-v1c-3xui-binding.md`：3x-ui 管理、客户端操作和跨服务出口绑定。
+- `docs/superpowers/plans/2026-08-24-unified-console-v1b-aimili-management.md`：已废止的旧 AimiliVPN 管理计划，仅保留历史。
+- `docs/superpowers/plans/2026-08-24-unified-console-v1c-3xui-binding.md`：已废止的旧 3x-ui 绑定计划，仅保留历史。
 - `cmd/aimili-gateway`：统一控制台服务进程。
 - `cmd/aimili-gateway-admin`：本地管理员初始化、账户安全管理和会话撤销命令。
 - `web`：Vue 登录页和服务总览页。
@@ -79,7 +82,7 @@ V1-A 的完整验收脚本位于 Task 9；日常修改至少完成以下检查�
 
 - 后端使用 Go 1.26.x、SQLite 和标准 HTTP 接口；前端依赖版本固定在 `web/package-lock.json`。
 - V1 不重写 AimiliVPN、3x-ui 或 Xray 核心，不把它们合并成单个进程。
-- 原版 3x-ui 后台保留为专家模式，并继续使用 3x-ui 自身认证。
-- 统一控制台的一套账户只覆盖 Gateway 页面。专家模式仍使用 3x-ui 登录；相同密码或反向代理保护都不是真正 SSO。
+- Gateway 普通页面和由 Gateway 自己实现的 AimiliVPN、3x-ui 高级设置统一使用 Gateway 账户。
+- 原版 3x-ui 后台保留为专家维护入口，并继续使用 3x-ui 自身认证；相同密码或反向代理保护都不是真正 SSO。
 - 示例 systemd 单元只允许 Gateway 访问回环网络和自身数据目录，不授予任意命令、systemd、Caddy 或底层数据库修改权限。
 - 部署资产已经在用户授权的 `ny` 测试部署中应用并验证；其他环境仍须单独取得授权、刷新基线并验证。

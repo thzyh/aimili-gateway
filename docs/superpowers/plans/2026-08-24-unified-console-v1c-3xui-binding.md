@@ -1,6 +1,8 @@
 # Aimili Gateway V1-C 3x-ui 管理与出口绑定 Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Do not dispatch subagents for this project.
+> **状态：已废止，不得执行。** 用户于 2026-08-25 将后续目标修订为国家代理目录和 VLESS＋mixed 成对编排。本计划被 `docs/superpowers/specs/2026-08-25-country-proxy-console-design.md` 取代；新设计书面批准后重新编写实施计划。
+
+> 本文件只作历史记录，不得调用实施计划流程或执行其中任何复选步骤。
 
 **Goal:** 在已验证的 V1-B 基础上增加 3x-ui 入站与客户端日常管理、敏感连接信息的受控显示，以及 3x-ui 入站到 AimiliVPN 主出口或多出口槽位的可靠绑定。
 
