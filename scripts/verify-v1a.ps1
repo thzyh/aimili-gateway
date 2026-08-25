@@ -5,6 +5,12 @@ $ErrorActionPreference = 'Stop'
 $env:GOTOOLCHAIN = 'local'
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $buildDirectory = Join-Path ([IO.Path]::GetTempPath()) ('aimili-gateway-verify-' + [IO.Path]::GetRandomFileName())
+$gitExecutable = (Get-Command git -ErrorAction Stop).Source
+$gitRoot = Split-Path -Parent (Split-Path -Parent $gitExecutable)
+$gitBash = Join-Path $gitRoot 'bin\bash.exe'
+if (-not (Test-Path -LiteralPath $gitBash)) {
+    $gitBash = (Get-Command bash -ErrorAction Stop).Source
+}
 
 function Invoke-NativeStep {
     param(
@@ -43,6 +49,7 @@ try {
     Invoke-NativeStep 'Go vet' { go vet ./... }
     Invoke-NativeStep 'Gateway build' { go build -o (Join-Path $buildDirectory 'aimili-gateway.exe') ./cmd/aimili-gateway }
     Invoke-NativeStep 'Admin CLI build' { go build -o (Join-Path $buildDirectory 'aimili-gateway-admin.exe') ./cmd/aimili-gateway-admin }
+    Invoke-NativeStep 'Account command syntax' { & $gitBash -n deploy/bin/aimili-gateway-account }
     Invoke-NativeStep 'Git whitespace check' { git diff --check }
 
     Write-Host '[verify] Tracked artifact scan'

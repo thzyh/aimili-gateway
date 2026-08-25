@@ -45,6 +45,7 @@ run_step 'Go race tests' go test ./... -race -count=1
 run_step 'Go vet' go vet ./...
 run_step 'Gateway build' go build -o "$build_directory/aimili-gateway" ./cmd/aimili-gateway
 run_step 'Admin CLI build' go build -o "$build_directory/aimili-gateway-admin" ./cmd/aimili-gateway-admin
+run_step 'Account command syntax' bash -n deploy/bin/aimili-gateway-account
 run_step 'Git whitespace check' git diff --check
 
 printf '[verify] Tracked artifact scan\n'

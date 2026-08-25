@@ -15,7 +15,7 @@ V1-A 的 Gateway 代码不修改 AimiliVPN 或 3x-ui 配置，也不包含 V1-B/
 - `docs/superpowers/plans/2026-08-24-unified-console-v1b-aimili-management.md`：AimiliVPN 版本化控制 API、适配器和日常管理功能。
 - `docs/superpowers/plans/2026-08-24-unified-console-v1c-3xui-binding.md`：3x-ui 管理、客户端操作和跨服务出口绑定。
 - `cmd/aimili-gateway`：统一控制台服务进程。
-- `cmd/aimili-gateway-admin`：本地管理员初始化和会话撤销命令。
+- `cmd/aimili-gateway-admin`：本地管理员初始化、账户安全管理和会话撤销命令。
 - `web`：Vue 登录页和服务总览页。
 - `deploy`：示例配置、systemd 单元和待合并的 Caddy 路由片段。
 
@@ -42,7 +42,27 @@ go run ./cmd/aimili-gateway-admin init
 go run ./cmd/aimili-gateway
 ```
 
-首次初始化会输出一次 TOTP enrollment URI。不要把该输出写入仓库、日志或聊天记录。生产部署前，应复制 `deploy/config/config.example.json`，替换保留域名和大写路径占位符，并将配置文件权限限制到专用管理员可读。
+首次初始化默认只启用密码登录。需要 TOTP 时，通过服务器本地账户管理命令登记。不要把密码或 TOTP enrollment URI 写入仓库、日志或聊天记录。生产部署前，应复制 `deploy/config/config.example.json`，替换保留域名和大写路径占位符，并将配置文件权限限制到专用管理员可读。
+
+### Gateway 账户管理
+
+服务器安装后统一使用：
+
+```bash
+sudo aimili-gateway-account
+```
+
+中文菜单提供以下功能：
+
+1. 查看当前用户名、TOTP 状态和安全信息更新时间。
+2. 修改用户名。
+3. 生成安全随机新密码。
+4. 设置自定义新密码。
+5. 启用或重新登记 TOTP。
+6. 关闭 TOTP。
+7. 撤销全部 Gateway 登录会话。
+
+当前密码使用 Argon2id 单向哈希保存，无法查询或恢复明文，只能重置。随机新密码只在当前终端显示一次；自定义密码采用隐藏输入和二次确认。关闭 Gateway TOTP 后，统一控制台登录页不再显示动态验证码，但 3x-ui 专家模式仍使用 3x-ui 自己的账户和认证设置，两者不是 SSO。
 
 ## 验证
 

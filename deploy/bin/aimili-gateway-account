@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if (( $# != 0 )); then
+    printf '用法：sudo aimili-gateway-account\n' >&2
+    exit 2
+fi
+if (( EUID != 0 )); then
+    printf '请使用 sudo aimili-gateway-account。\n' >&2
+    exit 1
+fi
+
+exec /usr/bin/systemd-run \
+    --quiet \
+    --wait \
+    --collect \
+    --pty \
+    --unit=aimili-gateway-account \
+    --service-type=exec \
+    --property=User=aimili-gateway \
+    --property=Group=aimili-gateway \
+    --property=WorkingDirectory=/var/lib/aimili-gateway \
+    --property=LoadCredentialEncrypted=gateway-master-key:/etc/credstore.encrypted/aimili-gateway-master-key \
+    --setenv=GATEWAY_CONFIG=/etc/aimili-gateway/config.json \
+    --setenv=GATEWAY_MASTER_KEY_FILE=%d/gateway-master-key \
+    --property=UMask=0077 \
+    --property=NoNewPrivileges=yes \
+    --property=PrivateTmp=yes \
+    --property=PrivateDevices=yes \
+    --property=ProtectSystem=strict \
+    --property=ProtectHome=yes \
+    --property=ReadWritePaths=/var/lib/aimili-gateway \
+    --property=ProtectControlGroups=yes \
+    --property=ProtectKernelLogs=yes \
+    --property=ProtectKernelModules=yes \
+    --property=ProtectKernelTunables=yes \
+    --property=ProtectProc=invisible \
+    --property=ProcSubset=pid \
+    --property=RestrictNamespaces=yes \
+    --property=RestrictRealtime=yes \
+    --property=RestrictSUIDSGID=yes \
+    --property=LockPersonality=yes \
+    --property=MemoryDenyWriteExecute=yes \
+    --property=CapabilityBoundingSet= \
+    --property=RestrictAddressFamilies=AF_UNIX \
+    --property=IPAddressDeny=any \
+    /usr/local/bin/aimili-gateway-admin account

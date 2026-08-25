@@ -85,6 +85,34 @@ func TestCaddyFragmentPreservesExistingRoutesBeforeGatewayFallback(t *testing.T)
 	}
 }
 
+func TestAccountCommandUsesRestrictedTransientUnit(t *testing.T) {
+	script := readAsset(t, "bin/aimili-gateway-account")
+	for _, required := range []string{
+		"/usr/bin/systemd-run",
+		"--pty",
+		"--wait",
+		"--collect",
+		"User=aimili-gateway",
+		"Group=aimili-gateway",
+		"LoadCredentialEncrypted=gateway-master-key:",
+		"GATEWAY_CONFIG=/etc/aimili-gateway/config.json",
+		"GATEWAY_MASTER_KEY_FILE=%d/gateway-master-key",
+		"IPAddressDeny=any",
+		"NoNewPrivileges=yes",
+		"/usr/local/bin/aimili-gateway-admin",
+		"account",
+	} {
+		if !strings.Contains(script, required) {
+			t.Fatalf("account command missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"bash -c", "sh -c", "eval ", "curl ", "wget ", "$@"} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("account command contains unsafe behavior %q", forbidden)
+		}
+	}
+}
+
 func readAsset(t *testing.T, relativePath string) string {
 	t.Helper()
 	contents, err := os.ReadFile(filepath.FromSlash(relativePath))
