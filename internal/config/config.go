@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -21,16 +22,24 @@ const (
 )
 
 type Config struct {
-	ListenAddress          string `json:"listenAddress"`
-	PublicOrigin           string `json:"publicOrigin"`
-	DatabasePath           string `json:"databasePath"`
-	MasterKeyFile          string `json:"masterKeyFile"`
-	AimiliAddress          string `json:"aimiliAddress"`
-	AimiliControlURL       string `json:"aimiliControlUrl"`
-	AimiliControlTokenFile string `json:"aimiliControlTokenFile"`
-	XUIBaseURL             string `json:"xuiBaseUrl"`
-	XUICredentialsFile     string `json:"xuiCredentialsFile"`
-	ExpertModeURL          string `json:"expertModeUrl"`
+	ListenAddress          string   `json:"listenAddress"`
+	PublicOrigin           string   `json:"publicOrigin"`
+	DatabasePath           string   `json:"databasePath"`
+	MasterKeyFile          string   `json:"masterKeyFile"`
+	AimiliAddress          string   `json:"aimiliAddress"`
+	AimiliControlURL       string   `json:"aimiliControlUrl"`
+	AimiliControlTokenFile string   `json:"aimiliControlTokenFile"`
+	XUIBaseURL             string   `json:"xuiBaseUrl"`
+	XUICredentialsFile     string   `json:"xuiCredentialsFile"`
+	ExpertModeURL          string   `json:"expertModeUrl"`
+	MaxProxyGroups         int      `json:"maxProxyGroups"`
+	VLESSPortStart         int      `json:"vlessPortStart"`
+	VLESSPortEnd           int      `json:"vlessPortEnd"`
+	MixedPortStart         int      `json:"mixedPortStart"`
+	MixedPortEnd           int      `json:"mixedPortEnd"`
+	XrayPath               string   `json:"xrayPath"`
+	ProbeHost              string   `json:"probeHost"`
+	MixedSourceCIDRs       []string `json:"mixedSourceCidrs"`
 
 	localTest bool
 }
@@ -45,6 +54,13 @@ func Load(path string) (Config, error) {
 		AimiliControlTokenFile: filepath.FromSlash("data/aimili-control.token"),
 		XUIBaseURL:             defaultXUIBaseURL,
 		XUICredentialsFile:     filepath.FromSlash("data/xui-automation.json"),
+		MaxProxyGroups:         1,
+		VLESSPortStart:         20000,
+		VLESSPortEnd:           20999,
+		MixedPortStart:         30000,
+		MixedPortEnd:           30999,
+		XrayPath:               filepath.FromSlash("/usr/local/x-ui/bin/xray-linux-amd64"),
+		ProbeHost:              "api.ipify.org",
 		localTest:              path == "",
 	}
 
@@ -59,6 +75,31 @@ func Load(path string) (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+func (c Config) WithRuntimeDefaults() Config {
+	if c.MaxProxyGroups == 0 {
+		c.MaxProxyGroups = 1
+	}
+	if c.VLESSPortStart == 0 {
+		c.VLESSPortStart = 20000
+	}
+	if c.VLESSPortEnd == 0 {
+		c.VLESSPortEnd = 20999
+	}
+	if c.MixedPortStart == 0 {
+		c.MixedPortStart = 30000
+	}
+	if c.MixedPortEnd == 0 {
+		c.MixedPortEnd = 30999
+	}
+	if strings.TrimSpace(c.XrayPath) == "" {
+		c.XrayPath = filepath.FromSlash("/usr/local/x-ui/bin/xray-linux-amd64")
+	}
+	if strings.TrimSpace(c.ProbeHost) == "" {
+		c.ProbeHost = "api.ipify.org"
+	}
+	return c
 }
 
 func (c Config) Validate() error {
@@ -91,6 +132,20 @@ func (c Config) Validate() error {
 	}
 	if err := validateExpertModeURL(c.ExpertModeURL); err != nil {
 		return err
+	}
+	if c.MaxProxyGroups < 1 || c.MaxProxyGroups > 4 || c.VLESSPortStart < 1 || c.VLESSPortEnd > 65535 ||
+		c.VLESSPortEnd < c.VLESSPortStart || c.MixedPortStart < 1 || c.MixedPortEnd > 65535 || c.MixedPortEnd < c.MixedPortStart ||
+		!(c.VLESSPortEnd < c.MixedPortStart || c.MixedPortEnd < c.VLESSPortStart) {
+		return errors.New("invalid proxy group capacity or port ranges")
+	}
+	if strings.TrimSpace(c.XrayPath) == "" || strings.TrimSpace(c.ProbeHost) == "" || net.ParseIP(c.ProbeHost) != nil || strings.ContainsAny(c.ProbeHost, "/:") {
+		return errors.New("xrayPath and a DNS probeHost are required")
+	}
+	for _, raw := range c.MixedSourceCIDRs {
+		prefix, err := netip.ParsePrefix(raw)
+		if err != nil || prefix.Bits() == 0 || prefix != prefix.Masked() {
+			return errors.New("mixedSourceCidrs must contain canonical non-global prefixes")
+		}
 	}
 	return nil
 }
@@ -143,6 +198,8 @@ func applyEnvironment(cfg *Config) {
 		{name: "GATEWAY_XUI_BASE_URL", target: &cfg.XUIBaseURL},
 		{name: "GATEWAY_XUI_CREDENTIALS_FILE", target: &cfg.XUICredentialsFile},
 		{name: "GATEWAY_EXPERT_MODE_URL", target: &cfg.ExpertModeURL},
+		{name: "GATEWAY_XRAY_PATH", target: &cfg.XrayPath},
+		{name: "GATEWAY_PROBE_HOST", target: &cfg.ProbeHost},
 	}
 	for _, override := range overrides {
 		if value := os.Getenv(override.name); value != "" {

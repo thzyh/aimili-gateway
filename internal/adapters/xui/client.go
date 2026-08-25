@@ -180,6 +180,9 @@ func (c *Client) EnsureManagedGroup(ctx context.Context, desired DesiredGroup) (
 		MixedInboundTag: mixedTag,
 		OutboundTag:     desired.ResourceName + "-socks",
 		Fingerprint:     fingerprintDesired(desired),
+		PublicKey:       publicKey,
+		ShortID:         shortID,
+		ServerName:      "www.microsoft.com",
 	}
 	for _, inbound := range updated {
 		switch inbound.Tag {
@@ -505,9 +508,10 @@ func mergeManagedXray(setting map[string]any, desired DesiredGroup, vlessTag, mi
 		}
 		keptRules = append(keptRules, rule)
 	}
+	allowedSources := append(append([]string{}, desired.MixedSourceCIDRs...), "127.0.0.1/32", "::1/128")
 	managedRules := []any{
 		map[string]any{"type": "field", "inboundTag": []any{vlessTag}, "outboundTag": outboundTag},
-		map[string]any{"type": "field", "inboundTag": []any{mixedTag}, "source": stringsToAny(desired.MixedSourceCIDRs), "outboundTag": outboundTag},
+		map[string]any{"type": "field", "inboundTag": []any{mixedTag}, "source": stringsToAny(allowedSources), "outboundTag": outboundTag},
 		map[string]any{"type": "field", "inboundTag": []any{mixedTag}, "outboundTag": "agw-blackhole"},
 	}
 	routing["rules"] = append(managedRules, keptRules...)

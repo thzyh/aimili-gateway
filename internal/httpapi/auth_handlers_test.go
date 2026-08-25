@@ -323,6 +323,16 @@ func validLoginPayload() map[string]string {
 
 func (e *authTestEnvironment) request(t *testing.T, method, path string, payload any, origin, csrf string) *http.Response {
 	t.Helper()
+	request := e.newRequest(t, method, path, payload, origin, csrf)
+	response, err := e.client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return response
+}
+
+func (e *authTestEnvironment) newRequest(t *testing.T, method, path string, payload any, origin, csrf string) *http.Request {
+	t.Helper()
 	var body io.Reader
 	if payload != nil {
 		encoded, err := json.Marshal(payload)
@@ -344,11 +354,7 @@ func (e *authTestEnvironment) request(t *testing.T, method, path string, payload
 	if csrf != "" {
 		request.Header.Set("X-CSRF-Token", csrf)
 	}
-	response, err := e.client.Do(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return response
+	return request
 }
 
 func (e *authTestEnvironment) session(t *testing.T) sessionPayload {

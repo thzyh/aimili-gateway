@@ -25,12 +25,15 @@ func (s *Store) CreateProxyGroup(ctx context.Context, group domain.ProxyGroup) e
 		INSERT INTO proxy_groups(
 			id, resource_name, country_code, country_name, proxy_type, status,
 			aimili_slot, vless_port, mixed_port, exit_ip, config_fingerprint,
+			vless_inbound_id, mixed_inbound_id, reality_public_key, reality_short_id, reality_server_name,
 			last_error_code, recovery_state, version, created_at, updated_at,
 			last_checked_at, last_rotated_at
-		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
 		group.ID, group.ResourceName, group.CountryCode, group.CountryName,
 		group.ProxyType, group.Status, group.AimiliSlot, group.VLESSPort,
 		group.MixedPort, group.ExitIP, group.ConfigFingerprint,
+		group.VLESSInboundID, group.MixedInboundID, group.RealityPublicKey,
+		group.RealityShortID, group.RealityServerName,
 		group.LastErrorCode, group.RecoveryState, group.CreatedAt.UTC().UnixMilli(),
 		group.UpdatedAt.UTC().UnixMilli(), unixMillis(group.LastCheckedAt),
 		unixMillis(group.LastRotatedAt),
@@ -48,6 +51,7 @@ func (s *Store) GetProxyGroup(ctx context.Context, id string) (domain.ProxyGroup
 	return scanProxyGroup(s.db.QueryRowContext(ctx, `
 		SELECT id, resource_name, country_code, country_name, proxy_type, status,
 			aimili_slot, vless_port, mixed_port, exit_ip, config_fingerprint,
+			vless_inbound_id, mixed_inbound_id, reality_public_key, reality_short_id, reality_server_name,
 			last_error_code, recovery_state, version, created_at, updated_at,
 			last_checked_at, last_rotated_at
 		FROM proxy_groups WHERE id = ?`, id))
@@ -57,6 +61,7 @@ func (s *Store) ListProxyGroups(ctx context.Context) ([]domain.ProxyGroup, error
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, resource_name, country_code, country_name, proxy_type, status,
 			aimili_slot, vless_port, mixed_port, exit_ip, config_fingerprint,
+			vless_inbound_id, mixed_inbound_id, reality_public_key, reality_short_id, reality_server_name,
 			last_error_code, recovery_state, version, created_at, updated_at,
 			last_checked_at, last_rotated_at
 		FROM proxy_groups ORDER BY country_code, proxy_type`)
@@ -85,11 +90,13 @@ func (s *Store) UpdateProxyGroup(ctx context.Context, group domain.ProxyGroup, e
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE proxy_groups SET
 			country_name = ?, status = ?, aimili_slot = ?, vless_port = ?, mixed_port = ?,
-			exit_ip = ?, config_fingerprint = ?, last_error_code = ?, recovery_state = ?,
+			exit_ip = ?, config_fingerprint = ?, vless_inbound_id = ?, mixed_inbound_id = ?,
+			reality_public_key = ?, reality_short_id = ?, reality_server_name = ?, last_error_code = ?, recovery_state = ?,
 			version = version + 1, updated_at = ?, last_checked_at = ?, last_rotated_at = ?
 		WHERE id = ? AND version = ?`,
 		group.CountryName, group.Status, group.AimiliSlot, group.VLESSPort,
-		group.MixedPort, group.ExitIP, group.ConfigFingerprint, group.LastErrorCode,
+		group.MixedPort, group.ExitIP, group.ConfigFingerprint, group.VLESSInboundID,
+		group.MixedInboundID, group.RealityPublicKey, group.RealityShortID, group.RealityServerName, group.LastErrorCode,
 		group.RecoveryState, group.UpdatedAt.UTC().UnixMilli(),
 		unixMillis(group.LastCheckedAt), unixMillis(group.LastRotatedAt),
 		group.ID, expectedVersion,
@@ -107,6 +114,21 @@ func (s *Store) UpdateProxyGroup(ctx context.Context, group domain.ProxyGroup, e
 	return nil
 }
 
+func (s *Store) DeleteProxyGroup(ctx context.Context, id string) error {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM proxy_groups WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete proxy group: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read proxy group delete result: %w", err)
+	}
+	if changed != 1 {
+		return ErrProxyGroupNotFound
+	}
+	return nil
+}
+
 type rowScanner interface {
 	Scan(...any) error
 }
@@ -118,6 +140,8 @@ func scanProxyGroup(row rowScanner) (domain.ProxyGroup, error) {
 		&group.ID, &group.ResourceName, &group.CountryCode, &group.CountryName,
 		&group.ProxyType, &group.Status, &group.AimiliSlot, &group.VLESSPort,
 		&group.MixedPort, &group.ExitIP, &group.ConfigFingerprint,
+		&group.VLESSInboundID, &group.MixedInboundID, &group.RealityPublicKey,
+		&group.RealityShortID, &group.RealityServerName,
 		&group.LastErrorCode, &group.RecoveryState, &group.Version,
 		&createdAt, &updatedAt, &checkedAt, &rotatedAt,
 	)

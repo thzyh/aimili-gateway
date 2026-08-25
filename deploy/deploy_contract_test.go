@@ -22,6 +22,10 @@ func TestSystemdUnitIsUnprivilegedAndHardened(t *testing.T) {
 		"LoadCredentialEncrypted=gateway-master-key:",
 		"Environment=GATEWAY_CONFIG=/etc/aimili-gateway/config.json",
 		"Environment=GATEWAY_MASTER_KEY_FILE=%d/gateway-master-key",
+		"LoadCredential=aimili-control-token:/etc/aimilivpn/control.token",
+		"LoadCredential=xui-automation:/etc/aimili-gateway/xui-automation.json",
+		"Environment=GATEWAY_AIMILI_CONTROL_TOKEN_FILE=%d/aimili-control-token",
+		"Environment=GATEWAY_XUI_CREDENTIALS_FILE=%d/xui-automation",
 	} {
 		if !strings.Contains(unit, required) {
 			t.Fatalf("systemd unit missing %q", required)
@@ -37,11 +41,16 @@ func TestSystemdUnitIsUnprivilegedAndHardened(t *testing.T) {
 func TestExampleConfigUsesOnlyLoopbackAndPlaceholders(t *testing.T) {
 	contents := readAsset(t, "config/config.example.json")
 	var config struct {
-		ListenAddress string `json:"listenAddress"`
-		PublicOrigin  string `json:"publicOrigin"`
-		AimiliAddress string `json:"aimiliAddress"`
-		XUIBaseURL    string `json:"xuiBaseUrl"`
-		ExpertModeURL string `json:"expertModeUrl"`
+		ListenAddress          string   `json:"listenAddress"`
+		PublicOrigin           string   `json:"publicOrigin"`
+		AimiliAddress          string   `json:"aimiliAddress"`
+		XUIBaseURL             string   `json:"xuiBaseUrl"`
+		ExpertModeURL          string   `json:"expertModeUrl"`
+		AimiliControlURL       string   `json:"aimiliControlUrl"`
+		AimiliControlTokenFile string   `json:"aimiliControlTokenFile"`
+		XUICredentialsFile     string   `json:"xuiCredentialsFile"`
+		MaxProxyGroups         int      `json:"maxProxyGroups"`
+		MixedSourceCIDRs       []string `json:"mixedSourceCidrs"`
 	}
 	if err := json.Unmarshal([]byte(contents), &config); err != nil {
 		t.Fatal(err)
@@ -54,6 +63,9 @@ func TestExampleConfigUsesOnlyLoopbackAndPlaceholders(t *testing.T) {
 	}
 	if config.ExpertModeURL != "/EXISTING_3X_UI_ROUTE/" || !strings.Contains(config.XUIBaseURL, "EXISTING_3X_UI_BASE_PATH") {
 		t.Fatal("example configuration does not use explicit path placeholders")
+	}
+	if config.AimiliControlURL != "http://127.0.0.1:8790/" || !strings.HasPrefix(config.AimiliControlTokenFile, "/run/credentials/") || !strings.HasPrefix(config.XUICredentialsFile, "/run/credentials/") || config.MaxProxyGroups != 1 || len(config.MixedSourceCIDRs) != 1 {
+		t.Fatal("example configuration is missing the single-group adapter contract")
 	}
 }
 

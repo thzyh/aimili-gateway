@@ -4,6 +4,17 @@
   "databasePath": "/var/lib/aimili-gateway/aimili-gateway.db",
   "masterKeyFile": "/run/credentials/aimili-gateway.service/gateway-master-key",
   "aimiliAddress": "127.0.0.1:8787",
+	"aimiliControlUrl": "http://127.0.0.1:8790/",
+	"aimiliControlTokenFile": "/run/credentials/aimili-gateway.service/aimili-control-token",
   "xuiBaseUrl": "http://127.0.0.1:2001/EXISTING_3X_UI_BASE_PATH/",
+	"xuiCredentialsFile": "/run/credentials/aimili-gateway.service/xui-automation",
+	"maxProxyGroups": 1,
+	"vlessPortStart": 20000,
+	"vlessPortEnd": 20999,
+	"mixedPortStart": 30000,
+	"mixedPortEnd": 30999,
+	"xrayPath": "/usr/local/x-ui/bin/xray-linux-amd64",
+	"probeHost": "api.ipify.org",
+	"mixedSourceCidrs": ["203.0.113.24/32"],
   "expertModeUrl": "/EXISTING_3X_UI_ROUTE/"
 }

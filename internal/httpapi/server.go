@@ -1,12 +1,17 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/netip"
+	"sync"
 	"time"
 
 	"github.com/thzyh/aimili-gateway/internal/adapters"
+	"github.com/thzyh/aimili-gateway/internal/domain"
+	"github.com/thzyh/aimili-gateway/internal/orchestrator"
 	"github.com/thzyh/aimili-gateway/internal/store"
 )
 
@@ -21,6 +26,18 @@ type Dependencies struct {
 	AimiliProbe   adapters.Prober
 	XUIProbe      adapters.Prober
 	ExpertModeURL string
+	ProxyManager  ProxyManager
+}
+
+type ProxyManager interface {
+	Countries(context.Context) ([]orchestrator.Country, error)
+	List(context.Context) ([]domain.ProxyGroup, error)
+	Enable(context.Context, orchestrator.EnableRequest) (domain.ProxyGroup, error)
+	Check(context.Context, string) (domain.ProxyGroup, error)
+	Rotate(context.Context, string) (domain.ProxyGroup, error)
+	Disable(context.Context, string) error
+	Connections(context.Context, string) (orchestrator.Connections, error)
+	SetMixedCIDRs(context.Context, []netip.Prefix) error
 }
 
 type server struct {
@@ -32,6 +49,9 @@ type server struct {
 	aimiliProbe   adapters.Prober
 	xuiProbe      adapters.Prober
 	expertModeURL string
+	proxyManager  ProxyManager
+	idempotencyMu sync.Mutex
+	idempotency   map[string]cachedResponse
 }
 
 func NewServer(dependencies Dependencies) http.Handler {
@@ -61,6 +81,8 @@ func NewServer(dependencies Dependencies) http.Handler {
 		aimiliProbe:   dependencies.AimiliProbe,
 		xuiProbe:      dependencies.XUIProbe,
 		expertModeURL: dependencies.ExpertModeURL,
+		proxyManager:  dependencies.ProxyManager,
+		idempotency:   make(map[string]cachedResponse),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/auth/options", server.handleAuthOptions)
@@ -70,6 +92,14 @@ func NewServer(dependencies Dependencies) http.Handler {
 	mux.HandleFunc("POST /api/v1/auth/reauth", server.handleReauthenticate)
 	mux.HandleFunc("GET /api/v1/overview", server.handleOverview)
 	mux.HandleFunc("GET /api/v1/navigation", server.handleNavigation)
+	mux.HandleFunc("GET /api/v1/countries", server.handleCountries)
+	mux.HandleFunc("GET /api/v1/proxy-groups", server.handleProxyGroups)
+	mux.HandleFunc("POST /api/v1/proxy-groups", server.handleEnableProxyGroup)
+	mux.HandleFunc("POST /api/v1/proxy-groups/{id}/check", server.handleCheckProxyGroup)
+	mux.HandleFunc("POST /api/v1/proxy-groups/{id}/rotate", server.handleRotateProxyGroup)
+	mux.HandleFunc("DELETE /api/v1/proxy-groups/{id}", server.handleDisableProxyGroup)
+	mux.HandleFunc("GET /api/v1/proxy-groups/{id}/connections", server.handleConnections)
+	mux.HandleFunc("PUT /api/v1/settings/mixed-cidrs", server.handleMixedCIDRs)
 	return noStore(mux)
 }
 

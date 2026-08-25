@@ -29,6 +29,21 @@ export interface AuthOptionsPayload {
   totpRequired: boolean
 }
 
+export type ProxyType = 'residential' | 'datacenter'
+export type ProxyGroupStatus = 'provisioning' | 'ready' | 'rotating' | 'degraded' | 'repair_required' | 'disabling'
+
+export interface CountryPayload { code: string; name: string; residentialCount: number; datacenterCount: number }
+export interface ProxyGroupPayload {
+  id: string; countryCode: string; countryName: string; proxyType: ProxyType; status: ProxyGroupStatus
+  vlessPort: number; mixedPort: number; exitIp: string; lastErrorCode?: string; version: number; lastCheckedAt?: string
+}
+export interface ConnectionsPayload { vlessUri: string; socks5hUri: string }
+
+export function idempotencyHeaders(): HeadersInit {
+  const random = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`
+  return { 'Idempotency-Key': random }
+}
+
 export class APIError extends Error {
   constructor(
     public readonly status: number,

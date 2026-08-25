@@ -50,6 +50,9 @@ type ManagedGroup struct {
 	MixedInboundTag string
 	OutboundTag     string
 	Fingerprint     string
+	PublicKey       string
+	ShortID         string
+	ServerName      string
 }
 
 type AdapterError struct {

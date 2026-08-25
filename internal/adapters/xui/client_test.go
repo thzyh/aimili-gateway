@@ -149,7 +149,8 @@ func TestEnsureManagedGroupPreservesUnmanagedXrayResources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if managed.ResourceName != "agw-jp-dc" || managed.Fingerprint == "" {
+	if managed.ResourceName != "agw-jp-dc" || managed.Fingerprint == "" ||
+		managed.PublicKey == "" || managed.ShortID == "" || managed.ServerName != "www.microsoft.com" {
 		t.Fatalf("unexpected managed group: %#v", managed)
 	}
 	if strings.Join(fixture.addedProtocols, ",") != "vless,mixed" {
@@ -167,6 +168,13 @@ func TestEnsureManagedGroupPreservesUnmanagedXrayResources(t *testing.T) {
 	rules := fixture.updatedXray["routing"].(map[string]any)["rules"].([]any)
 	if len(rules) != 4 {
 		t.Fatalf("managed rules did not preserve unmanaged rule: %#v", rules)
+	}
+	allowed := rules[1].(map[string]any)["source"].([]any)
+	joinedAllowed := fmt.Sprint(allowed)
+	for _, prefix := range []string{"198.51.100.0/24", "127.0.0.1/32", "::1/128"} {
+		if !strings.Contains(joinedAllowed, prefix) {
+			t.Fatalf("mixed allow rule missing %s: %#v", prefix, allowed)
+		}
 	}
 }
 

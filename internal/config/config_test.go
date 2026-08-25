@@ -39,6 +39,23 @@ func TestLoadAppliesSafeLocalDefaults(t *testing.T) {
 	if cfg.XUICredentialsFile != filepath.FromSlash("data/xui-automation.json") {
 		t.Fatalf("3x-ui credentials file = %q", cfg.XUICredentialsFile)
 	}
+	if cfg.MaxProxyGroups != 1 || cfg.VLESSPortStart != 20000 || cfg.VLESSPortEnd != 20999 ||
+		cfg.MixedPortStart != 30000 || cfg.MixedPortEnd != 30999 || cfg.ProbeHost != "api.ipify.org" || cfg.XrayPath == "" {
+		t.Fatalf("proxy runtime defaults are incomplete: %#v", cfg)
+	}
+}
+
+func TestValidateRejectsUnsafeProxyRuntimeRanges(t *testing.T) {
+	cfg := validProductionConfig()
+	cfg.MaxProxyGroups = 1
+	cfg.VLESSPortStart, cfg.VLESSPortEnd = 20000, 20999
+	cfg.MixedPortStart, cfg.MixedPortEnd = 30000, 30999
+	cfg.XrayPath = "/usr/local/x-ui/bin/xray-linux-amd64"
+	cfg.ProbeHost = "api.ipify.org"
+	cfg.MixedSourceCIDRs = []string{"0.0.0.0/0"}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("global mixed CIDR was accepted")
+	}
 }
 
 func TestValidateRejectsPublicListenAddress(t *testing.T) {
@@ -149,7 +166,7 @@ func validProductionConfig() Config {
 		XUIBaseURL:             "http://127.0.0.1:2001/",
 		XUICredentialsFile:     filepath.FromSlash("data/xui-automation.json"),
 		ExpertModeURL:          "/expert/",
-	}
+	}.WithRuntimeDefaults()
 }
 
 func clearConfigEnvironment(t *testing.T) {

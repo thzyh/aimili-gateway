@@ -10,7 +10,11 @@ WorkingDirectory=/var/lib/aimili-gateway
 ExecStart=/usr/local/bin/aimili-gateway
 Environment=GATEWAY_CONFIG=/etc/aimili-gateway/config.json
 Environment=GATEWAY_MASTER_KEY_FILE=%d/gateway-master-key
+Environment=GATEWAY_AIMILI_CONTROL_TOKEN_FILE=%d/aimili-control-token
+Environment=GATEWAY_XUI_CREDENTIALS_FILE=%d/xui-automation
 LoadCredentialEncrypted=gateway-master-key:/etc/credstore.encrypted/aimili-gateway-master-key
+LoadCredential=aimili-control-token:/etc/aimilivpn/control.token
+LoadCredential=xui-automation:/etc/aimili-gateway/xui-automation.json
 StateDirectory=aimili-gateway
 StateDirectoryMode=0700
 UMask=0077

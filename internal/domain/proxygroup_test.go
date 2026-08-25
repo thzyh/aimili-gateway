@@ -49,3 +49,18 @@ func TestProxyGroupTransitionAllowsOnlyDeclaredLifecycleEdges(t *testing.T) {
 		t.Fatal("ready group transitioned back to provisioning")
 	}
 }
+
+func TestProxyGroupCarriesRestartSafeManagedMetadata(t *testing.T) {
+	group, err := NewProxyGroupIdentity("JP", ProxyTypeDatacenter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	group.VLESSInboundID = 11
+	group.MixedInboundID = 12
+	group.RealityPublicKey = "public-key"
+	group.RealityShortID = "short-id"
+	group.RealityServerName = "www.microsoft.com"
+	if group.VLESSInboundID != 11 || group.MixedInboundID != 12 || group.RealityPublicKey == "" || group.RealityShortID == "" || group.RealityServerName == "" {
+		t.Fatalf("managed metadata was not retained: %#v", group)
+	}
+}

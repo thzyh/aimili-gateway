@@ -39,6 +39,11 @@ type ProxyGroup struct {
 	MixedPort         int
 	ExitIP            string
 	ConfigFingerprint string
+	VLESSInboundID    int64
+	MixedInboundID    int64
+	RealityPublicKey  string
+	RealityShortID    string
+	RealityServerName string
 	LastErrorCode     string
 	RecoveryState     string
 	Version           int64

@@ -84,6 +84,28 @@ func TestNewRejectsInvalidMasterKeyLength(t *testing.T) {
 	}
 }
 
+func TestNewRejectsPartialAdapterSecretConfiguration(t *testing.T) {
+	directory := t.TempDir()
+	masterKeyPath := filepath.Join(directory, "master.key")
+	tokenPath := filepath.Join(directory, "aimili-control.token")
+	if err := os.WriteFile(masterKeyPath, []byte(strings.Repeat("k", 32)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tokenPath, []byte("test-control-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	application, err := New(t.Context(), config.Config{
+		ListenAddress: "127.0.0.1:9080", PublicOrigin: "https://console.example.test",
+		DatabasePath: filepath.Join(directory, "gateway.db"), MasterKeyFile: masterKeyPath,
+		AimiliAddress: "127.0.0.1:8787", AimiliControlURL: "http://127.0.0.1:8790/", AimiliControlTokenFile: tokenPath,
+		XUIBaseURL: "http://127.0.0.1:2001/panel-fixture/", XUICredentialsFile: filepath.Join(directory, "missing-xui.json"),
+	})
+	if err == nil {
+		_ = application.Close()
+		t.Fatal("partial adapter secret configuration was accepted")
+	}
+}
+
 func TestNewSupportsExplicitLocalTestConfiguration(t *testing.T) {
 	for _, name := range []string{
 		"GATEWAY_LISTEN_ADDRESS",

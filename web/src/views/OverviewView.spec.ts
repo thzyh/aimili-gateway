@@ -33,6 +33,12 @@ beforeEach(() => {
     if (path === '/api/v1/navigation') {
       return Promise.resolve({ expertModeUrl: '/expert-fixture/' })
     }
+	if (path === '/api/v1/countries') {
+		return Promise.resolve([{ code: 'JP', name: '日本', residentialCount: 1, datacenterCount: 2 }])
+	}
+	if (path === '/api/v1/proxy-groups') {
+		return Promise.resolve([{ id: 'agw-jp-dc', countryCode: 'JP', countryName: '日本', proxyType: 'datacenter', status: 'ready', vlessPort: 20000, mixedPort: 30000, exitIp: '203.0.113.7', version: 2 }])
+	}
     if (path === '/api/v1/auth/logout') {
       return Promise.resolve(undefined)
     }
@@ -63,4 +69,23 @@ it('renders all service layers and opens expert mode outside an iframe', async (
   expect(expertLink.attributes('href')).toBe('/expert-fixture/')
   expect(expertLink.attributes('target')).toBe('_blank')
   expect(wrapper.text()).toContain('3x-ui 会要求单独登录')
+	expect(wrapper.get('[data-country="JP"]').text()).toContain('住宅 1')
+	expect(wrapper.get('[data-country="JP"]').text()).toContain('机房 2')
+	expect(wrapper.get('[data-group="agw-jp-dc"]').text()).toContain('203.0.113.7')
+})
+
+it('runs group checks without changing the selected exit', async () => {
+	mocks.apiFetch.mockImplementation((path: string) => {
+		if (path === '/api/v1/overview') return Promise.resolve({ gateway: { health: 'healthy' }, services: [], expertModeAvailable: false })
+		if (path === '/api/v1/navigation') return Promise.resolve({ expertModeUrl: '' })
+		if (path === '/api/v1/countries') return Promise.resolve([])
+		if (path === '/api/v1/proxy-groups') return Promise.resolve([{ id: 'agw-jp-dc', countryCode: 'JP', countryName: '日本', proxyType: 'datacenter', status: 'ready', vlessPort: 20000, mixedPort: 30000, exitIp: '203.0.113.7', version: 2 }])
+		if (path === '/api/v1/proxy-groups/agw-jp-dc/check') return Promise.resolve({ id: 'agw-jp-dc', status: 'ready' })
+		return Promise.reject(new Error('unexpected API path'))
+	})
+	const wrapper = mount(OverviewView)
+	await flushPromises()
+	await wrapper.get('button[data-check="agw-jp-dc"]').trigger('click')
+	await flushPromises()
+	expect(mocks.apiFetch).toHaveBeenCalledWith('/api/v1/proxy-groups/agw-jp-dc/check', expect.objectContaining({ method: 'POST' }))
 })
