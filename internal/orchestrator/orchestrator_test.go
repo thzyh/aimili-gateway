@@ -175,25 +175,52 @@ func (s *fakeStore) ReplaceMixedCIDRs(_ context.Context, values []netip.Prefix) 
 }
 
 type fakeAimili struct {
-	calls         *[]string
-	rotatedExitIP string
-	unreadyChecks int
+	calls            *[]string
+	rotatedExitIP    string
+	unreadyChecks    int
+	candidates       []aimili.Candidate
+	slotsByCandidate map[string]aimili.Slot
+	createdSlots     map[int]aimili.Slot
+	createErrors     map[string]error
 }
 
 func (a *fakeAimili) Candidates(context.Context) ([]aimili.Candidate, error) {
+	if a.candidates != nil {
+		return append([]aimili.Candidate(nil), a.candidates...), nil
+	}
 	return []aimili.Candidate{{CountryCode: "JP", CountryName: "日本", ProxyType: "datacenter", ProbeStatus: "available"}}, nil
 }
-func (a *fakeAimili) CreateSlot(context.Context, aimili.CreateSlotRequest) (aimili.Slot, error) {
+func (a *fakeAimili) CreateSlot(_ context.Context, request aimili.CreateSlotRequest) (aimili.Slot, error) {
 	*a.calls = append(*a.calls, "slot.create")
+	if err := a.createErrors[request.CandidateID]; err != nil {
+		return aimili.Slot{}, err
+	}
+	if slot, ok := a.slotsByCandidate[request.CandidateID]; ok {
+		if a.createdSlots == nil {
+			a.createdSlots = make(map[int]aimili.Slot)
+		}
+		a.createdSlots[slot.Number] = slot
+		return slot, nil
+	}
 	return a.slot("203.0.113.7"), nil
 }
-func (a *fakeAimili) CheckSlot(context.Context, int) (aimili.SlotCheck, error) {
+func (a *fakeAimili) ListSlots(context.Context) ([]aimili.Slot, error) {
+	result := make([]aimili.Slot, 0, len(a.createdSlots))
+	for _, slot := range a.createdSlots {
+		result = append(result, slot)
+	}
+	return result, nil
+}
+func (a *fakeAimili) CheckSlot(_ context.Context, number int) (aimili.SlotCheck, error) {
 	*a.calls = append(*a.calls, "slot.check")
 	if a.unreadyChecks > 0 {
 		a.unreadyChecks--
 		slot := a.slot("")
 		slot.EgressOK = false
 		slot.Status = "starting"
+		return slot, nil
+	}
+	if slot, ok := a.createdSlots[number]; ok {
 		return slot, nil
 	}
 	ip := a.rotatedExitIP
@@ -267,8 +294,11 @@ func newFixture() *fixture {
 	return f
 }
 func (f *fixture) orchestrator(t *testing.T) *Orchestrator {
+	return f.orchestratorWithMax(t, 1)
+}
+func (f *fixture) orchestratorWithMax(t *testing.T, max int) *Orchestrator {
 	t.Helper()
-	value, err := New(Config{MaxGroups: 1, VLESSPortStart: 20000, VLESSPortEnd: 20009, MixedPortStart: 30000, MixedPortEnd: 30009, PublicHost: "proxy.example.test", XrayPath: "/xray", ProbeHost: "ip.example.test", ReadyTimeout: time.Second, PollInterval: time.Millisecond, Now: func() time.Time { return time.Unix(1700000000, 0).UTC() }}, f.store, f.aimili, f.xui, f.validator, []byte("01234567890123456789012345678901"))
+	value, err := New(Config{MaxGroups: max, VLESSPortStart: 20000, VLESSPortEnd: 20009, MixedPortStart: 30000, MixedPortEnd: 30009, PublicHost: "proxy.example.test", XrayPath: "/xray", ProbeHost: "ip.example.test", ReadyTimeout: time.Second, PollInterval: time.Millisecond, Now: func() time.Time { return time.Unix(1700000000, 0).UTC() }}, f.store, f.aimili, f.xui, f.validator, []byte("01234567890123456789012345678901"))
 	if err != nil {
 		t.Fatal(err)
 	}

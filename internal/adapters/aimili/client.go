@@ -45,8 +45,9 @@ type Candidate struct {
 }
 
 type CreateSlotRequest struct {
-	Country   string `json:"country"`
-	ProxyType string `json:"proxyType"`
+	Country     string `json:"country"`
+	ProxyType   string `json:"proxyType"`
+	CandidateID string `json:"candidateId,omitempty"`
 }
 
 type Slot struct {
@@ -149,6 +150,12 @@ func (c *Client) Candidates(ctx context.Context) ([]Candidate, error) {
 func (c *Client) CreateSlot(ctx context.Context, input CreateSlotRequest) (Slot, error) {
 	var result Slot
 	err := c.do(ctx, c.operationTimeout, http.MethodPost, "control/v1/slots", input, &result)
+	return result, err
+}
+
+func (c *Client) ListSlots(ctx context.Context) ([]Slot, error) {
+	var result []Slot
+	err := c.do(ctx, c.readTimeout, http.MethodGet, "control/v1/slots", nil, &result)
 	return result, err
 }
 

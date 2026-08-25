@@ -39,8 +39,11 @@ type Config struct {
 }
 
 type EnableRequest struct {
-	CountryCode string
-	ProxyType   domain.ProxyType
+	CountryCode        string
+	ProxyType          domain.ProxyType
+	CandidateID        string
+	CandidateIP        string
+	CandidateLatencyMS int
 }
 
 type Country struct {
@@ -73,6 +76,7 @@ type groupStore interface {
 type aimiliClient interface {
 	Candidates(context.Context) ([]aimili.Candidate, error)
 	CreateSlot(context.Context, aimili.CreateSlotRequest) (aimili.Slot, error)
+	ListSlots(context.Context) ([]aimili.Slot, error)
 	CheckSlot(context.Context, int) (aimili.SlotCheck, error)
 	RotateSlot(context.Context, int) (aimili.Slot, error)
 	DeleteSlot(context.Context, int) error
@@ -153,7 +157,13 @@ func (o *Orchestrator) List(ctx context.Context) ([]domain.ProxyGroup, error) {
 }
 
 func (o *Orchestrator) Enable(ctx context.Context, request EnableRequest) (domain.ProxyGroup, error) {
-	identity, err := domain.NewProxyGroupIdentity(request.CountryCode, request.ProxyType)
+	var identity domain.ProxyGroup
+	var err error
+	if strings.TrimSpace(request.CandidateID) == "" {
+		identity, err = domain.NewProxyGroupIdentity(request.CountryCode, request.ProxyType)
+	} else {
+		identity, err = domain.NewProxyGroupIdentity(request.CountryCode, request.ProxyType, request.CandidateID)
+	}
 	if err != nil {
 		return domain.ProxyGroup{}, &Error{Code: "invalid_request"}
 	}
@@ -176,6 +186,9 @@ func (o *Orchestrator) Enable(ctx context.Context, request EnableRequest) (domai
 	}
 	now := o.config.Now().UTC()
 	identity.AimiliSlot = 0
+	identity.CandidateIP = request.CandidateIP
+	identity.CandidateLatencyMS = request.CandidateLatencyMS
+	identity.LastSeenAt = now
 	identity.VLESSPort = vlessPort
 	identity.MixedPort = mixedPort
 	identity.CreatedAt = now
@@ -184,7 +197,7 @@ func (o *Orchestrator) Enable(ctx context.Context, request EnableRequest) (domai
 		return domain.ProxyGroup{}, operationError(err)
 	}
 	group := identity
-	slot, err := o.aimili.CreateSlot(ctx, aimili.CreateSlotRequest{Country: group.CountryCode, ProxyType: string(group.ProxyType)})
+	slot, err := o.aimili.CreateSlot(ctx, aimili.CreateSlotRequest{Country: group.CountryCode, ProxyType: string(group.ProxyType), CandidateID: group.CandidateID})
 	if err != nil {
 		_ = o.store.DeleteProxyGroup(ctx, group.ID)
 		return domain.ProxyGroup{}, operationError(err)
@@ -210,12 +223,16 @@ func (o *Orchestrator) Enable(ctx context.Context, request EnableRequest) (domai
 	group.RealityPublicKey = managed.PublicKey
 	group.RealityShortID = managed.ShortID
 	group.RealityServerName = managed.ServerName
-	if _, err = o.validateSOCKS(ctx, group, credentials); err != nil {
+	socksResult, err := o.validateSOCKS(ctx, group, credentials)
+	if err != nil {
 		return domain.ProxyGroup{}, o.rollbackEnable(ctx, &group, managed, errorCode(err))
 	}
-	if _, err = o.validateVLESS(ctx, group, credentials); err != nil {
+	vlessResult, err := o.validateVLESS(ctx, group, credentials)
+	if err != nil {
 		return domain.ProxyGroup{}, o.rollbackEnable(ctx, &group, managed, errorCode(err))
 	}
+	group.SOCKSLatencyMS = durationMillis(socksResult.Latency)
+	group.VLESSLatencyMS = durationMillis(vlessResult.Latency)
 	group.Status = domain.ProxyGroupReady
 	group.LastCheckedAt = o.config.Now().UTC()
 	group.LastErrorCode = ""
@@ -224,6 +241,17 @@ func (o *Orchestrator) Enable(ctx context.Context, request EnableRequest) (domai
 		return domain.ProxyGroup{}, o.rollbackEnable(ctx, &group, managed, "storage_failed")
 	}
 	return group, nil
+}
+
+func durationMillis(value time.Duration) int {
+	if value <= 0 {
+		return 0
+	}
+	millis := value.Milliseconds()
+	if millis == 0 {
+		return 1
+	}
+	return int(millis)
 }
 
 func (o *Orchestrator) Check(ctx context.Context, id string) (domain.ProxyGroup, error) {
