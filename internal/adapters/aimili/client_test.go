@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestClientCandidatesSendsBearerTokenAndDecodesSafeFields(t *testing.T) {
@@ -59,6 +60,41 @@ func TestClientCreateSlotUsesClosedRequestAndResponseTypes(t *testing.T) {
 	}
 	if slot.Number != 2 || slot.Port != 17930 || slot.ExitIP != "203.0.113.5" {
 		t.Fatalf("unexpected slot: %#v", slot)
+	}
+}
+
+func TestClientLongOperationsOutliveReadTimeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		time.Sleep(60 * time.Millisecond)
+		response.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/control/v1/candidates":
+			fmt.Fprint(response, `{"data":[]}`)
+		case "/control/v1/slots":
+			fmt.Fprint(response, `{"data":{"slot":0,"country":"JP","country_name":"Japan","proxy_type":"datacenter","port":17928,"status":"up","node_id":"node-a","candidate_ip":"198.51.100.10","exit_ip":"203.0.113.10","egress_ok":true,"latency_ms":42,"checked_at":1700000000}}`)
+		case "/control/v1/slots/0/rotate":
+			fmt.Fprint(response, `{"data":{"slot":0,"country":"JP","country_name":"Japan","proxy_type":"datacenter","port":17928,"status":"up","node_id":"node-b","candidate_ip":"198.51.100.11","exit_ip":"203.0.113.11","egress_ok":true,"latency_ms":44,"checked_at":1700000001}}`)
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewClient(server.URL+"/", []byte("test-token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.readTimeout = 20 * time.Millisecond
+	client.operationTimeout = 200 * time.Millisecond
+
+	if _, err := client.Candidates(context.Background()); err == nil {
+		t.Fatal("ordinary read outlived its short timeout")
+	}
+	if _, err := client.CreateSlot(context.Background(), CreateSlotRequest{Country: "JP", ProxyType: "datacenter"}); err != nil {
+		t.Fatalf("create slot did not use the long operation timeout: %v", err)
+	}
+	if _, err := client.RotateSlot(context.Background(), 0); err != nil {
+		t.Fatalf("rotate slot did not use the long operation timeout: %v", err)
 	}
 }
 

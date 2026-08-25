@@ -18,8 +18,9 @@ import (
 )
 
 const (
-	controlTimeout       = 8 * time.Second
-	controlResponseLimit = 16 << 10
+	controlReadTimeout      = 8 * time.Second
+	controlOperationTimeout = 75 * time.Second
+	controlResponseLimit    = 16 << 10
 )
 
 type Capabilities struct {
@@ -74,9 +75,11 @@ func (e *AdapterError) Error() string {
 }
 
 type Client struct {
-	baseURL    *url.URL
-	token      string
-	httpClient *http.Client
+	baseURL          *url.URL
+	token            string
+	httpClient       *http.Client
+	readTimeout      time.Duration
+	operationTimeout time.Duration
 }
 
 func ReadTokenFile(path string) ([]byte, error) {
@@ -119,10 +122,11 @@ func NewClient(baseURL string, token []byte) (*Client, error) {
 		parsed.Path += "/"
 	}
 	return &Client{
-		baseURL: parsed,
-		token:   secret,
+		baseURL:          parsed,
+		token:            secret,
+		readTimeout:      controlReadTimeout,
+		operationTimeout: controlOperationTimeout,
 		httpClient: &http.Client{
-			Timeout: controlTimeout,
 			CheckRedirect: func(*http.Request, []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
@@ -132,45 +136,45 @@ func NewClient(baseURL string, token []byte) (*Client, error) {
 
 func (c *Client) Capabilities(ctx context.Context) (Capabilities, error) {
 	var result Capabilities
-	err := c.do(ctx, http.MethodGet, "control/v1/capabilities", nil, &result)
+	err := c.do(ctx, c.readTimeout, http.MethodGet, "control/v1/capabilities", nil, &result)
 	return result, err
 }
 
 func (c *Client) Candidates(ctx context.Context) ([]Candidate, error) {
 	var result []Candidate
-	err := c.do(ctx, http.MethodGet, "control/v1/candidates", nil, &result)
+	err := c.do(ctx, c.readTimeout, http.MethodGet, "control/v1/candidates", nil, &result)
 	return result, err
 }
 
 func (c *Client) CreateSlot(ctx context.Context, input CreateSlotRequest) (Slot, error) {
 	var result Slot
-	err := c.do(ctx, http.MethodPost, "control/v1/slots", input, &result)
+	err := c.do(ctx, c.operationTimeout, http.MethodPost, "control/v1/slots", input, &result)
 	return result, err
 }
 
 func (c *Client) GetSlot(ctx context.Context, slot int) (Slot, error) {
 	var result Slot
-	err := c.do(ctx, http.MethodGet, fmt.Sprintf("control/v1/slots/%d", slot), nil, &result)
+	err := c.do(ctx, c.readTimeout, http.MethodGet, fmt.Sprintf("control/v1/slots/%d", slot), nil, &result)
 	return result, err
 }
 
 func (c *Client) RotateSlot(ctx context.Context, slot int) (Slot, error) {
 	var result Slot
-	err := c.do(ctx, http.MethodPost, fmt.Sprintf("control/v1/slots/%d/rotate", slot), struct{}{}, &result)
+	err := c.do(ctx, c.operationTimeout, http.MethodPost, fmt.Sprintf("control/v1/slots/%d/rotate", slot), struct{}{}, &result)
 	return result, err
 }
 
 func (c *Client) CheckSlot(ctx context.Context, slot int) (SlotCheck, error) {
 	var result SlotCheck
-	err := c.do(ctx, http.MethodPost, fmt.Sprintf("control/v1/slots/%d/check", slot), struct{}{}, &result)
+	err := c.do(ctx, c.readTimeout, http.MethodPost, fmt.Sprintf("control/v1/slots/%d/check", slot), struct{}{}, &result)
 	return result, err
 }
 
 func (c *Client) DeleteSlot(ctx context.Context, slot int) error {
-	return c.do(ctx, http.MethodDelete, fmt.Sprintf("control/v1/slots/%d", slot), nil, nil)
+	return c.do(ctx, c.readTimeout, http.MethodDelete, fmt.Sprintf("control/v1/slots/%d", slot), nil, nil)
 }
 
-func (c *Client) do(ctx context.Context, method, path string, input, output any) error {
+func (c *Client) do(ctx context.Context, timeout time.Duration, method, path string, input, output any) error {
 	endpoint, err := url.JoinPath(c.baseURL.String(), path)
 	if err != nil {
 		return &AdapterError{Code: "invalid_configuration"}
@@ -183,7 +187,9 @@ func (c *Client) do(ctx context.Context, method, path string, input, output any)
 		}
 		body = bytes.NewReader(encoded)
 	}
-	request, err := http.NewRequestWithContext(ctx, method, endpoint, body)
+	requestContext, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(requestContext, method, endpoint, body)
 	if err != nil {
 		return &AdapterError{Code: "invalid_request"}
 	}
