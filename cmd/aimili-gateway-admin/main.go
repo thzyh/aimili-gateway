@@ -28,8 +28,18 @@ func main() {
 }
 
 func run(args []string, in io.Reader, out, errOut io.Writer, now func() time.Time) int {
-	if len(args) != 1 || (args[0] != "init" && args[0] != "revoke-sessions") {
-		_, _ = fmt.Fprintln(errOut, "usage: aimili-gateway-admin <init|revoke-sessions>")
+	return runWithDependencies(args, in, out, errOut, commandDependencies{Now: now, Random: rand.Reader})
+}
+
+func runWithDependencies(args []string, in io.Reader, out, errOut io.Writer, dependencies commandDependencies) int {
+	if dependencies.Now == nil {
+		dependencies.Now = time.Now
+	}
+	if dependencies.Random == nil {
+		dependencies.Random = rand.Reader
+	}
+	if len(args) != 1 || (args[0] != "init" && args[0] != "revoke-sessions" && args[0] != "account") {
+		_, _ = fmt.Fprintln(errOut, "usage: aimili-gateway-admin <init|revoke-sessions|account>")
 		return 2
 	}
 	cfg, err := config.Load(os.Getenv("GATEWAY_CONFIG"))
@@ -46,7 +56,7 @@ func run(args []string, in io.Reader, out, errOut io.Writer, now func() time.Tim
 
 	switch args[0] {
 	case "init":
-		if err := initializeAdmin(context.Background(), database, cfg.MasterKeyFile, in, out, now); err != nil {
+		if err := initializeAdmin(context.Background(), database, cfg.MasterKeyFile, in, out, dependencies.Now); err != nil {
 			writeCommandError(errOut, "initialize administrator", err)
 			return 1
 		}
@@ -56,6 +66,11 @@ func run(args []string, in io.Reader, out, errOut io.Writer, now func() time.Tim
 			return 1
 		}
 		_, _ = fmt.Fprintln(out, "All gateway sessions have been revoked.")
+	case "account":
+		if err := runAccountMenu(context.Background(), database, cfg.MasterKeyFile, newPromptReader(in), out, dependencies); err != nil {
+			writeCommandError(errOut, "manage administrator", err)
+			return 1
+		}
 	}
 	return 0
 }
@@ -106,29 +121,17 @@ func initializeAdmin(ctx context.Context, database *store.Store, masterKeyPath s
 	if err != nil {
 		return err
 	}
-	totpSecret, err := auth.GenerateTOTPSecret()
-	if err != nil {
-		return errors.New("generate TOTP secret")
-	}
-	defer clear(totpSecret)
-	encryptedSecret, err := auth.Seal(masterKey, totpSecret)
-	if err != nil {
-		return err
-	}
 	timestamp := now().UTC()
 	if err := database.CreateAdmin(ctx, store.Admin{
-		Username:             username,
-		PasswordHash:         []byte(passwordHash),
-		TOTPSecretCiphertext: encryptedSecret,
-		CreatedAt:            timestamp,
-		SecurityUpdatedAt:    timestamp,
+		Username:          username,
+		PasswordHash:      []byte(passwordHash),
+		TOTPEnabled:       false,
+		CreatedAt:         timestamp,
+		SecurityUpdatedAt: timestamp,
 	}); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintln(out, buildEnrollmentURI(username, totpSecret)); err != nil {
-		return errors.New("write enrollment URI")
-	}
-	_, _ = fmt.Fprintln(out, "Store the second factor safely. Losing it requires local recovery.")
+	_, _ = fmt.Fprintln(out, "Administrator created. TOTP is disabled by default.")
 	return nil
 }
 

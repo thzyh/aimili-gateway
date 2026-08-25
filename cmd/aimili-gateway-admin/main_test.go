@@ -4,10 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/base32"
 	"encoding/json"
 	"errors"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,8 +29,8 @@ func TestInitCreatesEncryptedSingleAdminWithoutEchoingPassword(t *testing.T) {
 	if strings.Contains(output.String(), password) || strings.Contains(errorOutput.String(), password) {
 		t.Fatal("password was written to command output")
 	}
-	if strings.Count(output.String(), "otpauth://") != 1 {
-		t.Fatal("enrollment URI was not emitted exactly once")
+	if strings.Contains(output.String(), "otpauth://") {
+		t.Fatal("new administrator unexpectedly emitted a TOTP enrollment URI")
 	}
 
 	database, err := store.Open(context.Background(), environment.databasePath)
@@ -58,28 +56,8 @@ func TestInitCreatesEncryptedSingleAdminWithoutEchoingPassword(t *testing.T) {
 	if len(masterKey) != 32 {
 		t.Fatalf("master key length = %d", len(masterKey))
 	}
-	totpSecret, err := auth.Open(masterKey, admin.TOTPSecretCiphertext)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	enrollment, err := url.Parse(extractEnrollmentURI(t, output.String()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if enrollment.Path != "/Aimili Gateway:owner local" {
-		t.Fatalf("enrollment label = %q", enrollment.Path)
-	}
-	query := enrollment.Query()
-	if query.Get("issuer") != "Aimili Gateway" || query.Get("algorithm") != "SHA1" || query.Get("digits") != "6" || query.Get("period") != "30" {
-		t.Fatal("enrollment parameters are incomplete")
-	}
-	uriSecret, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(query.Get("secret"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(uriSecret, totpSecret) {
-		t.Fatal("enrollment secret does not match encrypted storage")
+	if admin.TOTPEnabled || len(admin.TOTPSecretCiphertext) != 0 {
+		t.Fatal("new administrator did not default to password-only authentication")
 	}
 }
 
@@ -132,6 +110,7 @@ func TestRevokeSessionsDoesNotModifyAdministratorOrMasterKey(t *testing.T) {
 	admin := store.Admin{
 		Username:             "owner",
 		PasswordHash:         []byte("encoded-test-hash"),
+		TOTPEnabled:          true,
 		TOTPSecretCiphertext: []byte("encrypted-test-secret"),
 		CreatedAt:            environment.now(),
 		SecurityUpdatedAt:    environment.now(),
@@ -226,17 +205,4 @@ func newAdminTestEnvironment(t *testing.T) adminTestEnvironment {
 		t.Setenv(name, "")
 	}
 	return environment
-}
-
-func extractEnrollmentURI(t *testing.T, output string) string {
-	t.Helper()
-	start := strings.Index(output, "otpauth://")
-	if start < 0 {
-		t.Fatal("enrollment URI missing")
-	}
-	end := strings.IndexByte(output[start:], '\n')
-	if end < 0 {
-		return strings.TrimSpace(output[start:])
-	}
-	return strings.TrimSpace(output[start : start+end])
 }
