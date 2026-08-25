@@ -183,7 +183,7 @@ func (c *Client) EnsureManagedGroup(ctx context.Context, desired DesiredGroup) (
 		Fingerprint:     fingerprintDesired(desired),
 		PublicKey:       publicKey,
 		ShortID:         shortID,
-		ServerName:      "www.microsoft.com",
+		ServerName:      desired.RealityServerName,
 	}
 	for _, inbound := range updated {
 		switch inbound.Tag {
@@ -466,7 +466,9 @@ func (c *Client) call(ctx context.Context, method, path string, payload any, for
 
 func validateDesiredGroup(desired DesiredGroup) error {
 	if !strings.HasPrefix(desired.ResourceName, "agw-") || desired.SOCKSPort < 1 || desired.VLESSPort < 1 || desired.MixedPort < 1 ||
-		desired.VLESSClientID == "" || desired.MixedUsername == "" || desired.MixedPassword == "" || len(desired.MixedSourceCIDRs) == 0 {
+		desired.VLESSClientID == "" || desired.MixedUsername == "" || desired.MixedPassword == "" || len(desired.MixedSourceCIDRs) == 0 ||
+		desired.RealityTarget != "127.0.0.1:443" || strings.TrimSpace(desired.RealityServerName) == "" ||
+		net.ParseIP(desired.RealityServerName) != nil || strings.ContainsAny(desired.RealityServerName, "/:") {
 		return &AdapterError{Code: "invalid_request"}
 	}
 	for _, raw := range desired.MixedSourceCIDRs {
@@ -552,7 +554,7 @@ func vlessInbound(desired DesiredGroup, tag, privateKey, publicKey, shortID stri
 		"enable": true, "expiryTime": 0, "trafficReset": "never", "trafficResetDay": 1,
 		"listen": "", "port": desired.VLESSPort, "protocol": "vless", "tag": tag,
 		"settings":       mustJSONString(map[string]any{"clients": []any{map[string]any{"id": desired.VLESSClientID, "email": "aimili-gateway", "flow": "xtls-rprx-vision", "enable": true}}, "decryption": "none"}),
-		"streamSettings": mustJSONString(map[string]any{"network": "tcp", "security": "reality", "realitySettings": map[string]any{"show": false, "xver": 0, "target": "www.microsoft.com:443", "serverNames": []any{"www.microsoft.com"}, "privateKey": privateKey, "shortIds": []any{shortID}, "settings": map[string]any{"publicKey": publicKey, "fingerprint": "chrome", "spiderX": "/"}}}),
+		"streamSettings": mustJSONString(map[string]any{"network": "tcp", "security": "reality", "realitySettings": map[string]any{"show": false, "xver": 0, "target": desired.RealityTarget, "serverNames": []any{desired.RealityServerName}, "privateKey": privateKey, "shortIds": []any{shortID}, "settings": map[string]any{"publicKey": publicKey, "fingerprint": "chrome", "spiderX": "/"}}}),
 		"sniffing":       mustJSONString(map[string]any{"enabled": true, "destOverride": []any{"http", "tls", "quic"}, "metadataOnly": false, "routeOnly": false}),
 	}
 }

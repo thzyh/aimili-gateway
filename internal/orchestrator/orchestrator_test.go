@@ -30,6 +30,9 @@ func TestEnableCreatesAndValidatesOneStableProxyGroup(t *testing.T) {
 	if !equalStrings(fixture.calls, want) {
 		t.Fatalf("calls = %#v, want %#v", fixture.calls, want)
 	}
+	if fixture.xui.desired.RealityTarget != "127.0.0.1:443" || fixture.xui.desired.RealityServerName != "proxy.example.test" {
+		t.Fatalf("Reality target = %#v", fixture.xui.desired)
+	}
 }
 
 func TestEnableWaitsForAimiliSlotToCarryRealTraffic(t *testing.T) {
@@ -217,11 +220,13 @@ func (a *fakeAimili) slot(ip string) aimili.Slot {
 type fakeXUI struct {
 	calls       *[]string
 	deleteError error
+	desired     xui.DesiredGroup
 }
 
-func (x *fakeXUI) EnsureManagedGroup(context.Context, xui.DesiredGroup) (xui.ManagedGroup, error) {
+func (x *fakeXUI) EnsureManagedGroup(_ context.Context, desired xui.DesiredGroup) (xui.ManagedGroup, error) {
 	*x.calls = append(*x.calls, "xui.ensure")
-	return xui.ManagedGroup{ResourceName: "agw-jp-dc", VLESSInboundID: 11, MixedInboundID: 12, VLESSInboundTag: "agw-jp-dc-vless", MixedInboundTag: "agw-jp-dc-mixed", OutboundTag: "agw-jp-dc-socks", Fingerprint: "fp", PublicKey: "pk", ShortID: "sid", ServerName: "www.microsoft.com"}, nil
+	x.desired = desired
+	return xui.ManagedGroup{ResourceName: "agw-jp-dc", VLESSInboundID: 11, MixedInboundID: 12, VLESSInboundTag: "agw-jp-dc-vless", MixedInboundTag: "agw-jp-dc-mixed", OutboundTag: "agw-jp-dc-socks", Fingerprint: "fp", PublicKey: "pk", ShortID: "sid", ServerName: desired.RealityServerName}, nil
 }
 func (x *fakeXUI) DeleteManagedGroup(context.Context, xui.ManagedGroup) error {
 	*x.calls = append(*x.calls, "xui.delete")

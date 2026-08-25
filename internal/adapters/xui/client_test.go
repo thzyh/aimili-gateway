@@ -157,21 +157,23 @@ func TestEnsureManagedGroupPreservesUnmanagedXrayResources(t *testing.T) {
 	fixture := &xuiFixture{}
 	client := newXUIFixtureClient(t, fixture)
 	desired := DesiredGroup{
-		ResourceName:     "agw-jp-dc",
-		SOCKSPort:        17930,
-		VLESSPort:        20000,
-		MixedPort:        30000,
-		VLESSClientID:    "test-client-id",
-		MixedUsername:    "proxy-user",
-		MixedPassword:    "proxy-password",
-		MixedSourceCIDRs: []string{"198.51.100.0/24"},
+		ResourceName:      "agw-jp-dc",
+		SOCKSPort:         17930,
+		VLESSPort:         20000,
+		MixedPort:         30000,
+		VLESSClientID:     "test-client-id",
+		MixedUsername:     "proxy-user",
+		MixedPassword:     "proxy-password",
+		MixedSourceCIDRs:  []string{"198.51.100.0/24"},
+		RealityTarget:     "127.0.0.1:443",
+		RealityServerName: "proxy.example.test",
 	}
 	managed, err := client.EnsureManagedGroup(context.Background(), desired)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if managed.ResourceName != "agw-jp-dc" || managed.Fingerprint == "" ||
-		managed.PublicKey == "" || managed.ShortID == "" || managed.ServerName != "www.microsoft.com" {
+		managed.PublicKey == "" || managed.ShortID == "" || managed.ServerName != "proxy.example.test" {
 		t.Fatalf("unexpected managed group: %#v", managed)
 	}
 	if strings.Join(fixture.addedProtocols, ",") != "vless,mixed" {
@@ -199,6 +201,38 @@ func TestEnsureManagedGroupPreservesUnmanagedXrayResources(t *testing.T) {
 	}
 }
 
+func TestEnsureManagedGroupUsesConfiguredLocalRealityTarget(t *testing.T) {
+	fixture := &xuiFixture{}
+	client := newXUIFixtureClient(t, fixture)
+	desired := DesiredGroup{
+		ResourceName: "agw-jp-dc", SOCKSPort: 17930, VLESSPort: 20000, MixedPort: 30000,
+		VLESSClientID: "test-client-id", MixedUsername: "proxy-user", MixedPassword: "proxy-password",
+		MixedSourceCIDRs: []string{"198.51.100.0/24"}, RealityTarget: "127.0.0.1:443", RealityServerName: "proxy.example.test",
+	}
+
+	if _, err := client.EnsureManagedGroup(context.Background(), desired); err != nil {
+		t.Fatal(err)
+	}
+	var vless map[string]any
+	for _, inbound := range fixture.inbounds {
+		if inbound["protocol"] == "vless" {
+			vless = inbound
+			break
+		}
+	}
+	if vless == nil {
+		t.Fatal("managed VLESS inbound was not created")
+	}
+	var stream map[string]any
+	if err := json.Unmarshal([]byte(vless["streamSettings"].(string)), &stream); err != nil {
+		t.Fatal(err)
+	}
+	reality := stream["realitySettings"].(map[string]any)
+	if reality["target"] != "127.0.0.1:443" || fmt.Sprint(reality["serverNames"]) != "[proxy.example.test]" {
+		t.Fatalf("unexpected Reality target: %#v", reality)
+	}
+}
+
 func TestEnsureManagedGroupRejectsSameTagWithoutOwnershipMarker(t *testing.T) {
 	fixture := &xuiFixture{inbounds: []map[string]any{{
 		"id": float64(9), "tag": "agw-jp-dc-vless", "remark": "User inbound", "protocol": "vless", "port": float64(20000),
@@ -208,6 +242,7 @@ func TestEnsureManagedGroupRejectsSameTagWithoutOwnershipMarker(t *testing.T) {
 		ResourceName: "agw-jp-dc", SOCKSPort: 17930, VLESSPort: 20000, MixedPort: 30000,
 		VLESSClientID: "test-client-id", MixedUsername: "proxy-user", MixedPassword: "proxy-password",
 		MixedSourceCIDRs: []string{"198.51.100.0/24"},
+		RealityTarget:    "127.0.0.1:443", RealityServerName: "proxy.example.test",
 	})
 	var adapterError *AdapterError
 	if err == nil || !strings.Contains(err.Error(), "ownership_conflict") || !errors.As(err, &adapterError) {
@@ -231,6 +266,7 @@ func TestEnsureManagedGroupRejectsConflictingNamespacedOutbound(t *testing.T) {
 		ResourceName: "agw-jp-dc", SOCKSPort: 17930, VLESSPort: 20000, MixedPort: 30000,
 		VLESSClientID: "test-client-id", MixedUsername: "proxy-user", MixedPassword: "proxy-password",
 		MixedSourceCIDRs: []string{"198.51.100.0/24"},
+		RealityTarget:    "127.0.0.1:443", RealityServerName: "proxy.example.test",
 	})
 	var adapterError *AdapterError
 	if !errors.As(err, &adapterError) || adapterError.Code != "ownership_conflict" {
@@ -250,6 +286,7 @@ func TestEnsureManagedGroupRejectsUnmanagedPortConflict(t *testing.T) {
 		ResourceName: "agw-jp-dc", SOCKSPort: 17930, VLESSPort: 20000, MixedPort: 30000,
 		VLESSClientID: "test-client-id", MixedUsername: "proxy-user", MixedPassword: "proxy-password",
 		MixedSourceCIDRs: []string{"198.51.100.0/24"},
+		RealityTarget:    "127.0.0.1:443", RealityServerName: "proxy.example.test",
 	})
 	var adapterError *AdapterError
 	if !errors.As(err, &adapterError) || adapterError.Code != "port_conflict" {
@@ -267,6 +304,7 @@ func TestDeleteManagedGroupRemovesOnlyNamedResources(t *testing.T) {
 		ResourceName: "agw-jp-dc", SOCKSPort: 17930, VLESSPort: 20000, MixedPort: 30000,
 		VLESSClientID: "test-client-id", MixedUsername: "proxy-user", MixedPassword: "proxy-password",
 		MixedSourceCIDRs: []string{"198.51.100.0/24"},
+		RealityTarget:    "127.0.0.1:443", RealityServerName: "proxy.example.test",
 	}
 	managed, err := client.EnsureManagedGroup(context.Background(), desired)
 	if err != nil {
@@ -291,6 +329,7 @@ func TestEnsureManagedGroupRollsBackPartialInboundCreation(t *testing.T) {
 		ResourceName: "agw-jp-dc", SOCKSPort: 17930, VLESSPort: 20000, MixedPort: 30000,
 		VLESSClientID: "test-client-id", MixedUsername: "proxy-user", MixedPassword: "proxy-password",
 		MixedSourceCIDRs: []string{"198.51.100.0/24"},
+		RealityTarget:    "127.0.0.1:443", RealityServerName: "proxy.example.test",
 	})
 	if err == nil {
 		t.Fatal("partial inbound creation succeeded")

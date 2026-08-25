@@ -196,7 +196,11 @@ func (o *Orchestrator) Enable(ctx context.Context, request EnableRequest) (domai
 		return domain.ProxyGroup{}, o.rollbackEnable(ctx, &group, xui.ManagedGroup{}, codeOr(err, "egress_unavailable"))
 	}
 	group.ExitIP = checked.ExitIP
-	managed, err := o.xui.EnsureManagedGroup(ctx, xui.DesiredGroup{ResourceName: group.ResourceName, SOCKSPort: checked.Port, VLESSPort: group.VLESSPort, MixedPort: group.MixedPort, VLESSClientID: string(credentials.vlessID), MixedUsername: string(credentials.mixedUsername), MixedPassword: string(credentials.mixedPassword), MixedSourceCIDRs: prefixStrings(cidrs)})
+	managed, err := o.xui.EnsureManagedGroup(ctx, xui.DesiredGroup{
+		ResourceName: group.ResourceName, SOCKSPort: checked.Port, VLESSPort: group.VLESSPort, MixedPort: group.MixedPort,
+		VLESSClientID: string(credentials.vlessID), MixedUsername: string(credentials.mixedUsername), MixedPassword: string(credentials.mixedPassword),
+		MixedSourceCIDRs: prefixStrings(cidrs), RealityTarget: "127.0.0.1:443", RealityServerName: o.config.PublicHost,
+	})
 	if err != nil {
 		return domain.ProxyGroup{}, o.rollbackEnable(ctx, &group, xui.ManagedGroup{}, errorCode(err))
 	}
