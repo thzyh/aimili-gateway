@@ -321,11 +321,19 @@ func (c *Client) snapshot(ctx context.Context) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
+	envelopeRaw := obj
+	if len(envelopeRaw) > 0 && envelopeRaw[0] == '"' {
+		var encoded string
+		if json.Unmarshal(envelopeRaw, &encoded) != nil {
+			return Snapshot{}, &AdapterError{Code: "invalid_response"}
+		}
+		envelopeRaw = []byte(encoded)
+	}
 	var xrayEnvelope struct {
 		XraySetting     json.RawMessage `json:"xraySetting"`
 		OutboundTestURL string          `json:"outboundTestUrl"`
 	}
-	if err := json.Unmarshal(obj, &xrayEnvelope); err != nil {
+	if err := json.Unmarshal(envelopeRaw, &xrayEnvelope); err != nil {
 		return Snapshot{}, &AdapterError{Code: "invalid_response"}
 	}
 	settingRaw := xrayEnvelope.XraySetting

@@ -15,14 +15,15 @@ import (
 )
 
 type xuiFixture struct {
-	mu             sync.Mutex
-	csrfCalls      int
-	loginCalls     int
-	addedProtocols []string
-	updatedXray    map[string]any
-	inbounds       []map[string]any
-	failProtocol   string
-	initialXray    map[string]any
+	mu                 sync.Mutex
+	csrfCalls          int
+	loginCalls         int
+	addedProtocols     []string
+	updatedXray        map[string]any
+	inbounds           []map[string]any
+	failProtocol       string
+	initialXray        map[string]any
+	stringXrayEnvelope bool
 }
 
 func (fixture *xuiFixture) handler(response http.ResponseWriter, request *http.Request) {
@@ -49,7 +50,15 @@ func (fixture *xuiFixture) handler(response http.ResponseWriter, request *http.R
 			}
 		}
 		encoded, _ := json.Marshal(setting)
-		fmt.Fprintf(response, `{"success":true,"obj":{"xraySetting":%q,"outboundTestUrl":"https://probe.invalid/"}}`, string(encoded))
+		xrayEnvelope := map[string]any{"xraySetting": string(encoded), "outboundTestUrl": "https://probe.invalid/"}
+		if fixture.stringXrayEnvelope {
+			encodedEnvelope, _ := json.Marshal(xrayEnvelope)
+			body, _ := json.Marshal(map[string]any{"success": true, "obj": string(encodedEnvelope)})
+			_, _ = response.Write(body)
+		} else {
+			body, _ := json.Marshal(map[string]any{"success": true, "obj": xrayEnvelope})
+			_, _ = response.Write(body)
+		}
 	case "/panel/panel/api/xray/update":
 		if err := request.ParseForm(); err != nil {
 			testingError(response, "invalid form")
@@ -129,6 +138,18 @@ func TestClientSnapshotAuthenticatesWithCSRFAndKeepsCookiesInMemory(t *testing.T
 	}
 	if cookies := client.httpClient.Jar.Cookies(client.baseURL); len(cookies) != 1 || cookies[0].Name != "session" {
 		t.Fatalf("session cookie not held by memory jar: %#v", cookies)
+	}
+}
+
+func TestClientSnapshotAcceptsStringEncodedXrayEnvelope(t *testing.T) {
+	fixture := &xuiFixture{stringXrayEnvelope: true}
+	client := newXUIFixtureClient(t, fixture)
+	snapshot, err := client.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Outbounds) != 1 || snapshot.Outbounds[0].Tag != "direct" || snapshot.OutboundTestURL != "https://probe.invalid/" {
+		t.Fatalf("unexpected string-encoded snapshot: %#v", snapshot)
 	}
 }
 
