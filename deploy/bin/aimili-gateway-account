@@ -6,7 +6,7 @@ if (( $# != 0 )); then
     exit 2
 fi
 if (( EUID != 0 )); then
-    printf '请使用 sudo aimili-gateway-account。\n' >&2
+    printf '请执行 sudo aimili-gateway-account。\n' >&2
     exit 1
 fi
 

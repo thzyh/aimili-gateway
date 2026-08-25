@@ -87,6 +87,9 @@ func TestCaddyFragmentPreservesExistingRoutesBeforeGatewayFallback(t *testing.T)
 
 func TestAccountCommandUsesRestrictedTransientUnit(t *testing.T) {
 	script := readAsset(t, "bin/aimili-gateway-account")
+	if strings.Contains(script, "\r") {
+		t.Fatal("account command must use LF line endings for its Linux shebang")
+	}
 	for _, required := range []string{
 		"/usr/bin/systemd-run",
 		"--pty",
