@@ -29,6 +29,7 @@ type Config struct {
 	AimiliControlURL       string `json:"aimiliControlUrl"`
 	AimiliControlTokenFile string `json:"aimiliControlTokenFile"`
 	XUIBaseURL             string `json:"xuiBaseUrl"`
+	XUICredentialsFile     string `json:"xuiCredentialsFile"`
 	ExpertModeURL          string `json:"expertModeUrl"`
 
 	localTest bool
@@ -43,6 +44,7 @@ func Load(path string) (Config, error) {
 		AimiliControlURL:       defaultAimiliControlURL,
 		AimiliControlTokenFile: filepath.FromSlash("data/aimili-control.token"),
 		XUIBaseURL:             defaultXUIBaseURL,
+		XUICredentialsFile:     filepath.FromSlash("data/xui-automation.json"),
 		localTest:              path == "",
 	}
 
@@ -83,6 +85,9 @@ func (c Config) Validate() error {
 	}
 	if err := validateLoopbackURL("xuiBaseUrl", c.XUIBaseURL); err != nil {
 		return err
+	}
+	if strings.TrimSpace(c.XUICredentialsFile) == "" {
+		return errors.New("xuiCredentialsFile is required")
 	}
 	if err := validateExpertModeURL(c.ExpertModeURL); err != nil {
 		return err
@@ -136,6 +141,7 @@ func applyEnvironment(cfg *Config) {
 		{name: "GATEWAY_AIMILI_CONTROL_URL", target: &cfg.AimiliControlURL},
 		{name: "GATEWAY_AIMILI_CONTROL_TOKEN_FILE", target: &cfg.AimiliControlTokenFile},
 		{name: "GATEWAY_XUI_BASE_URL", target: &cfg.XUIBaseURL},
+		{name: "GATEWAY_XUI_CREDENTIALS_FILE", target: &cfg.XUICredentialsFile},
 		{name: "GATEWAY_EXPERT_MODE_URL", target: &cfg.ExpertModeURL},
 	}
 	for _, override := range overrides {

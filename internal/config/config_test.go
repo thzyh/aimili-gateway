@@ -36,6 +36,9 @@ func TestLoadAppliesSafeLocalDefaults(t *testing.T) {
 	if cfg.XUIBaseURL != "http://127.0.0.1:2001/" {
 		t.Fatalf("3x-ui base URL = %q", cfg.XUIBaseURL)
 	}
+	if cfg.XUICredentialsFile != filepath.FromSlash("data/xui-automation.json") {
+		t.Fatalf("3x-ui credentials file = %q", cfg.XUICredentialsFile)
+	}
 }
 
 func TestValidateRejectsPublicListenAddress(t *testing.T) {
@@ -144,6 +147,7 @@ func validProductionConfig() Config {
 		AimiliControlURL:       "http://127.0.0.1:8790/",
 		AimiliControlTokenFile: filepath.FromSlash("data/aimili-control.token"),
 		XUIBaseURL:             "http://127.0.0.1:2001/",
+		XUICredentialsFile:     filepath.FromSlash("data/xui-automation.json"),
 		ExpertModeURL:          "/expert/",
 	}
 }
@@ -159,6 +163,7 @@ func clearConfigEnvironment(t *testing.T) {
 		"GATEWAY_AIMILI_CONTROL_URL",
 		"GATEWAY_AIMILI_CONTROL_TOKEN_FILE",
 		"GATEWAY_XUI_BASE_URL",
+		"GATEWAY_XUI_CREDENTIALS_FILE",
 		"GATEWAY_EXPERT_MODE_URL",
 	} {
 		t.Setenv(name, "")
