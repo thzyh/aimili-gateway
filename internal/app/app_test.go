@@ -18,13 +18,16 @@ func TestNewProvidesHealthHandlerAndClosesIdempotently(t *testing.T) {
 		t.Fatal(err)
 	}
 	application, err := New(t.Context(), config.Config{
-		ListenAddress: "127.0.0.1:9080",
-		PublicOrigin:  "https://console.example.test",
-		DatabasePath:  filepath.Join(directory, "gateway.db"),
-		MasterKeyFile: masterKeyPath,
-		AimiliAddress: "127.0.0.1:8787",
-		XUIBaseURL:    "http://127.0.0.1:2001/panel-fixture/",
-		ExpertModeURL: "/expert-fixture/",
+		ListenAddress:          "127.0.0.1:9080",
+		PublicOrigin:           "https://console.example.test",
+		DatabasePath:           filepath.Join(directory, "gateway.db"),
+		MasterKeyFile:          masterKeyPath,
+		AimiliAddress:          "127.0.0.1:8787",
+		AimiliControlURL:       "http://127.0.0.1:8790/",
+		AimiliControlTokenFile: filepath.Join(directory, "aimili-control.token"),
+		XUIBaseURL:             "http://127.0.0.1:2001/panel-fixture/",
+		XUICredentialsFile:     filepath.Join(directory, "xui-automation.json"),
+		ExpertModeURL:          "/expert-fixture/",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -66,12 +69,15 @@ func TestNewRejectsInvalidMasterKeyLength(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := New(t.Context(), config.Config{
-		ListenAddress: "127.0.0.1:9080",
-		PublicOrigin:  "https://console.example.test",
-		DatabasePath:  filepath.Join(directory, "gateway.db"),
-		MasterKeyFile: masterKeyPath,
-		AimiliAddress: "127.0.0.1:8787",
-		XUIBaseURL:    "http://127.0.0.1:2001/panel-fixture/",
+		ListenAddress:          "127.0.0.1:9080",
+		PublicOrigin:           "https://console.example.test",
+		DatabasePath:           filepath.Join(directory, "gateway.db"),
+		MasterKeyFile:          masterKeyPath,
+		AimiliAddress:          "127.0.0.1:8787",
+		AimiliControlURL:       "http://127.0.0.1:8790/",
+		AimiliControlTokenFile: filepath.Join(directory, "aimili-control.token"),
+		XUIBaseURL:             "http://127.0.0.1:2001/panel-fixture/",
+		XUICredentialsFile:     filepath.Join(directory, "xui-automation.json"),
 	})
 	if err == nil {
 		t.Fatal("invalid master key accepted")
@@ -85,7 +91,10 @@ func TestNewSupportsExplicitLocalTestConfiguration(t *testing.T) {
 		"GATEWAY_DATABASE_PATH",
 		"GATEWAY_MASTER_KEY_FILE",
 		"GATEWAY_AIMILI_ADDRESS",
+		"GATEWAY_AIMILI_CONTROL_URL",
+		"GATEWAY_AIMILI_CONTROL_TOKEN_FILE",
 		"GATEWAY_XUI_BASE_URL",
+		"GATEWAY_XUI_CREDENTIALS_FILE",
 		"GATEWAY_EXPERT_MODE_URL",
 	} {
 		t.Setenv(name, "")
@@ -117,12 +126,15 @@ func newTestApplication(t *testing.T) *App {
 		t.Fatal(err)
 	}
 	application, err := New(t.Context(), config.Config{
-		ListenAddress: "127.0.0.1:9080",
-		PublicOrigin:  "https://console.example.test",
-		DatabasePath:  filepath.Join(directory, "gateway.db"),
-		MasterKeyFile: masterKeyPath,
-		AimiliAddress: "127.0.0.1:8787",
-		XUIBaseURL:    "http://127.0.0.1:2001/panel-fixture/",
+		ListenAddress:          "127.0.0.1:9080",
+		PublicOrigin:           "https://console.example.test",
+		DatabasePath:           filepath.Join(directory, "gateway.db"),
+		MasterKeyFile:          masterKeyPath,
+		AimiliAddress:          "127.0.0.1:8787",
+		AimiliControlURL:       "http://127.0.0.1:8790/",
+		AimiliControlTokenFile: filepath.Join(directory, "aimili-control.token"),
+		XUIBaseURL:             "http://127.0.0.1:2001/panel-fixture/",
+		XUICredentialsFile:     filepath.Join(directory, "xui-automation.json"),
 	})
 	if err != nil {
 		t.Fatal(err)
