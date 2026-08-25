@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -33,13 +34,35 @@ type reauthenticateRequest struct {
 	TOTP     string `json:"totp"`
 }
 
+type authOptionsResponse struct {
+	TOTPRequired bool `json:"totpRequired"`
+}
+
+func (s *server) handleAuthOptions(response http.ResponseWriter, request *http.Request) {
+	required, err := s.totpRequired(request.Context())
+	if err != nil {
+		writeAPIError(response, http.StatusInternalServerError, "internal_error")
+		return
+	}
+	writeJSON(response, http.StatusOK, authOptionsResponse{TOTPRequired: required})
+}
+
 func (s *server) handleLogin(response http.ResponseWriter, request *http.Request) {
 	if !s.requireOrigin(request) {
 		writeAPIError(response, http.StatusForbidden, "forbidden")
 		return
 	}
 	var input loginRequest
-	if err := decodeJSON(request, &input); err != nil || input.Username == "" || input.Password == "" || input.TOTP == "" || len(input.Username) > 256 {
+	if err := decodeJSON(request, &input); err != nil || input.Username == "" || input.Password == "" || len(input.Username) > 256 {
+		writeAPIError(response, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	totpRequired, err := s.totpRequired(request.Context())
+	if err != nil {
+		writeAPIError(response, http.StatusInternalServerError, "internal_error")
+		return
+	}
+	if totpRequired && !validTOTPFormat(input.TOTP) {
 		writeAPIError(response, http.StatusBadRequest, "invalid_request")
 		return
 	}
@@ -139,7 +162,16 @@ func (s *server) handleReauthenticate(response http.ResponseWriter, request *htt
 		return
 	}
 	var input reauthenticateRequest
-	if err := decodeJSON(request, &input); err != nil || input.Password == "" || input.TOTP == "" {
+	if err := decodeJSON(request, &input); err != nil || input.Password == "" {
+		writeAPIError(response, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	totpRequired, err := s.totpRequired(request.Context())
+	if err != nil {
+		writeAPIError(response, http.StatusInternalServerError, "internal_error")
+		return
+	}
+	if totpRequired && !validTOTPFormat(input.TOTP) {
 		writeAPIError(response, http.StatusBadRequest, "invalid_request")
 		return
 	}
@@ -174,17 +206,43 @@ func (s *server) verifyCredentials(request *http.Request, username, password, to
 	if err != nil {
 		return false, err
 	}
-	secret, err := auth.Open(s.masterKey, admin.TOTPSecretCiphertext)
-	if err != nil {
-		return false, err
+	totpValid := true
+	if admin.TOTPEnabled {
+		secret, err := auth.Open(s.masterKey, admin.TOTPSecretCiphertext)
+		if err != nil {
+			return false, err
+		}
+		defer clear(secret)
+		totpValid = auth.ValidateTOTP(secret, totp, s.now().UTC())
 	}
-	defer clear(secret)
-	totpValid := auth.ValidateTOTP(secret, totp, s.now().UTC())
 	usernameValid := true
 	if requireUsername {
 		usernameValid = len(username) == len(admin.Username) && subtle.ConstantTimeCompare([]byte(username), []byte(admin.Username)) == 1
 	}
 	return usernameValid && passwordValid && totpValid, nil
+}
+
+func (s *server) totpRequired(ctx context.Context) (bool, error) {
+	admin, err := s.store.GetAdmin(ctx)
+	if errors.Is(err, store.ErrAdminNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return admin.TOTPEnabled, nil
+}
+
+func validTOTPFormat(value string) bool {
+	if len(value) != 6 {
+		return false
+	}
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func sessionCookie(value string, expiresAt time.Time) *http.Cookie {

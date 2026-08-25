@@ -48,6 +48,52 @@ func TestLoginBeforeInitializationIsUnauthorized(t *testing.T) {
 	assertResponseStatus(t, response, http.StatusUnauthorized)
 }
 
+func TestAuthOptionsExposeOnlyWhetherTOTPIsRequired(t *testing.T) {
+	environment := newAuthTestEnvironment(t)
+	response := environment.request(t, http.MethodGet, "/api/v1/auth/options", nil, "", "")
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", response.StatusCode)
+	}
+	if response.Header.Get("Cache-Control") != "no-store" {
+		t.Fatal("auth options response is cacheable")
+	}
+	var payload map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload) != 1 || payload["totpRequired"] != true {
+		t.Fatalf("auth options payload = %#v", payload)
+	}
+	if _, exposed := payload["username"]; exposed {
+		t.Fatal("auth options exposed username")
+	}
+}
+
+func TestPasswordOnlyAccountCanLoginAndReauthenticateWithoutTOTP(t *testing.T) {
+	environment := newAuthTestEnvironment(t)
+	environment.disableTOTP(t)
+	login := environment.request(t, http.MethodPost, "/api/v1/auth/login", map[string]string{
+		"username": "owner",
+		"password": "local-only-test-password",
+	}, environment.origin, "")
+	assertResponseStatus(t, login, http.StatusNoContent)
+	csrf := environment.session(t).CSRFToken
+	response := environment.request(t, http.MethodPost, "/api/v1/auth/reauth", map[string]string{
+		"password": "local-only-test-password",
+	}, environment.origin, csrf)
+	assertResponseStatus(t, response, http.StatusNoContent)
+}
+
+func TestTOTPAccountRejectsMissingTOTP(t *testing.T) {
+	environment := newAuthTestEnvironment(t)
+	response := environment.request(t, http.MethodPost, "/api/v1/auth/login", map[string]string{
+		"username": "owner",
+		"password": "local-only-test-password",
+	}, environment.origin, "")
+	assertResponseStatus(t, response, http.StatusBadRequest)
+}
+
 func TestSuccessfulLoginSetsSecureCookieAndReturnsSession(t *testing.T) {
 	environment := newAuthTestEnvironment(t)
 	response := environment.login(t)
@@ -197,6 +243,7 @@ func newAuthTestEnvironmentConfigured(t *testing.T, initializeAdmin bool, config
 		if err := database.CreateAdmin(ctx, store.Admin{
 			Username:             "owner",
 			PasswordHash:         []byte(passwordHash),
+			TOTPEnabled:          true,
 			TOTPSecretCiphertext: encryptedSecret,
 			CreatedAt:            clock.Now(),
 			SecurityUpdatedAt:    clock.Now(),
@@ -241,6 +288,24 @@ func newAuthTestEnvironmentConfigured(t *testing.T, initializeAdmin bool, config
 		_ = database.Close()
 	})
 	return environment
+}
+
+func (e *authTestEnvironment) disableTOTP(t *testing.T) {
+	t.Helper()
+	admin, err := e.database.GetAdmin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.database.UpdateAdminSecurityAndRevokeSessions(context.Background(), store.AdminSecurityUpdate{
+		ExpectedSecurityUpdatedAt: admin.SecurityUpdatedAt,
+		Username:                  admin.Username,
+		PasswordHash:              admin.PasswordHash,
+		TOTPEnabled:               false,
+		Action:                    "test.totp_disabled",
+		UpdatedAt:                 admin.SecurityUpdatedAt.Add(time.Millisecond),
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (e *authTestEnvironment) login(t *testing.T) *http.Response {
