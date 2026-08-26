@@ -88,9 +88,32 @@ git -C /opt/aimilivpn merge --ff-only FETCH_HEAD
 
 install -d -m 0755 /etc/systemd/system/aimilivpn.service.d
 printf '%s\n' \
+    '[Unit]' \
+    'StartLimitIntervalSec=600' \
+    'StartLimitBurst=3' \
+    '' \
     '[Service]' \
-    'Environment=MAX_EXIT_SLOTS=64' \
+    'Environment=OPENVPN_TEST_CONCURRENCY=1' \
+    'Environment=TCP_PRESCREEN_CONCURRENCY=8' \
+    'Environment=MAX_FETCH_ROWS=300' \
+    'Environment=TARGET_VALID_POOL_SIZE=30' \
+    'Environment=NODE_TEST_BATCH_SIZE=1' \
+    'Environment=PROBE_FAILURE_COOLDOWN_SECONDS=1800' \
+    'Environment=MAX_EXIT_SLOTS=4' \
+    'Environment=COLLECTOR_INITIAL_DELAY_SECONDS=120' \
+    'Environment=COLLECTOR_FAILURE_BACKOFF_SECONDS=600' \
+    'Environment=FETCH_INTERVAL_SECONDS=21600' \
+    'Environment=CHECK_INTERVAL_SECONDS=21600' \
     'Environment=AIMILI_CONTROL_ADDRESS=127.0.0.1:8790' \
+    'Environment=MALLOC_ARENA_MAX=2' \
+    'Restart=on-failure' \
+    'RestartSec=30' \
+    'MemoryHigh=180M' \
+    'MemoryMax=220M' \
+    'TasksMax=48' \
+    'CPUQuota=50%' \
+    'Nice=10' \
+    'OOMScoreAdjust=500' \
     > /etc/systemd/system/aimilivpn.service.d/20-v1c-capacity.conf
 chmod 0644 /etc/systemd/system/aimilivpn.service.d/20-v1c-capacity.conf
 systemctl daemon-reload

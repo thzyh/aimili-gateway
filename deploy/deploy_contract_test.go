@@ -26,6 +26,10 @@ func TestSystemdUnitIsUnprivilegedAndHardened(t *testing.T) {
 		"LoadCredential=xui-automation:/etc/aimili-gateway/xui-automation.json",
 		"Environment=GATEWAY_AIMILI_CONTROL_TOKEN_FILE=%d/aimili-control-token",
 		"Environment=GATEWAY_XUI_CREDENTIALS_FILE=%d/xui-automation",
+		"Environment=GOMEMLIMIT=64MiB",
+		"MemoryHigh=64M",
+		"MemoryMax=96M",
+		"TasksMax=64",
 	} {
 		if !strings.Contains(unit, required) {
 			t.Fatalf("systemd unit missing %q", required)
@@ -135,7 +139,16 @@ func TestV1CRemoteDeploymentIsIncrementalAndRollbackSafe(t *testing.T) {
 		"bundle verify",
 		"stash push --include-untracked",
 		"merge --ff-only FETCH_HEAD",
-		"Environment=MAX_EXIT_SLOTS=64",
+		"Environment=OPENVPN_TEST_CONCURRENCY=1",
+		"Environment=TCP_PRESCREEN_CONCURRENCY=8",
+		"Environment=NODE_TEST_BATCH_SIZE=1",
+		"Environment=MAX_EXIT_SLOTS=4",
+		"Environment=COLLECTOR_INITIAL_DELAY_SECONDS=120",
+		"Environment=COLLECTOR_FAILURE_BACKOFF_SECONDS=600",
+		"MemoryHigh=180M",
+		"MemoryMax=220M",
+		"TasksMax=48",
+		"Restart=on-failure",
 		`d["maxProxyGroups"] = capacity`,
 		"systemctl restart aimilivpn.service",
 		"systemctl start aimili-gateway.service",

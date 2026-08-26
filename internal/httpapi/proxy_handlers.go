@@ -62,7 +62,7 @@ func (s *server) handleProxyGroups(response http.ResponseWriter, request *http.R
 		writeAPIError(response, http.StatusServiceUnavailable, "not_configured")
 		return
 	}
-	groups, err := s.proxyManager.List(request.Context())
+	groups, err := s.proxyManager.Pool(request.Context())
 	if err != nil {
 		writeProxyError(response, err)
 		return
@@ -216,6 +216,28 @@ func (s *server) handleCheckProxyGroup(response http.ResponseWriter, request *ht
 		writeProxyError(response, err)
 		return
 	}
+	writeJSON(response, http.StatusOK, safeProxyGroup(group))
+}
+
+func (s *server) handleActivateProxyGroup(response http.ResponseWriter, request *http.Request) {
+	session, ok := s.authorizeMutation(response, request, true)
+	if !ok {
+		return
+	}
+	key, hit, ok := s.idempotencyKey(response, request, session)
+	if !ok {
+		return
+	}
+	if hit != nil {
+		writeCached(response, *hit)
+		return
+	}
+	group, err := s.proxyManager.Activate(request.Context(), request.PathValue("id"))
+	if err != nil {
+		writeProxyError(response, err)
+		return
+	}
+	s.storeIdempotent(key, http.StatusOK, safeProxyGroup(group))
 	writeJSON(response, http.StatusOK, safeProxyGroup(group))
 }
 

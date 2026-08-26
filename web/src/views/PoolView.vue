@@ -72,12 +72,12 @@ async function exportRows(): Promise<void> {
   finally { busy.value = '' }
 }
 
-async function mutate(row: ProxyGroupPayload, action: 'check' | 'rotate'): Promise<void> {
+async function mutate(row: ProxyGroupPayload, action: 'activate' | 'check' | 'rotate'): Promise<void> {
   busy.value = `${action}-${row.id}`; notice.value = ''
   try {
-    await apiFetch(`/api/v1/proxy-groups/${row.id}/${action}`, { method: 'POST', ...(action === 'rotate' ? { headers: idempotencyHeaders() } : {}) })
+    await apiFetch(`/api/v1/proxy-groups/${row.id}/${action}`, { method: 'POST', ...(['activate', 'rotate'].includes(action) ? { headers: idempotencyHeaders() } : {}) })
     await load()
-  } catch (error) { notice.value = messageFor(error, action === 'check' ? '检测失败' : '换 IP 失败') }
+  } catch (error) { notice.value = messageFor(error, action === 'activate' ? '启用失败' : action === 'check' ? '检测失败' : '换 IP 失败') }
   finally { busy.value = '' }
 }
 
@@ -96,10 +96,10 @@ function messageFor(error: unknown, fallback: string): string {
     <p v-if="notice" class="notice" role="status">{{ notice }}</p>
     <section class="pool-toolbar">
       <PoolFilters :countries="countries" :country="country" :proxy-type="proxyType" :status="status" :sort="sort" @country="country=$event" @proxy-type="proxyType=$event" @status="status=$event" @sort="sort=$event" />
-      <span>{{ rows.length }} 个出口 · {{ rows.filter(row => row.status === 'ready').length }} 个可用</span>
+      <span>{{ rows.length }} 个候选 · {{ rows.filter(row => row.status === 'ready').length }} 个在线</span>
     </section>
     <div v-if="loading" class="loading">正在读取代理池…</div>
-    <PoolTable v-else :rows="rows" :protocol="protocol" :busy="busy" @copy="copyAddress" @check="mutate($event,'check')" @rotate="mutate($event,'rotate')" />
+    <PoolTable v-else :rows="rows" :protocol="protocol" :busy="busy" @copy="copyAddress" @activate="mutate($event,'activate')" @check="mutate($event,'check')" @rotate="mutate($event,'rotate')" />
   </AppShell>
 </template>
 

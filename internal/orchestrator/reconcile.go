@@ -17,7 +17,7 @@ type ReconcileResult struct {
 // Reconcile converges every safe Aimili candidate into an independently usable proxy entry.
 // A single candidate failure is isolated so healthy candidates can still become ready.
 func (o *Orchestrator) Reconcile(ctx context.Context) ReconcileResult {
-	unlock := o.locks.lock("reconcile")
+	unlock := o.locks.lock("activation")
 	defer unlock()
 	result := ReconcileResult{}
 	candidates, err := o.aimili.Candidates(ctx)
@@ -33,6 +33,7 @@ func (o *Orchestrator) Reconcile(ctx context.Context) ReconcileResult {
 	groups = o.adoptLegacyGroups(ctx, groups, candidates)
 	existing := make(map[string]domain.ProxyGroup, len(groups))
 	byExit := make(map[string]domain.ProxyGroup, len(groups))
+	activeCount := len(groups)
 	for _, group := range groups {
 		if group.CandidateID != "" {
 			existing[group.CandidateID] = group
@@ -54,6 +55,9 @@ func (o *Orchestrator) Reconcile(ctx context.Context) ReconcileResult {
 			}
 			continue
 		}
+		if activeCount >= o.config.MaxGroups {
+			continue
+		}
 		group, enableErr := o.Enable(ctx, EnableRequest{
 			CountryCode: candidate.CountryCode, ProxyType: proxyType,
 			CandidateID: candidate.ID, CandidateIP: candidate.IP, CandidateLatencyMS: candidate.LatencyMS,
@@ -63,6 +67,7 @@ func (o *Orchestrator) Reconcile(ctx context.Context) ReconcileResult {
 			continue
 		}
 		existing[candidate.ID] = group
+		activeCount++
 		if current, duplicate := byExit[group.ExitIP]; duplicate && current.ID != group.ID {
 			keep, remove := current, group
 			if egressScore(group) < egressScore(current) {
@@ -71,6 +76,7 @@ func (o *Orchestrator) Reconcile(ctx context.Context) ReconcileResult {
 			if disableErr := o.Disable(ctx, remove.ID); disableErr != nil {
 				result.Failed++
 			} else {
+				activeCount--
 				delete(existing, remove.CandidateID)
 				byExit[group.ExitIP] = keep
 			}
@@ -86,6 +92,58 @@ func (o *Orchestrator) Reconcile(ctx context.Context) ReconcileResult {
 		}
 	}
 	return result
+}
+
+// Pool merges the safe Aimili candidate catalog with the bounded set of live
+// groups. Entries beyond live capacity are visible but contain no live-only
+// ports, verified exit IP, or connection material.
+func (o *Orchestrator) Pool(ctx context.Context) ([]domain.ProxyGroup, error) {
+	candidates, err := o.aimili.Candidates(ctx)
+	if err != nil {
+		return nil, operationError(err)
+	}
+	groups, err := o.store.ListProxyGroups(ctx)
+	if err != nil {
+		return nil, &Error{Code: "storage_failed"}
+	}
+	byCandidate := make(map[string]domain.ProxyGroup, len(groups))
+	legacy := make([]domain.ProxyGroup, 0)
+	for _, group := range groups {
+		if strings.TrimSpace(group.CandidateID) == "" {
+			legacy = append(legacy, group)
+			continue
+		}
+		byCandidate[group.CandidateID] = group
+	}
+	result := make([]domain.ProxyGroup, 0, len(candidates)+len(legacy))
+	seen := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		candidate.ID = strings.TrimSpace(candidate.ID)
+		proxyType := domain.ProxyType(candidate.ProxyType)
+		if candidate.ID == "" || candidate.ProbeStatus != "available" || !proxyType.Valid() {
+			continue
+		}
+		seen[candidate.ID] = struct{}{}
+		if group, ok := byCandidate[candidate.ID]; ok {
+			result = append(result, group)
+			continue
+		}
+		standby, identityErr := domain.NewProxyGroupIdentity(candidate.CountryCode, proxyType, candidate.ID)
+		if identityErr != nil {
+			continue
+		}
+		standby.CountryName = candidate.CountryName
+		standby.CandidateIP = candidate.IP
+		standby.CandidateLatencyMS = candidate.LatencyMS
+		standby.Status = domain.ProxyGroupStandby
+		result = append(result, standby)
+	}
+	for candidateID, group := range byCandidate {
+		if _, ok := seen[candidateID]; !ok {
+			result = append(result, group)
+		}
+	}
+	return append(legacy, result...), nil
 }
 
 func (o *Orchestrator) adoptLegacyGroups(ctx context.Context, groups []domain.ProxyGroup, candidates []aimili.Candidate) []domain.ProxyGroup {

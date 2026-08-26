@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 将单代理组闭环升级为全部 AimiliVPN 有效出口同时在线的 VLESS 与 SOCKS5H 资源池，并交付紧凑统一控制台。
+**Goal:** 将单代理组闭环升级为全部 AimiliVPN 有效候选可见、一个出口在线、其余候选按需切换的 VLESS 与 SOCKS5H 资源池，并交付紧凑统一控制台。
 
-**Architecture:** 每个候选出口使用独立 AimiliVPN 槽位、Xray SOCKS 出站、VLESS 入站和 mixed 入站。Gateway 通过版本化 Adapter 协调资源，只有双协议真实验证通过的出口允许复制或导出。
+**Architecture:** 资源池目录合并全部安全候选和当前在线组。512 MiB 生产容量固定为 1；启用待机候选时回收旧组并建立对应 AimiliVPN 槽位、Xray SOCKS 出站、VLESS 入站和 mixed 入站。只有双协议真实验证通过的出口允许复制或导出。
 
 **Tech Stack:** Go 1.26、SQLite、Vue 3、TypeScript、Vite、Vitest、Python 3 标准库、OpenVPN、3x-ui/Xray、Caddy、systemd。
 
@@ -123,7 +123,7 @@
 - [ ] 运行 Vitest 和 `npm run build`。
 - [ ] 提交 `feat: redesign gateway as compact proxy pools`。
 
-### Task 6: 部署、本地验收与 VPS 阶梯部署
+### Task 6: 部署、本地验收与 512 MiB VPS 安全部署
 
 **Files:**
 - Modify: `deploy/config/config.example.json`
@@ -141,7 +141,7 @@
 - [ ] 写失败部署契约测试，要求固定新提交、容量配置且 Aimili 控制端口仍只监听回环。
 - [ ] 更新配置、部署脚本和中文文档，运行三个项目全部测试及构建。
 - [ ] 备份 VPS 当前部署并先以容量 1 验证兼容。
-- [ ] 按 `4 → 8 → 12 → 16 → 更高数量` 提升，每级验证全部代理、DNS、来源拒绝、重启恢复和资源指标。
-- [ ] 失败即回退上一级；没有全部在线证据时不得宣称 A 完成。
+- [ ] 固定容量 1，验证待机候选可见、按需切换、代理、DNS、来源拒绝、重启恢复和资源指标。
+- [ ] 验证 AimiliVPN 串行探测、启动延迟、失败退避和 systemd 资源保护；不在 512 MiB 上扩展常驻槽位。
 - [ ] 写入脱敏验收记录并提交。
 - [ ] 按既定选择本地合并回 Gateway `main` 和 AimiliVPN `custom`。

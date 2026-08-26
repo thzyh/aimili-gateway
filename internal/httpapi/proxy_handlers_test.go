@@ -87,6 +87,23 @@ func TestProxyPoolFiltersAndExposesProtocolLatenciesWithoutSecrets(t *testing.T)
 	}
 }
 
+func TestStandbyCandidateCanBeActivatedOnlyAfterRecentReauthentication(t *testing.T) {
+	manager := &fakeProxyManager{groups: []domain.ProxyGroup{
+		{ID: "agw-kr-res-standby", CountryCode: "KR", CountryName: "韩国", ProxyType: domain.ProxyTypeResidential, Status: domain.ProxyGroupStandby, CandidateLatencyMS: 35, Version: 1},
+	}}
+	environment := newAuthTestEnvironmentConfigured(t, true, func(dependencies *Dependencies) { dependencies.ProxyManager = manager })
+	assertResponseStatus(t, environment.login(t), http.StatusNoContent)
+	csrf := environment.session(t).CSRFToken
+	path := "/api/v1/proxy-groups/agw-kr-res-standby/activate"
+	assertResponseStatus(t, environment.requestWithHeaders(t, http.MethodPost, path, nil, environment.origin, csrf, map[string]string{"Idempotency-Key": "activate-kr"}), http.StatusPreconditionRequired)
+	assertResponseStatus(t, environment.request(t, http.MethodPost, "/api/v1/auth/reauth", map[string]string{"password": "local-only-test-password", "totp": "287082"}, environment.origin, csrf), http.StatusNoContent)
+	response := environment.requestWithHeaders(t, http.MethodPost, path, nil, environment.origin, csrf, map[string]string{"Idempotency-Key": "activate-kr"})
+	assertResponseStatus(t, response, http.StatusOK)
+	if manager.activateCalls != 1 || manager.activatedID != "agw-kr-res-standby" {
+		t.Fatalf("activate calls=%d id=%q", manager.activateCalls, manager.activatedID)
+	}
+}
+
 func TestPoolExportRequiresRecentReauthenticationAndExportsOnlyReadyFilteredRows(t *testing.T) {
 	manager := &fakeProxyManager{groups: []domain.ProxyGroup{
 		{ID: "ready-jp", CountryCode: "JP", ProxyType: domain.ProxyTypeDatacenter, Status: domain.ProxyGroupReady},
@@ -131,14 +148,19 @@ func (e *authTestEnvironment) requestWithHeaders(t *testing.T, method, path stri
 }
 
 type fakeProxyManager struct {
-	enableCalls int
-	groups      []domain.ProxyGroup
+	enableCalls   int
+	activateCalls int
+	activatedID   string
+	groups        []domain.ProxyGroup
 }
 
 func (*fakeProxyManager) Countries(context.Context) ([]orchestrator.Country, error) {
 	return []orchestrator.Country{{Code: "JP", Name: "日本", DatacenterCount: 2}}, nil
 }
 func (m *fakeProxyManager) List(context.Context) ([]domain.ProxyGroup, error) {
+	return append([]domain.ProxyGroup(nil), m.groups...), nil
+}
+func (m *fakeProxyManager) Pool(context.Context) ([]domain.ProxyGroup, error) {
 	return append([]domain.ProxyGroup(nil), m.groups...), nil
 }
 func (m *fakeProxyManager) Enable(_ context.Context, request orchestrator.EnableRequest) (domain.ProxyGroup, error) {
@@ -150,6 +172,11 @@ func (m *fakeProxyManager) Enable(_ context.Context, request orchestrator.Enable
 }
 func (*fakeProxyManager) Check(context.Context, string) (domain.ProxyGroup, error) {
 	return domain.ProxyGroup{}, nil
+}
+func (m *fakeProxyManager) Activate(_ context.Context, id string) (domain.ProxyGroup, error) {
+	m.activateCalls++
+	m.activatedID = id
+	return domain.ProxyGroup{ID: id, CountryCode: "KR", CountryName: "韩国", ProxyType: domain.ProxyTypeResidential, Status: domain.ProxyGroupReady, Version: 2}, nil
 }
 func (*fakeProxyManager) Rotate(context.Context, string) (domain.ProxyGroup, error) {
 	return domain.ProxyGroup{}, nil

@@ -30,7 +30,7 @@ export interface AuthOptionsPayload {
 }
 
 export type ProxyType = 'residential' | 'datacenter'
-export type ProxyGroupStatus = 'provisioning' | 'ready' | 'rotating' | 'degraded' | 'repair_required' | 'disabling'
+export type ProxyGroupStatus = 'standby' | 'provisioning' | 'ready' | 'rotating' | 'degraded' | 'repair_required' | 'disabling'
 
 export interface CountryPayload { code: string; name: string; residentialCount: number; datacenterCount: number }
 export interface ProxyGroupPayload {

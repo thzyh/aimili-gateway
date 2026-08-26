@@ -32,6 +32,66 @@ func TestReconcileCreatesEveryAvailableCandidateEvenWithinOneClassification(t *t
 	}
 }
 
+func TestReconcileLeavesCandidatesBeyondCapacityOnStandby(t *testing.T) {
+	fixture := newFixture()
+	fixture.aimili.candidates = []aimili.Candidate{
+		{ID: "jp-one", CountryCode: "JP", CountryName: "日本", IP: "198.51.100.10", ProxyType: "datacenter", LatencyMS: 21, ProbeStatus: "available"},
+		{ID: "kr-two", CountryCode: "KR", CountryName: "韩国", IP: "198.51.100.11", ProxyType: "residential", LatencyMS: 35, ProbeStatus: "available"},
+	}
+	fixture.aimili.slotsByCandidate = map[string]aimili.Slot{
+		"jp-one": {Number: 0, Country: "JP", CountryName: "日本", ProxyType: "datacenter", Port: 17928, Status: "up", NodeID: "jp-one", ExitIP: "203.0.113.10", EgressOK: true},
+		"kr-two": {Number: 1, Country: "KR", CountryName: "韩国", ProxyType: "residential", Port: 17929, Status: "up", NodeID: "kr-two", ExitIP: "203.0.113.11", EgressOK: true},
+	}
+	orchestrator := fixture.orchestratorWithMax(t, 1)
+
+	result := orchestrator.Reconcile(context.Background())
+	pool, err := orchestrator.Pool(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result.Discovered != 2 || result.Ready != 1 || result.Failed != 0 {
+		t.Fatalf("unexpected capacity-limited result: %#v", result)
+	}
+	if len(pool) != 2 || pool[0].Status != domain.ProxyGroupReady || pool[1].Status != domain.ProxyGroupStandby {
+		t.Fatalf("standby candidate was not retained in the visible pool: %#v", pool)
+	}
+	if pool[0].ID == pool[1].ID || pool[1].ExitIP != "" || pool[1].VLESSPort != 0 || pool[1].MixedPort != 0 {
+		t.Fatalf("standby entry exposed live-only data: %#v", pool[1])
+	}
+}
+
+func TestActivateStandbyCandidateReplacesTheSingleActiveGroup(t *testing.T) {
+	fixture := newFixture()
+	fixture.aimili.candidates = []aimili.Candidate{
+		{ID: "jp-one", CountryCode: "JP", CountryName: "日本", IP: "198.51.100.10", ProxyType: "datacenter", LatencyMS: 21, ProbeStatus: "available"},
+		{ID: "kr-two", CountryCode: "KR", CountryName: "韩国", IP: "198.51.100.11", ProxyType: "residential", LatencyMS: 35, ProbeStatus: "available"},
+	}
+	fixture.aimili.slotsByCandidate = map[string]aimili.Slot{
+		"jp-one": {Number: 0, Country: "JP", CountryName: "日本", ProxyType: "datacenter", Port: 17928, Status: "up", NodeID: "jp-one", ExitIP: "203.0.113.10", EgressOK: true},
+		"kr-two": {Number: 1, Country: "KR", CountryName: "韩国", ProxyType: "residential", Port: 17929, Status: "up", NodeID: "kr-two", ExitIP: "203.0.113.11", EgressOK: true},
+	}
+	orchestrator := fixture.orchestratorWithMax(t, 1)
+	orchestrator.Reconcile(context.Background())
+	standby, _ := domain.NewProxyGroupIdentity("KR", domain.ProxyTypeResidential, "kr-two")
+
+	activated, err := orchestrator.Activate(context.Background(), standby.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	groups, _ := fixture.store.ListProxyGroups(context.Background())
+
+	if activated.CandidateID != "kr-two" || activated.Status != domain.ProxyGroupReady {
+		t.Fatalf("wrong candidate activated: %#v", activated)
+	}
+	if len(groups) != 1 || groups[0].CandidateID != "kr-two" {
+		t.Fatalf("single-active capacity was not enforced: %#v", groups)
+	}
+	if !contains(fixture.calls, "slot.delete") || !contains(fixture.calls, "xui.delete") {
+		t.Fatalf("previous active resources were not retired: %#v", fixture.calls)
+	}
+}
+
 func TestReconcileAdoptsV1BLegacyGroupFromItsExistingSlot(t *testing.T) {
 	fixture := newFixture()
 	fixture.aimili.candidates = []aimili.Candidate{

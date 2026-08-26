@@ -19,6 +19,7 @@ const (
 type ProxyGroupStatus string
 
 const (
+	ProxyGroupStandby        ProxyGroupStatus = "standby"
 	ProxyGroupProvisioning   ProxyGroupStatus = "provisioning"
 	ProxyGroupReady          ProxyGroupStatus = "ready"
 	ProxyGroupRotating       ProxyGroupStatus = "rotating"
@@ -97,7 +98,7 @@ func (t ProxyType) Valid() bool {
 
 func (s ProxyGroupStatus) Valid() bool {
 	switch s {
-	case ProxyGroupProvisioning, ProxyGroupReady, ProxyGroupRotating, ProxyGroupDegraded, ProxyGroupRepairRequired, ProxyGroupDisabling:
+	case ProxyGroupStandby, ProxyGroupProvisioning, ProxyGroupReady, ProxyGroupRotating, ProxyGroupDegraded, ProxyGroupRepairRequired, ProxyGroupDisabling:
 		return true
 	default:
 		return false

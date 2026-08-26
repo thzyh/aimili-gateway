@@ -12,6 +12,8 @@ Environment=GATEWAY_CONFIG=/etc/aimili-gateway/config.json
 Environment=GATEWAY_MASTER_KEY_FILE=%d/gateway-master-key
 Environment=GATEWAY_AIMILI_CONTROL_TOKEN_FILE=%d/aimili-control-token
 Environment=GATEWAY_XUI_CREDENTIALS_FILE=%d/xui-automation
+Environment=GOMEMLIMIT=64MiB
+Environment=GOGC=50
 LoadCredentialEncrypted=gateway-master-key:/etc/credstore.encrypted/aimili-gateway-master-key
 LoadCredential=aimili-control-token:/etc/aimilivpn/control.token
 LoadCredential=xui-automation:/etc/aimili-gateway/xui-automation.json
@@ -22,6 +24,9 @@ Restart=on-failure
 RestartSec=5s
 
 NoNewPrivileges=true
+MemoryHigh=64M
+MemoryMax=96M
+TasksMax=64
 PrivateTmp=true
 PrivateDevices=true
 ProtectSystem=strict

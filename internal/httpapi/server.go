@@ -32,7 +32,9 @@ type Dependencies struct {
 type ProxyManager interface {
 	Countries(context.Context) ([]orchestrator.Country, error)
 	List(context.Context) ([]domain.ProxyGroup, error)
+	Pool(context.Context) ([]domain.ProxyGroup, error)
 	Enable(context.Context, orchestrator.EnableRequest) (domain.ProxyGroup, error)
+	Activate(context.Context, string) (domain.ProxyGroup, error)
 	Check(context.Context, string) (domain.ProxyGroup, error)
 	Rotate(context.Context, string) (domain.ProxyGroup, error)
 	Disable(context.Context, string) error
@@ -98,6 +100,7 @@ func NewServer(dependencies Dependencies) http.Handler {
 	mux.HandleFunc("GET /api/v1/proxy-groups/export", server.handleProxyGroupExport)
 	mux.HandleFunc("POST /api/v1/proxy-groups", server.handleEnableProxyGroup)
 	mux.HandleFunc("POST /api/v1/proxy-groups/reconcile", server.handleReconcileProxyGroups)
+	mux.HandleFunc("POST /api/v1/proxy-groups/{id}/activate", server.handleActivateProxyGroup)
 	mux.HandleFunc("POST /api/v1/proxy-groups/{id}/check", server.handleCheckProxyGroup)
 	mux.HandleFunc("POST /api/v1/proxy-groups/{id}/rotate", server.handleRotateProxyGroup)
 	mux.HandleFunc("DELETE /api/v1/proxy-groups/{id}", server.handleDisableProxyGroup)

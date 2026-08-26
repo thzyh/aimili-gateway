@@ -24,6 +24,7 @@ import VpnPoolView from './VpnPoolView.vue'
 const rows = [
   { id: 'jp-one', countryCode: 'JP', countryName: '日本', proxyType: 'datacenter', status: 'ready', vlessPort: 20000, mixedPort: 30000, exitIp: '203.0.113.10', candidateLatencyMs: 20, vlessLatencyMs: 81, socksLatencyMs: 70, version: 2, lastCheckedAt: '2026-08-26T00:00:00Z' },
   { id: 'kr-one', countryCode: 'KR', countryName: '韩国', proxyType: 'residential', status: 'degraded', vlessPort: 20001, mixedPort: 30001, exitIp: '203.0.113.11', candidateLatencyMs: 30, vlessLatencyMs: 0, socksLatencyMs: 0, version: 2 },
+  { id: 'us-standby', countryCode: 'US', countryName: '美国', proxyType: 'datacenter', status: 'standby', vlessPort: 0, mixedPort: 0, exitIp: '', candidateLatencyMs: 44, vlessLatencyMs: 0, socksLatencyMs: 0, version: 1 },
 ]
 
 beforeEach(() => {
@@ -46,10 +47,21 @@ it('renders a compact pool without service status cards and filters by country',
 
   expect(wrapper.text()).not.toContain('AimiliVPN 正常')
   expect(wrapper.text()).not.toContain('3x-ui 正常')
-  expect(wrapper.findAll('[data-pool-row]')).toHaveLength(2)
+  expect(wrapper.findAll('[data-pool-row]')).toHaveLength(3)
   await wrapper.get('[data-country-filter]').setValue('JP')
   expect(wrapper.findAll('[data-pool-row]')).toHaveLength(1)
   expect(wrapper.text()).toContain('81 ms')
+})
+
+it('activates a standby candidate instead of exposing an unusable address', async () => {
+  const wrapper = mount(VpnPoolView)
+  await flushPromises()
+
+  expect(wrapper.get('[data-copy="us-standby"]').attributes('disabled')).toBeDefined()
+  await wrapper.get('[data-activate="us-standby"]').trigger('click')
+  await flushPromises()
+
+  expect(mocks.apiFetch).toHaveBeenCalledWith('/api/v1/proxy-groups/us-standby/activate', { method: 'POST', headers: { 'Idempotency-Key': 'test-key' } })
 })
 
 it('copies the selected protocol address only for a ready row', async () => {

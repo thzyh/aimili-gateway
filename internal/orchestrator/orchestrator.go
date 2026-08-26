@@ -156,6 +156,61 @@ func (o *Orchestrator) List(ctx context.Context) ([]domain.ProxyGroup, error) {
 	return o.store.ListProxyGroups(ctx)
 }
 
+// Activate switches a standby catalog entry into the bounded live set. At
+// capacity, the oldest live group is retired first. A failed switch attempts
+// to restore that previous group before returning the original error.
+func (o *Orchestrator) Activate(ctx context.Context, id string) (domain.ProxyGroup, error) {
+	unlock := o.locks.lock("activation")
+	defer unlock()
+	candidates, err := o.aimili.Candidates(ctx)
+	if err != nil {
+		return domain.ProxyGroup{}, operationError(err)
+	}
+	var target *aimili.Candidate
+	for index := range candidates {
+		candidate := &candidates[index]
+		proxyType := domain.ProxyType(candidate.ProxyType)
+		if candidate.ProbeStatus != "available" || !proxyType.Valid() || strings.TrimSpace(candidate.ID) == "" {
+			continue
+		}
+		identity, identityErr := domain.NewProxyGroupIdentity(candidate.CountryCode, proxyType, candidate.ID)
+		if identityErr == nil && identity.ID == strings.TrimSpace(id) {
+			target = candidate
+			break
+		}
+	}
+	if target == nil {
+		return domain.ProxyGroup{}, &Error{Code: "not_found"}
+	}
+	groups, err := o.store.ListProxyGroups(ctx)
+	if err != nil {
+		return domain.ProxyGroup{}, &Error{Code: "storage_failed"}
+	}
+	for _, group := range groups {
+		if group.ID == id {
+			return group, nil
+		}
+	}
+	var previous *domain.ProxyGroup
+	if len(groups) >= o.config.MaxGroups {
+		sort.Slice(groups, func(i, j int) bool { return groups[i].UpdatedAt.Before(groups[j].UpdatedAt) })
+		copy := groups[0]
+		previous = &copy
+		if err := o.Disable(ctx, previous.ID); err != nil {
+			return domain.ProxyGroup{}, err
+		}
+	}
+	request := EnableRequest{CountryCode: target.CountryCode, ProxyType: domain.ProxyType(target.ProxyType), CandidateID: target.ID, CandidateIP: target.IP, CandidateLatencyMS: target.LatencyMS}
+	activated, err := o.Enable(ctx, request)
+	if err == nil {
+		return activated, nil
+	}
+	if previous != nil {
+		_, _ = o.Enable(ctx, EnableRequest{CountryCode: previous.CountryCode, ProxyType: previous.ProxyType, CandidateID: previous.CandidateID, CandidateIP: previous.CandidateIP, CandidateLatencyMS: previous.CandidateLatencyMS})
+	}
+	return domain.ProxyGroup{}, err
+}
+
 func (o *Orchestrator) Enable(ctx context.Context, request EnableRequest) (domain.ProxyGroup, error) {
 	var identity domain.ProxyGroup
 	var err error

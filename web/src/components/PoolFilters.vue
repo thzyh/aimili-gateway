@@ -15,7 +15,7 @@ const emit = defineEmits<{ country: [value: string]; proxyType: [value: '' | Pro
       <option value="">全部类型</option><option value="residential">住宅</option><option value="datacenter">机房</option>
     </select>
     <select :value="status" aria-label="状态" @change="emit('status', ($event.target as HTMLSelectElement).value as '' | ProxyGroupStatus)">
-      <option value="">全部状态</option><option value="ready">可用</option><option value="provisioning">创建中</option><option value="degraded">异常</option><option value="repair_required">需要修复</option>
+      <option value="">全部状态</option><option value="standby">待启用</option><option value="ready">可用</option><option value="provisioning">创建中</option><option value="degraded">异常</option><option value="repair_required">需要修复</option>
     </select>
     <select :value="sort" aria-label="排序" @change="emit('sort', ($event.target as HTMLSelectElement).value)">
       <option value="latency">延迟从低到高</option><option value="country">按国家排序</option><option value="updated">最近检测优先</option>
