@@ -1,15 +1,35 @@
 package app
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/thzyh/aimili-gateway/internal/config"
+	"github.com/thzyh/aimili-gateway/internal/orchestrator"
 )
+
+type recordingReconciler struct{ called chan struct{} }
+
+func (r recordingReconciler) Reconcile(context.Context) orchestrator.ReconcileResult {
+	close(r.called)
+	return orchestrator.ReconcileResult{}
+}
+
+func TestInitialReconcileRunsInBackground(t *testing.T) {
+	called := make(chan struct{})
+	startInitialReconcile(t.Context(), recordingReconciler{called: called})
+	select {
+	case <-called:
+	case <-time.After(time.Second):
+		t.Fatal("initial reconciliation did not start")
+	}
+}
 
 func TestNewProvidesHealthHandlerAndClosesIdempotently(t *testing.T) {
 	directory := t.TempDir()

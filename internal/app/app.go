@@ -33,6 +33,10 @@ type App struct {
 	closeErr  error
 }
 
+type initialReconciler interface {
+	Reconcile(context.Context) orchestrator.ReconcileResult
+}
+
 func New(ctx context.Context, cfg config.Config) (*App, error) {
 	cfg = cfg.WithRuntimeDefaults()
 	if err := cfg.Validate(); err != nil {
@@ -78,7 +82,16 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	})
 	mux.Handle("/api/v1/", apiHandler)
 	mux.Handle("/", webassets.Handler())
+	if proxyManager != nil {
+		startInitialReconcile(ctx, proxyManager)
+	}
 	return &App{handler: mux, store: database}, nil
+}
+
+func startInitialReconcile(ctx context.Context, reconciler initialReconciler) {
+	go func() {
+		_ = reconciler.Reconcile(ctx)
+	}()
 }
 
 func newProxyManager(ctx context.Context, cfg config.Config, database *store.Store, masterKey []byte) (*orchestrator.Orchestrator, error) {

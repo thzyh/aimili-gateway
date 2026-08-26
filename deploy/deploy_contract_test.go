@@ -128,6 +128,30 @@ func TestAccountCommandUsesRestrictedTransientUnit(t *testing.T) {
 	}
 }
 
+func TestV1CRemoteDeploymentIsIncrementalAndRollbackSafe(t *testing.T) {
+	script := readAsset(t, "../scripts/deploy-online-pools-v1c-remote.sh")
+	for _, required := range []string{
+		"sha256sum",
+		"bundle verify",
+		"stash push --include-untracked",
+		"merge --ff-only FETCH_HEAD",
+		"Environment=MAX_EXIT_SLOTS=64",
+		`d["maxProxyGroups"] = capacity`,
+		"systemctl restart aimilivpn.service",
+		"systemctl start aimili-gateway.service",
+		"http://127.0.0.1:9080/healthz",
+	} {
+		if !strings.Contains(script, required) {
+			t.Fatalf("V1-C remote deployment missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"reset --hard", "checkout --force", "curl github", "rm -rf /opt/aimilivpn"} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("V1-C remote deployment contains destructive behavior %q", forbidden)
+		}
+	}
+}
+
 func readAsset(t *testing.T, relativePath string) string {
 	t.Helper()
 	contents, err := os.ReadFile(filepath.FromSlash(relativePath))
