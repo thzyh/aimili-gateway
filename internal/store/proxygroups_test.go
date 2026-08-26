@@ -44,10 +44,19 @@ func TestProxyGroupRoundTripAndOptimisticVersion(t *testing.T) {
 		t.Fatalf("unexpected group: %#v", actual)
 	}
 	actual.Status = domain.ProxyGroupReady
+	actual.CandidateID = "candidate-adopted"
+	actual.CandidateIP = "198.51.100.20"
 	actual.ExitIP = "203.0.113.7"
 	actual.UpdatedAt = now.Add(time.Minute)
 	if err := database.UpdateProxyGroup(ctx, actual, 1); err != nil {
 		t.Fatal(err)
+	}
+	updated, err := database.GetProxyGroup(ctx, group.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.CandidateID != "candidate-adopted" || updated.CandidateIP != "198.51.100.20" {
+		t.Fatalf("candidate adoption was not persisted: %#v", updated)
 	}
 	if err := database.UpdateProxyGroup(ctx, actual, 1); !errors.Is(err, ErrProxyGroupChanged) {
 		t.Fatalf("expected optimistic conflict, got %v", err)

@@ -4,13 +4,17 @@ Aimili Gateway 是 AimiliVPN 与 3x-ui 的轻量统一控制台项目。统一�
 
 ## 当前阶段
 
+V1-C 在线资源池正在交付：统一控制台主界面改为“VPN 节点池、SOCKS5H 代理池、高级设置”，移除旧服务状态卡和国家大卡片。Gateway 会为 AimiliVPN 当前可用的每个候选出口建立独立槽位及成对的 VLESS Reality、mixed/SOCKS5H 资源；同一实际出口 IP 只保留协议综合延迟更优的实例。只有双协议真实验证为 `ready` 的记录允许复制或导出。
+
 V1-B 单代理组闭环已于 2026-08-26 完成真实 VPS 端到端验收：在 V1-A 个人单管理员、可选 TOTP、服务端会话和独立 3x-ui 专家模式基础上，增加国家候选目录、住宅/机房分类、AimiliVPN 槽位与 `agw-` Xray 资源编排、VLESS Reality、mixed/SOCKS5H、同类型换 IP、反向补偿和真实协议验证器。验收证据见 `docs/verification/2026-08-26-ny-v1b.md`。
 
-统一控制台页面可执行启用、检测、换 IP、禁用、mixed 来源 CIDR 设置，以及重新认证后的连接信息显示和复制。Gateway 只管理 `agw-` 命名空间；不接管非受管 3x-ui/Xray 资源，也不直接写 `x-ui.db`。
+统一控制台页面可执行资源池筛选、异步刷新、检测、换 IP、mixed 来源 CIDR 设置，以及重新认证后的单条复制和筛选导出。Gateway 只管理 `agw-` 命名空间；不接管非受管 3x-ui/Xray 资源，也不直接写 `x-ui.db`。
 
 ## 重要文件
 
 - `docs/superpowers/specs/2026-08-25-country-proxy-console-design.md`：当前后续设计，定义国家代理目录、VLESS＋mixed 成对编排、容量、安全、统一高级设置和真实出口验收。
+- `docs/superpowers/specs/2026-08-26-online-proxy-pools-design.md`：V1-C 正式设计，定义每候选出口实例、在线双协议资源池、紧凑前端和阶梯容量门槛。
+- `docs/superpowers/plans/2026-08-26-online-proxy-pools-v1c.md`：V1-C 实施与真实 VPS 验收计划。
 - `docs/superpowers/plans/2026-08-25-country-proxy-v1b-single-group.md`：V1-B 单代理组控制面、协议验证与部署验收计划。
 - `docs/superpowers/specs/2026-08-24-unified-console-design.md`：V1-A 历史设计基线；其中未实施的旧 V1-B/V1-C 已被取代。
 - `docs/superpowers/plans/2026-08-24-unified-console-v1a-foundation.md`：单管理员登录、只读探测、统一状态页和专家模式入口。
@@ -67,6 +71,8 @@ sudo aimili-gateway-account
 当前密码使用 Argon2id 单向哈希保存，无法查询或恢复明文，只能重置。随机新密码只在当前终端显示一次；自定义密码采用隐藏输入和二次确认。关闭 Gateway TOTP 后，统一控制台登录页不再显示动态验证码，但 3x-ui 专家模式仍使用 3x-ui 自己的账户和认证设置，两者不是 SSO。
 
 ## 验证
+
+V1-C 本地验证入口为 `scripts/verify-online-pools-v1c.ps1`。生产配置可将 `maxProxyGroups` 设置到 `64`，但它只是代码上限；实际值必须从 1 开始逐级验证，不能把配置上限当作稳定在线数量。
 
 V1-B 的本地验证入口为 `scripts/verify-country-proxy-v1b.ps1`；日常修改至少完成以下检查：
 

@@ -97,6 +97,88 @@ func TestMigrationTwoPreservesExistingTOTP(t *testing.T) {
 	}
 }
 
+func TestMigrationFivePreservesV1BProxyGroupAndOperation(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "gateway.db")
+	database, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ExecContext(ctx, `CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	for _, migration := range []struct {
+		version int
+		name    string
+	}{{3, "003_country_proxy.sql"}, {4, "004_proxy_group_managed_metadata.sql"}} {
+		body, readErr := migrationFiles.ReadFile("migrations/" + migration.name)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if _, execErr := database.ExecContext(ctx, string(body)); execErr != nil {
+			t.Fatal(execErr)
+		}
+		if _, execErr := database.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES(?, 1700000000000)`, migration.version); execErr != nil {
+			t.Fatal(execErr)
+		}
+	}
+	for _, version := range []int{1, 2} {
+		if _, err := database.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES(?, 1700000000000)`, version); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := database.ExecContext(ctx, `
+		INSERT INTO proxy_groups(
+			id, resource_name, country_code, country_name, proxy_type, status,
+			aimili_slot, vless_port, mixed_port, exit_ip, config_fingerprint,
+			last_error_code, recovery_state, version, created_at, updated_at,
+			last_checked_at, last_rotated_at, vless_inbound_id, mixed_inbound_id,
+			reality_public_key, reality_short_id, reality_server_name
+		) VALUES(
+			'agw-jp-dc', 'agw-jp-dc', 'JP', '日本', 'datacenter', 'ready',
+			0, 20000, 30000, '203.0.113.10', 'fingerprint', '', '', 3,
+			1700000000000, 1700000001000, 1700000002000, 1700000003000,
+			11, 12, 'public-key', 'short-id', 'example.test'
+		);
+		INSERT INTO proxy_operations(proxy_group_id, operation, phase, result, started_at, completed_at)
+		VALUES('agw-jp-dc', 'enable', 'complete', 'success', 1700000000000, 1700000003000);
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	opened, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = opened.Close() })
+	var candidateID, publicKey string
+	var version, operationCount int
+	if err := opened.db.QueryRowContext(ctx, `SELECT candidate_id, reality_public_key, version FROM proxy_groups WHERE id = 'agw-jp-dc'`).Scan(&candidateID, &publicKey, &version); err != nil {
+		t.Fatal(err)
+	}
+	if candidateID != "" || publicKey != "public-key" || version != 3 {
+		t.Fatalf("V1-B proxy group changed during migration: candidate=%q publicKey=%q version=%d", candidateID, publicKey, version)
+	}
+	if err := opened.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM proxy_operations WHERE proxy_group_id = 'agw-jp-dc'`).Scan(&operationCount); err != nil {
+		t.Fatal(err)
+	}
+	if operationCount != 1 {
+		t.Fatalf("V1-B operation count = %d", operationCount)
+	}
+	if _, err := opened.db.ExecContext(ctx, `
+		INSERT INTO proxy_groups(
+			id, resource_name, country_code, proxy_type, candidate_id, status,
+			aimili_slot, vless_port, mixed_port, version, created_at, updated_at
+		) VALUES('agw-jp-dc-new', 'agw-jp-dc-new', 'JP', 'datacenter', 'candidate-new',
+			'provisioning', 1, 20001, 30001, 1, 1700000010000, 1700000010000)
+	`); err != nil {
+		t.Fatalf("V1-C schema still rejects a second candidate in one classification: %v", err)
+	}
+}
+
 func TestCreateAdminAllowsDisabledTOTP(t *testing.T) {
 	database := openTestStore(t)
 	now := time.Unix(1_700_000_000, 0).UTC()

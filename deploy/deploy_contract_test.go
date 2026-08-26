@@ -64,8 +64,8 @@ func TestExampleConfigUsesOnlyLoopbackAndPlaceholders(t *testing.T) {
 	if config.ExpertModeURL != "/EXISTING_3X_UI_ROUTE/" || !strings.Contains(config.XUIBaseURL, "EXISTING_3X_UI_BASE_PATH") {
 		t.Fatal("example configuration does not use explicit path placeholders")
 	}
-	if config.AimiliControlURL != "http://127.0.0.1:8790/" || !strings.HasPrefix(config.AimiliControlTokenFile, "/run/credentials/") || !strings.HasPrefix(config.XUICredentialsFile, "/run/credentials/") || config.MaxProxyGroups != 1 || len(config.MixedSourceCIDRs) != 1 {
-		t.Fatal("example configuration is missing the single-group adapter contract")
+	if config.AimiliControlURL != "http://127.0.0.1:8790/" || !strings.HasPrefix(config.AimiliControlTokenFile, "/run/credentials/") || !strings.HasPrefix(config.XUICredentialsFile, "/run/credentials/") || config.MaxProxyGroups != 64 || len(config.MixedSourceCIDRs) != 1 {
+		t.Fatal("example configuration is missing the V1-C online-pool adapter contract")
 	}
 }
 
