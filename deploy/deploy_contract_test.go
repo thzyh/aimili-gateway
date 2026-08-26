@@ -165,6 +165,35 @@ func TestV1CRemoteDeploymentIsIncrementalAndRollbackSafe(t *testing.T) {
 	}
 }
 
+func TestV1CFreshGatewayBootstrapPreservesServiceBoundaries(t *testing.T) {
+	script := readAsset(t, "../scripts/bootstrap-online-pools-v1c-remote.sh")
+	for _, required := range []string{
+		"sha256sum",
+		"id -u aimili-gateway",
+		"systemd-creds encrypt",
+		"install -d -m 0750 -o root -g aimili-gateway /etc/aimili-gateway",
+		"/etc/aimilivpn/control.token",
+		"/etc/aimili-gateway/xui-automation.json",
+		"GATEWAY_CONFIG=/etc/aimili-gateway/config.json",
+		"'/usr/local/bin/aimili-gateway-admin', 'init'",
+		"maxProxyGroups",
+		"127.0.0.1:9080",
+		"reverse_proxy 127.0.0.1:9080",
+		"caddy validate",
+		"systemctl enable --now aimili-gateway.service",
+		"aimili-gateway-account",
+	} {
+		if !strings.Contains(script, required) {
+			t.Fatalf("V1-C fresh bootstrap missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"x-ui.db", "0.0.0.0/0", "::/0", "password=", "Cookie"} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("V1-C fresh bootstrap contains unsafe behavior %q", forbidden)
+		}
+	}
+}
+
 func readAsset(t *testing.T, relativePath string) string {
 	t.Helper()
 	contents, err := os.ReadFile(filepath.FromSlash(relativePath))
