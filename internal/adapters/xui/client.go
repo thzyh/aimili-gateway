@@ -234,6 +234,10 @@ func (c *Client) UpdateManagedGroup(ctx context.Context, desired DesiredGroup, m
 	if len(found) != len(wanted) {
 		return ManagedGroup{}, &AdapterError{Code: "managed_resource_missing"}
 	}
+	publicKey, shortID, serverName, err := c.currentRealityMaterial(ctx, desired, managed)
+	if err != nil {
+		return ManagedGroup{}, err
+	}
 	setting, err := mergeManagedXray(snapshot.XraySetting, desired, managed.VLESSInboundTag, managed.MixedInboundTag)
 	if err != nil {
 		return ManagedGroup{}, err
@@ -242,7 +246,108 @@ func (c *Client) UpdateManagedGroup(ctx context.Context, desired DesiredGroup, m
 		return ManagedGroup{}, err
 	}
 	managed.Fingerprint = fingerprintDesired(desired)
+	managed.PublicKey = publicKey
+	managed.ShortID = shortID
+	managed.ServerName = serverName
 	return managed, nil
+}
+
+type inboundDetail struct {
+	ID             int64  `json:"id"`
+	Tag            string `json:"tag"`
+	Remark         string `json:"remark"`
+	Protocol       string `json:"protocol"`
+	Port           int    `json:"port"`
+	Settings       any    `json:"settings"`
+	StreamSettings any    `json:"streamSettings"`
+}
+
+func (c *Client) currentRealityMaterial(ctx context.Context, desired DesiredGroup, managed ManagedGroup) (string, string, string, error) {
+	details, err := c.inboundDetails(ctx)
+	if err != nil {
+		return "", "", "", err
+	}
+	for _, inbound := range details {
+		if inbound.ID != managed.VLESSInboundID {
+			continue
+		}
+		if inbound.Tag != managed.VLESSInboundTag || inbound.Protocol != "vless" || inbound.Port != desired.VLESSPort || !strings.HasPrefix(inbound.Remark, "Aimili Gateway ") {
+			return "", "", "", &AdapterError{Code: "ownership_conflict"}
+		}
+		settings, ok := decodeObject(inbound.Settings)
+		if !ok {
+			return "", "", "", &AdapterError{Code: "invalid_response"}
+		}
+		clients := asObjectSlice(settings["clients"])
+		if len(clients) != 1 || stringValue(clients[0]["id"]) != desired.VLESSClientID || stringValue(clients[0]["flow"]) != "xtls-rprx-vision" {
+			return "", "", "", &AdapterError{Code: "managed_resource_drift"}
+		}
+		stream, ok := decodeObject(inbound.StreamSettings)
+		if !ok || stringValue(stream["network"]) != "tcp" || stringValue(stream["security"]) != "reality" {
+			return "", "", "", &AdapterError{Code: "managed_resource_drift"}
+		}
+		reality, ok := decodeObject(stream["realitySettings"])
+		if !ok || stringValue(reality["target"]) != desired.RealityTarget {
+			return "", "", "", &AdapterError{Code: "managed_resource_drift"}
+		}
+		serverNames := stringValues(reality["serverNames"])
+		shortIDs := stringValues(reality["shortIds"])
+		clientSettings, ok := decodeObject(reality["settings"])
+		publicKey := stringValue(clientSettings["publicKey"])
+		if !ok || len(serverNames) != 1 || serverNames[0] != desired.RealityServerName || len(shortIDs) != 1 ||
+			!validRealityValue(publicKey, 256) || !validRealityValue(shortIDs[0], 64) {
+			return "", "", "", &AdapterError{Code: "managed_resource_drift"}
+		}
+		return publicKey, shortIDs[0], serverNames[0], nil
+	}
+	return "", "", "", &AdapterError{Code: "managed_resource_missing"}
+}
+
+func (c *Client) inboundDetails(ctx context.Context) ([]inboundDetail, error) {
+	obj, err := c.call(ctx, http.MethodGet, "panel/api/inbounds/list", nil, false)
+	if err != nil {
+		return nil, err
+	}
+	var result []inboundDetail
+	if json.Unmarshal(obj, &result) != nil {
+		return nil, &AdapterError{Code: "invalid_response"}
+	}
+	return result, nil
+}
+
+func decodeObject(value any) (map[string]any, bool) {
+	switch typed := value.(type) {
+	case map[string]any:
+		return typed, typed != nil
+	case string:
+		var result map[string]any
+		if json.Unmarshal([]byte(typed), &result) != nil || result == nil {
+			return nil, false
+		}
+		return result, true
+	default:
+		return nil, false
+	}
+}
+
+func stringValues(value any) []string {
+	raw, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	result := make([]string, 0, len(raw))
+	for _, item := range raw {
+		text, ok := item.(string)
+		if !ok {
+			return nil
+		}
+		result = append(result, text)
+	}
+	return result
+}
+
+func validRealityValue(value string, limit int) bool {
+	return value != "" && len(value) <= limit && value == strings.TrimSpace(value) && !strings.ContainsAny(value, "\x00\r\n")
 }
 
 func (c *Client) rollbackEnsure(ctx context.Context, original map[string]any, probeURL string, tags ...string) error {
@@ -410,13 +515,13 @@ func (c *Client) snapshot(ctx context.Context) (Snapshot, error) {
 }
 
 func (c *Client) inbounds(ctx context.Context) ([]Inbound, error) {
-	obj, err := c.call(ctx, http.MethodGet, "panel/api/inbounds/list", nil, false)
+	details, err := c.inboundDetails(ctx)
 	if err != nil {
 		return nil, err
 	}
-	var result []Inbound
-	if json.Unmarshal(obj, &result) != nil {
-		return nil, &AdapterError{Code: "invalid_response"}
+	result := make([]Inbound, 0, len(details))
+	for _, inbound := range details {
+		result = append(result, Inbound{ID: inbound.ID, Tag: inbound.Tag, Remark: inbound.Remark, Protocol: inbound.Protocol, Port: inbound.Port})
 	}
 	return result, nil
 }

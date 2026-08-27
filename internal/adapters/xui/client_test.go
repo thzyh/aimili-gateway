@@ -289,6 +289,78 @@ func TestUpdateManagedGroupChangesOnlyOwnedRouting(t *testing.T) {
 	}
 }
 
+func TestUpdateManagedGroupReturnsCurrentRealityMaterialFromObjectResponse(t *testing.T) {
+	fixture := &xuiFixture{}
+	client := newXUIFixtureClient(t, fixture)
+	desired := DesiredGroup{
+		ResourceName: "agw-jp-dc", SOCKSPort: 17930, VLESSPort: 20000, MixedPort: 30000,
+		VLESSClientID: "client-id", MixedUsername: "proxy-user", MixedPassword: "proxy-password",
+		MixedSourceRestrictionEnabled: true, MixedSourceCIDRs: []string{"198.51.100.0/24"},
+		RealityTarget: "127.0.0.1:443", RealityServerName: "proxy.example.test",
+	}
+	managed, err := client.EnsureManagedGroup(context.Background(), desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, inbound := range fixture.inbounds {
+		if inbound["protocol"] != "vless" {
+			continue
+		}
+		var stream map[string]any
+		if err := json.Unmarshal([]byte(inbound["streamSettings"].(string)), &stream); err != nil {
+			t.Fatal(err)
+		}
+		reality := stream["realitySettings"].(map[string]any)
+		reality["shortIds"] = []any{"current-short-id"}
+		reality["settings"].(map[string]any)["publicKey"] = "current-public-key"
+		inbound["streamSettings"] = stream
+	}
+
+	updated, err := client.UpdateManagedGroup(context.Background(), desired, managed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.PublicKey != "current-public-key" || updated.ShortID != "current-short-id" || updated.ServerName != "proxy.example.test" {
+		t.Fatalf("current Reality material was not returned: %#v", updated)
+	}
+}
+
+func TestUpdateManagedGroupRejectsRealityClientDriftBeforeChangingRouting(t *testing.T) {
+	fixture := &xuiFixture{}
+	client := newXUIFixtureClient(t, fixture)
+	desired := DesiredGroup{
+		ResourceName: "agw-jp-dc", SOCKSPort: 17930, VLESSPort: 20000, MixedPort: 30000,
+		VLESSClientID: "client-id", MixedUsername: "proxy-user", MixedPassword: "proxy-password",
+		MixedSourceRestrictionEnabled: true, MixedSourceCIDRs: []string{"198.51.100.0/24"},
+		RealityTarget: "127.0.0.1:443", RealityServerName: "proxy.example.test",
+	}
+	managed, err := client.EnsureManagedGroup(context.Background(), desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.updatedXray = nil
+	for _, inbound := range fixture.inbounds {
+		if inbound["protocol"] != "vless" {
+			continue
+		}
+		var settings map[string]any
+		if err := json.Unmarshal([]byte(inbound["settings"].(string)), &settings); err != nil {
+			t.Fatal(err)
+		}
+		settings["clients"].([]any)[0].(map[string]any)["id"] = "different-client"
+		inbound["settings"] = settings
+	}
+
+	_, err = client.UpdateManagedGroup(context.Background(), desired, managed)
+	var adapterError *AdapterError
+	if !errors.As(err, &adapterError) || adapterError.Code != "managed_resource_drift" {
+		t.Fatalf("unexpected drift error: %v", err)
+	}
+	if fixture.updatedXray != nil {
+		t.Fatal("Reality drift changed Xray routing before validation")
+	}
+}
+
 func TestEnsureManagedGroupRejectsSameTagWithoutOwnershipMarker(t *testing.T) {
 	fixture := &xuiFixture{inbounds: []map[string]any{{
 		"id": float64(9), "tag": "agw-jp-dc-vless", "remark": "User inbound", "protocol": "vless", "port": float64(20000),

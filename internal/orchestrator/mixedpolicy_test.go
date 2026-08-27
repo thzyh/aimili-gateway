@@ -115,6 +115,25 @@ func TestRepairManagedReappliesCurrentPolicyOnlyToStoredGroups(t *testing.T) {
 	}
 }
 
+func TestRepairManagedPersistsRealityMaterialReturnedByXUI(t *testing.T) {
+	fixture := newFixture()
+	fixture.store.groups = map[string]domain.ProxyGroup{
+		"agw-jp-dc-a": mixedPolicyGroup("agw-jp-dc-a", 20001, 30001, 1),
+	}
+	fixture.store.policy = store.MixedSourcePolicy{Enabled: true, CIDRs: []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24")}, ApplyStatus: store.MixedPolicyApplied, UpdatedAt: fixture.now()}
+	fixture.xui.returnedPublicKey = "current-public-key"
+	fixture.xui.returnedShortID = "current-short-id"
+	fixture.xui.returnedServerName = "proxy.example.test"
+
+	if err := fixture.orchestrator(t).RepairManaged(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	group := fixture.store.groups["agw-jp-dc-a"]
+	if group.RealityPublicKey != "current-public-key" || group.RealityShortID != "current-short-id" || group.RealityServerName != "proxy.example.test" {
+		t.Fatalf("repaired Reality material was not persisted: %#v", group)
+	}
+}
+
 func mixedPolicyGroups() map[string]domain.ProxyGroup {
 	return map[string]domain.ProxyGroup{
 		"agw-us-res-b": mixedPolicyGroup("agw-us-res-b", 20002, 30002, 2),
