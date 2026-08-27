@@ -13,7 +13,7 @@ fi
 unit_name="aimili-gateway-account-$(date +%s)-$$"
 credential_directory="/run/credentials/${unit_name}.service"
 
-exec /usr/bin/systemd-run \
+if /usr/bin/systemd-run \
     --quiet \
     --wait \
     --collect \
@@ -53,3 +53,8 @@ exec /usr/bin/systemd-run \
     --property=IPAddressDeny=any \
     --property=IPAddressAllow=localhost \
     /usr/local/bin/aimili-gateway-admin account
+then
+    /usr/bin/systemctl try-restart aimili-gateway.service
+else
+    exit $?
+fi

@@ -61,6 +61,7 @@ type Slot struct {
 	CandidateIP string  `json:"candidate_ip"`
 	ExitIP      string  `json:"exit_ip"`
 	EgressOK    bool    `json:"egress_ok"`
+	OK          bool    `json:"ok"`
 	LatencyMS   int     `json:"latency_ms"`
 	CheckedAt   float64 `json:"checked_at"`
 }

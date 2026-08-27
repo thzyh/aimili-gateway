@@ -208,6 +208,7 @@ func TestAccountCommandUsesRestrictedTransientUnit(t *testing.T) {
 		"NoNewPrivileges=yes",
 		"/usr/local/bin/aimili-gateway-admin",
 		"account",
+		"/usr/bin/systemctl try-restart aimili-gateway.service",
 	} {
 		if !strings.Contains(script, required) {
 			t.Fatalf("account command missing %q", required)

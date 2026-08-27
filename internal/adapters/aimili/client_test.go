@@ -77,7 +77,7 @@ func TestClientListsSafeManagedSlots(t *testing.T) {
 			t.Fatalf("unexpected request %s %s", request.Method, request.URL.Path)
 		}
 		response.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(response, `{"data":[{"slot":2,"country":"JP","country_name":"Japan","proxy_type":"residential","port":17930,"status":"up","node_id":"node-safe","candidate_ip":"198.51.100.10","exit_ip":"203.0.113.5","egress_ok":true,"latency_ms":42,"checked_at":1700000000}]}`)
+		fmt.Fprint(response, `{"data":[{"slot":2,"country":"JP","country_name":"Japan","proxy_type":"residential","port":17930,"status":"up","node_id":"node-safe","candidate_ip":"198.51.100.10","exit_ip":"203.0.113.5","egress_ok":true,"ok":true,"latency_ms":42,"checked_at":1700000000}]}`)
 	}))
 	t.Cleanup(server.Close)
 	client, err := NewClient(server.URL+"/", []byte("test-token"))
@@ -88,7 +88,7 @@ func TestClientListsSafeManagedSlots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(slots) != 1 || slots[0].NodeID != "node-safe" {
+	if len(slots) != 1 || slots[0].NodeID != "node-safe" || !slots[0].OK {
 		t.Fatalf("unexpected slots: %#v", slots)
 	}
 }
