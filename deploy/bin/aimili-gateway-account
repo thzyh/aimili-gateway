@@ -10,18 +10,25 @@ if (( EUID != 0 )); then
     exit 1
 fi
 
+unit_name="aimili-gateway-account-$(date +%s)-$$"
+
 exec /usr/bin/systemd-run \
     --quiet \
     --wait \
     --collect \
     --pty \
     --service-type=exec \
+    --unit="$unit_name" \
     --property=User=aimili-gateway \
     --property=Group=aimili-gateway \
     --property=WorkingDirectory=/var/lib/aimili-gateway \
     --property=LoadCredentialEncrypted=gateway-master-key:/etc/credstore.encrypted/aimili-gateway-master-key \
+    --property=LoadCredential=aimili-control-token:/etc/aimilivpn/control.token \
+    --property=LoadCredential=xui-automation:/etc/aimili-gateway/xui-automation.json \
     --setenv=GATEWAY_CONFIG=/etc/aimili-gateway/config.json \
     --setenv=GATEWAY_MASTER_KEY_FILE=%d/gateway-master-key \
+    --setenv=GATEWAY_AIMILI_CONTROL_TOKEN_FILE=%d/aimili-control-token \
+    --setenv=GATEWAY_XUI_CREDENTIALS_FILE=%d/xui-automation \
     --property=UMask=0077 \
     --property=NoNewPrivileges=yes \
     --property=PrivateTmp=yes \
@@ -41,6 +48,7 @@ exec /usr/bin/systemd-run \
     --property=LockPersonality=yes \
     --property=MemoryDenyWriteExecute=yes \
     --property=CapabilityBoundingSet= \
-    --property=RestrictAddressFamilies=AF_UNIX \
+    --property="RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6" \
     --property=IPAddressDeny=any \
+    --property=IPAddressAllow=localhost \
     /usr/local/bin/aimili-gateway-admin account

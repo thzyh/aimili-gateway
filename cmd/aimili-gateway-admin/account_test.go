@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/thzyh/aimili-gateway/internal/accountsync"
 	"github.com/thzyh/aimili-gateway/internal/auth"
 	"github.com/thzyh/aimili-gateway/internal/store"
 )
@@ -25,12 +26,12 @@ func TestAccountMenuShowsOnlyAllowedStatusFields(t *testing.T) {
 		strings.NewReader("1\n0\n"),
 		&output,
 		&bytes.Buffer{},
-		commandDependencies{Now: environment.now, Random: bytes.NewReader(bytes.Repeat([]byte{1}, 64))},
+		commandDependencies{Now: environment.now, Random: bytes.NewReader(bytes.Repeat([]byte{1}, 64)), Synchronizer: newTestAccountSynchronizer(environment)},
 	)
 	if code != 0 {
 		t.Fatalf("exit code = %d", code)
 	}
-	for _, expected := range []string{"owner", "TOTP：已关闭", "账户创建时间", "安全信息更新时间"} {
+	for _, expected := range []string{"owner", "TOTP：已关闭", "三服务同步：等待统一重置", "7. 修复三账户同步", "8. 撤销 Gateway 登录会话"} {
 		if !strings.Contains(output.String(), expected) {
 			t.Fatalf("status output missing %q", expected)
 		}
@@ -54,7 +55,7 @@ func TestAccountMenuGeneratesRandomPasswordOnceAndRevokesSessions(t *testing.T) 
 		strings.NewReader("3\n0\n"),
 		&output,
 		&bytes.Buffer{},
-		commandDependencies{Now: environment.now, Random: bytes.NewReader(randomBytes)},
+		commandDependencies{Now: environment.now, Random: bytes.NewReader(randomBytes), Synchronizer: newTestAccountSynchronizer(environment)},
 	)
 	if code != 0 {
 		t.Fatalf("exit code = %d", code)
@@ -83,10 +84,10 @@ func TestAccountMenuChangesUsernameAndRevokesSessions(t *testing.T) {
 	database.Close()
 	code := runWithDependencies(
 		[]string{"account"},
-		strings.NewReader("2\nrenamed-owner\n0\n"),
+		strings.NewReader("2\nrenamed-owner\nold-local-only-password\n0\n"),
 		&bytes.Buffer{},
 		&bytes.Buffer{},
-		commandDependencies{Now: environment.now, Random: bytes.NewReader(bytes.Repeat([]byte{4}, 64))},
+		commandDependencies{Now: environment.now, Random: bytes.NewReader(bytes.Repeat([]byte{4}, 64)), Synchronizer: newTestAccountSynchronizer(environment)},
 	)
 	if code != 0 {
 		t.Fatalf("exit code = %d", code)
@@ -116,7 +117,7 @@ func TestAccountMenuSetsCustomPasswordWithoutEchoingIt(t *testing.T) {
 		strings.NewReader("4\n"+password+"\n"+password+"\n0\n"),
 		&output,
 		&bytes.Buffer{},
-		commandDependencies{Now: environment.now, Random: bytes.NewReader(bytes.Repeat([]byte{2}, 64))},
+		commandDependencies{Now: environment.now, Random: bytes.NewReader(bytes.Repeat([]byte{2}, 64)), Synchronizer: newTestAccountSynchronizer(environment)},
 	)
 	if code != 0 {
 		t.Fatalf("exit code = %d", code)
@@ -151,7 +152,7 @@ func TestAccountMenuRejectsInvalidCustomPasswords(t *testing.T) {
 				strings.NewReader(input),
 				&bytes.Buffer{},
 				&bytes.Buffer{},
-				commandDependencies{Now: environment.now, Random: bytes.NewReader(bytes.Repeat([]byte{5}, 64))},
+				commandDependencies{Now: environment.now, Random: bytes.NewReader(bytes.Repeat([]byte{5}, 64)), Synchronizer: newTestAccountSynchronizer(environment)},
 			)
 			if code != 0 {
 				t.Fatalf("exit code = %d", code)
@@ -176,7 +177,7 @@ func TestAccountMenuEnablesTOTPOnlyAfterValidNewCode(t *testing.T) {
 		strings.NewReader("5\n287082\n0\n"),
 		&output,
 		&bytes.Buffer{},
-		commandDependencies{Now: func() time.Time { return time.Unix(59, 0).UTC() }, Random: bytes.NewReader(secret)},
+		commandDependencies{Now: func() time.Time { return time.Unix(59, 0).UTC() }, Random: bytes.NewReader(secret), Synchronizer: newTestAccountSynchronizer(environment)},
 	)
 	if code != 0 {
 		t.Fatalf("exit code = %d", code)
@@ -207,7 +208,7 @@ func TestAccountMenuRejectsInvalidTOTPWithoutChangingAccount(t *testing.T) {
 		strings.NewReader("5\n000000\n0\n"),
 		&bytes.Buffer{},
 		&bytes.Buffer{},
-		commandDependencies{Now: func() time.Time { return time.Unix(59, 0).UTC() }, Random: bytes.NewReader([]byte("12345678901234567890"))},
+		commandDependencies{Now: func() time.Time { return time.Unix(59, 0).UTC() }, Random: bytes.NewReader([]byte("12345678901234567890")), Synchronizer: newTestAccountSynchronizer(environment)},
 	)
 	if code != 0 {
 		t.Fatalf("exit code = %d", code)
@@ -227,7 +228,7 @@ func TestAccountMenuDisablesTOTPAndClearsSecret(t *testing.T) {
 		strings.NewReader("6\n关闭 TOTP\n0\n"),
 		&bytes.Buffer{},
 		&bytes.Buffer{},
-		commandDependencies{Now: environment.now, Random: bytes.NewReader(bytes.Repeat([]byte{3}, 64))},
+		commandDependencies{Now: environment.now, Random: bytes.NewReader(bytes.Repeat([]byte{3}, 64)), Synchronizer: newTestAccountSynchronizer(environment)},
 	)
 	if code != 0 {
 		t.Fatalf("exit code = %d", code)
@@ -295,4 +296,59 @@ func reopenAccountAdmin(t *testing.T, environment adminTestEnvironment) store.Ad
 		t.Fatal(err)
 	}
 	return admin
+}
+
+type testAccountSynchronizer struct {
+	environment adminTestEnvironment
+}
+
+func newTestAccountSynchronizer(environment adminTestEnvironment) *testAccountSynchronizer {
+	return &testAccountSynchronizer{environment: environment}
+}
+
+func (s *testAccountSynchronizer) Status(ctx context.Context) (store.AccountSyncState, error) {
+	database, err := store.Open(ctx, s.environment.databasePath)
+	if err != nil {
+		return store.AccountSyncState{}, err
+	}
+	defer database.Close()
+	return database.GetAccountSyncState(ctx)
+}
+
+func (s *testAccountSynchronizer) Change(ctx context.Context, request accountsync.ChangeRequest) error {
+	database, err := store.Open(ctx, s.environment.databasePath)
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	admin, err := database.GetAdmin(ctx)
+	if err != nil {
+		return err
+	}
+	passwordHash, err := auth.HashPassword(request.Password)
+	if err != nil {
+		return err
+	}
+	masterKey, err := os.ReadFile(s.environment.masterKeyPath)
+	if err != nil {
+		return err
+	}
+	usernameCiphertext, passwordCiphertext, err := store.SealUnifiedCredentials(request.Username, request.Password, masterKey)
+	if err != nil {
+		return err
+	}
+	return database.CommitUnifiedCredentialsAndRevokeSessions(ctx, store.UnifiedCredentialUpdate{
+		ExpectedSecurityUpdatedAt: admin.SecurityUpdatedAt,
+		Username:                  request.Username,
+		PasswordHash:              []byte(passwordHash),
+		UsernameCiphertext:        usernameCiphertext,
+		PasswordCiphertext:        passwordCiphertext,
+		UsernameFingerprint:       "test-fingerprint",
+		Status:                    store.AccountSyncSynced,
+		UpdatedAt:                 admin.SecurityUpdatedAt.Add(time.Millisecond),
+	})
+}
+
+func (s *testAccountSynchronizer) Repair(ctx context.Context, request accountsync.ChangeRequest) error {
+	return s.Change(ctx, request)
 }

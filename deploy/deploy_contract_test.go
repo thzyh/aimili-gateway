@@ -114,9 +114,15 @@ func TestAccountCommandUsesRestrictedTransientUnit(t *testing.T) {
 		"User=aimili-gateway",
 		"Group=aimili-gateway",
 		"LoadCredentialEncrypted=gateway-master-key:",
+		"LoadCredential=aimili-control-token:/etc/aimilivpn/control.token",
+		"LoadCredential=xui-automation:/etc/aimili-gateway/xui-automation.json",
 		"GATEWAY_CONFIG=/etc/aimili-gateway/config.json",
 		"GATEWAY_MASTER_KEY_FILE=%d/gateway-master-key",
+		"GATEWAY_AIMILI_CONTROL_TOKEN_FILE=%d/aimili-control-token",
+		"GATEWAY_XUI_CREDENTIALS_FILE=%d/xui-automation",
+		"RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",
 		"IPAddressDeny=any",
+		"IPAddressAllow=localhost",
 		"NoNewPrivileges=yes",
 		"/usr/local/bin/aimili-gateway-admin",
 		"account",
@@ -125,7 +131,10 @@ func TestAccountCommandUsesRestrictedTransientUnit(t *testing.T) {
 			t.Fatalf("account command missing %q", required)
 		}
 	}
-	for _, forbidden := range []string{"bash -c", "sh -c", "eval ", "curl ", "wget ", "$@", "--unit="} {
+	if !strings.Contains(script, `unit_name="aimili-gateway-account-`) || !strings.Contains(script, `--unit="$unit_name"`) {
+		t.Fatal("account command does not use a unique transient unit name")
+	}
+	for _, forbidden := range []string{"bash -c", "sh -c", "eval ", "curl ", "wget ", "$@"} {
 		if strings.Contains(script, forbidden) {
 			t.Fatalf("account command contains unsafe behavior %q", forbidden)
 		}

@@ -15,6 +15,9 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/thzyh/aimili-gateway/internal/accountsync"
+	"github.com/thzyh/aimili-gateway/internal/adapters/aimili"
+	"github.com/thzyh/aimili-gateway/internal/adapters/xui"
 	"github.com/thzyh/aimili-gateway/internal/auth"
 	"github.com/thzyh/aimili-gateway/internal/config"
 	"github.com/thzyh/aimili-gateway/internal/securefile"
@@ -67,12 +70,45 @@ func runWithDependencies(args []string, in io.Reader, out, errOut io.Writer, dep
 		}
 		_, _ = fmt.Fprintln(out, "All gateway sessions have been revoked.")
 	case "account":
+		if dependencies.Synchronizer == nil {
+			dependencies.Synchronizer, err = buildAccountSynchronizer(database, cfg, dependencies.Now)
+			if err != nil {
+				writeCommandError(errOut, "initialize unified account manager", err)
+				return 1
+			}
+		}
 		if err := runAccountMenu(context.Background(), database, cfg.MasterKeyFile, newPromptReader(in), out, dependencies); err != nil {
 			writeCommandError(errOut, "manage administrator", err)
 			return 1
 		}
 	}
 	return 0
+}
+
+func buildAccountSynchronizer(database *store.Store, cfg config.Config, now func() time.Time) (accountSynchronizer, error) {
+	masterKey, err := loadMasterKey(cfg.MasterKeyFile)
+	if err != nil {
+		return nil, err
+	}
+	defer clear(masterKey)
+	token, err := aimili.ReadTokenFile(cfg.AimiliControlTokenFile)
+	if err != nil {
+		return nil, err
+	}
+	defer clear(token)
+	aimiliClient, err := aimili.NewClient(cfg.AimiliControlURL, token)
+	if err != nil {
+		return nil, err
+	}
+	xuiCredentials, err := xui.ReadCredentialsFile(cfg.XUICredentialsFile)
+	if err != nil {
+		return nil, err
+	}
+	xuiClient, err := xui.NewClient(cfg.XUIBaseURL, xuiCredentials)
+	if err != nil {
+		return nil, err
+	}
+	return accountsync.New(database, masterKey, aimiliClient, xuiClient, now)
 }
 
 func initializeAdmin(ctx context.Context, database *store.Store, masterKeyPath string, in io.Reader, out io.Writer, now func() time.Time) error {
