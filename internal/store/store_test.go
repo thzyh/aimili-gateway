@@ -179,6 +179,143 @@ func TestMigrationFivePreservesV1BProxyGroupAndOperation(t *testing.T) {
 	}
 }
 
+func TestMigrationSixInitializesUnifiedAccountAndPreservesMixedRestriction(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "gateway.db")
+	database, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ExecContext(ctx, `CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	for version, name := range []string{
+		"001_initial.sql",
+		"002_optional_totp.sql",
+		"003_country_proxy.sql",
+		"004_proxy_group_managed_metadata.sql",
+		"005_online_egress_pool.sql",
+	} {
+		body, readErr := migrationFiles.ReadFile("migrations/" + name)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if _, execErr := database.ExecContext(ctx, string(body)); execErr != nil {
+			t.Fatalf("apply %s: %v", name, execErr)
+		}
+		if _, execErr := database.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES(?, 1700000000000)`, version+1); execErr != nil {
+			t.Fatal(execErr)
+		}
+	}
+	if _, err := database.ExecContext(ctx, `INSERT INTO mixed_source_cidrs(prefix, created_at) VALUES('198.51.100.0/24', 1700000000000)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	opened, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = opened.Close() })
+	state, err := opened.GetAccountSyncState(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Status != AccountSyncResetRequired || state.ErrorCode != "" {
+		t.Fatalf("initial account sync state = %#v", state)
+	}
+	policy, err := opened.GetMixedSourcePolicy(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !policy.Enabled || len(policy.CIDRs) != 1 || policy.CIDRs[0].String() != "198.51.100.0/24" {
+		t.Fatalf("migrated mixed policy = %#v", policy)
+	}
+	for _, forbidden := range []string{"password", "plaintext"} {
+		rows, queryErr := opened.db.QueryContext(ctx, `SELECT name FROM pragma_table_info('account_sync_state') WHERE lower(name) LIKE '%' || ? || '%'`, forbidden)
+		if queryErr != nil {
+			t.Fatal(queryErr)
+		}
+		if rows.Next() {
+			rows.Close()
+			t.Fatalf("account sync schema contains forbidden %s column", forbidden)
+		}
+		rows.Close()
+	}
+}
+
+func TestCommitUnifiedCredentialsIsAtomicAndRevokesSessions(t *testing.T) {
+	database := openTestStore(t)
+	ctx := context.Background()
+	now := time.Unix(1_700_000_000, 0).UTC()
+	if err := database.CreateAdmin(ctx, Admin{Username: "owner", PasswordHash: []byte("old-hash"), CreatedAt: now, SecurityUpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	session := testSession("unified-account", now)
+	if err := database.CreateSession(ctx, session); err != nil {
+		t.Fatal(err)
+	}
+	key := bytesOf(0x31, 32)
+	usernameCiphertext, err := encryptCredential(UnifiedUsernamePurpose, []byte("renamed"), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	passwordCiphertext, err := encryptCredential(UnifiedPasswordPurpose, []byte("new-password-marker"), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updatedAt := now.Add(time.Minute)
+	err = database.CommitUnifiedCredentialsAndRevokeSessions(ctx, UnifiedCredentialUpdate{
+		ExpectedSecurityUpdatedAt: now,
+		Username:                  "renamed",
+		PasswordHash:              []byte("new-hash"),
+		UsernameCiphertext:        usernameCiphertext,
+		PasswordCiphertext:        passwordCiphertext,
+		UsernameFingerprint:       "fingerprint",
+		Status:                    AccountSyncSynced,
+		UpdatedAt:                 updatedAt,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin, err := database.GetAdmin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if admin.Username != "renamed" || string(admin.PasswordHash) != "new-hash" || !admin.SecurityUpdatedAt.Equal(updatedAt) {
+		t.Fatalf("updated admin = %#v", admin)
+	}
+	if _, err := database.GetSession(ctx, session.TokenHash, updatedAt); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("old session remained usable: %v", err)
+	}
+	for purpose, want := range map[string]string{UnifiedUsernamePurpose: "renamed", UnifiedPasswordPurpose: "new-password-marker"} {
+		got, getErr := database.GetCredential(ctx, purpose, key)
+		if getErr != nil {
+			t.Fatal(getErr)
+		}
+		if string(got) != want {
+			t.Fatalf("%s credential = %q", purpose, got)
+		}
+	}
+	state, err := database.GetAccountSyncState(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Status != AccountSyncSynced || state.UsernameFingerprint != "fingerprint" || !state.LastCheckedAt.Equal(updatedAt) {
+		t.Fatalf("account sync state = %#v", state)
+	}
+}
+
+func bytesOf(value byte, count int) []byte {
+	result := make([]byte, count)
+	for index := range result {
+		result[index] = value
+	}
+	return result
+}
+
 func TestCreateAdminAllowsDisabledTOTP(t *testing.T) {
 	database := openTestStore(t)
 	now := time.Unix(1_700_000_000, 0).UTC()

@@ -166,3 +166,41 @@ func TestMixedCIDRsRejectFullInternetAndRoundTripSpecificNetworks(t *testing.T) 
 		t.Fatalf("CIDR round trip = %#v", actual)
 	}
 }
+
+func TestMixedSourcePolicyCanDisableRestrictionWithNoCIDRs(t *testing.T) {
+	database := openTestStore(t)
+	ctx := context.Background()
+	now := time.Unix(1_700_000_000, 0).UTC()
+	if err := database.ReplaceMixedSourcePolicy(ctx, MixedSourcePolicy{
+		Enabled:     false,
+		ApplyStatus: MixedPolicyApplied,
+		UpdatedAt:   now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	actual, err := database.GetMixedSourcePolicy(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if actual.Enabled || len(actual.CIDRs) != 0 || actual.ApplyStatus != MixedPolicyApplied || !actual.UpdatedAt.Equal(now) {
+		t.Fatalf("disabled policy = %#v", actual)
+	}
+}
+
+func TestMixedSourcePolicyRequiresSpecificCIDRsWhenEnabled(t *testing.T) {
+	database := openTestStore(t)
+	ctx := context.Background()
+	now := time.Unix(1_700_000_000, 0).UTC()
+	for name, prefixes := range map[string][]netip.Prefix{
+		"empty":         nil,
+		"IPv4 internet": {netip.MustParsePrefix("0.0.0.0/0")},
+		"IPv6 internet": {netip.MustParsePrefix("::/0")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := database.ReplaceMixedSourcePolicy(ctx, MixedSourcePolicy{Enabled: true, CIDRs: prefixes, ApplyStatus: MixedPolicyPending, UpdatedAt: now})
+			if err == nil {
+				t.Fatal("invalid enabled policy was accepted")
+			}
+		})
+	}
+}
