@@ -219,6 +219,17 @@ func (c *Client) UpdateAdmin(ctx context.Context, input AdminUpdate) error {
 	return c.do(ctx, c.operationTimeout, http.MethodPut, "control/v1/admin", wire, nil)
 }
 
+func (c *Client) VerifyAdmin(ctx context.Context, input AdminUpdate) error {
+	if strings.TrimSpace(input.Username) == "" || len(input.Password) == 0 {
+		return &AdapterError{Code: "invalid_request"}
+	}
+	wire := struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}{Username: input.Username, Password: string(input.Password)}
+	return c.do(ctx, c.readTimeout, http.MethodPost, "control/v1/admin/verify", wire, nil)
+}
+
 func (c *Client) IssueAdminSession(ctx context.Context) (AdminSession, error) {
 	var wire struct {
 		CookieName   string  `json:"cookieName"`

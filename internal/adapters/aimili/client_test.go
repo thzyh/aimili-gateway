@@ -232,6 +232,30 @@ func TestClientUpdateAdminUsesClosedPUTAndNoContent(t *testing.T) {
 	}
 }
 
+func TestClientVerifyAdminUsesClosedPOSTAndNoContent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || request.URL.Path != "/control/v1/admin/verify" {
+			t.Fatalf("unexpected request %s %s", request.Method, request.URL.Path)
+		}
+		var body map[string]string
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if len(body) != 2 || body["username"] != "owner" || body["password"] != "old-password-marker" {
+			t.Fatalf("verify body = %#v", body)
+		}
+		response.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+	client, err := NewClient(server.URL+"/", []byte("test-token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.VerifyAdmin(context.Background(), AdminUpdate{Username: "owner", Password: []byte("old-password-marker")}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestClientIssueAdminSessionAcceptsOnlyExpectedOpaqueCookie(t *testing.T) {
 	expiresAt := time.Now().UTC().Add(5 * time.Minute).Unix()
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
