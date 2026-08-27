@@ -40,6 +40,43 @@ type UnifiedCredentialUpdate struct {
 	UpdatedAt                 time.Time
 }
 
+type UnifiedCredentials struct {
+	Username string
+	Password []byte
+}
+
+func SealUnifiedCredentials(username string, password, masterKey []byte) ([]byte, []byte, error) {
+	if username == "" || len(password) == 0 {
+		return nil, nil, errors.New("unified credentials are required")
+	}
+	usernameCiphertext, err := encryptCredential(UnifiedUsernamePurpose, []byte(username), masterKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	passwordCiphertext, err := encryptCredential(UnifiedPasswordPurpose, password, masterKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	return usernameCiphertext, passwordCiphertext, nil
+}
+
+func (s *Store) LoadUnifiedCredentials(ctx context.Context, masterKey []byte) (UnifiedCredentials, error) {
+	username, err := s.GetCredential(ctx, UnifiedUsernamePurpose, masterKey)
+	if err != nil {
+		return UnifiedCredentials{}, err
+	}
+	defer clear(username)
+	password, err := s.GetCredential(ctx, UnifiedPasswordPurpose, masterKey)
+	if err != nil {
+		return UnifiedCredentials{}, err
+	}
+	if len(username) == 0 || len(password) == 0 {
+		clear(password)
+		return UnifiedCredentials{}, errors.New("unified credentials are empty")
+	}
+	return UnifiedCredentials{Username: string(username), Password: password}, nil
+}
+
 func (s *Store) GetAccountSyncState(ctx context.Context) (AccountSyncState, error) {
 	var state AccountSyncState
 	var lastCheckedAt int64

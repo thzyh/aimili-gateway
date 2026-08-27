@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -305,6 +306,42 @@ func TestCommitUnifiedCredentialsIsAtomicAndRevokesSessions(t *testing.T) {
 	}
 	if state.Status != AccountSyncSynced || state.UsernameFingerprint != "fingerprint" || !state.LastCheckedAt.Equal(updatedAt) {
 		t.Fatalf("account sync state = %#v", state)
+	}
+}
+
+func TestSealAndLoadUnifiedCredentialsUseIndependentPurposes(t *testing.T) {
+	database := openTestStore(t)
+	ctx := context.Background()
+	key := bytesOf(0x51, 32)
+	usernameCiphertext, passwordCiphertext, err := SealUnifiedCredentials("owner", []byte("password-marker"), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(usernameCiphertext, passwordCiphertext) || bytes.Contains(usernameCiphertext, []byte("owner")) || bytes.Contains(passwordCiphertext, []byte("password-marker")) {
+		t.Fatal("unified credential sealing did not isolate plaintext or purposes")
+	}
+	now := time.Unix(1_700_000_000, 0).UTC()
+	if err := database.CreateAdmin(ctx, Admin{Username: "owner", PasswordHash: []byte("hash"), CreatedAt: now, SecurityUpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.CommitUnifiedCredentialsAndRevokeSessions(ctx, UnifiedCredentialUpdate{
+		ExpectedSecurityUpdatedAt: now,
+		Username:                  "owner",
+		PasswordHash:              []byte("new-hash"),
+		UsernameCiphertext:        usernameCiphertext,
+		PasswordCiphertext:        passwordCiphertext,
+		UsernameFingerprint:       "fingerprint",
+		Status:                    AccountSyncSynced,
+		UpdatedAt:                 now.Add(time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	credentials, err := database.LoadUnifiedCredentials(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if credentials.Username != "owner" || string(credentials.Password) != "password-marker" {
+		t.Fatalf("loaded unified credentials = %#v", credentials)
 	}
 }
 
