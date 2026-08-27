@@ -1,8 +1,16 @@
 # 本片段必须合并到现有 HTTPS site block，不能作为独立 Caddyfile 使用。
 # 保留下方两个标记所代表的现有 handle，并把它们放在 Gateway 路由之前。
 
+handle_path /EXISTING_AIMILIVPN_ROUTE/* {
+    reverse_proxy 127.0.0.1:8787
+}
+
+handle /EXISTING_3X_UI_ROUTE/* {
+    reverse_proxy 127.0.0.1:2001
+}
+
 # EXISTING_3X_UI_EXPERT_ROUTE
-# 将现有 3x-ui 专家模式 handle 原样保留在这里；它继续使用 3x-ui 自身认证。
+# 上方模板必须替换为服务器现有的 3x-ui 精确路径，不能改为通配后台。
 
 # EXISTING_SUBSCRIPTION_ROUTE
 # 将现有订阅 handle 原样保留在这里；不要让 Gateway fallback 覆盖它。

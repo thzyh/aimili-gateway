@@ -101,6 +101,76 @@ func TestCaddyFragmentPreservesExistingRoutesBeforeGatewayFallback(t *testing.T)
 	}
 }
 
+func TestV1DOperationalScriptsAreSecretSafeAndRollbackOrdered(t *testing.T) {
+	preflight := readAsset(t, "bin/aimili-gateway-v1d-preflight")
+	verify := readAsset(t, "bin/aimili-gateway-v1d-verify")
+	backup := readAsset(t, "bin/aimili-gateway-v1d-backup")
+	rollback := readAsset(t, "bin/aimili-gateway-v1d-rollback")
+	for name, script := range map[string]string{"preflight": preflight, "verify": verify, "backup": backup, "rollback": rollback} {
+		if strings.Contains(script, "\r") || !strings.Contains(script, "set -euo pipefail") || strings.Contains(script, "set -x") {
+			t.Fatalf("%s script lacks safe shell contract", name)
+		}
+		for _, forbidden := range []string{"cat /etc/aimili-gateway/config.json", "echo $password", "echo $cookie", "x-ui.db"} {
+			if strings.Contains(strings.ToLower(script), strings.ToLower(forbidden)) {
+				t.Fatalf("%s script contains unsafe behavior %q", name, forbidden)
+			}
+		}
+	}
+	for name, script := range map[string]string{"preflight": preflight, "verify": verify} {
+		for _, forbidden := range []string{
+			`--header "Authorization: Bearer $(`,
+			`--header "Authorization: Bearer ${`,
+		} {
+			if strings.Contains(script, forbidden) {
+				t.Fatalf("%s exposes the control token through curl argv", name)
+			}
+		}
+		for _, required := range []string{"mktemp -d", "chmod 0700", `--header @"$auth_header"`} {
+			if !strings.Contains(script, required) {
+				t.Fatalf("%s does not use a root-only curl header file: missing %q", name, required)
+			}
+		}
+	}
+	for _, required := range []string{"aimili-gateway.service", "aimilivpn.service", "x-ui.service", "caddy.service", "MemAvailable", "SwapTotal", "maxProxyGroups", "control/v1/capabilities", "PASS"} {
+		if !strings.Contains(preflight, required) {
+			t.Fatalf("preflight missing %q", required)
+		}
+	}
+	for _, required := range []string{"aimili-gateway.db", "gateway-master-key", "aimili-ui", "xui-config", "Caddyfile", "sha256sum", "chmod 0700"} {
+		if !strings.Contains(backup, required) {
+			t.Fatalf("backup missing %q", required)
+		}
+	}
+	order := []string{"restore_binary", "restore_config", "restore_database", "start_aimilivpn", "start_xui", "start_gateway", "start_caddy"}
+	last := -1
+	for _, marker := range order {
+		index := strings.Index(rollback, marker)
+		if index <= last {
+			t.Fatalf("rollback marker %q is missing or out of order", marker)
+		}
+		last = index
+	}
+	for _, required := range []string{"/healthz", "control/v1/capabilities", "HTTP", "PASS", "FAIL"} {
+		if !strings.Contains(verify, required) {
+			t.Fatalf("verify missing %q", required)
+		}
+	}
+}
+
+func TestV1DCaddyUsesOnlyFixedBackendSubpaths(t *testing.T) {
+	fragment := readAsset(t, "caddy/AimiliGateway.Caddyfile")
+	for _, required := range []string{"handle_path /EXISTING_AIMILIVPN_ROUTE/*", "reverse_proxy 127.0.0.1:8787", "handle /EXISTING_3X_UI_ROUTE/*", "reverse_proxy 127.0.0.1:2001"} {
+		if !strings.Contains(fragment, required) {
+			t.Fatalf("Caddy fragment missing V1-D route %q", required)
+		}
+	}
+	for _, forbidden := range []string{"basic_auth", "forward_auth"} {
+		if strings.Contains(strings.ToLower(fragment), forbidden) {
+			t.Fatalf("Caddy fragment adds an unsupported auth layer %q", forbidden)
+		}
+	}
+}
+
 func TestAccountCommandUsesRestrictedTransientUnit(t *testing.T) {
 	script := readAsset(t, "bin/aimili-gateway-account")
 	if strings.Contains(script, "\r") {

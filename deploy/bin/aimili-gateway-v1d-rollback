@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+[[ ${EUID:-$(id -u)} -eq 0 ]] || { printf 'FAIL 需要 root 权限\n' >&2; exit 1; }
+backup="${1:-}"
+[[ -n "$backup" && -d "$backup" && "$backup" == /var/backups/aimili-gateway-v1d/* ]] || { printf 'FAIL 回退目录无效\n' >&2; exit 1; }
+(cd "$backup" && sha256sum --check --quiet SHA256SUMS) || { printf 'FAIL 回退点校验失败\n' >&2; exit 1; }
+
+systemctl stop caddy.service aimili-gateway.service x-ui.service aimilivpn.service
+
+restore_binary() { install -m 0755 "$backup/aimili-gateway" /usr/local/bin/aimili-gateway; }
+restore_config() {
+    install -m 0600 "$backup/gateway-config.json" /etc/aimili-gateway/config.json
+    install -m 0600 "$backup/gateway-master-key" /etc/credstore.encrypted/aimili-gateway-master-key
+    install -m 0600 "$backup/aimili-ui" /opt/aimilivpn/vpngate_data/ui_auth.json
+    tar --extract --gzip --file "$backup/xui-config.tar.gz" --directory /etc
+    install -m 0600 "$backup/Caddyfile" /etc/caddy/Caddyfile
+}
+restore_database() { install -o aimili-gateway -g aimili-gateway -m 0600 "$backup/aimili-gateway.db" /var/lib/aimili-gateway/aimili-gateway.db; }
+start_aimilivpn() { systemctl start aimilivpn.service; }
+start_xui() { systemctl start x-ui.service; }
+start_gateway() { systemctl start aimili-gateway.service; }
+start_caddy() { systemctl start caddy.service; }
+
+restore_binary
+restore_config
+restore_database
+start_aimilivpn
+start_xui
+start_gateway
+start_caddy
+printf 'PASS V1-D 回退完成\n'

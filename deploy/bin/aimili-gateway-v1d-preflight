@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+pass() { printf 'PASS %s\n' "$1"; }
+fail() { printf 'FAIL %s\n' "$1" >&2; exit 1; }
+
+[[ ${EUID:-$(id -u)} -eq 0 ]] || fail '需要 root 权限'
+workdir="$(mktemp -d /run/aimili-gateway-v1d-preflight.XXXXXX)"
+chmod 0700 "$workdir"
+cleanup() { rm -rf -- "$workdir"; }
+trap cleanup EXIT
+
+for unit in aimili-gateway.service aimilivpn.service x-ui.service caddy.service; do
+    systemctl is-active --quiet "$unit" || fail "$unit 未运行"
+    pass "$unit active"
+done
+
+memory_available="$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)"
+swap_total="$(awk '/^SwapTotal:/ {print $2}' /proc/meminfo)"
+[[ -n "$memory_available" ]] || fail '无法读取 MemAvailable'
+[[ -n "$swap_total" ]] || fail '无法读取 SwapTotal'
+pass "MemAvailable 已读取"
+pass "SwapTotal 已读取"
+
+config=/etc/aimili-gateway/config.json
+[[ -r "$config" ]] || fail 'Gateway 配置不可读'
+capacity="$(jq -er '.maxProxyGroups' "$config")" || fail '无法读取 maxProxyGroups'
+[[ "$capacity" == 1 ]] || fail 'maxProxyGroups 不是低内存生产值 1'
+pass 'maxProxyGroups=1'
+
+gateway_status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' http://127.0.0.1:9080/healthz)"
+[[ "$gateway_status" == 200 ]] || fail "Gateway health HTTP $gateway_status"
+pass 'Gateway health HTTP 200'
+
+token=/etc/aimilivpn/control.token
+[[ -r "$token" ]] || fail 'AimiliVPN 控制凭据不可读'
+auth_header="$workdir/aimili-control.header"
+printf 'Authorization: Bearer %s\n' "$(<"$token")" >"$auth_header"
+chmod 0600 "$auth_header"
+capability_response="$workdir/capabilities.json"
+capability_status="$(curl --silent --show-error --output "$capability_response" --write-out '%{http_code}' --header @"$auth_header" http://127.0.0.1:8790/control/v1/capabilities)"
+[[ "$capability_status" == 200 ]] || fail "AimiliVPN capabilities HTTP $capability_status"
+jq -e '.data.capabilities | index("admin.update") and index("admin.sessions.issue")' "$capability_response" >/dev/null || fail 'AimiliVPN 账户能力不完整'
+pass 'AimiliVPN control/v1/capabilities compatible'
+
+command -v x-ui >/dev/null || fail '3x-ui 命令不可用'
+x-ui version >/dev/null 2>&1 || fail '3x-ui 版本探测失败'
+pass '3x-ui version readable'
+
+available_kb="$(df -Pk /var/backups | awk 'NR==2 {print $4}')"
+[[ "${available_kb:-0}" -ge 131072 ]] || fail '备份空间不足 128 MiB'
+pass '备份空间充足'

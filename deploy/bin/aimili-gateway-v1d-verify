@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+pass() { printf 'PASS %s\n' "$1"; }
+fail() { printf 'FAIL %s\n' "$1" >&2; exit 1; }
+
+[[ ${EUID:-$(id -u)} -eq 0 ]] || fail '需要 root 权限'
+workdir="$(mktemp -d /run/aimili-gateway-v1d-verify.XXXXXX)"
+chmod 0700 "$workdir"
+cleanup() { rm -rf -- "$workdir"; }
+trap cleanup EXIT
+
+for unit in aimili-gateway.service aimilivpn.service x-ui.service caddy.service; do
+    systemctl is-active --quiet "$unit" || fail "$unit inactive"
+done
+pass '四个独立服务 active'
+
+health_http="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' http://127.0.0.1:9080/healthz)"
+[[ "$health_http" == 200 ]] || fail "health HTTP $health_http"
+pass 'Gateway /healthz HTTP 200'
+
+unauth_http="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' http://127.0.0.1:9080/api/v1/settings/summary)"
+[[ "$unauth_http" == 401 ]] || fail "settings auth boundary HTTP $unauth_http"
+pass 'Settings authentication HTTP 401'
+
+token=/etc/aimilivpn/control.token
+[[ -r "$token" ]] || fail 'AimiliVPN 控制凭据不可读'
+auth_header="$workdir/aimili-control.header"
+printf 'Authorization: Bearer %s\n' "$(<"$token")" >"$auth_header"
+chmod 0600 "$auth_header"
+cap_http="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --header @"$auth_header" http://127.0.0.1:8790/control/v1/capabilities)"
+[[ "$cap_http" == 200 ]] || fail "control/v1/capabilities HTTP $cap_http"
+pass 'AimiliVPN capability HTTP 200'
+
+failed_units="$(systemctl --failed --no-legend --plain | wc -l)"
+[[ "$failed_units" -eq 0 ]] || fail '存在 failed systemd unit'
+pass 'systemd failed units 0'
+
+if journalctl -k --since '-30 min' --no-pager | grep -Eqi 'out of memory|oom-kill|killed process'; then
+    fail '最近 30 分钟发现 OOM'
+fi
+pass '最近 30 分钟无 OOM'

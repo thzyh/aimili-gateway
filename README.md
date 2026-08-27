@@ -8,7 +8,7 @@ V1-C 低内存按需资源池已经完成服务器端验收：统一控制台主
 
 V1-B 单代理组闭环已于 2026-08-26 完成真实 VPS 端到端验收：在 V1-A 个人单管理员、可选 TOTP、服务端会话和独立 3x-ui 专家模式基础上，增加国家候选目录、住宅/机房分类、AimiliVPN 槽位与 `agw-` Xray 资源编排、VLESS Reality、mixed/SOCKS5H、同类型换 IP、反向补偿和真实协议验证器。验收证据见 `docs/verification/2026-08-26-ny-v1b.md`。
 
-2026-08-27 已批准 V1-D 聊天设计，正式文档正在等待最终审核：删除近期安全确认，把 SOCKS5H 来源限制改为开关，增加 Gateway 原生 AimiliVPN/3x-ui 高级页面，并采用“统一凭据＋服务端自动代登录”。在 V1-D 实施前，当前运行版本仍要求近期重新认证和 3x-ui 独立登录。
+V1-D 已按批准设计完成本地实现：删除近期安全确认，把 SOCKS5H 来源限制改为开关，增加 Gateway 原生 AimiliVPN/3x-ui 高级页面，并采用“统一凭据＋服务端自动代登录”。VPS 部署和真实端到端结果以 `docs/verification/2026-08-27-ny-v1d.md` 为准；未在该记录中标为通过的层级仍视为尚未验收。
 
 Gateway 只管理 `agw-` 命名空间；不接管非受管 3x-ui/Xray 资源，也不直接写 `x-ui.db`。
 
@@ -16,7 +16,8 @@ Gateway 只管理 `agw-` 命名空间；不接管非受管 3x-ui/Xray 资源，�
 
 - `docs/superpowers/specs/2026-08-25-country-proxy-console-design.md`：当前后续设计，定义国家代理目录、VLESS＋mixed 成对编排、容量、安全、统一高级设置和真实出口验收。
 - `docs/superpowers/specs/2026-08-26-online-proxy-pools-design.md`：V1-C 正式设计，定义每候选出口实例、在线双协议资源池、紧凑前端和阶梯容量门槛。
-- `docs/superpowers/specs/2026-08-27-advanced-settings-unified-credentials-design.md`：等待最终审核的 V1-D 正式设计，定义高级设置、三账户同步、服务端自动代登录、SOCKS5H 来源开关和状态简化。
+- `docs/superpowers/specs/2026-08-27-advanced-settings-unified-credentials-design.md`：已批准的 V1-D 正式设计，定义高级设置、三账户同步、服务端自动代登录、SOCKS5H 来源开关和状态简化。
+- `docs/superpowers/plans/2026-08-27-advanced-settings-unified-credentials-v1d.md`：V1-D 实施、迁移、回退和真实 VPS 验收计划。
 - `docs/superpowers/plans/2026-08-26-online-proxy-pools-v1c.md`：V1-C 实施与真实 VPS 验收计划。
 - `docs/superpowers/plans/2026-08-25-country-proxy-v1b-single-group.md`：V1-B 单代理组控制面、协议验证与部署验收计划。
 - `docs/superpowers/specs/2026-08-24-unified-console-design.md`：V1-A 历史设计基线；其中未实施的旧 V1-B/V1-C 已被取代。
@@ -25,7 +26,7 @@ Gateway 只管理 `agw-` 命名空间；不接管非受管 3x-ui/Xray 资源，�
 - `docs/superpowers/plans/2026-08-24-unified-console-v1c-3xui-binding.md`：已废止的旧 3x-ui 绑定计划，仅保留历史。
 - `cmd/aimili-gateway`：统一控制台服务进程。
 - `cmd/aimili-gateway-admin`：本地管理员初始化、账户安全管理和会话撤销命令。
-- `web`：Vue 登录页、代理池操作和高级设置入口；当前实现与待实施 V1-D 的差异以正式设计文档为准。
+- `web`：Vue 登录页、代理池操作、紧凑高级设置页和两个原生维护页。
 - `deploy`：示例配置、systemd 单元和待合并的 Caddy 路由片段。
 
 ## 使用方法
@@ -63,15 +64,16 @@ sudo aimili-gateway-account
 
 中文菜单提供以下功能：
 
-1. 查看当前用户名、TOTP 状态和安全信息更新时间。
-2. 修改用户名。
-3. 生成安全随机新密码。
-4. 设置自定义新密码。
-5. 启用或重新登记 TOTP。
-6. 关闭 TOTP。
+1. 查看当前用户名、Gateway TOTP 状态和三个服务的同步状态。
+2. 统一修改用户名。
+3. 生成并应用安全随机新密码。
+4. 设置并应用自定义新密码。
+5. 启用或重新登记 Gateway TOTP。
+6. 关闭 Gateway TOTP。
 7. 撤销全部 Gateway 登录会话。
+8. 使用新密码修复三服务账户同步。
 
-当前已部署命令只修改 Gateway 账户。V1-D 实施后，该命令将成为三服务统一用户名和密码的唯一受支持修改入口，并增加同步状态与修复功能。当前密码使用 Argon2id 单向哈希保存，无法查询或恢复明文，只能重置；V1-D 首次升级需要执行一次统一密码重置才能启用自动代登录。
+V1-D 中该命令是三服务统一用户名和密码的唯一受支持修改入口。密码不能查询或恢复，只能生成随机新密码或设置自定义新密码；首次升级后必须执行一次统一密码重置，自动代登录才会从“等待统一重置”进入可用状态。Gateway TOTP 仍是独立的可选第二因素，不同步到底层后台。
 
 ## 验证
 
@@ -91,6 +93,6 @@ V1-B 的本地验证入口为 `scripts/verify-country-proxy-v1b.ps1`；日常修
 - 后端使用 Go 1.26.x、SQLite 和标准 HTTP 接口；前端依赖版本固定在 `web/package-lock.json`。
 - V1 不重写 AimiliVPN、3x-ui 或 Xray 核心，不把它们合并成单个进程。
 - Gateway 普通页面和由 Gateway 自己实现的 AimiliVPN、3x-ui 高级设置统一使用 Gateway 账户。
-- V1-D 将让三服务使用相同用户名和密码，并由 Gateway 服务端代登录原后台；三个后台仍签发独立会话，因此相同密码、反向代理保护或自动代登录都不是真正 SSO。
+- V1-D 让三服务使用相同用户名和密码，并由 Gateway 服务端代登录原后台；三个后台仍签发独立会话，因此相同密码、反向代理保护或自动代登录都不是真正 SSO。
 - 示例 systemd 单元只允许 Gateway 访问回环网络和自身数据目录，不授予任意命令、systemd、Caddy 或底层数据库修改权限。
 - 部署资产已经在用户授权的 `ny` 测试部署中应用并验证；其他环境仍须单独取得授权、刷新基线并验证。

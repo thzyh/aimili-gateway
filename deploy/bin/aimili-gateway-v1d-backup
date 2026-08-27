@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+[[ ${EUID:-$(id -u)} -eq 0 ]] || { printf 'FAIL 需要 root 权限\n' >&2; exit 1; }
+umask 077
+root=/var/backups/aimili-gateway-v1d
+stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+target="$root/$stamp"
+install -d -m 0700 "$root" "$target"
+chmod 0700 "$target"
+
+install -m 0600 /var/lib/aimili-gateway/aimili-gateway.db "$target/aimili-gateway.db"
+install -m 0600 /etc/credstore.encrypted/aimili-gateway-master-key "$target/gateway-master-key"
+install -m 0600 /opt/aimilivpn/vpngate_data/ui_auth.json "$target/aimili-ui"
+tar --create --gzip --file "$target/xui-config.tar.gz" --directory /etc x-ui
+install -m 0600 /etc/caddy/Caddyfile "$target/Caddyfile"
+install -m 0755 /usr/local/bin/aimili-gateway "$target/aimili-gateway"
+install -m 0600 /etc/aimili-gateway/config.json "$target/gateway-config.json"
+sha256sum "$target"/* >"$target/SHA256SUMS"
+chmod 0600 "$target/SHA256SUMS"
+printf 'PASS V1-D 回退点已创建并校验\n'
