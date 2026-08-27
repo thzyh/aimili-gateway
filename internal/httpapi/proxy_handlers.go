@@ -352,16 +352,24 @@ func prefixStringsForResponse(prefixes []netip.Prefix) []string {
 }
 
 func (s *server) authorizeMutation(response http.ResponseWriter, request *http.Request) (requestSession, bool) {
+	session, ok := s.authorizeSessionMutation(response, request)
+	if !ok {
+		return requestSession{}, false
+	}
+	if s.proxyManager == nil {
+		writeAPIError(response, http.StatusServiceUnavailable, "not_configured")
+		return requestSession{}, false
+	}
+	return session, true
+}
+
+func (s *server) authorizeSessionMutation(response http.ResponseWriter, request *http.Request) (requestSession, bool) {
 	session, ok := s.authenticateOrWrite(response, request)
 	if !ok {
 		return requestSession{}, false
 	}
 	if !s.requireOrigin(request) || !validCSRF(request, session) {
 		writeAPIError(response, http.StatusForbidden, "forbidden")
-		return requestSession{}, false
-	}
-	if s.proxyManager == nil {
-		writeAPIError(response, http.StatusServiceUnavailable, "not_configured")
 		return requestSession{}, false
 	}
 	return session, true

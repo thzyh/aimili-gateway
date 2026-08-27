@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/thzyh/aimili-gateway/internal/adapters"
+	"github.com/thzyh/aimili-gateway/internal/backendlogin"
 	"github.com/thzyh/aimili-gateway/internal/domain"
+	"github.com/thzyh/aimili-gateway/internal/maintenance"
 	"github.com/thzyh/aimili-gateway/internal/orchestrator"
 	"github.com/thzyh/aimili-gateway/internal/store"
 )
@@ -26,6 +28,22 @@ type Dependencies struct {
 	XUIProbe      adapters.Prober
 	ExpertModeURL string
 	ProxyManager  ProxyManager
+	Maintenance   MaintenanceService
+	BackendLogin  BackendLoginService
+}
+
+type MaintenanceService interface {
+	Summary(context.Context) (maintenance.Summary, error)
+	AimiliVPN(context.Context) (maintenance.AimiliSummary, error)
+	RefreshAimiliVPN(context.Context) (maintenance.AimiliSummary, error)
+	CheckAimiliVPN(context.Context) (maintenance.AimiliSummary, error)
+	XUI(context.Context) (maintenance.XUISummary, error)
+	CheckXUI(context.Context) (maintenance.XUISummary, error)
+	RepairXUI(context.Context) (maintenance.XUISummary, error)
+}
+
+type BackendLoginService interface {
+	Login(context.Context, backendlogin.Target) (backendlogin.Session, error)
 }
 
 type ProxyManager interface {
@@ -53,6 +71,8 @@ type server struct {
 	xuiProbe      adapters.Prober
 	expertModeURL string
 	proxyManager  ProxyManager
+	maintenance   MaintenanceService
+	backendLogin  BackendLoginService
 	idempotencyMu sync.Mutex
 	idempotency   map[string]cachedResponse
 }
@@ -85,6 +105,8 @@ func NewServer(dependencies Dependencies) http.Handler {
 		xuiProbe:      dependencies.XUIProbe,
 		expertModeURL: dependencies.ExpertModeURL,
 		proxyManager:  dependencies.ProxyManager,
+		maintenance:   dependencies.Maintenance,
+		backendLogin:  dependencies.BackendLogin,
 		idempotency:   make(map[string]cachedResponse),
 	}
 	mux := http.NewServeMux()
@@ -106,6 +128,15 @@ func NewServer(dependencies Dependencies) http.Handler {
 	mux.HandleFunc("GET /api/v1/proxy-groups/{id}/connections", server.handleConnections)
 	mux.HandleFunc("GET /api/v1/settings/mixed-source-policy", server.handleGetMixedPolicy)
 	mux.HandleFunc("PUT /api/v1/settings/mixed-source-policy", server.handleSetMixedPolicy)
+	mux.HandleFunc("GET /api/v1/settings/summary", server.handleSettingsSummary)
+	mux.HandleFunc("GET /api/v1/settings/aimilivpn", server.handleAimiliSettings)
+	mux.HandleFunc("POST /api/v1/settings/aimilivpn/refresh", server.handleRefreshAimiliSettings)
+	mux.HandleFunc("POST /api/v1/settings/aimilivpn/check", server.handleCheckAimiliSettings)
+	mux.HandleFunc("GET /api/v1/settings/3x-ui", server.handleXUISettings)
+	mux.HandleFunc("POST /api/v1/settings/3x-ui/check", server.handleCheckXUISettings)
+	mux.HandleFunc("POST /api/v1/settings/3x-ui/repair", server.handleRepairXUISettings)
+	mux.HandleFunc("POST /api/v1/backends/aimilivpn/login", server.handleAimiliBackendLogin)
+	mux.HandleFunc("POST /api/v1/backends/3x-ui/login", server.handleXUIBackendLogin)
 	return noStore(mux)
 }
 
