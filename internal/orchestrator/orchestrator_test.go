@@ -272,6 +272,7 @@ type fakeXUI struct {
 	returnedServerName     string
 	returnedVLESSInboundID int64
 	returnedMixedInboundID int64
+	returnedResourceName   string
 }
 
 func (x *fakeXUI) EnsureManagedGroup(_ context.Context, desired xui.DesiredGroup) (xui.ManagedGroup, error) {
@@ -304,6 +305,12 @@ func (x *fakeXUI) UpdateManagedGroup(_ context.Context, desired xui.DesiredGroup
 	}
 	if x.returnedMixedInboundID != 0 {
 		managed.MixedInboundID = x.returnedMixedInboundID
+	}
+	if x.returnedResourceName != "" {
+		managed.ResourceName = x.returnedResourceName
+		managed.VLESSInboundTag = x.returnedResourceName + "-vless"
+		managed.MixedInboundTag = x.returnedResourceName + "-mixed"
+		managed.OutboundTag = x.returnedResourceName + "-socks"
 	}
 	return managed, nil
 }

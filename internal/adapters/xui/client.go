@@ -220,18 +220,23 @@ func (c *Client) UpdateManagedGroup(ctx context.Context, desired DesiredGroup, m
 	if err != nil {
 		return ManagedGroup{}, err
 	}
+	effectiveDesired := desired
+	effectiveDesired.ResourceName = managed.ResourceName
 	publicKey, shortID, serverName, err := c.currentRealityMaterial(ctx, desired, managed)
 	if err != nil {
 		return ManagedGroup{}, err
 	}
-	setting, err := mergeManagedXray(snapshot.XraySetting, desired, managed.VLESSInboundTag, managed.MixedInboundTag)
+	if err := c.verifyCurrentMixedAccount(ctx, desired, managed); err != nil {
+		return ManagedGroup{}, err
+	}
+	setting, err := mergeManagedXray(snapshot.XraySetting, effectiveDesired, managed.VLESSInboundTag, managed.MixedInboundTag)
 	if err != nil {
 		return ManagedGroup{}, err
 	}
 	if err := c.updateXray(ctx, setting, snapshot.OutboundTestURL); err != nil {
 		return ManagedGroup{}, err
 	}
-	managed.Fingerprint = fingerprintDesired(desired)
+	managed.Fingerprint = fingerprintDesired(effectiveDesired)
 	managed.PublicKey = publicKey
 	managed.ShortID = shortID
 	managed.ServerName = serverName
@@ -239,7 +244,7 @@ func (c *Client) UpdateManagedGroup(ctx context.Context, desired DesiredGroup, m
 }
 
 func resolveManagedInboundIDs(inbounds []Inbound, desired DesiredGroup, managed ManagedGroup) (ManagedGroup, error) {
-	var vless, mixed *Inbound
+	var vless, mixed, portVLESS, portMixed *Inbound
 	for index := range inbounds {
 		inbound := &inbounds[index]
 		if inbound.ID == managed.VLESSInboundID && inbound.Tag != managed.VLESSInboundTag {
@@ -260,13 +265,65 @@ func resolveManagedInboundIDs(inbounds []Inbound, desired DesiredGroup, managed 
 			}
 			mixed = inbound
 		}
+		if inbound.Protocol == "vless" && inbound.Port == desired.VLESSPort && strings.HasPrefix(inbound.Remark, "Aimili Gateway ") {
+			if portVLESS != nil {
+				return ManagedGroup{}, &AdapterError{Code: "ownership_conflict"}
+			}
+			portVLESS = inbound
+		}
+		if inbound.Protocol == "mixed" && inbound.Port == desired.MixedPort && strings.HasPrefix(inbound.Remark, "Aimili Gateway ") {
+			if portMixed != nil {
+				return ManagedGroup{}, &AdapterError{Code: "ownership_conflict"}
+			}
+			portMixed = inbound
+		}
 	}
-	if vless == nil || mixed == nil {
+	if vless == nil && mixed == nil {
+		vless, mixed = portVLESS, portMixed
+		if vless == nil || mixed == nil {
+			return ManagedGroup{}, &AdapterError{Code: "managed_resource_missing"}
+		}
+		vlessStem := strings.TrimSuffix(vless.Tag, "-vless")
+		mixedStem := strings.TrimSuffix(mixed.Tag, "-mixed")
+		if vlessStem == vless.Tag || mixedStem == mixed.Tag || vlessStem != mixedStem || !strings.HasPrefix(vlessStem, "agw-") {
+			return ManagedGroup{}, &AdapterError{Code: "ownership_conflict"}
+		}
+		managed.ResourceName = vlessStem
+		managed.VLESSInboundTag = vless.Tag
+		managed.MixedInboundTag = mixed.Tag
+		managed.OutboundTag = vlessStem + "-socks"
+	} else if vless == nil || mixed == nil {
 		return ManagedGroup{}, &AdapterError{Code: "managed_resource_missing"}
 	}
 	managed.VLESSInboundID = vless.ID
 	managed.MixedInboundID = mixed.ID
 	return managed, nil
+}
+
+func (c *Client) verifyCurrentMixedAccount(ctx context.Context, desired DesiredGroup, managed ManagedGroup) error {
+	details, err := c.inboundDetails(ctx)
+	if err != nil {
+		return err
+	}
+	for _, inbound := range details {
+		if inbound.ID != managed.MixedInboundID {
+			continue
+		}
+		if inbound.Tag != managed.MixedInboundTag || inbound.Protocol != "mixed" || inbound.Port != desired.MixedPort || !strings.HasPrefix(inbound.Remark, "Aimili Gateway ") {
+			return &AdapterError{Code: "ownership_conflict"}
+		}
+		settings, ok := decodeObject(inbound.Settings)
+		if !ok {
+			return &AdapterError{Code: "invalid_response"}
+		}
+		accounts := asObjectSlice(settings["accounts"])
+		if stringValue(settings["auth"]) != "password" || len(accounts) != 1 ||
+			stringValue(accounts[0]["user"]) != desired.MixedUsername || stringValue(accounts[0]["pass"]) != desired.MixedPassword {
+			return &AdapterError{Code: "managed_resource_drift"}
+		}
+		return nil
+	}
+	return &AdapterError{Code: "managed_resource_missing"}
 }
 
 type inboundDetail struct {

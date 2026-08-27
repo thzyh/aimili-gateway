@@ -392,6 +392,85 @@ func TestUpdateManagedGroupRebindsMissingStoredIDsToExactOwnedTags(t *testing.T)
 	}
 }
 
+func TestUpdateManagedGroupAdoptsUniqueOwnedPortPairWhenResourceNameDrifts(t *testing.T) {
+	fixture := &xuiFixture{}
+	client := newXUIFixtureClient(t, fixture)
+	desired := DesiredGroup{
+		ResourceName: "agw-jp-dc", SOCKSPort: 17930, VLESSPort: 20000, MixedPort: 30000,
+		VLESSClientID: "client-id", MixedUsername: "proxy-user", MixedPassword: "proxy-password",
+		MixedSourceRestrictionEnabled: true, MixedSourceCIDRs: []string{"198.51.100.0/24"},
+		RealityTarget: "127.0.0.1:443", RealityServerName: "proxy.example.test",
+	}
+	managed, err := client.EnsureManagedGroup(context.Background(), desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, inbound := range fixture.inbounds {
+		switch inbound["protocol"] {
+		case "vless":
+			inbound["id"] = float64(601)
+			inbound["tag"] = "agw-jp-dc-previous-vless"
+		case "mixed":
+			inbound["id"] = float64(602)
+			inbound["tag"] = "agw-jp-dc-previous-mixed"
+		}
+	}
+	for _, outbound := range fixture.updatedXray["outbounds"].([]any) {
+		item := outbound.(map[string]any)
+		if item["tag"] == "agw-jp-dc-socks" {
+			item["tag"] = "agw-jp-dc-previous-socks"
+		}
+	}
+
+	updated, err := client.UpdateManagedGroup(context.Background(), desired, managed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.ResourceName != "agw-jp-dc-previous" || updated.VLESSInboundID != 601 || updated.MixedInboundID != 602 ||
+		updated.VLESSInboundTag != "agw-jp-dc-previous-vless" || updated.MixedInboundTag != "agw-jp-dc-previous-mixed" || updated.OutboundTag != "agw-jp-dc-previous-socks" {
+		t.Fatalf("owned port pair was not adopted: %#v", updated)
+	}
+	if fixture.updatedXray["outbounds"].([]any)[1].(map[string]any)["tag"] != "agw-jp-dc-previous-socks" {
+		t.Fatalf("adoption created a second managed outbound: %#v", fixture.updatedXray["outbounds"])
+	}
+}
+
+func TestUpdateManagedGroupRejectsOwnedPortPairWithDifferentMixedAccount(t *testing.T) {
+	fixture := &xuiFixture{}
+	client := newXUIFixtureClient(t, fixture)
+	desired := DesiredGroup{
+		ResourceName: "agw-jp-dc", SOCKSPort: 17930, VLESSPort: 20000, MixedPort: 30000,
+		VLESSClientID: "client-id", MixedUsername: "proxy-user", MixedPassword: "proxy-password",
+		MixedSourceRestrictionEnabled: true, MixedSourceCIDRs: []string{"198.51.100.0/24"},
+		RealityTarget: "127.0.0.1:443", RealityServerName: "proxy.example.test",
+	}
+	managed, err := client.EnsureManagedGroup(context.Background(), desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.updatedXray = nil
+	for _, inbound := range fixture.inbounds {
+		if inbound["protocol"] != "mixed" {
+			continue
+		}
+		var settings map[string]any
+		if err := json.Unmarshal([]byte(inbound["settings"].(string)), &settings); err != nil {
+			t.Fatal(err)
+		}
+		settings["accounts"].([]any)[0].(map[string]any)["pass"] = "different-password"
+		inbound["settings"] = settings
+	}
+
+	_, err = client.UpdateManagedGroup(context.Background(), desired, managed)
+	var adapterError *AdapterError
+	if !errors.As(err, &adapterError) || adapterError.Code != "managed_resource_drift" {
+		t.Fatalf("unexpected mixed drift error: %v", err)
+	}
+	if fixture.updatedXray != nil {
+		t.Fatal("mixed account drift changed Xray routing before validation")
+	}
+}
+
 func TestEnsureManagedGroupRejectsSameTagWithoutOwnershipMarker(t *testing.T) {
 	fixture := &xuiFixture{inbounds: []map[string]any{{
 		"id": float64(9), "tag": "agw-jp-dc-vless", "remark": "User inbound", "protocol": "vless", "port": float64(20000),

@@ -85,6 +85,7 @@ func (o *Orchestrator) SetMixedPolicy(ctx context.Context, requested store.Mixed
 		updated, updateErr := o.xui.UpdateManagedGroup(ctx, update.desired, update.managed)
 		if updateErr == nil {
 			update.updated = updated
+			update.oldDesired.ResourceName = updated.ResourceName
 			applied = append(applied, update)
 			_, updateErr = o.validateSOCKS(ctx, update.group, credentials)
 		}
@@ -96,6 +97,7 @@ func (o *Orchestrator) SetMixedPolicy(ctx context.Context, requested store.Mixed
 	saved := make([]mixedPolicyUpdate, 0, len(applied))
 	for _, update := range applied {
 		changed := update.group
+		changed.ResourceName = update.updated.ResourceName
 		changed.ConfigFingerprint = update.updated.Fingerprint
 		changed.VLESSInboundID = update.updated.VLESSInboundID
 		changed.MixedInboundID = update.updated.MixedInboundID
