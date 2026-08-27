@@ -8,6 +8,7 @@ import (
 )
 
 const verifiedAdminContract = "v3-update-user"
+const browserSessionCookieName = "3x-ui"
 
 func (c *Client) ProbeAdminCapabilities(ctx context.Context) (AdminCapabilities, error) {
 	if c.credentials.TwoFactorCode != "" {
@@ -84,14 +85,14 @@ func (c *Client) IssueAdminSession(ctx context.Context, credentials Credentials)
 		return BrowserSession{}, err
 	}
 	cookies := client.httpClient.Jar.Cookies(client.baseURL)
-	if len(cookies) != 1 || cookies[0].Name != "session" {
+	if len(cookies) != 1 || cookies[0].Name != browserSessionCookieName {
 		return BrowserSession{}, &AdapterError{Code: "unexpected_cookie"}
 	}
 	value := cookies[0].Value
 	if len(value) < 16 || len(value) > 4096 || strings.ContainsAny(value, "\x00\r\n;,") {
 		return BrowserSession{}, &AdapterError{Code: "invalid_response"}
 	}
-	return BrowserSession{CookieName: "session", Token: []byte(value)}, nil
+	return BrowserSession{CookieName: browserSessionCookieName, Token: []byte(value)}, nil
 }
 
 func (c *Client) isolatedAdminClient(credentials Credentials) (*Client, error) {

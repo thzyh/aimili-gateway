@@ -105,7 +105,7 @@ func (service *Service) Login(ctx context.Context, target Target) (Session, erro
 	}
 	defer clear(credentials.Password)
 	issued, err := service.xui.IssueAdminSession(ctx, xui.Credentials{Username: credentials.Username, Password: string(credentials.Password)})
-	if err != nil || issued.CookieName != "session" || !validToken(issued.Token) {
+	if err != nil || issued.CookieName != "3x-ui" || !validToken(issued.Token) {
 		return Session{}, &Error{Code: "automatic_login_failed"}
 	}
 	return Session{CookieName: issued.CookieName, Token: append([]byte(nil), issued.Token...), Path: service.config.XUIPath, Location: service.config.XUILocation}, nil

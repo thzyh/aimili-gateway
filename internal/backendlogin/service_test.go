@@ -15,7 +15,7 @@ func TestServiceIssuesOnlyFixedBackendSessionsAfterAccountCheck(t *testing.T) {
 	accounts := &fakeAccounts{state: store.AccountSyncState{Status: store.AccountSyncSynced}}
 	credentials := &fakeCredentialStore{value: store.UnifiedCredentials{Username: "owner", Password: []byte("not-returned-password")}}
 	aimiliIssuer := &fakeAimiliIssuer{session: aimili.AdminSession{CookieName: "session", Token: []byte("opaque-aimili-session-token-value"), ExpiresAt: time.Unix(1_700_000_300, 0).UTC()}}
-	xuiIssuer := &fakeXUIIssuer{session: xui.BrowserSession{CookieName: "session", Token: []byte("opaque-xui-session-token")}}
+	xuiIssuer := &fakeXUIIssuer{session: xui.BrowserSession{CookieName: "3x-ui", Token: []byte("opaque-xui-session-token")}}
 	service, err := New(Config{
 		AimiliPath: "/aimili-native-fixture/", AimiliLocation: "/aimili-native-fixture/",
 		XUIPath: "/xui-native-fixture/", XUILocation: "/xui-native-fixture/",
@@ -35,7 +35,7 @@ func TestServiceIssuesOnlyFixedBackendSessionsAfterAccountCheck(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if xuiSession.CookieName != "session" || xuiSession.Path != "/xui-native-fixture/" || xuiSession.Location != "/xui-native-fixture/" || len(xuiSession.Token) == 0 {
+	if xuiSession.CookieName != "3x-ui" || xuiSession.Path != "/xui-native-fixture/" || xuiSession.Location != "/xui-native-fixture/" || len(xuiSession.Token) == 0 {
 		t.Fatalf("3x-ui session = %#v", xuiSession)
 	}
 	if accounts.checkCalls != 2 || aimiliIssuer.calls != 1 || xuiIssuer.calls != 1 || xuiIssuer.username != "owner" || xuiIssuer.password != "not-returned-password" {

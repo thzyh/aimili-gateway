@@ -131,13 +131,13 @@ func TestUpdateAdminUsesVersionedEndpointAndVerifiesNewCredentials(t *testing.T)
 }
 
 func TestIssueAdminSessionReturnsOnlyWhitelistedCookie(t *testing.T) {
-	fixture := &adminXUIFixture{username: "owner", password: "old-password-marker", cookieNames: []string{"session"}}
+	fixture := &adminXUIFixture{username: "owner", password: "old-password-marker", cookieNames: []string{"3x-ui"}}
 	client := newAdminXUIClient(t, fixture)
 	session, err := client.IssueAdminSession(context.Background(), Credentials{Username: "owner", Password: "old-password-marker"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if session.CookieName != "session" || string(session.Token) != "opaque-browser-session" {
+	if session.CookieName != "3x-ui" || string(session.Token) != "opaque-browser-session" {
 		t.Fatalf("browser session = %#v", session)
 	}
 }
