@@ -8,6 +8,7 @@
 	"aimiliControlTokenFile": "/run/credentials/aimili-gateway.service/aimili-control-token",
   "xuiBaseUrl": "http://127.0.0.1:2001/EXISTING_3X_UI_BASE_PATH/",
 	"xuiCredentialsFile": "/run/credentials/aimili-gateway.service/xui-automation",
+	"aimiliBackendUrl": "/EXISTING_AIMILIVPN_ROUTE/",
 	"maxProxyGroups": 64,
 	"vlessPortStart": 20000,
 	"vlessPortEnd": 20999,

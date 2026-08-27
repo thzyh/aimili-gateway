@@ -14,11 +14,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/thzyh/aimili-gateway/internal/accountsync"
 	"github.com/thzyh/aimili-gateway/internal/adapters"
 	"github.com/thzyh/aimili-gateway/internal/adapters/aimili"
 	"github.com/thzyh/aimili-gateway/internal/adapters/xui"
+	"github.com/thzyh/aimili-gateway/internal/backendlogin"
 	"github.com/thzyh/aimili-gateway/internal/config"
 	"github.com/thzyh/aimili-gateway/internal/httpapi"
+	"github.com/thzyh/aimili-gateway/internal/maintenance"
 	"github.com/thzyh/aimili-gateway/internal/orchestrator"
 	"github.com/thzyh/aimili-gateway/internal/securefile"
 	"github.com/thzyh/aimili-gateway/internal/store"
@@ -31,28 +34,87 @@ type App struct {
 	store     *store.Store
 	closeOnce sync.Once
 	closeErr  error
+	cancel    context.CancelFunc
+	driftDone <-chan struct{}
 }
 
 type initialReconciler interface {
 	Reconcile(context.Context) orchestrator.ReconcileResult
 }
 
+type accountChecker interface{ Check(context.Context) error }
+
+func startAccountDriftChecks(ctx context.Context, checker accountChecker, initialDelay, interval time.Duration) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		timer := time.NewTimer(initialDelay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+		_ = checker.Check(ctx)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				_ = checker.Check(ctx)
+			}
+		}
+	}()
+	return done
+}
+
+func migrateLegacyUnifiedCredentials(ctx context.Context, database *store.Store, legacyPath string, masterKey []byte) error {
+	credentials, err := database.LoadUnifiedCredentials(ctx, masterKey)
+	if err == nil {
+		clear(credentials.Password)
+		return nil
+	}
+	if !errors.Is(err, store.ErrCredentialNotFound) {
+		return err
+	}
+	legacy, err := xui.ReadCredentialsFile(legacyPath)
+	if err != nil {
+		return err
+	}
+	password := []byte(legacy.Password)
+	defer clear(password)
+	if err := database.PutCredential(ctx, store.UnifiedUsernamePurpose, []byte(legacy.Username), masterKey); err != nil {
+		return err
+	}
+	if err := database.PutCredential(ctx, store.UnifiedPasswordPurpose, password, masterKey); err != nil {
+		return err
+	}
+	return nil
+}
+
 func New(ctx context.Context, cfg config.Config) (*App, error) {
+	appContext, cancel := context.WithCancel(ctx)
 	cfg = cfg.WithRuntimeDefaults()
 	if err := cfg.Validate(); err != nil {
+		cancel()
 		return nil, err
 	}
 	masterKey, err := securefile.ReadMasterKey(cfg.MasterKeyFile)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 	defer clear(masterKey)
 	database, err := store.Open(ctx, cfg.DatabasePath)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 	xuiProbe, err := newXUIProbe(cfg.XUIBaseURL)
 	if err != nil {
+		cancel()
 		_ = database.Close()
 		return nil, err
 	}
@@ -64,12 +126,15 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		XUIProbe:      xuiProbe,
 		ExpertModeURL: cfg.ExpertModeURL,
 	}
-	proxyManager, err := newProxyManager(ctx, cfg, database, masterKey)
+	runtime, err := newRuntimeServices(appContext, cfg, database, masterKey)
 	if err != nil {
+		cancel()
 		_ = database.Close()
 		return nil, err
 	}
-	dependencies.ProxyManager = proxyManager
+	dependencies.ProxyManager = runtime.proxy
+	dependencies.Maintenance = runtime.maintenance
+	dependencies.BackendLogin = runtime.backendLogin
 	if cfg.PublicOrigin == "" {
 		dependencies.TestOrigin = "http://" + cfg.ListenAddress
 	}
@@ -82,10 +147,14 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	})
 	mux.Handle("/api/v1/", apiHandler)
 	mux.Handle("/", webassets.Handler())
-	if proxyManager != nil {
-		startInitialReconcile(ctx, proxyManager)
+	var driftDone <-chan struct{}
+	if runtime.proxy != nil {
+		startInitialReconcile(appContext, runtime.proxy)
 	}
-	return &App{handler: mux, store: database}, nil
+	if runtime.accounts != nil {
+		driftDone = startAccountDriftChecks(appContext, runtime.accounts, accountCheckInitialDelay(), 6*time.Hour)
+	}
+	return &App{handler: mux, store: database, cancel: cancel, driftDone: driftDone}, nil
 }
 
 func startInitialReconcile(ctx context.Context, reconciler initialReconciler) {
@@ -94,51 +163,95 @@ func startInitialReconcile(ctx context.Context, reconciler initialReconciler) {
 	}()
 }
 
-func newProxyManager(ctx context.Context, cfg config.Config, database *store.Store, masterKey []byte) (*orchestrator.Orchestrator, error) {
+type runtimeServices struct {
+	proxy        *orchestrator.Orchestrator
+	accounts     *accountsync.Coordinator
+	maintenance  *maintenance.Service
+	backendLogin *backendlogin.Service
+}
+
+func newRuntimeServices(ctx context.Context, cfg config.Config, database *store.Store, masterKey []byte) (runtimeServices, error) {
 	tokenExists := regularFileExists(cfg.AimiliControlTokenFile)
-	xuiCredentialsExist := regularFileExists(cfg.XUICredentialsFile)
-	if !tokenExists && !xuiCredentialsExist {
-		return nil, nil
+	legacyCredentialsExist := regularFileExists(cfg.XUICredentialsFile)
+	if !tokenExists && !legacyCredentialsExist {
+		return runtimeServices{}, nil
 	}
-	if tokenExists != xuiCredentialsExist {
-		return nil, errors.New("Aimili control token and 3x-ui automation credentials must be configured together")
+	if !tokenExists {
+		return runtimeServices{}, errors.New("Aimili control token is required when legacy 3x-ui credentials exist")
+	}
+	if legacyCredentialsExist {
+		if err := migrateLegacyUnifiedCredentials(ctx, database, cfg.XUICredentialsFile, masterKey); err != nil {
+			return runtimeServices{}, err
+		}
 	}
 	token, err := aimili.ReadTokenFile(cfg.AimiliControlTokenFile)
 	if err != nil {
-		return nil, err
+		return runtimeServices{}, err
 	}
 	aimiliClient, err := aimili.NewClient(cfg.AimiliControlURL, token)
 	clear(token)
 	if err != nil {
-		return nil, err
+		return runtimeServices{}, err
 	}
-	xuiCredentials, err := xui.ReadCredentialsFile(cfg.XUICredentialsFile)
+	unified, err := database.LoadUnifiedCredentials(ctx, masterKey)
 	if err != nil {
-		return nil, err
+		return runtimeServices{}, errors.New("unified credentials are not initialized")
 	}
+	defer clear(unified.Password)
+	xuiCredentials := xui.Credentials{Username: unified.Username, Password: string(unified.Password)}
 	xuiClient, err := xui.NewClient(cfg.XUIBaseURL, xuiCredentials)
 	if err != nil {
-		return nil, err
+		return runtimeServices{}, err
 	}
 	if err := ensureRuntimeCredentials(ctx, database, masterKey); err != nil {
-		return nil, err
+		return runtimeServices{}, err
 	}
 	if err := seedMixedCIDRs(ctx, database, cfg.MixedSourceCIDRs); err != nil {
-		return nil, err
+		return runtimeServices{}, err
 	}
 	publicHost := "localhost"
 	if cfg.PublicOrigin != "" {
 		parsed, parseErr := url.Parse(cfg.PublicOrigin)
 		if parseErr != nil || parsed.Hostname() == "" {
-			return nil, errors.New("resolve public proxy host")
+			return runtimeServices{}, errors.New("resolve public proxy host")
 		}
 		publicHost = parsed.Hostname()
 	}
-	return orchestrator.New(orchestrator.Config{
+	proxy, err := orchestrator.New(orchestrator.Config{
 		MaxGroups: cfg.MaxProxyGroups, VLESSPortStart: cfg.VLESSPortStart, VLESSPortEnd: cfg.VLESSPortEnd,
 		MixedPortStart: cfg.MixedPortStart, MixedPortEnd: cfg.MixedPortEnd, PublicHost: publicHost,
 		XrayPath: cfg.XrayPath, ProbeHost: cfg.ProbeHost,
 	}, database, aimiliClient, xuiClient, validator.New(20*time.Second), masterKey)
+	if err != nil {
+		return runtimeServices{}, err
+	}
+	accounts, err := accountsync.New(database, masterKey, aimiliClient, xuiClient, time.Now)
+	if err != nil {
+		return runtimeServices{}, err
+	}
+	maintenanceService, err := maintenance.New(maintenance.Config{MaxOnline: cfg.MaxProxyGroups}, aimiliClient, xuiClient, proxy, accounts)
+	if err != nil {
+		return runtimeServices{}, err
+	}
+	result := runtimeServices{proxy: proxy, accounts: accounts, maintenance: maintenanceService}
+	if cfg.AimiliBackendURL != "" && cfg.ExpertModeURL != "" {
+		result.backendLogin, err = backendlogin.New(backendlogin.Config{
+			AimiliPath: cfg.AimiliBackendURL, AimiliLocation: cfg.AimiliBackendURL,
+			XUIPath: cfg.ExpertModeURL, XUILocation: cfg.ExpertModeURL,
+		}, accounts, database, aimiliClient, xuiClient, masterKey)
+		if err != nil {
+			return runtimeServices{}, err
+		}
+	}
+	return result, nil
+}
+
+func accountCheckInitialDelay() time.Duration {
+	raw := make([]byte, 1)
+	if _, err := rand.Read(raw); err != nil {
+		return time.Minute
+	}
+	return time.Duration(30+int(raw[0])%91) * time.Second
 }
 
 func regularFileExists(path string) bool {
@@ -220,6 +333,12 @@ func (a *App) Close() error {
 		return nil
 	}
 	a.closeOnce.Do(func() {
+		if a.cancel != nil {
+			a.cancel()
+		}
+		if a.driftDone != nil {
+			<-a.driftDone
+		}
 		if a.store != nil {
 			a.closeErr = a.store.Close()
 		}

@@ -98,6 +98,23 @@ func TestSetMixedPolicyMarksRepairRequiredWhenRollbackFails(t *testing.T) {
 	}
 }
 
+func TestRepairManagedReappliesCurrentPolicyOnlyToStoredGroups(t *testing.T) {
+	fixture := newFixture()
+	fixture.store.groups = mixedPolicyGroups()
+	fixture.store.policy = store.MixedSourcePolicy{Enabled: true, CIDRs: []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24")}, ApplyStatus: store.MixedPolicyApplied, UpdatedAt: fixture.now()}
+	if err := fixture.orchestratorWithMax(t, 2).RepairManaged(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !equalStrings(fixture.xui.updateNames, []string{"agw-jp-dc-a", "agw-us-res-b"}) || fixture.validator.socksCalls != 2 {
+		t.Fatalf("updates=%#v validations=%d", fixture.xui.updateNames, fixture.validator.socksCalls)
+	}
+	for _, group := range fixture.store.groups {
+		if group.ConfigFingerprint != "new-"+group.ID {
+			t.Fatalf("group was not repaired: %#v", group)
+		}
+	}
+}
+
 func mixedPolicyGroups() map[string]domain.ProxyGroup {
 	return map[string]domain.ProxyGroup{
 		"agw-us-res-b": mixedPolicyGroup("agw-us-res-b", 20002, 30002, 2),

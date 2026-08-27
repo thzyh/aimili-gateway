@@ -31,6 +31,7 @@ type Config struct {
 	AimiliControlTokenFile string   `json:"aimiliControlTokenFile"`
 	XUIBaseURL             string   `json:"xuiBaseUrl"`
 	XUICredentialsFile     string   `json:"xuiCredentialsFile"`
+	AimiliBackendURL       string   `json:"aimiliBackendUrl"`
 	ExpertModeURL          string   `json:"expertModeUrl"`
 	MaxProxyGroups         int      `json:"maxProxyGroups"`
 	VLESSPortStart         int      `json:"vlessPortStart"`
@@ -130,8 +131,14 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.XUICredentialsFile) == "" {
 		return errors.New("xuiCredentialsFile is required")
 	}
-	if err := validateExpertModeURL(c.ExpertModeURL); err != nil {
+	if err := validateBackendURL("aimiliBackendUrl", c.AimiliBackendURL); err != nil {
 		return err
+	}
+	if err := validateBackendURL("expertModeUrl", c.ExpertModeURL); err != nil {
+		return err
+	}
+	if (c.AimiliBackendURL == "") != (c.ExpertModeURL == "") {
+		return errors.New("aimiliBackendUrl and expertModeUrl must be configured together")
 	}
 	if c.MaxProxyGroups < 1 || c.MaxProxyGroups > 64 || c.VLESSPortStart < 1 || c.VLESSPortEnd > 65535 ||
 		c.VLESSPortEnd < c.VLESSPortStart || c.MixedPortStart < 1 || c.MixedPortEnd > 65535 || c.MixedPortEnd < c.MixedPortStart ||
@@ -197,6 +204,7 @@ func applyEnvironment(cfg *Config) {
 		{name: "GATEWAY_AIMILI_CONTROL_TOKEN_FILE", target: &cfg.AimiliControlTokenFile},
 		{name: "GATEWAY_XUI_BASE_URL", target: &cfg.XUIBaseURL},
 		{name: "GATEWAY_XUI_CREDENTIALS_FILE", target: &cfg.XUICredentialsFile},
+		{name: "GATEWAY_AIMILI_BACKEND_URL", target: &cfg.AimiliBackendURL},
 		{name: "GATEWAY_EXPERT_MODE_URL", target: &cfg.ExpertModeURL},
 		{name: "GATEWAY_XRAY_PATH", target: &cfg.XrayPath},
 		{name: "GATEWAY_PROBE_HOST", target: &cfg.ProbeHost},
@@ -261,16 +269,16 @@ func validateLoopbackURL(field, value string) error {
 	return nil
 }
 
-func validateExpertModeURL(value string) error {
+func validateBackendURL(field, value string) error {
 	if value == "" {
 		return nil
 	}
 	parsed, err := url.ParseRequestURI(value)
 	if err != nil || !strings.HasPrefix(value, "/") || parsed.IsAbs() || parsed.Host != "" {
-		return errors.New("expertModeUrl must be a relative absolute-path reference")
+		return fmt.Errorf("%s must be a relative absolute-path reference", field)
 	}
-	if parsed.RawQuery != "" || parsed.Fragment != "" {
-		return errors.New("expertModeUrl must not include query or fragment")
+	if parsed.RawQuery != "" || parsed.Fragment != "" || strings.HasPrefix(value, "//") || !strings.HasSuffix(value, "/") {
+		return fmt.Errorf("%s must be an exact directory path without query or fragment", field)
 	}
 	return nil
 }

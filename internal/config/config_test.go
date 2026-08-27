@@ -113,6 +113,34 @@ func TestValidateRequiresExactHTTPSPublicOrigin(t *testing.T) {
 	}
 }
 
+func TestValidateAcceptsOnlyFixedSameOriginBackendPaths(t *testing.T) {
+	cfg := validProductionConfig()
+	cfg.AimiliBackendURL = "/aimili-native/"
+	cfg.ExpertModeURL = "/xui-native/"
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"https://evil.invalid/", "//evil.invalid/", "/native/?target=bad", "/native"} {
+		candidate := cfg
+		candidate.AimiliBackendURL = value
+		if err := candidate.Validate(); err == nil {
+			t.Fatalf("unsafe backend path accepted: %q", value)
+		}
+	}
+}
+
+func TestValidateRequiresBackendPathsAsAPair(t *testing.T) {
+	cfg := validProductionConfig()
+	cfg.AimiliBackendURL = ""
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("partial backend path configuration was accepted")
+	}
+	cfg.ExpertModeURL = ""
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("fully disabled backend login rejected: %v", err)
+	}
+}
+
 func TestLoadRejectsUnknownJSONFields(t *testing.T) {
 	clearConfigEnvironment(t)
 	dir := t.TempDir()
@@ -178,6 +206,7 @@ func validProductionConfig() Config {
 		XUIBaseURL:             "http://127.0.0.1:2001/",
 		XUICredentialsFile:     filepath.FromSlash("data/xui-automation.json"),
 		ExpertModeURL:          "/expert/",
+		AimiliBackendURL:       "/aimili-native/",
 	}.WithRuntimeDefaults()
 }
 
@@ -194,6 +223,7 @@ func clearConfigEnvironment(t *testing.T) {
 		"GATEWAY_XUI_BASE_URL",
 		"GATEWAY_XUI_CREDENTIALS_FILE",
 		"GATEWAY_EXPERT_MODE_URL",
+		"GATEWAY_AIMILI_BACKEND_URL",
 	} {
 		t.Setenv(name, "")
 	}

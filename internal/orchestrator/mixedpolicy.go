@@ -27,6 +27,14 @@ func (o *Orchestrator) MixedPolicy(ctx context.Context) (store.MixedSourcePolicy
 	return policy, nil
 }
 
+func (o *Orchestrator) RepairManaged(ctx context.Context) error {
+	policy, err := o.store.GetMixedSourcePolicy(ctx)
+	if err != nil {
+		return &Error{Code: "storage_failed"}
+	}
+	return o.SetMixedPolicy(ctx, policy)
+}
+
 func (o *Orchestrator) SetMixedPolicy(ctx context.Context, requested store.MixedSourcePolicy) error {
 	desired, err := canonicalMixedPolicy(requested)
 	if err != nil {

@@ -12,6 +12,7 @@ import (
 
 	"github.com/thzyh/aimili-gateway/internal/config"
 	"github.com/thzyh/aimili-gateway/internal/orchestrator"
+	"github.com/thzyh/aimili-gateway/internal/store"
 )
 
 type recordingReconciler struct{ called chan struct{} }
@@ -31,6 +32,62 @@ func TestInitialReconcileRunsInBackground(t *testing.T) {
 	}
 }
 
+func TestLegacyXUICredentialsMigrateToEncryptedUnifiedCredentialsWithoutChangingResetState(t *testing.T) {
+	directory := t.TempDir()
+	database, err := store.Open(t.Context(), filepath.Join(directory, "gateway.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	path := filepath.Join(directory, "xui-automation.json")
+	if err := os.WriteFile(path, []byte(`{"username":"legacy-owner","password":"legacy-password-marker"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	key := []byte("01234567890123456789012345678901")
+	if err := migrateLegacyUnifiedCredentials(t.Context(), database, path, key); err != nil {
+		t.Fatal(err)
+	}
+	credentials, err := database.LoadUnifiedCredentials(t.Context(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clear(credentials.Password)
+	if credentials.Username != "legacy-owner" || string(credentials.Password) != "legacy-password-marker" {
+		t.Fatal("legacy credentials did not migrate")
+	}
+	state, err := database.GetAccountSyncState(t.Context())
+	if err != nil || state.Status != store.AccountSyncResetRequired {
+		t.Fatalf("sync state = %#v err=%v", state, err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal("migration removed rollback input before deployment verification")
+	}
+}
+
+func TestAccountDriftChecksRunAfterInitialDelayAndStopWithContext(t *testing.T) {
+	checker := &recordingAccountChecker{called: make(chan struct{}, 2)}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := startAccountDriftChecks(ctx, checker, time.Millisecond, 5*time.Millisecond)
+	select {
+	case <-checker.called:
+	case <-time.After(time.Second):
+		t.Fatal("account drift check did not run")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("account drift checker did not stop")
+	}
+}
+
+type recordingAccountChecker struct{ called chan struct{} }
+
+func (checker *recordingAccountChecker) Check(context.Context) error {
+	checker.called <- struct{}{}
+	return nil
+}
+
 func TestNewProvidesHealthHandlerAndClosesIdempotently(t *testing.T) {
 	directory := t.TempDir()
 	masterKeyPath := filepath.Join(directory, "master.key")
@@ -47,6 +104,7 @@ func TestNewProvidesHealthHandlerAndClosesIdempotently(t *testing.T) {
 		AimiliControlTokenFile: filepath.Join(directory, "aimili-control.token"),
 		XUIBaseURL:             "http://127.0.0.1:2001/panel-fixture/",
 		XUICredentialsFile:     filepath.Join(directory, "xui-automation.json"),
+		AimiliBackendURL:       "/aimili-fixture/",
 		ExpertModeURL:          "/expert-fixture/",
 	})
 	if err != nil {
