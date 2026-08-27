@@ -138,6 +138,24 @@ func TestRepairManagedPersistsRealityMaterialReturnedByXUI(t *testing.T) {
 	}
 }
 
+func TestRepairManagedValidatesAndPersistsTheFreshAimiliExit(t *testing.T) {
+	fixture := newFixture()
+	group := mixedPolicyGroup("agw-jp-dc-a", 20001, 30001, 1)
+	group.ExitIP = "203.0.113.6"
+	fixture.store.groups = map[string]domain.ProxyGroup{group.ID: group}
+	fixture.store.policy = store.MixedSourcePolicy{Enabled: true, CIDRs: []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24")}, ApplyStatus: store.MixedPolicyApplied, UpdatedAt: fixture.now()}
+
+	if err := fixture.orchestrator(t).RepairManaged(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !equalStrings(fixture.validator.socksExpectedIPs, []string{"203.0.113.7"}) {
+		t.Fatalf("SOCKS validation did not use the fresh Aimili exit: %#v", fixture.validator.socksExpectedIPs)
+	}
+	if stored := fixture.store.groups[group.ID]; stored.ExitIP != "203.0.113.7" {
+		t.Fatalf("fresh Aimili exit was not persisted: %#v", stored)
+	}
+}
+
 func mixedPolicyGroups() map[string]domain.ProxyGroup {
 	return map[string]domain.ProxyGroup{
 		"agw-us-res-b": mixedPolicyGroup("agw-us-res-b", 20002, 30002, 2),

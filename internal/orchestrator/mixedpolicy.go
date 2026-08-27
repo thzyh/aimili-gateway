@@ -13,6 +13,7 @@ import (
 
 type mixedPolicyUpdate struct {
 	group      domain.ProxyGroup
+	original   domain.ProxyGroup
 	managed    xui.ManagedGroup
 	desired    xui.DesiredGroup
 	oldDesired xui.DesiredGroup
@@ -65,9 +66,11 @@ func (o *Orchestrator) SetMixedPolicy(ctx context.Context, requested store.Mixed
 		if checkErr != nil || !slot.EgressOK || slot.Port < 1 || net.ParseIP(slot.ExitIP) == nil {
 			return &Error{Code: "egress_unavailable"}
 		}
+		original := group
+		group.ExitIP = slot.ExitIP
 		managed := managedFromGroup(group)
 		updates = append(updates, mixedPolicyUpdate{
-			group: group, managed: managed,
+			group: group, original: original, managed: managed,
 			desired:    o.desiredGroup(group, slot.Port, credentials, desired),
 			oldDesired: o.desiredGroup(group, slot.Port, credentials, oldPolicy),
 		})
@@ -131,7 +134,7 @@ func (o *Orchestrator) failMixedPolicyUpdate(ctx context.Context, oldPolicy, des
 	}
 	for index := len(saved) - 1; index >= 0; index-- {
 		update := saved[index]
-		restored := update.group
+		restored := update.original
 		restored.Version++
 		restored.UpdatedAt = o.config.Now().UTC()
 		if err := o.save(ctx, &restored); err != nil {

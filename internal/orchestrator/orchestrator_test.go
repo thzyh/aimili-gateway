@@ -316,15 +316,17 @@ func (x *fakeXUI) UpdateManagedGroup(_ context.Context, desired xui.DesiredGroup
 }
 
 type fakeValidator struct {
-	calls       *[]string
-	vlessError  error
-	socksCalls  int
-	socksErrors []error
+	calls            *[]string
+	vlessError       error
+	socksCalls       int
+	socksErrors      []error
+	socksExpectedIPs []string
 }
 
-func (v *fakeValidator) ValidateSOCKS5H(context.Context, validator.SOCKSTarget) (validator.Result, error) {
+func (v *fakeValidator) ValidateSOCKS5H(_ context.Context, target validator.SOCKSTarget) (validator.Result, error) {
 	*v.calls = append(*v.calls, "validate.socks")
 	v.socksCalls++
+	v.socksExpectedIPs = append(v.socksExpectedIPs, target.ExpectedExitIP)
 	if v.socksCalls <= len(v.socksErrors) && v.socksErrors[v.socksCalls-1] != nil {
 		return validator.Result{}, v.socksErrors[v.socksCalls-1]
 	}
