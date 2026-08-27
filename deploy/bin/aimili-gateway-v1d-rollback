@@ -8,7 +8,25 @@ backup="${1:-}"
 
 systemctl stop caddy.service aimili-gateway.service x-ui.service aimilivpn.service
 
-restore_binary() { install -m 0755 "$backup/aimili-gateway" /usr/local/bin/aimili-gateway; }
+restore_binary() {
+    install -m 0755 "$backup/aimili-gateway" /usr/local/bin/aimili-gateway
+    install -m 0755 "$backup/aimili-gateway-admin" /usr/local/bin/aimili-gateway-admin
+}
+restore_service_assets() {
+    install -m 0755 "$backup/aimili-gateway-account" /usr/local/sbin/aimili-gateway-account
+    install -m 0644 "$backup/aimili-gateway.service" /etc/systemd/system/aimili-gateway.service
+}
+restore_aimilivpn_checkout() {
+    local workdir branch head
+    workdir="$(systemctl show -p WorkingDirectory --value aimilivpn.service)"
+    branch="$(<"$backup/aimilivpn-git-branch")"
+    head="$(<"$backup/aimilivpn-git-head")"
+    [[ "$workdir" == /opt/aimilivpn* && -d "$workdir/.git" && "$head" =~ ^[0-9a-f]{40}$ ]] || return 1
+    git check-ref-format --branch "$branch" >/dev/null
+    git -C "$workdir" cat-file -e "$head^{commit}"
+    git -C "$workdir" checkout "$branch" >/dev/null
+    [[ "$(git -C "$workdir" rev-parse HEAD)" == "$head" ]]
+}
 restore_config() {
     install -m 0600 "$backup/gateway-config.json" /etc/aimili-gateway/config.json
     install -m 0600 "$backup/gateway-master-key" /etc/credstore.encrypted/aimili-gateway-master-key
@@ -17,14 +35,18 @@ restore_config() {
     install -m 0600 "$backup/Caddyfile" /etc/caddy/Caddyfile
 }
 restore_database() { install -o aimili-gateway -g aimili-gateway -m 0600 "$backup/aimili-gateway.db" /var/lib/aimili-gateway/aimili-gateway.db; }
+daemon_reload() { systemctl daemon-reload; }
 start_aimilivpn() { systemctl start aimilivpn.service; }
 start_xui() { systemctl start x-ui.service; }
 start_gateway() { systemctl start aimili-gateway.service; }
 start_caddy() { systemctl start caddy.service; }
 
 restore_binary
+restore_service_assets
+restore_aimilivpn_checkout
 restore_config
 restore_database
+daemon_reload
 start_aimilivpn
 start_xui
 start_gateway

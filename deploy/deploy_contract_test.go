@@ -136,12 +136,20 @@ func TestV1DOperationalScriptsAreSecretSafeAndRollbackOrdered(t *testing.T) {
 			t.Fatalf("preflight missing %q", required)
 		}
 	}
-	for _, required := range []string{"aimili-gateway.db", "gateway-master-key", "aimili-ui", "xui-config", "Caddyfile", "sha256sum", "chmod 0700"} {
+	for _, required := range []string{
+		"aimili-gateway.db", "gateway-master-key", "aimili-ui", "xui-config", "Caddyfile",
+		"aimili-gateway-admin", "aimili-gateway-account", "aimili-gateway.service",
+		"aimilivpn-git-branch", "aimilivpn-git-head", "sha256sum", "chmod 0700",
+	} {
 		if !strings.Contains(backup, required) {
 			t.Fatalf("backup missing %q", required)
 		}
 	}
-	order := []string{"restore_binary", "restore_config", "restore_database", "start_aimilivpn", "start_xui", "start_gateway", "start_caddy"}
+	order := []string{
+		"restore_binary", "restore_service_assets", "restore_aimilivpn_checkout",
+		"restore_config", "restore_database", "daemon_reload",
+		"start_aimilivpn", "start_xui", "start_gateway", "start_caddy",
+	}
 	last := -1
 	for _, marker := range order {
 		index := strings.Index(rollback, marker)
@@ -149,6 +157,9 @@ func TestV1DOperationalScriptsAreSecretSafeAndRollbackOrdered(t *testing.T) {
 			t.Fatalf("rollback marker %q is missing or out of order", marker)
 		}
 		last = index
+	}
+	if strings.Contains(rollback, "git reset") {
+		t.Fatal("rollback must not rewrite the recorded AimiliVPN branch")
 	}
 	for _, required := range []string{"/healthz", "control/v1/capabilities", "HTTP", "PASS", "FAIL"} {
 		if !strings.Contains(verify, required) {

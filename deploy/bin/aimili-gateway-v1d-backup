@@ -15,7 +15,25 @@ install -m 0600 /opt/aimilivpn/vpngate_data/ui_auth.json "$target/aimili-ui"
 tar --create --gzip --file "$target/xui-config.tar.gz" --directory /etc x-ui
 install -m 0600 /etc/caddy/Caddyfile "$target/Caddyfile"
 install -m 0755 /usr/local/bin/aimili-gateway "$target/aimili-gateway"
+install -m 0755 /usr/local/bin/aimili-gateway-admin "$target/aimili-gateway-admin"
+install -m 0755 /usr/local/sbin/aimili-gateway-account "$target/aimili-gateway-account"
+install -m 0644 /etc/systemd/system/aimili-gateway.service "$target/aimili-gateway.service"
 install -m 0600 /etc/aimili-gateway/config.json "$target/gateway-config.json"
+
+aimili_workdir="$(systemctl show -p WorkingDirectory --value aimilivpn.service)"
+[[ "$aimili_workdir" == /opt/aimilivpn* && -d "$aimili_workdir/.git" ]] || {
+    printf 'FAIL AimiliVPN 工作树无效\n' >&2
+    exit 1
+}
+aimili_branch="$(git -C "$aimili_workdir" branch --show-current)"
+aimili_head="$(git -C "$aimili_workdir" rev-parse HEAD)"
+[[ -n "$aimili_branch" && "$aimili_head" =~ ^[0-9a-f]{40}$ ]] || {
+    printf 'FAIL AimiliVPN Git 状态不可回退\n' >&2
+    exit 1
+}
+printf '%s\n' "$aimili_branch" >"$target/aimilivpn-git-branch"
+printf '%s\n' "$aimili_head" >"$target/aimilivpn-git-head"
+chmod 0600 "$target/aimilivpn-git-branch" "$target/aimilivpn-git-head"
 sha256sum "$target"/* >"$target/SHA256SUMS"
 chmod 0600 "$target/SHA256SUMS"
 printf 'PASS V1-D 回退点已创建并校验\n'
