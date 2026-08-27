@@ -67,6 +67,22 @@ type Slot struct {
 
 type SlotCheck = Slot
 
+type AdminStatus struct {
+	Username      string `json:"username"`
+	TOTPSupported bool   `json:"totpSupported"`
+}
+
+type AdminUpdate struct {
+	Username string
+	Password []byte
+}
+
+type AdminSession struct {
+	CookieName string
+	Token      []byte
+	ExpiresAt  time.Time
+}
+
 type AdapterError struct {
 	Code string
 }
@@ -179,6 +195,52 @@ func (c *Client) CheckSlot(ctx context.Context, slot int) (SlotCheck, error) {
 
 func (c *Client) DeleteSlot(ctx context.Context, slot int) error {
 	return c.do(ctx, c.readTimeout, http.MethodDelete, fmt.Sprintf("control/v1/slots/%d", slot), nil, nil)
+}
+
+func (c *Client) AdminStatus(ctx context.Context) (AdminStatus, error) {
+	var result AdminStatus
+	if err := c.do(ctx, c.readTimeout, http.MethodGet, "control/v1/admin", nil, &result); err != nil {
+		return AdminStatus{}, err
+	}
+	if strings.TrimSpace(result.Username) == "" || len(result.Username) > 64 {
+		return AdminStatus{}, &AdapterError{Code: "invalid_response"}
+	}
+	return result, nil
+}
+
+func (c *Client) UpdateAdmin(ctx context.Context, input AdminUpdate) error {
+	if strings.TrimSpace(input.Username) == "" || len(input.Password) == 0 {
+		return &AdapterError{Code: "invalid_request"}
+	}
+	wire := struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}{Username: input.Username, Password: string(input.Password)}
+	return c.do(ctx, c.operationTimeout, http.MethodPut, "control/v1/admin", wire, nil)
+}
+
+func (c *Client) IssueAdminSession(ctx context.Context) (AdminSession, error) {
+	var wire struct {
+		CookieName   string  `json:"cookieName"`
+		SessionToken string  `json:"sessionToken"`
+		ExpiresAt    float64 `json:"expiresAt"`
+	}
+	if err := c.do(ctx, c.readTimeout, http.MethodPost, "control/v1/admin/sessions", struct{}{}, &wire); err != nil {
+		return AdminSession{}, err
+	}
+	if wire.CookieName != "session" || len(wire.SessionToken) < 32 || len(wire.SessionToken) > 1024 || wire.ExpiresAt <= 0 {
+		return AdminSession{}, &AdapterError{Code: "invalid_response"}
+	}
+	for _, character := range wire.SessionToken {
+		if character <= 0x20 || character == 0x7f || character == ';' || character == ',' {
+			return AdminSession{}, &AdapterError{Code: "invalid_response"}
+		}
+	}
+	return AdminSession{
+		CookieName: wire.CookieName,
+		Token:      []byte(wire.SessionToken),
+		ExpiresAt:  time.Unix(int64(wire.ExpiresAt), 0).UTC(),
+	}, nil
 }
 
 func (c *Client) do(ctx context.Context, timeout time.Duration, method, path string, input, output any) error {

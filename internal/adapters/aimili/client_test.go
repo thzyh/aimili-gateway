@@ -183,6 +183,98 @@ func TestClientRejectsNonLoopbackURLAndEmptyToken(t *testing.T) {
 	}
 }
 
+func TestClientAdminStatusUsesBearerAndClosedResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet || request.URL.Path != "/control/v1/admin" {
+			t.Fatalf("unexpected request %s %s", request.Method, request.URL.Path)
+		}
+		if request.Header.Get("Authorization") != "Bearer test-token" {
+			t.Fatal("missing control bearer token")
+		}
+		fmt.Fprint(response, `{"data":{"username":"owner","totpSupported":false}}`)
+	}))
+	t.Cleanup(server.Close)
+	client, err := NewClient(server.URL+"/", []byte("test-token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := client.AdminStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Username != "owner" || status.TOTPSupported {
+		t.Fatalf("admin status = %#v", status)
+	}
+}
+
+func TestClientUpdateAdminUsesClosedPUTAndNoContent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPut || request.URL.Path != "/control/v1/admin" {
+			t.Fatalf("unexpected request %s %s", request.Method, request.URL.Path)
+		}
+		var body map[string]string
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if len(body) != 2 || body["username"] != "renamed" || body["password"] != "new-password-marker" {
+			t.Fatalf("admin update body = %#v", body)
+		}
+		response.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+	client, err := NewClient(server.URL+"/", []byte("test-token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	password := []byte("new-password-marker")
+	if err := client.UpdateAdmin(context.Background(), AdminUpdate{Username: "renamed", Password: password}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestClientIssueAdminSessionAcceptsOnlyExpectedOpaqueCookie(t *testing.T) {
+	expiresAt := time.Now().UTC().Add(5 * time.Minute).Unix()
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || request.URL.Path != "/control/v1/admin/sessions" {
+			t.Fatalf("unexpected request %s %s", request.Method, request.URL.Path)
+		}
+		fmt.Fprintf(response, `{"data":{"cookieName":"session","sessionToken":"opaque-session-token-with-enough-entropy","expiresAt":%d}}`, expiresAt)
+	}))
+	t.Cleanup(server.Close)
+	client, err := NewClient(server.URL+"/", []byte("test-token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := client.IssueAdminSession(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.CookieName != "session" || string(session.Token) != "opaque-session-token-with-enough-entropy" || session.ExpiresAt.Unix() != expiresAt {
+		t.Fatalf("admin session = %#v", session)
+	}
+}
+
+func TestClientIssueAdminSessionRejectsUnknownCookieAndFields(t *testing.T) {
+	for name, body := range map[string]string{
+		"unknown cookie": `{"data":{"cookieName":"other","sessionToken":"opaque-session-token-with-enough-entropy","expiresAt":1700000300}}`,
+		"unknown field":  `{"data":{"cookieName":"session","sessionToken":"opaque-session-token-with-enough-entropy","expiresAt":1700000300,"secret_path":"forbidden"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+				fmt.Fprint(response, body)
+			}))
+			t.Cleanup(server.Close)
+			client, err := NewClient(server.URL+"/", []byte("test-token"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := client.IssueAdminSession(context.Background()); err == nil {
+				t.Fatal("invalid admin session was accepted")
+			}
+		})
+	}
+}
+
 func TestReadTokenFileReturnsTrimmedSecretAndRejectsEmptyFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "control.token")
 	if err := os.WriteFile(path, []byte("file-token\n"), 0o600); err != nil {
