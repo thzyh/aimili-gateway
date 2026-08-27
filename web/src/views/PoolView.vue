@@ -1,15 +1,16 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { APIError, apiDownloadText, apiFetch, idempotencyHeaders, type ConnectionsPayload, type ProxyGroupPayload, type ProxyGroupStatus, type ProxyType } from '../api/client'
+import { APIError, apiDownloadText, apiFetch, idempotencyHeaders, type ConnectionsPayload, type ProxyGroupPayload, type ProxyType } from '../api/client'
 import AppShell from '../components/AppShell.vue'
 import PoolFilters from '../components/PoolFilters.vue'
 import PoolTable from '../components/PoolTable.vue'
+import { poolStatusGroup, type PoolStatusGroup } from '../components/poolStatus'
 
 const props = defineProps<{ protocol: 'vless' | 'socks5h' }>()
 const groups = ref<ProxyGroupPayload[]>([])
 const country = ref('')
 const proxyType = ref<'' | ProxyType>('')
-const status = ref<'' | ProxyGroupStatus>('')
+const status = ref<'' | PoolStatusGroup>('')
 const sort = ref('latency')
 const busy = ref('')
 const loading = ref(true)
@@ -18,7 +19,7 @@ const notice = ref('')
 const title = computed(() => props.protocol === 'vless' ? 'VPN 节点池' : 'SOCKS5H 代理池')
 const description = computed(() => props.protocol === 'vless' ? '复制或导出可直接用于代理客户端和代码的 VLESS Reality 节点。' : '每个在线出口对应一个支持代理 DNS 的 SOCKS5H 地址。')
 const countries = computed(() => [...new Map(groups.value.map(row => [row.countryCode, { code: row.countryCode, name: row.countryName }])).values()].sort((a,b)=>a.code.localeCompare(b.code)))
-const rows = computed(() => groups.value.filter(row => (!country.value || row.countryCode === country.value) && (!proxyType.value || row.proxyType === proxyType.value) && (!status.value || row.status === status.value)).sort((a,b) => {
+const rows = computed(() => groups.value.filter(row => (!country.value || row.countryCode === country.value) && (!proxyType.value || row.proxyType === proxyType.value) && (!status.value || poolStatusGroup(row.status) === status.value)).sort((a,b) => {
   if (sort.value === 'country') return a.countryCode.localeCompare(b.countryCode)
   if (sort.value === 'updated') return (b.lastCheckedAt ?? '').localeCompare(a.lastCheckedAt ?? '')
   const left = props.protocol === 'vless' ? a.vlessLatencyMs : a.socksLatencyMs
@@ -60,7 +61,7 @@ async function exportRows(): Promise<void> {
   const query = new URLSearchParams({ protocol: props.protocol })
   if (country.value) query.set('country', country.value)
   if (proxyType.value) query.set('proxyType', proxyType.value)
-  if (status.value) query.set('status', status.value)
+  if (status.value === 'standby' || status.value === 'ready') query.set('status', status.value)
   try {
     const text = await apiDownloadText(`/api/v1/proxy-groups/export?${query}`)
     if (typeof URL.createObjectURL === 'function') {

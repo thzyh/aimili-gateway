@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import type { ProxyGroupStatus, ProxyType } from '../api/client'
+import type { ProxyType } from '../api/client'
+import type { PoolStatusGroup } from './poolStatus'
 
-defineProps<{ countries: { code: string; name: string }[]; country: string; proxyType: '' | ProxyType; status: '' | ProxyGroupStatus; sort: string }>()
-const emit = defineEmits<{ country: [value: string]; proxyType: [value: '' | ProxyType]; status: [value: '' | ProxyGroupStatus]; sort: [value: string] }>()
+defineProps<{ countries: { code: string; name: string }[]; country: string; proxyType: '' | ProxyType; status: '' | PoolStatusGroup; sort: string }>()
+const emit = defineEmits<{ country: [value: string]; proxyType: [value: '' | ProxyType]; status: [value: '' | PoolStatusGroup]; sort: [value: string] }>()
 </script>
 
 <template>
@@ -14,8 +15,8 @@ const emit = defineEmits<{ country: [value: string]; proxyType: [value: '' | Pro
     <select :value="proxyType" aria-label="IP 类型" @change="emit('proxyType', ($event.target as HTMLSelectElement).value as '' | ProxyType)">
       <option value="">全部类型</option><option value="residential">住宅</option><option value="datacenter">机房</option>
     </select>
-    <select :value="status" aria-label="状态" @change="emit('status', ($event.target as HTMLSelectElement).value as '' | ProxyGroupStatus)">
-      <option value="">全部状态</option><option value="standby">待启用</option><option value="ready">可用</option><option value="provisioning">创建中</option><option value="degraded">异常</option><option value="repair_required">需要修复</option>
+    <select data-status-filter :value="status" aria-label="状态" @change="emit('status', ($event.target as HTMLSelectElement).value as '' | PoolStatusGroup)">
+      <option value="">全部状态</option><option value="standby">可选节点</option><option value="ready">已启用</option><option value="processing">处理中</option><option value="fault">故障</option>
     </select>
     <select :value="sort" aria-label="排序" @change="emit('sort', ($event.target as HTMLSelectElement).value)">
       <option value="latency">延迟从低到高</option><option value="country">按国家排序</option><option value="updated">最近检测优先</option>
