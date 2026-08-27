@@ -1,5 +1,7 @@
 # Aimili Gateway 账户管理与可选 TOTP 设计及实施计划
 
+> **后续修订：** 本文记录 2026-08-25 已实施的 Gateway 自身账户管理。2026-08-27 批准的 `2026-08-27-advanced-settings-unified-credentials-design.md` 将在后续阶段把用户名和密码扩展为 Gateway、AimiliVPN、3x-ui 三服务统一凭据，并增加服务端自动代登录；在新设计实施和验收前，本文描述仍是当前运行事实。
+
 > **执行要求：** 批准后由当前主 Agent 使用 `superpowers:executing-plans` 在本对话内逐项实施；不使用子 Agent。所有步骤使用复选框跟踪，先测试后实现。
 
 **目标：** 为个人单管理员 Gateway 提供一个简单的本地账户管理菜单，并让密码登录与可选 TOTP 在数据库、API、前端和部署层保持一致。

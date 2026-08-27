@@ -69,3 +69,14 @@ Gateway 首次启动日志明确报告读取 `/etc/aimili-gateway/config.json` �
 - 正式使用前执行 `sudo aimili-gateway-account` 设置自定义 Gateway 密码并按需登记 TOTP。
 - AimiliVPN 与 3x-ui 的正式凭据需分别通过各自本地管理命令重置；不得把密码写入 shell 历史或聊天。
 - 若需要从当前 Windows 公网来源使用 mixed，应在 Gateway 高级设置中添加准确的单地址 `/32`，不得使用 `0.0.0.0/0`；保存后切换一次待机候选以重建当前受管资源，再执行外部客户端复测。
+
+## 2026-08-27 后续状态
+
+本节只记录验收后的最新只读事实和已批准设计，不把尚未实现的功能记为通过：
+
+- 最新只读 VPS 检查显示 AimiliVPN、3x-ui、Gateway、Caddy 均为 `active`，失败 systemd 单元为 0；可用内存约 186 MiB，Swap 已使用约 135 MiB。
+- V1-C 的服务器端单在线出口验收结论继续有效，但本次没有重新执行完整 VLESS、SOCKS5H 和外部客户端测试，因此不生成新的协议通过结论。
+- Windows 外部用户客户端应用层验收仍未完成。
+- 512 MiB 生产仍保持一个在线出口；两个在线出口只作为后续单独的阶梯容量实验，尚未授权实施或验证。
+- 高级设置、取消近期重新认证、SOCKS5H 来源开关、三账户统一和服务端自动代登录已经完成聊天设计确认，但尚未编码或部署。正式设计见 `docs/superpowers/specs/2026-08-27-advanced-settings-unified-credentials-design.md`。
+- 本文前述“原后台独立登录”和 mixed 强制白名单是 2026-08-26 验收时的真实运行边界；只有 V1-D 完成最新端到端验收后才能更新为新行为。
