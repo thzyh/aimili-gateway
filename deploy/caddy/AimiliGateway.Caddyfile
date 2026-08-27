@@ -1,7 +1,7 @@
 # 本片段必须合并到现有 HTTPS site block，不能作为独立 Caddyfile 使用。
 # 保留下方两个标记所代表的现有 handle，并把它们放在 Gateway 路由之前。
 
-handle_path /EXISTING_AIMILIVPN_ROUTE/* {
+handle /EXISTING_AIMILIVPN_ROUTE/* {
     reverse_proxy 127.0.0.1:8787
 }
 

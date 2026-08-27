@@ -159,12 +159,12 @@ func TestV1DOperationalScriptsAreSecretSafeAndRollbackOrdered(t *testing.T) {
 
 func TestV1DCaddyUsesOnlyFixedBackendSubpaths(t *testing.T) {
 	fragment := readAsset(t, "caddy/AimiliGateway.Caddyfile")
-	for _, required := range []string{"handle_path /EXISTING_AIMILIVPN_ROUTE/*", "reverse_proxy 127.0.0.1:8787", "handle /EXISTING_3X_UI_ROUTE/*", "reverse_proxy 127.0.0.1:2001"} {
+	for _, required := range []string{"handle /EXISTING_AIMILIVPN_ROUTE/*", "reverse_proxy 127.0.0.1:8787", "handle /EXISTING_3X_UI_ROUTE/*", "reverse_proxy 127.0.0.1:2001"} {
 		if !strings.Contains(fragment, required) {
 			t.Fatalf("Caddy fragment missing V1-D route %q", required)
 		}
 	}
-	for _, forbidden := range []string{"basic_auth", "forward_auth"} {
+	for _, forbidden := range []string{"handle_path /EXISTING_AIMILIVPN_ROUTE/*", "basic_auth", "forward_auth"} {
 		if strings.Contains(strings.ToLower(fragment), forbidden) {
 			t.Fatalf("Caddy fragment adds an unsupported auth layer %q", forbidden)
 		}
