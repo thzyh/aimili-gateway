@@ -113,6 +113,7 @@ type fakeStore struct {
 	groups      map[string]domain.ProxyGroup
 	credentials map[string][]byte
 	cidrs       []netip.Prefix
+	policy      store.MixedSourcePolicy
 }
 
 func (s *fakeStore) CreateProxyGroup(_ context.Context, group domain.ProxyGroup) error {
@@ -171,6 +172,21 @@ func (s *fakeStore) ListMixedCIDRs(context.Context) ([]netip.Prefix, error) {
 }
 func (s *fakeStore) ReplaceMixedCIDRs(_ context.Context, values []netip.Prefix) error {
 	s.cidrs = append([]netip.Prefix(nil), values...)
+	return nil
+}
+func (s *fakeStore) GetMixedSourcePolicy(context.Context) (store.MixedSourcePolicy, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := s.policy
+	result.CIDRs = append([]netip.Prefix(nil), result.CIDRs...)
+	return result, nil
+}
+func (s *fakeStore) ReplaceMixedSourcePolicy(_ context.Context, policy store.MixedSourcePolicy) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	policy.CIDRs = append([]netip.Prefix(nil), policy.CIDRs...)
+	s.policy = policy
+	s.cidrs = append([]netip.Prefix(nil), policy.CIDRs...)
 	return nil
 }
 
@@ -245,9 +261,12 @@ func (a *fakeAimili) slot(ip string) aimili.Slot {
 }
 
 type fakeXUI struct {
-	calls       *[]string
-	deleteError error
-	desired     xui.DesiredGroup
+	calls        *[]string
+	deleteError  error
+	desired      xui.DesiredGroup
+	updated      []xui.DesiredGroup
+	updateNames  []string
+	updateErrors map[int]error
 }
 
 func (x *fakeXUI) EnsureManagedGroup(_ context.Context, desired xui.DesiredGroup) (xui.ManagedGroup, error) {
@@ -259,14 +278,29 @@ func (x *fakeXUI) DeleteManagedGroup(context.Context, xui.ManagedGroup) error {
 	*x.calls = append(*x.calls, "xui.delete")
 	return x.deleteError
 }
+func (x *fakeXUI) UpdateManagedGroup(_ context.Context, desired xui.DesiredGroup, managed xui.ManagedGroup) (xui.ManagedGroup, error) {
+	x.updateNames = append(x.updateNames, desired.ResourceName)
+	x.updated = append(x.updated, desired)
+	if err := x.updateErrors[len(x.updateNames)]; err != nil {
+		return xui.ManagedGroup{}, err
+	}
+	managed.Fingerprint = "new-" + desired.ResourceName
+	return managed, nil
+}
 
 type fakeValidator struct {
-	calls      *[]string
-	vlessError error
+	calls       *[]string
+	vlessError  error
+	socksCalls  int
+	socksErrors []error
 }
 
 func (v *fakeValidator) ValidateSOCKS5H(context.Context, validator.SOCKSTarget) (validator.Result, error) {
 	*v.calls = append(*v.calls, "validate.socks")
+	v.socksCalls++
+	if v.socksCalls <= len(v.socksErrors) && v.socksErrors[v.socksCalls-1] != nil {
+		return validator.Result{}, v.socksErrors[v.socksCalls-1]
+	}
 	return validator.Result{ExitIP: "203.0.113.7", DNSVerified: true}, nil
 }
 func (v *fakeValidator) ValidateVLESS(_ context.Context, target validator.VLESSTarget) (validator.Result, error) {
@@ -288,11 +322,13 @@ type fixture struct {
 func newFixture() *fixture {
 	f := &fixture{}
 	f.store = &fakeStore{groups: map[string]domain.ProxyGroup{}, credentials: map[string][]byte{"vless-client-id": []byte("client-id"), "mixed-username": []byte("proxy-user"), "mixed-password": []byte("proxy-password")}, cidrs: []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24")}}
+	f.store.policy = store.MixedSourcePolicy{Enabled: true, CIDRs: append([]netip.Prefix(nil), f.store.cidrs...), ApplyStatus: store.MixedPolicyApplied, UpdatedAt: f.now()}
 	f.aimili = &fakeAimili{calls: &f.calls}
 	f.xui = &fakeXUI{calls: &f.calls}
 	f.validator = &fakeValidator{calls: &f.calls}
 	return f
 }
+func (f *fixture) now() time.Time { return time.Unix(1700000000, 0).UTC() }
 func (f *fixture) orchestrator(t *testing.T) *Orchestrator {
 	return f.orchestratorWithMax(t, 1)
 }

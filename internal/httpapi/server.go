@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/netip"
 	"sync"
 	"time"
 
@@ -39,7 +38,8 @@ type ProxyManager interface {
 	Rotate(context.Context, string) (domain.ProxyGroup, error)
 	Disable(context.Context, string) error
 	Connections(context.Context, string) (orchestrator.Connections, error)
-	SetMixedCIDRs(context.Context, []netip.Prefix) error
+	MixedPolicy(context.Context) (store.MixedSourcePolicy, error)
+	SetMixedPolicy(context.Context, store.MixedSourcePolicy) error
 	Reconcile(context.Context) orchestrator.ReconcileResult
 }
 
@@ -104,7 +104,8 @@ func NewServer(dependencies Dependencies) http.Handler {
 	mux.HandleFunc("POST /api/v1/proxy-groups/{id}/rotate", server.handleRotateProxyGroup)
 	mux.HandleFunc("DELETE /api/v1/proxy-groups/{id}", server.handleDisableProxyGroup)
 	mux.HandleFunc("GET /api/v1/proxy-groups/{id}/connections", server.handleConnections)
-	mux.HandleFunc("PUT /api/v1/settings/mixed-cidrs", server.handleMixedCIDRs)
+	mux.HandleFunc("GET /api/v1/settings/mixed-source-policy", server.handleGetMixedPolicy)
+	mux.HandleFunc("PUT /api/v1/settings/mixed-source-policy", server.handleSetMixedPolicy)
 	return noStore(mux)
 }
 

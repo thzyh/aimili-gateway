@@ -199,6 +199,52 @@ func (c *Client) EnsureManagedGroup(ctx context.Context, desired DesiredGroup) (
 	return managed, nil
 }
 
+func (c *Client) UpdateManagedGroup(ctx context.Context, desired DesiredGroup, managed ManagedGroup) (ManagedGroup, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := validateDesiredGroup(desired); err != nil {
+		return ManagedGroup{}, err
+	}
+	if managed.ResourceName != desired.ResourceName || managed.VLESSInboundID <= 0 || managed.MixedInboundID <= 0 ||
+		managed.VLESSInboundTag != desired.ResourceName+"-vless" || managed.MixedInboundTag != desired.ResourceName+"-mixed" {
+		return ManagedGroup{}, &AdapterError{Code: "invalid_request"}
+	}
+	if err := c.authenticate(ctx); err != nil {
+		return ManagedGroup{}, err
+	}
+	snapshot, err := c.snapshot(ctx)
+	if err != nil {
+		return ManagedGroup{}, err
+	}
+	wanted := map[int64]string{
+		managed.VLESSInboundID: managed.VLESSInboundTag,
+		managed.MixedInboundID: managed.MixedInboundTag,
+	}
+	found := make(map[int64]bool, len(wanted))
+	for _, inbound := range snapshot.Inbounds {
+		tag, owned := wanted[inbound.ID]
+		if !owned {
+			continue
+		}
+		if inbound.Tag != tag || !strings.HasPrefix(inbound.Remark, "Aimili Gateway ") {
+			return ManagedGroup{}, &AdapterError{Code: "ownership_conflict"}
+		}
+		found[inbound.ID] = true
+	}
+	if len(found) != len(wanted) {
+		return ManagedGroup{}, &AdapterError{Code: "managed_resource_missing"}
+	}
+	setting, err := mergeManagedXray(snapshot.XraySetting, desired, managed.VLESSInboundTag, managed.MixedInboundTag)
+	if err != nil {
+		return ManagedGroup{}, err
+	}
+	if err := c.updateXray(ctx, setting, snapshot.OutboundTestURL); err != nil {
+		return ManagedGroup{}, err
+	}
+	managed.Fingerprint = fingerprintDesired(desired)
+	return managed, nil
+}
+
 func (c *Client) rollbackEnsure(ctx context.Context, original map[string]any, probeURL string, tags ...string) error {
 	tagSet := make(map[string]bool, len(tags))
 	for _, tag := range tags {
@@ -481,7 +527,8 @@ func (c *Client) call(ctx context.Context, method, path string, payload any, for
 
 func validateDesiredGroup(desired DesiredGroup) error {
 	if !strings.HasPrefix(desired.ResourceName, "agw-") || desired.SOCKSPort < 1 || desired.VLESSPort < 1 || desired.MixedPort < 1 ||
-		desired.VLESSClientID == "" || desired.MixedUsername == "" || desired.MixedPassword == "" || len(desired.MixedSourceCIDRs) == 0 ||
+		desired.VLESSClientID == "" || desired.MixedUsername == "" || desired.MixedPassword == "" ||
+		(desired.MixedSourceRestrictionEnabled && len(desired.MixedSourceCIDRs) == 0) ||
 		desired.RealityTarget != "127.0.0.1:443" || strings.TrimSpace(desired.RealityServerName) == "" ||
 		net.ParseIP(desired.RealityServerName) != nil || strings.ContainsAny(desired.RealityServerName, "/:") {
 		return &AdapterError{Code: "invalid_request"}
@@ -534,14 +581,22 @@ func mergeManagedXray(setting map[string]any, desired DesiredGroup, vlessTag, mi
 		}
 		keptRules = append(keptRules, rule)
 	}
-	allowedSources := append(append([]string{}, desired.MixedSourceCIDRs...), "127.0.0.1/32", "::1/128")
-	managedRules := []any{
-		map[string]any{"type": "field", "inboundTag": []any{vlessTag}, "outboundTag": outboundTag},
-		map[string]any{"type": "field", "inboundTag": []any{mixedTag}, "source": stringsToAny(allowedSources), "outboundTag": outboundTag},
-		map[string]any{"type": "field", "inboundTag": []any{mixedTag}, "outboundTag": "agw-blackhole"},
+	managedRules := []any{map[string]any{"type": "field", "inboundTag": []any{vlessTag}, "outboundTag": outboundTag}}
+	if mixedSourceRestrictionEnabled(desired) {
+		allowedSources := append(append([]string{}, desired.MixedSourceCIDRs...), "127.0.0.1/32", "::1/128")
+		managedRules = append(managedRules,
+			map[string]any{"type": "field", "inboundTag": []any{mixedTag}, "source": stringsToAny(allowedSources), "outboundTag": outboundTag},
+			map[string]any{"type": "field", "inboundTag": []any{mixedTag}, "outboundTag": "agw-blackhole"},
+		)
+	} else {
+		managedRules = append(managedRules, map[string]any{"type": "field", "inboundTag": []any{mixedTag}, "outboundTag": outboundTag})
 	}
 	routing["rules"] = append(managedRules, keptRules...)
 	return setting, nil
+}
+
+func mixedSourceRestrictionEnabled(desired DesiredGroup) bool {
+	return desired.MixedSourceRestrictionEnabled || len(desired.MixedSourceCIDRs) > 0
 }
 
 func managedSocksOutboundMatches(outbound map[string]any, port int) bool {

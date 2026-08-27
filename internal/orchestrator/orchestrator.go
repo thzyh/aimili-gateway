@@ -71,6 +71,8 @@ type groupStore interface {
 	GetCredential(context.Context, string, []byte) ([]byte, error)
 	ListMixedCIDRs(context.Context) ([]netip.Prefix, error)
 	ReplaceMixedCIDRs(context.Context, []netip.Prefix) error
+	GetMixedSourcePolicy(context.Context) (store.MixedSourcePolicy, error)
+	ReplaceMixedSourcePolicy(context.Context, store.MixedSourcePolicy) error
 }
 
 type aimiliClient interface {
@@ -84,6 +86,7 @@ type aimiliClient interface {
 
 type xuiClient interface {
 	EnsureManagedGroup(context.Context, xui.DesiredGroup) (xui.ManagedGroup, error)
+	UpdateManagedGroup(context.Context, xui.DesiredGroup, xui.ManagedGroup) (xui.ManagedGroup, error)
 	DeleteManagedGroup(context.Context, xui.ManagedGroup) error
 }
 
@@ -231,7 +234,7 @@ func (o *Orchestrator) Enable(ctx context.Context, request EnableRequest) (domai
 	if len(groups) >= o.config.MaxGroups {
 		return domain.ProxyGroup{}, &Error{Code: "capacity_exceeded"}
 	}
-	cidrs, credentials, err := o.runtimeInputs(ctx)
+	policy, credentials, err := o.runtimeInputs(ctx)
 	if err != nil {
 		return domain.ProxyGroup{}, err
 	}
@@ -267,7 +270,8 @@ func (o *Orchestrator) Enable(ctx context.Context, request EnableRequest) (domai
 	managed, err := o.xui.EnsureManagedGroup(ctx, xui.DesiredGroup{
 		ResourceName: group.ResourceName, SOCKSPort: checked.Port, VLESSPort: group.VLESSPort, MixedPort: group.MixedPort,
 		VLESSClientID: string(credentials.vlessID), MixedUsername: string(credentials.mixedUsername), MixedPassword: string(credentials.mixedPassword),
-		MixedSourceCIDRs: prefixStrings(cidrs), RealityTarget: "127.0.0.1:443", RealityServerName: o.config.PublicHost,
+		MixedSourceRestrictionEnabled: policy.Enabled, MixedSourceCIDRs: prefixStrings(policy.CIDRs),
+		RealityTarget: "127.0.0.1:443", RealityServerName: o.config.PublicHost,
 	})
 	if err != nil {
 		return domain.ProxyGroup{}, o.rollbackEnable(ctx, &group, xui.ManagedGroup{}, errorCode(err))
@@ -448,20 +452,21 @@ func (o *Orchestrator) Connections(ctx context.Context, id string) (Connections,
 	return Connections{VLESSURI: vless.String(), SOCKS5HURI: socks.String()}, nil
 }
 
-func (o *Orchestrator) SetMixedCIDRs(ctx context.Context, prefixes []netip.Prefix) error {
-	return o.store.ReplaceMixedCIDRs(ctx, prefixes)
-}
-
 type runtimeCredentials struct{ vlessID, mixedUsername, mixedPassword []byte }
 
-func (o *Orchestrator) runtimeInputs(ctx context.Context) ([]netip.Prefix, runtimeCredentials, error) {
-	cidrs, err := o.store.ListMixedCIDRs(ctx)
+func (o *Orchestrator) runtimeInputs(ctx context.Context) (store.MixedSourcePolicy, runtimeCredentials, error) {
+	policy, err := o.store.GetMixedSourcePolicy(ctx)
 	if err != nil {
-		return nil, runtimeCredentials{}, &Error{Code: "storage_failed"}
+		return store.MixedSourcePolicy{}, runtimeCredentials{}, &Error{Code: "storage_failed"}
 	}
-	if len(cidrs) == 0 {
-		return nil, runtimeCredentials{}, &Error{Code: "mixed_cidr_required"}
+	if policy.Enabled && len(policy.CIDRs) == 0 {
+		return store.MixedSourcePolicy{}, runtimeCredentials{}, &Error{Code: "mixed_cidr_required"}
 	}
+	result, err := o.runtimeCredentials(ctx)
+	return policy, result, err
+}
+
+func (o *Orchestrator) runtimeCredentials(ctx context.Context) (runtimeCredentials, error) {
 	var result runtimeCredentials
 	for _, item := range []struct {
 		purpose string
@@ -469,11 +474,11 @@ func (o *Orchestrator) runtimeInputs(ctx context.Context) ([]netip.Prefix, runti
 	}{{credentialVLESSClientID, &result.vlessID}, {credentialMixedUsername, &result.mixedUsername}, {credentialMixedPassword, &result.mixedPassword}} {
 		value, getErr := o.store.GetCredential(ctx, item.purpose, o.masterKey)
 		if getErr != nil {
-			return nil, runtimeCredentials{}, &Error{Code: "credentials_not_configured"}
+			return runtimeCredentials{}, &Error{Code: "credentials_not_configured"}
 		}
 		*item.target = value
 	}
-	return cidrs, result, nil
+	return result, nil
 }
 func (o *Orchestrator) allocatePorts(groups []domain.ProxyGroup) (int, int, bool) {
 	usedV := map[int]bool{}

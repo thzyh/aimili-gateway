@@ -44,16 +44,17 @@ type Snapshot struct {
 }
 
 type DesiredGroup struct {
-	ResourceName      string
-	SOCKSPort         int
-	VLESSPort         int
-	MixedPort         int
-	VLESSClientID     string
-	MixedUsername     string
-	MixedPassword     string
-	MixedSourceCIDRs  []string
-	RealityTarget     string
-	RealityServerName string
+	ResourceName                  string
+	SOCKSPort                     int
+	VLESSPort                     int
+	MixedPort                     int
+	VLESSClientID                 string
+	MixedUsername                 string
+	MixedPassword                 string
+	MixedSourceRestrictionEnabled bool
+	MixedSourceCIDRs              []string
+	RealityTarget                 string
+	RealityServerName             string
 }
 
 type ManagedGroup struct {

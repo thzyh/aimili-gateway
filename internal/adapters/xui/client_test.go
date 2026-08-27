@@ -233,6 +233,62 @@ func TestEnsureManagedGroupUsesConfiguredLocalRealityTarget(t *testing.T) {
 	}
 }
 
+func TestMergeManagedXrayCanDisableMixedSourceRestriction(t *testing.T) {
+	desired := DesiredGroup{
+		ResourceName: "agw-jp-dc", SOCKSPort: 17930, VLESSPort: 20000, MixedPort: 30000,
+		VLESSClientID: "client-id", MixedUsername: "proxy-user", MixedPassword: "proxy-password",
+		MixedSourceRestrictionEnabled: false, RealityTarget: "127.0.0.1:443", RealityServerName: "proxy.example.test",
+	}
+	setting, err := mergeManagedXray(map[string]any{}, desired, "agw-jp-dc-vless", "agw-jp-dc-mixed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	routing := setting["routing"].(map[string]any)
+	rules := asObjectSlice(routing["rules"])
+	if len(rules) != 2 {
+		t.Fatalf("rules = %#v", rules)
+	}
+	if _, exists := rules[1]["source"]; exists {
+		t.Fatalf("disabled policy still has source whitelist: %#v", rules[1])
+	}
+	if stringValue(rules[1]["outboundTag"]) != "agw-jp-dc-socks" {
+		t.Fatalf("mixed route = %#v", rules[1])
+	}
+}
+
+func TestUpdateManagedGroupChangesOnlyOwnedRouting(t *testing.T) {
+	fixture := &xuiFixture{}
+	client := newXUIFixtureClient(t, fixture)
+	desired := DesiredGroup{
+		ResourceName: "agw-jp-dc", SOCKSPort: 17930, VLESSPort: 20000, MixedPort: 30000,
+		VLESSClientID: "client-id", MixedUsername: "proxy-user", MixedPassword: "proxy-password",
+		MixedSourceRestrictionEnabled: true, MixedSourceCIDRs: []string{"198.51.100.0/24"},
+		RealityTarget: "127.0.0.1:443", RealityServerName: "proxy.example.test",
+	}
+	managed, err := client.EnsureManagedGroup(context.Background(), desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeInbounds, _ := json.Marshal(fixture.inbounds)
+	desired.MixedSourceRestrictionEnabled = false
+	desired.MixedSourceCIDRs = nil
+	updated, err := client.UpdateManagedGroup(context.Background(), desired, managed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterInbounds, _ := json.Marshal(fixture.inbounds)
+	if string(beforeInbounds) != string(afterInbounds) {
+		t.Fatalf("routing update changed inbounds: before=%s after=%s", beforeInbounds, afterInbounds)
+	}
+	if updated.Fingerprint == managed.Fingerprint || updated.ResourceName != managed.ResourceName {
+		t.Fatalf("updated managed group = %#v", updated)
+	}
+	rules := asObjectSlice(fixture.updatedXray["routing"].(map[string]any)["rules"])
+	if len(rules) != 3 { // VLESS, unrestricted mixed, preserved unmanaged rule.
+		t.Fatalf("updated rules = %#v", rules)
+	}
+}
+
 func TestEnsureManagedGroupRejectsSameTagWithoutOwnershipMarker(t *testing.T) {
 	fixture := &xuiFixture{inbounds: []map[string]any{{
 		"id": float64(9), "tag": "agw-jp-dc-vless", "remark": "User inbound", "protocol": "vless", "port": float64(20000),

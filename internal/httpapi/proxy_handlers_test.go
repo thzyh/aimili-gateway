@@ -10,6 +10,7 @@ import (
 
 	"github.com/thzyh/aimili-gateway/internal/domain"
 	"github.com/thzyh/aimili-gateway/internal/orchestrator"
+	"github.com/thzyh/aimili-gateway/internal/store"
 )
 
 func TestCountriesRequireAuthenticationAndReturnSafeCatalog(t *testing.T) {
@@ -126,6 +127,58 @@ func TestIdempotencyCacheKeyKeepsLargeSessionIDsDistinct(t *testing.T) {
 	}
 }
 
+func TestMixedSourcePolicyCanBeReadAndDisabledWithoutCIDRs(t *testing.T) {
+	manager := &fakeProxyManager{mixedPolicy: store.MixedSourcePolicy{Enabled: true, CIDRs: []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24")}, ApplyStatus: store.MixedPolicyApplied}}
+	environment := newAuthTestEnvironmentConfigured(t, true, func(dependencies *Dependencies) { dependencies.ProxyManager = manager })
+	assertResponseStatus(t, environment.login(t), http.StatusNoContent)
+
+	response := environment.request(t, http.MethodGet, "/api/v1/settings/mixed-source-policy", nil, "", "")
+	if response.StatusCode != http.StatusOK {
+		assertResponseStatus(t, response, http.StatusOK)
+	}
+	defer response.Body.Close()
+	var got struct {
+		Enabled     bool     `json:"enabled"`
+		CIDRs       []string `json:"cidrs"`
+		ApplyStatus string   `json:"applyStatus"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Enabled || len(got.CIDRs) != 1 || got.CIDRs[0] != "198.51.100.0/24" || got.ApplyStatus != "applied" {
+		t.Fatalf("policy = %#v", got)
+	}
+
+	csrf := environment.session(t).CSRFToken
+	response = environment.request(t, http.MethodPut, "/api/v1/settings/mixed-source-policy", map[string]any{"enabled": false, "cidrs": []string{}}, environment.origin, csrf)
+	assertResponseStatus(t, response, http.StatusOK)
+	if manager.mixedPolicy.Enabled || manager.mixedPolicy.ApplyStatus != store.MixedPolicyApplied {
+		t.Fatalf("saved policy = %#v", manager.mixedPolicy)
+	}
+}
+
+func TestMixedSourcePolicyRejectsUnsafeOrNonCanonicalCIDRs(t *testing.T) {
+	tests := []struct {
+		name string
+		cidr string
+	}{
+		{name: "IPv4 all", cidr: "0.0.0.0/0"},
+		{name: "IPv6 all", cidr: "::/0"},
+		{name: "not canonical", cidr: "198.51.100.1/24"},
+		{name: "invalid", cidr: "not-a-prefix"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			manager := &fakeProxyManager{}
+			environment := newAuthTestEnvironmentConfigured(t, true, func(dependencies *Dependencies) { dependencies.ProxyManager = manager })
+			assertResponseStatus(t, environment.login(t), http.StatusNoContent)
+			csrf := environment.session(t).CSRFToken
+			response := environment.request(t, http.MethodPut, "/api/v1/settings/mixed-source-policy", map[string]any{"enabled": true, "cidrs": []string{test.cidr}}, environment.origin, csrf)
+			assertResponseStatus(t, response, http.StatusBadRequest)
+		})
+	}
+}
+
 func (e *authTestEnvironment) requestWithHeaders(t *testing.T, method, path string, payload any, origin, csrf string, headers map[string]string) *http.Response {
 	t.Helper()
 	responseRequest := e.newRequest(t, method, path, payload, origin, csrf)
@@ -144,6 +197,7 @@ type fakeProxyManager struct {
 	activateCalls int
 	activatedID   string
 	groups        []domain.ProxyGroup
+	mixedPolicy   store.MixedSourcePolicy
 }
 
 func (*fakeProxyManager) Countries(context.Context) ([]orchestrator.Country, error) {
@@ -177,7 +231,14 @@ func (*fakeProxyManager) Disable(context.Context, string) error { return nil }
 func (*fakeProxyManager) Connections(context.Context, string) (orchestrator.Connections, error) {
 	return orchestrator.Connections{VLESSURI: "vless://masked-test", SOCKS5HURI: "socks5h://masked-test"}, nil
 }
-func (*fakeProxyManager) SetMixedCIDRs(context.Context, []netip.Prefix) error { return nil }
+func (m *fakeProxyManager) MixedPolicy(context.Context) (store.MixedSourcePolicy, error) {
+	return m.mixedPolicy, nil
+}
+func (m *fakeProxyManager) SetMixedPolicy(_ context.Context, policy store.MixedSourcePolicy) error {
+	policy.ApplyStatus = store.MixedPolicyApplied
+	m.mixedPolicy = policy
+	return nil
+}
 func (*fakeProxyManager) Reconcile(context.Context) orchestrator.ReconcileResult {
 	return orchestrator.ReconcileResult{Discovered: 1, Ready: 1}
 }

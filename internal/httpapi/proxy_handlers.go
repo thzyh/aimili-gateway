@@ -12,6 +12,7 @@ import (
 
 	"github.com/thzyh/aimili-gateway/internal/domain"
 	"github.com/thzyh/aimili-gateway/internal/orchestrator"
+	"github.com/thzyh/aimili-gateway/internal/store"
 )
 
 type proxyGroupResponse struct {
@@ -279,12 +280,35 @@ func (s *server) handleConnections(response http.ResponseWriter, request *http.R
 	writeJSON(response, http.StatusOK, connections)
 }
 
-func (s *server) handleMixedCIDRs(response http.ResponseWriter, request *http.Request) {
+type mixedPolicyResponse struct {
+	Enabled     bool     `json:"enabled"`
+	CIDRs       []string `json:"cidrs"`
+	ApplyStatus string   `json:"applyStatus"`
+}
+
+func (s *server) handleGetMixedPolicy(response http.ResponseWriter, request *http.Request) {
+	if _, ok := s.authenticateOrWrite(response, request); !ok {
+		return
+	}
+	if s.proxyManager == nil {
+		writeAPIError(response, http.StatusServiceUnavailable, "not_configured")
+		return
+	}
+	policy, err := s.proxyManager.MixedPolicy(request.Context())
+	if err != nil {
+		writeProxyError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, safeMixedPolicy(policy))
+}
+
+func (s *server) handleSetMixedPolicy(response http.ResponseWriter, request *http.Request) {
 	if _, ok := s.authorizeMutation(response, request); !ok {
 		return
 	}
 	var input struct {
-		CIDRs []string `json:"cidrs"`
+		Enabled bool     `json:"enabled"`
+		CIDRs   []string `json:"cidrs"`
 	}
 	if decodeJSON(request, &input) != nil {
 		writeAPIError(response, http.StatusBadRequest, "invalid_request")
@@ -299,11 +323,32 @@ func (s *server) handleMixedCIDRs(response http.ResponseWriter, request *http.Re
 		}
 		prefixes = append(prefixes, prefix)
 	}
-	if err := s.proxyManager.SetMixedCIDRs(request.Context(), prefixes); err != nil {
+	if input.Enabled && len(prefixes) == 0 {
+		writeAPIError(response, http.StatusBadRequest, "mixed_cidr_required")
+		return
+	}
+	if err := s.proxyManager.SetMixedPolicy(request.Context(), store.MixedSourcePolicy{Enabled: input.Enabled, CIDRs: prefixes}); err != nil {
 		writeProxyError(response, err)
 		return
 	}
-	response.WriteHeader(http.StatusNoContent)
+	policy, err := s.proxyManager.MixedPolicy(request.Context())
+	if err != nil {
+		writeProxyError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, safeMixedPolicy(policy))
+}
+
+func safeMixedPolicy(policy store.MixedSourcePolicy) mixedPolicyResponse {
+	return mixedPolicyResponse{Enabled: policy.Enabled, CIDRs: prefixStringsForResponse(policy.CIDRs), ApplyStatus: string(policy.ApplyStatus)}
+}
+
+func prefixStringsForResponse(prefixes []netip.Prefix) []string {
+	result := make([]string, len(prefixes))
+	for index, prefix := range prefixes {
+		result[index] = prefix.String()
+	}
+	return result
 }
 
 func (s *server) authorizeMutation(response http.ResponseWriter, request *http.Request) (requestSession, bool) {
