@@ -93,13 +93,13 @@ func (s *Store) UpdateProxyGroup(ctx context.Context, group domain.ProxyGroup, e
 	}
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE proxy_groups SET
-			country_name = ?, candidate_id = ?, candidate_ip = ?, candidate_latency_ms = ?, vless_latency_ms = ?, socks_latency_ms = ?,
+			resource_name = ?, country_name = ?, candidate_id = ?, candidate_ip = ?, candidate_latency_ms = ?, vless_latency_ms = ?, socks_latency_ms = ?,
 			status = ?, aimili_slot = ?, vless_port = ?, mixed_port = ?,
 			exit_ip = ?, config_fingerprint = ?, vless_inbound_id = ?, mixed_inbound_id = ?,
 			reality_public_key = ?, reality_short_id = ?, reality_server_name = ?, last_error_code = ?, recovery_state = ?,
 			version = version + 1, updated_at = ?, last_checked_at = ?, last_rotated_at = ?, last_seen_at = ?
 		WHERE id = ? AND version = ?`,
-		group.CountryName, group.CandidateID, group.CandidateIP, group.CandidateLatencyMS, group.VLESSLatencyMS, group.SOCKSLatencyMS,
+		group.ResourceName, group.CountryName, group.CandidateID, group.CandidateIP, group.CandidateLatencyMS, group.VLESSLatencyMS, group.SOCKSLatencyMS,
 		group.Status, group.AimiliSlot, group.VLESSPort,
 		group.MixedPort, group.ExitIP, group.ConfigFingerprint, group.VLESSInboundID,
 		group.MixedInboundID, group.RealityPublicKey, group.RealityShortID, group.RealityServerName, group.LastErrorCode,
@@ -108,6 +108,9 @@ func (s *Store) UpdateProxyGroup(ctx context.Context, group domain.ProxyGroup, e
 		group.ID, expectedVersion,
 	)
 	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "constraint") {
+			return ErrProxyGroupExists
+		}
 		return fmt.Errorf("update proxy group: %w", err)
 	}
 	changed, err := result.RowsAffected()
@@ -167,7 +170,7 @@ func scanProxyGroup(row rowScanner) (domain.ProxyGroup, error) {
 }
 
 func validateProxyGroup(group domain.ProxyGroup) error {
-	if !strings.HasPrefix(group.ID, "agw-") || group.ID != group.ResourceName ||
+	if !strings.HasPrefix(group.ID, "agw-") || !strings.HasPrefix(group.ResourceName, "agw-") ||
 		len(group.CountryCode) != 2 || !group.ProxyType.Valid() || !group.Status.Valid() ||
 		group.AimiliSlot < 0 || group.VLESSPort < 1 || group.VLESSPort > 65535 ||
 		group.MixedPort < 1 || group.MixedPort > 65535 || group.Version < 1 ||

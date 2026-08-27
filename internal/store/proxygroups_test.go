@@ -63,6 +63,37 @@ func TestProxyGroupRoundTripAndOptimisticVersion(t *testing.T) {
 	}
 }
 
+func TestProxyGroupUpdateCanRebindManagedResourceNameWithoutChangingStableID(t *testing.T) {
+	database := openTestStore(t)
+	ctx := context.Background()
+	now := time.Unix(1_700_000_000, 0).UTC()
+	group, err := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	group.AimiliSlot = 2
+	group.VLESSPort = 20000
+	group.MixedPort = 30000
+	group.CreatedAt = now
+	group.UpdatedAt = now
+	if err := database.CreateProxyGroup(ctx, group); err != nil {
+		t.Fatal(err)
+	}
+
+	group.ResourceName = "agw-jp-dc-previous"
+	group.UpdatedAt = now.Add(time.Minute)
+	if err := database.UpdateProxyGroup(ctx, group, 1); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := database.GetProxyGroup(ctx, group.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.ID != "agw-jp-dc" || updated.ResourceName != "agw-jp-dc-previous" || updated.Version != 2 {
+		t.Fatalf("managed resource rebind was not persisted with a stable ID: %#v", updated)
+	}
+}
+
 func TestProxyGroupCountryAndTypeAreUnique(t *testing.T) {
 	database := openTestStore(t)
 	ctx := context.Background()
