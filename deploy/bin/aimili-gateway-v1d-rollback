@@ -31,6 +31,7 @@ restore_config() {
     install -m 0600 "$backup/gateway-config.json" /etc/aimili-gateway/config.json
     install -m 0600 "$backup/gateway-master-key" /etc/credstore.encrypted/aimili-gateway-master-key
     install -m 0600 "$backup/aimili-ui" /opt/aimilivpn/vpngate_data/ui_auth.json
+    install -m 0600 "$backup/xui-automation" /etc/aimili-gateway/xui-automation.json
     tar --extract --gzip --file "$backup/xui-config.tar.gz" --directory /etc
     install -m 0600 "$backup/Caddyfile" /etc/caddy/Caddyfile
 }

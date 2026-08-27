@@ -137,7 +137,7 @@ func TestV1DOperationalScriptsAreSecretSafeAndRollbackOrdered(t *testing.T) {
 		}
 	}
 	for _, required := range []string{
-		"aimili-gateway.db", "gateway-master-key", "aimili-ui", "xui-config", "Caddyfile",
+		"aimili-gateway.db", "gateway-master-key", "aimili-ui", "xui-config", "xui-automation", "Caddyfile",
 		"aimili-gateway-admin", "aimili-gateway-account", "aimili-gateway.service",
 		"aimilivpn-git-branch", "aimilivpn-git-head", "sha256sum", "chmod 0700",
 	} {

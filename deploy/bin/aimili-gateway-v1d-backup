@@ -12,6 +12,7 @@ chmod 0700 "$target"
 install -m 0600 /var/lib/aimili-gateway/aimili-gateway.db "$target/aimili-gateway.db"
 install -m 0600 /etc/credstore.encrypted/aimili-gateway-master-key "$target/gateway-master-key"
 install -m 0600 /opt/aimilivpn/vpngate_data/ui_auth.json "$target/aimili-ui"
+install -m 0600 /etc/aimili-gateway/xui-automation.json "$target/xui-automation"
 tar --create --gzip --file "$target/xui-config.tar.gz" --directory /etc x-ui
 install -m 0600 /etc/caddy/Caddyfile "$target/Caddyfile"
 install -m 0755 /usr/local/bin/aimili-gateway "$target/aimili-gateway"
