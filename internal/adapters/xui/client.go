@@ -294,6 +294,10 @@ func (c *Client) authenticate(ctx context.Context) error {
 		"twoFactorCode": c.credentials.TwoFactorCode,
 	}
 	if _, err := c.call(ctx, http.MethodPost, "login", payload, false); err != nil {
+		var adapterError *AdapterError
+		if errors.As(err, &adapterError) && adapterError.Code == "upstream_rejected" {
+			return &AdapterError{Code: "credentials_rejected"}
+		}
 		return err
 	}
 	csrf, err = c.fetchCSRF(ctx)
@@ -452,14 +456,25 @@ func (c *Client) call(ctx context.Context, method, path string, payload any, for
 		return nil, &AdapterError{Code: "invalid_response"}
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		if response.StatusCode >= 300 && response.StatusCode < 400 {
+			return nil, &AdapterError{Code: "unsafe_redirect"}
+		}
 		return nil, &AdapterError{Code: "upstream_rejected"}
 	}
 	var envelope struct {
 		Success bool            `json:"success"`
 		Object  json.RawMessage `json:"obj"`
+		Message string          `json:"msg"`
 	}
-	if json.Unmarshal(raw, &envelope) != nil || !envelope.Success || envelope.Object == nil {
+	if json.Unmarshal(raw, &envelope) != nil || envelope.Object == nil {
 		return nil, &AdapterError{Code: "invalid_response"}
+	}
+	if !envelope.Success {
+		message := strings.ToLower(envelope.Message)
+		if strings.Contains(message, "two factor") || strings.Contains(message, "two-factor") || strings.Contains(message, "2fa") || strings.Contains(message, "totp") {
+			return nil, &AdapterError{Code: "totp_incompatible"}
+		}
+		return nil, &AdapterError{Code: "upstream_rejected"}
 	}
 	return envelope.Object, nil
 }

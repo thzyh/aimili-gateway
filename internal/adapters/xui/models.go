@@ -11,6 +11,18 @@ type Capabilities struct {
 	Capabilities []string
 }
 
+type AdminCapabilities struct {
+	ContractVersion string
+	CanUpdate       bool
+	CanBridge       bool
+	TOTPCompatible  bool
+}
+
+type BrowserSession struct {
+	CookieName string
+	Token      []byte
+}
+
 type Inbound struct {
 	ID       int64  `json:"id"`
 	Tag      string `json:"tag"`
