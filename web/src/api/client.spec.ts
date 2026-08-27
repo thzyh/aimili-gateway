@@ -57,6 +57,24 @@ it('downloads authenticated text exports without treating them as invalid JSON',
   await expect(apiDownloadText('/api/v1/proxy-groups/export?protocol=vless')).resolves.toBe('vless://masked\n')
 })
 
+it('opens only a fixed backend login endpoint with CSRF and follows its same-origin redirect', async () => {
+	const finalResponse = new Response('<html></html>', { status: 200, headers: { 'Content-Type': 'text/html' } })
+	Object.defineProperty(finalResponse, 'url', { value: `${window.location.origin}/native-fixture/` })
+	const fetchMock = vi.fn()
+		.mockResolvedValueOnce(jsonResponse({ authenticated: true, csrfToken: 'backend-csrf', expiresAt: '2026-08-27T00:00:00Z' }))
+		.mockResolvedValueOnce(finalResponse)
+	vi.stubGlobal('fetch', fetchMock)
+	const { openBackend } = await import('./client')
+
+	await expect(openBackend('/api/v1/backends/aimilivpn/login')).resolves.toBe('/native-fixture/')
+	const init = fetchMock.mock.calls[1][1] as RequestInit
+	expect(init.method).toBe('POST')
+	expect(init.credentials).toBe('same-origin')
+	expect(init.redirect).toBe('follow')
+	expect(new Headers(init.headers).get('X-CSRF-Token')).toBe('backend-csrf')
+	await expect(openBackend('/api/v1/backends/arbitrary/login')).rejects.toThrow('invalid_backend_target')
+})
+
 function jsonResponse(payload: unknown, status = 200): Response {
   return new Response(JSON.stringify(payload), {
     status,

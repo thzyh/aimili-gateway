@@ -39,6 +39,12 @@ export interface ProxyGroupPayload {
   lastErrorCode?: string; version: number; lastCheckedAt?: string
 }
 export interface ConnectionsPayload { vlessUri: string; socks5hUri: string }
+export type AccountSyncStatus = 'reset_required' | 'synced' | 'checking' | 'repair_required' | 'incompatible'
+export type MixedPolicyApplyStatus = 'pending' | 'applying' | 'applied' | 'failed' | 'repair_required'
+export interface SettingsSummaryPayload { accountSyncStatus: AccountSyncStatus; candidateCount: number; onlineCount: number; maxOnline: number }
+export interface MixedSourcePolicyPayload { enabled: boolean; cidrs: string[]; applyStatus: MixedPolicyApplyStatus }
+export interface AimiliSettingsPayload { candidateCount: number; residentialCount: number; datacenterCount: number; managedSlotCount: number; lastRefreshedAt?: string }
+export interface XUISettingsPayload { managedVlessCount: number; managedMixedCount: number; managedOutboundCount: number; ownershipMatches: boolean; lastCheckedAt?: string }
 
 export function idempotencyHeaders(): HeadersInit {
   const random = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`
@@ -143,6 +149,46 @@ export async function apiDownloadText(path: string): Promise<string> {
     throw new APIError(response.status, 'invalid_response')
   }
   return response.text()
+}
+
+const backendLoginPaths = new Set(['/api/v1/backends/aimilivpn/login', '/api/v1/backends/3x-ui/login'])
+
+export async function openBackend(path: string): Promise<string> {
+  if (!backendLoginPaths.has(path)) {
+    throw new APIError(400, 'invalid_backend_target')
+  }
+  if (csrfToken === null) {
+    const session = await apiFetch<SessionPayload>('/api/v1/auth/session')
+    csrfToken = session.csrfToken
+  }
+  const response = await fetch(path, {
+    method: 'POST',
+    headers: { 'X-CSRF-Token': csrfToken },
+    credentials: 'same-origin',
+    redirect: 'follow',
+  })
+  if (response.status === 401) {
+    csrfToken = null
+    unauthorizedHandler()
+  }
+  if (!response.ok) {
+    let code = 'automatic_login_failed'
+    const contentType = response.headers.get('Content-Type') ?? ''
+    if (contentType.toLowerCase().includes('application/json')) {
+      try {
+        const payload: unknown = await response.json()
+        if (isRecord(payload) && typeof payload.error === 'string') code = payload.error
+      } catch {
+        code = 'invalid_error_response'
+      }
+    }
+    throw new APIError(response.status, code)
+  }
+  const destination = new URL(response.url, window.location.origin)
+  if (destination.origin !== window.location.origin) {
+    throw new APIError(502, 'unsafe_redirect')
+  }
+  return `${destination.pathname}${destination.search}${destination.hash}`
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
