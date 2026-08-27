@@ -82,7 +82,6 @@ async function mutate(row: ProxyGroupPayload, action: 'activate' | 'check' | 'ro
 }
 
 function messageFor(error: unknown, fallback: string): string {
-  if (error instanceof APIError && error.message === 'reauthentication_required') return '请先到高级设置完成一次安全确认。'
   return `${fallback}：${error instanceof Error ? error.message : 'request_failed'}`
 }
 </script>

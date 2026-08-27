@@ -70,7 +70,7 @@ func TestAuthOptionsExposeOnlyWhetherTOTPIsRequired(t *testing.T) {
 	}
 }
 
-func TestPasswordOnlyAccountCanLoginAndReauthenticateWithoutTOTP(t *testing.T) {
+func TestPasswordOnlyAccountCanLoginWithoutTOTP(t *testing.T) {
 	environment := newAuthTestEnvironment(t)
 	environment.disableTOTP(t)
 	login := environment.request(t, http.MethodPost, "/api/v1/auth/login", map[string]string{
@@ -78,11 +78,6 @@ func TestPasswordOnlyAccountCanLoginAndReauthenticateWithoutTOTP(t *testing.T) {
 		"password": "local-only-test-password",
 	}, environment.origin, "")
 	assertResponseStatus(t, login, http.StatusNoContent)
-	csrf := environment.session(t).CSRFToken
-	response := environment.request(t, http.MethodPost, "/api/v1/auth/reauth", map[string]string{
-		"password": "local-only-test-password",
-	}, environment.origin, csrf)
-	assertResponseStatus(t, response, http.StatusNoContent)
 }
 
 func TestTOTPAccountRejectsMissingTOTP(t *testing.T) {
@@ -171,24 +166,15 @@ func TestSessionExpiresAtAbsoluteLifetime(t *testing.T) {
 	assertResponseStatus(t, response, http.StatusUnauthorized)
 }
 
-func TestReauthenticationRecordsFreshTimestamp(t *testing.T) {
+func TestReauthenticationRouteIsRemoved(t *testing.T) {
 	environment := newAuthTestEnvironment(t)
 	assertResponseStatus(t, environment.login(t), http.StatusNoContent)
 	csrf := environment.session(t).CSRFToken
-	environment.clock.Advance(time.Second)
 	response := environment.request(t, http.MethodPost, "/api/v1/auth/reauth", map[string]string{
 		"password": "local-only-test-password",
 		"totp":     "287082",
 	}, environment.origin, csrf)
-	assertResponseStatus(t, response, http.StatusNoContent)
-
-	session, err := environment.database.GetSession(context.Background(), environment.sessionTokenHash(t), environment.clock.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if session.ReauthenticatedAt == nil || !session.ReauthenticatedAt.Equal(environment.clock.Now()) {
-		t.Fatal("reauthentication timestamp was not stored")
-	}
+	assertResponseStatus(t, response, http.StatusNotFound)
 }
 
 func TestLoginThrottlesAfterFiveFailures(t *testing.T) {

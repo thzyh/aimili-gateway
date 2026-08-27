@@ -92,7 +92,6 @@ func NewServer(dependencies Dependencies) http.Handler {
 	mux.HandleFunc("POST /api/v1/auth/login", server.handleLogin)
 	mux.HandleFunc("POST /api/v1/auth/logout", server.handleLogout)
 	mux.HandleFunc("GET /api/v1/auth/session", server.handleSession)
-	mux.HandleFunc("POST /api/v1/auth/reauth", server.handleReauthenticate)
 	mux.HandleFunc("GET /api/v1/overview", server.handleOverview)
 	mux.HandleFunc("GET /api/v1/navigation", server.handleNavigation)
 	mux.HandleFunc("GET /api/v1/countries", server.handleCountries)

@@ -29,11 +29,6 @@ type loginRequest struct {
 	TOTP     string `json:"totp"`
 }
 
-type reauthenticateRequest struct {
-	Password string `json:"password"`
-	TOTP     string `json:"totp"`
-}
-
 type authOptionsResponse struct {
 	TOTPRequired bool `json:"totpRequired"`
 }
@@ -145,50 +140,6 @@ func (s *server) handleLogout(response http.ResponseWriter, request *http.Reques
 		return
 	}
 	http.SetCookie(response, expiredSessionCookie())
-	response.WriteHeader(http.StatusNoContent)
-}
-
-func (s *server) handleReauthenticate(response http.ResponseWriter, request *http.Request) {
-	if !s.requireOrigin(request) {
-		writeAPIError(response, http.StatusForbidden, "forbidden")
-		return
-	}
-	session, ok := s.authenticateOrWrite(response, request)
-	if !ok {
-		return
-	}
-	if !validCSRF(request, session) {
-		writeAPIError(response, http.StatusForbidden, "forbidden")
-		return
-	}
-	var input reauthenticateRequest
-	if err := decodeJSON(request, &input); err != nil || input.Password == "" {
-		writeAPIError(response, http.StatusBadRequest, "invalid_request")
-		return
-	}
-	totpRequired, err := s.totpRequired(request.Context())
-	if err != nil {
-		writeAPIError(response, http.StatusInternalServerError, "internal_error")
-		return
-	}
-	if totpRequired && !validTOTPFormat(input.TOTP) {
-		writeAPIError(response, http.StatusBadRequest, "invalid_request")
-		return
-	}
-	valid, err := s.verifyCredentials(request, "", input.Password, input.TOTP, false)
-	if err != nil {
-		writeAPIError(response, http.StatusInternalServerError, "internal_error")
-		return
-	}
-	if !valid {
-		writeAPIError(response, http.StatusUnauthorized, "unauthorized")
-		return
-	}
-	now := s.now().UTC()
-	if err := s.store.ReauthenticateSession(request.Context(), session.stored.ID, now); err != nil {
-		writeAPIError(response, http.StatusInternalServerError, "internal_error")
-		return
-	}
 	response.WriteHeader(http.StatusNoContent)
 }
 

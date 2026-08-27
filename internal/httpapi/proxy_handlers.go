@@ -14,8 +14,6 @@ import (
 	"github.com/thzyh/aimili-gateway/internal/orchestrator"
 )
 
-const recentReauthentication = 5 * time.Minute
-
 type proxyGroupResponse struct {
 	ID                 string                  `json:"id"`
 	CountryCode        string                  `json:"countryCode"`
@@ -80,7 +78,7 @@ func (s *server) handleProxyGroups(response http.ResponseWriter, request *http.R
 }
 
 func (s *server) handleReconcileProxyGroups(response http.ResponseWriter, request *http.Request) {
-	if _, ok := s.authorizeMutation(response, request, false); !ok {
+	if _, ok := s.authorizeMutation(response, request); !ok {
 		return
 	}
 	go func() {
@@ -92,12 +90,7 @@ func (s *server) handleReconcileProxyGroups(response http.ResponseWriter, reques
 }
 
 func (s *server) handleProxyGroupExport(response http.ResponseWriter, request *http.Request) {
-	session, ok := s.authenticateOrWrite(response, request)
-	if !ok {
-		return
-	}
-	if !s.recentlyReauthenticated(session) {
-		writeAPIError(response, http.StatusPreconditionRequired, "reauthentication_required")
+	if _, ok := s.authenticateOrWrite(response, request); !ok {
 		return
 	}
 	if s.proxyManager == nil {
@@ -173,7 +166,7 @@ func filterProxyGroups(groups []domain.ProxyGroup, request *http.Request) ([]dom
 }
 
 func (s *server) handleEnableProxyGroup(response http.ResponseWriter, request *http.Request) {
-	session, ok := s.authorizeMutation(response, request, true)
+	session, ok := s.authorizeMutation(response, request)
 	if !ok {
 		return
 	}
@@ -208,7 +201,7 @@ func (s *server) handleEnableProxyGroup(response http.ResponseWriter, request *h
 }
 
 func (s *server) handleCheckProxyGroup(response http.ResponseWriter, request *http.Request) {
-	if _, ok := s.authorizeMutation(response, request, false); !ok {
+	if _, ok := s.authorizeMutation(response, request); !ok {
 		return
 	}
 	group, err := s.proxyManager.Check(request.Context(), request.PathValue("id"))
@@ -220,7 +213,7 @@ func (s *server) handleCheckProxyGroup(response http.ResponseWriter, request *ht
 }
 
 func (s *server) handleActivateProxyGroup(response http.ResponseWriter, request *http.Request) {
-	session, ok := s.authorizeMutation(response, request, true)
+	session, ok := s.authorizeMutation(response, request)
 	if !ok {
 		return
 	}
@@ -242,7 +235,7 @@ func (s *server) handleActivateProxyGroup(response http.ResponseWriter, request 
 }
 
 func (s *server) handleRotateProxyGroup(response http.ResponseWriter, request *http.Request) {
-	session, ok := s.authorizeMutation(response, request, true)
+	session, ok := s.authorizeMutation(response, request)
 	if !ok {
 		return
 	}
@@ -264,7 +257,7 @@ func (s *server) handleRotateProxyGroup(response http.ResponseWriter, request *h
 }
 
 func (s *server) handleDisableProxyGroup(response http.ResponseWriter, request *http.Request) {
-	if _, ok := s.authorizeMutation(response, request, true); !ok {
+	if _, ok := s.authorizeMutation(response, request); !ok {
 		return
 	}
 	if err := s.proxyManager.Disable(request.Context(), request.PathValue("id")); err != nil {
@@ -275,12 +268,7 @@ func (s *server) handleDisableProxyGroup(response http.ResponseWriter, request *
 }
 
 func (s *server) handleConnections(response http.ResponseWriter, request *http.Request) {
-	session, ok := s.authenticateOrWrite(response, request)
-	if !ok {
-		return
-	}
-	if !s.recentlyReauthenticated(session) {
-		writeAPIError(response, http.StatusPreconditionRequired, "reauthentication_required")
+	if _, ok := s.authenticateOrWrite(response, request); !ok {
 		return
 	}
 	connections, err := s.proxyManager.Connections(request.Context(), request.PathValue("id"))
@@ -292,7 +280,7 @@ func (s *server) handleConnections(response http.ResponseWriter, request *http.R
 }
 
 func (s *server) handleMixedCIDRs(response http.ResponseWriter, request *http.Request) {
-	if _, ok := s.authorizeMutation(response, request, true); !ok {
+	if _, ok := s.authorizeMutation(response, request); !ok {
 		return
 	}
 	var input struct {
@@ -318,7 +306,7 @@ func (s *server) handleMixedCIDRs(response http.ResponseWriter, request *http.Re
 	response.WriteHeader(http.StatusNoContent)
 }
 
-func (s *server) authorizeMutation(response http.ResponseWriter, request *http.Request, requireRecent bool) (requestSession, bool) {
+func (s *server) authorizeMutation(response http.ResponseWriter, request *http.Request) (requestSession, bool) {
 	session, ok := s.authenticateOrWrite(response, request)
 	if !ok {
 		return requestSession{}, false
@@ -327,18 +315,11 @@ func (s *server) authorizeMutation(response http.ResponseWriter, request *http.R
 		writeAPIError(response, http.StatusForbidden, "forbidden")
 		return requestSession{}, false
 	}
-	if requireRecent && !s.recentlyReauthenticated(session) {
-		writeAPIError(response, http.StatusPreconditionRequired, "reauthentication_required")
-		return requestSession{}, false
-	}
 	if s.proxyManager == nil {
 		writeAPIError(response, http.StatusServiceUnavailable, "not_configured")
 		return requestSession{}, false
 	}
 	return session, true
-}
-func (s *server) recentlyReauthenticated(session requestSession) bool {
-	return session.stored.ReauthenticatedAt != nil && !s.now().UTC().Before(session.stored.ReauthenticatedAt.UTC()) && s.now().UTC().Sub(session.stored.ReauthenticatedAt.UTC()) <= recentReauthentication
 }
 func (s *server) idempotencyKey(response http.ResponseWriter, request *http.Request, session requestSession) (string, *cachedResponse, bool) {
 	raw := strings.TrimSpace(request.Header.Get("Idempotency-Key"))

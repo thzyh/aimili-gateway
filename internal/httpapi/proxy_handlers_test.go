@@ -31,14 +31,14 @@ func TestCountriesRequireAuthenticationAndReturnSafeCatalog(t *testing.T) {
 	}
 }
 
-func TestProxyGroupEnableRequiresCSRFRecentReauthAndReplaysIdempotencyKey(t *testing.T) {
+func TestProxyGroupEnableRequiresCSRFAndReplaysIdempotencyKeyWithoutReauth(t *testing.T) {
 	manager := &fakeProxyManager{}
 	environment := newAuthTestEnvironmentConfigured(t, true, func(dependencies *Dependencies) { dependencies.ProxyManager = manager })
 	assertResponseStatus(t, environment.login(t), http.StatusNoContent)
 	csrf := environment.session(t).CSRFToken
 	payload := map[string]string{"countryCode": "JP", "proxyType": "datacenter"}
+	assertResponseStatus(t, environment.requestWithHeaders(t, http.MethodPost, "/api/v1/proxy-groups", payload, environment.origin, "", map[string]string{"Idempotency-Key": "missing-csrf"}), http.StatusForbidden)
 	assertResponseStatus(t, environment.request(t, http.MethodPost, "/api/v1/proxy-groups", payload, environment.origin, csrf), http.StatusPreconditionRequired)
-	assertResponseStatus(t, environment.request(t, http.MethodPost, "/api/v1/auth/reauth", map[string]string{"password": "local-only-test-password", "totp": "287082"}, environment.origin, csrf), http.StatusNoContent)
 	first := environment.requestWithHeaders(t, http.MethodPost, "/api/v1/proxy-groups", payload, environment.origin, csrf, map[string]string{"Idempotency-Key": "enable-jp-dc"})
 	assertResponseStatus(t, first, http.StatusCreated)
 	second := environment.requestWithHeaders(t, http.MethodPost, "/api/v1/proxy-groups", payload, environment.origin, csrf, map[string]string{"Idempotency-Key": "enable-jp-dc"})
@@ -48,13 +48,10 @@ func TestProxyGroupEnableRequiresCSRFRecentReauthAndReplaysIdempotencyKey(t *tes
 	}
 }
 
-func TestConnectionsRequireReadyGroupAndRecentReauthentication(t *testing.T) {
+func TestConnectionsRequireOnlyAnAuthenticatedSession(t *testing.T) {
 	manager := &fakeProxyManager{}
 	environment := newAuthTestEnvironmentConfigured(t, true, func(dependencies *Dependencies) { dependencies.ProxyManager = manager })
 	assertResponseStatus(t, environment.login(t), http.StatusNoContent)
-	csrf := environment.session(t).CSRFToken
-	assertResponseStatus(t, environment.request(t, http.MethodGet, "/api/v1/proxy-groups/agw-jp-dc/connections", nil, "", ""), http.StatusPreconditionRequired)
-	assertResponseStatus(t, environment.request(t, http.MethodPost, "/api/v1/auth/reauth", map[string]string{"password": "local-only-test-password", "totp": "287082"}, environment.origin, csrf), http.StatusNoContent)
 	response := environment.request(t, http.MethodGet, "/api/v1/proxy-groups/agw-jp-dc/connections", nil, "", "")
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK || response.Header.Get("Cache-Control") != "no-store" {
@@ -87,7 +84,7 @@ func TestProxyPoolFiltersAndExposesProtocolLatenciesWithoutSecrets(t *testing.T)
 	}
 }
 
-func TestStandbyCandidateCanBeActivatedOnlyAfterRecentReauthentication(t *testing.T) {
+func TestStandbyCandidateCanBeActivatedWithoutRecentReauthentication(t *testing.T) {
 	manager := &fakeProxyManager{groups: []domain.ProxyGroup{
 		{ID: "agw-kr-res-standby", CountryCode: "KR", CountryName: "韩国", ProxyType: domain.ProxyTypeResidential, Status: domain.ProxyGroupStandby, CandidateLatencyMS: 35, Version: 1},
 	}}
@@ -95,8 +92,6 @@ func TestStandbyCandidateCanBeActivatedOnlyAfterRecentReauthentication(t *testin
 	assertResponseStatus(t, environment.login(t), http.StatusNoContent)
 	csrf := environment.session(t).CSRFToken
 	path := "/api/v1/proxy-groups/agw-kr-res-standby/activate"
-	assertResponseStatus(t, environment.requestWithHeaders(t, http.MethodPost, path, nil, environment.origin, csrf, map[string]string{"Idempotency-Key": "activate-kr"}), http.StatusPreconditionRequired)
-	assertResponseStatus(t, environment.request(t, http.MethodPost, "/api/v1/auth/reauth", map[string]string{"password": "local-only-test-password", "totp": "287082"}, environment.origin, csrf), http.StatusNoContent)
 	response := environment.requestWithHeaders(t, http.MethodPost, path, nil, environment.origin, csrf, map[string]string{"Idempotency-Key": "activate-kr"})
 	assertResponseStatus(t, response, http.StatusOK)
 	if manager.activateCalls != 1 || manager.activatedID != "agw-kr-res-standby" {
@@ -104,7 +99,7 @@ func TestStandbyCandidateCanBeActivatedOnlyAfterRecentReauthentication(t *testin
 	}
 }
 
-func TestPoolExportRequiresRecentReauthenticationAndExportsOnlyReadyFilteredRows(t *testing.T) {
+func TestPoolExportUsesAuthenticatedSessionAndExportsOnlyReadyFilteredRows(t *testing.T) {
 	manager := &fakeProxyManager{groups: []domain.ProxyGroup{
 		{ID: "ready-jp", CountryCode: "JP", ProxyType: domain.ProxyTypeDatacenter, Status: domain.ProxyGroupReady},
 		{ID: "broken-jp", CountryCode: "JP", ProxyType: domain.ProxyTypeDatacenter, Status: domain.ProxyGroupDegraded},
@@ -112,9 +107,6 @@ func TestPoolExportRequiresRecentReauthenticationAndExportsOnlyReadyFilteredRows
 	environment := newAuthTestEnvironmentConfigured(t, true, func(dependencies *Dependencies) { dependencies.ProxyManager = manager })
 	assertResponseStatus(t, environment.login(t), http.StatusNoContent)
 	path := "/api/v1/proxy-groups/export?protocol=vless&country=JP&proxyType=datacenter"
-	assertResponseStatus(t, environment.request(t, http.MethodGet, path, nil, "", ""), http.StatusPreconditionRequired)
-	csrf := environment.session(t).CSRFToken
-	assertResponseStatus(t, environment.request(t, http.MethodPost, "/api/v1/auth/reauth", map[string]string{"password": "local-only-test-password", "totp": "287082"}, environment.origin, csrf), http.StatusNoContent)
 	response := environment.request(t, http.MethodGet, path, nil, "", "")
 	defer response.Body.Close()
 	var body string
