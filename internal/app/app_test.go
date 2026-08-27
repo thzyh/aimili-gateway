@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/thzyh/aimili-gateway/internal/accountsync"
 	"github.com/thzyh/aimili-gateway/internal/config"
 	"github.com/thzyh/aimili-gateway/internal/orchestrator"
 	"github.com/thzyh/aimili-gateway/internal/store"
@@ -44,7 +45,7 @@ func TestLegacyXUICredentialsMigrateToEncryptedUnifiedCredentialsWithoutChanging
 		t.Fatal(err)
 	}
 	key := []byte("01234567890123456789012345678901")
-	if err := migrateLegacyUnifiedCredentials(t.Context(), database, path, key); err != nil {
+	if err := accountsync.MigrateLegacyCredentials(t.Context(), database, path, key); err != nil {
 		t.Fatal(err)
 	}
 	credentials, err := database.LoadUnifiedCredentials(t.Context(), key)

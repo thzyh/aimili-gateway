@@ -148,7 +148,7 @@ func newCoordinatorFixture(t *testing.T) coordinatorFixture {
 	database := &fakeAccountStore{
 		admin:       store.Admin{Username: "owner", PasswordHash: []byte("old-hash"), SecurityUpdatedAt: now},
 		credentials: store.UnifiedCredentials{Username: "owner", Password: []byte("old-password-marker")},
-		state:       store.AccountSyncState{Status: store.AccountSyncSynced},
+		state:       store.AccountSyncState{Status: store.AccountSyncSynced, UsernameFingerprint: "existing-fingerprint"},
 		calls:       &calls,
 	}
 	aimiliAdmin := &fakeAimiliAdmin{calls: &calls, username: "owner", password: "old-password-marker", updateFailures: map[string]error{}}
@@ -162,6 +162,15 @@ func newCoordinatorFixture(t *testing.T) coordinatorFixture {
 	}
 	coordinator.hashPassword = func([]byte) (string, error) { return "new-hash", nil }
 	return coordinatorFixture{coordinator: coordinator, store: database, aimili: aimiliAdmin, xui: xuiAdmin, calls: &calls}
+}
+
+func TestPreflightFailurePreservesCommittedFingerprint(t *testing.T) {
+	fixture := newCoordinatorFixture(t)
+	fixture.aimili.verifyErr = &aimili.AdapterError{Code: "credentials_rejected"}
+	assertCoordinatorCode(t, fixture.coordinator.Check(t.Context()), "account_drift")
+	if fixture.store.state.UsernameFingerprint != "existing-fingerprint" {
+		t.Fatal("drift failure erased the durable migration boundary")
+	}
 }
 
 func TestChangePreflightFailureHasNoSideEffects(t *testing.T) {

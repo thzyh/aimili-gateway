@@ -246,11 +246,7 @@ func (c *Coordinator) restoreXUI(ctx context.Context, current, old store.Unified
 }
 
 func (c *Coordinator) markRepairRequired(ctx context.Context) error {
-	_ = c.store.SetAccountSyncState(ctx, store.AccountSyncState{
-		Status:        store.AccountSyncRepairRequired,
-		LastCheckedAt: c.now().UTC(),
-		ErrorCode:     "rollback_failed",
-	})
+	c.setFailureState(ctx, store.AccountSyncRepairRequired, "rollback_failed")
 	return &Error{Code: "repair_required"}
 }
 
@@ -264,7 +260,20 @@ func (c *Coordinator) recordCheckFailure(ctx context.Context, err error) {
 	if code == "version_incompatible" {
 		status = store.AccountSyncIncompatible
 	}
-	_ = c.store.SetAccountSyncState(ctx, store.AccountSyncState{Status: status, LastCheckedAt: c.now().UTC(), ErrorCode: code})
+	c.setFailureState(ctx, status, code)
+}
+
+func (c *Coordinator) setFailureState(ctx context.Context, status store.AccountSyncStatus, code string) {
+	fingerprint := ""
+	if current, err := c.store.GetAccountSyncState(ctx); err == nil {
+		fingerprint = current.UsernameFingerprint
+	}
+	_ = c.store.SetAccountSyncState(ctx, store.AccountSyncState{
+		Status:              status,
+		UsernameFingerprint: fingerprint,
+		LastCheckedAt:       c.now().UTC(),
+		ErrorCode:           code,
+	})
 }
 
 func validateChangeRequest(request ChangeRequest) error {

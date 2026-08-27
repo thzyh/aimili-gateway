@@ -91,6 +91,10 @@ func buildAccountSynchronizer(database *store.Store, cfg config.Config, now func
 		return nil, err
 	}
 	defer clear(masterKey)
+	xuiCredentials, err := loadAccountXUICredentials(context.Background(), database, cfg.XUICredentialsFile, masterKey)
+	if err != nil {
+		return nil, err
+	}
 	token, err := aimili.ReadTokenFile(cfg.AimiliControlTokenFile)
 	if err != nil {
 		return nil, err
@@ -100,15 +104,23 @@ func buildAccountSynchronizer(database *store.Store, cfg config.Config, now func
 	if err != nil {
 		return nil, err
 	}
-	xuiCredentials, err := xui.ReadCredentialsFile(cfg.XUICredentialsFile)
-	if err != nil {
-		return nil, err
-	}
 	xuiClient, err := xui.NewClient(cfg.XUIBaseURL, xuiCredentials)
 	if err != nil {
 		return nil, err
 	}
 	return accountsync.New(database, masterKey, aimiliClient, xuiClient, now)
+}
+
+func loadAccountXUICredentials(ctx context.Context, database *store.Store, legacyPath string, masterKey []byte) (xui.Credentials, error) {
+	if err := accountsync.MigrateLegacyCredentials(ctx, database, legacyPath, masterKey); err != nil {
+		return xui.Credentials{}, err
+	}
+	unified, err := database.LoadUnifiedCredentials(ctx, masterKey)
+	if err != nil {
+		return xui.Credentials{}, err
+	}
+	defer clear(unified.Password)
+	return xui.Credentials{Username: unified.Username, Password: string(unified.Password)}, nil
 }
 
 func initializeAdmin(ctx context.Context, database *store.Store, masterKeyPath string, in io.Reader, out io.Writer, now func() time.Time) error {

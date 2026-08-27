@@ -61,6 +61,40 @@ func TestInitCreatesEncryptedSingleAdminWithoutEchoingPassword(t *testing.T) {
 	}
 }
 
+func TestLoadAccountXUICredentialsUsesEncryptedUnifiedCredentialsAfterSync(t *testing.T) {
+	directory := t.TempDir()
+	database, err := store.Open(t.Context(), filepath.Join(directory, "gateway.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	legacyPath := filepath.Join(directory, "xui-automation.json")
+	if err := os.WriteFile(legacyPath, []byte(`{"username":"owner","password":"stale-password-marker"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	key := []byte("01234567890123456789012345678901")
+	if err := database.PutCredential(t.Context(), store.UnifiedUsernamePurpose, []byte("owner"), key); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.PutCredential(t.Context(), store.UnifiedPasswordPurpose, []byte("current-password-marker"), key); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetAccountSyncState(t.Context(), store.AccountSyncState{
+		Status:              store.AccountSyncSynced,
+		UsernameFingerprint: "committed-fingerprint",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	credentials, err := loadAccountXUICredentials(t.Context(), database, legacyPath, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if credentials.Username != "owner" || credentials.Password != "current-password-marker" {
+		t.Fatal("account command did not use committed encrypted credentials")
+	}
+}
+
 func TestInitRejectsSecondAdministrator(t *testing.T) {
 	environment := newAdminTestEnvironment(t)
 	firstInput := strings.NewReader("owner\nlocal-only-test-password\nlocal-only-test-password\n")

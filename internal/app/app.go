@@ -70,30 +70,6 @@ func startAccountDriftChecks(ctx context.Context, checker accountChecker, initia
 	return done
 }
 
-func migrateLegacyUnifiedCredentials(ctx context.Context, database *store.Store, legacyPath string, masterKey []byte) error {
-	credentials, err := database.LoadUnifiedCredentials(ctx, masterKey)
-	if err == nil {
-		clear(credentials.Password)
-		return nil
-	}
-	if !errors.Is(err, store.ErrCredentialNotFound) {
-		return err
-	}
-	legacy, err := xui.ReadCredentialsFile(legacyPath)
-	if err != nil {
-		return err
-	}
-	password := []byte(legacy.Password)
-	defer clear(password)
-	if err := database.PutCredential(ctx, store.UnifiedUsernamePurpose, []byte(legacy.Username), masterKey); err != nil {
-		return err
-	}
-	if err := database.PutCredential(ctx, store.UnifiedPasswordPurpose, password, masterKey); err != nil {
-		return err
-	}
-	return nil
-}
-
 func New(ctx context.Context, cfg config.Config) (*App, error) {
 	appContext, cancel := context.WithCancel(ctx)
 	cfg = cfg.WithRuntimeDefaults()
@@ -180,7 +156,7 @@ func newRuntimeServices(ctx context.Context, cfg config.Config, database *store.
 		return runtimeServices{}, errors.New("Aimili control token is required when legacy 3x-ui credentials exist")
 	}
 	if legacyCredentialsExist {
-		if err := migrateLegacyUnifiedCredentials(ctx, database, cfg.XUICredentialsFile, masterKey); err != nil {
+		if err := accountsync.MigrateLegacyCredentials(ctx, database, cfg.XUICredentialsFile, masterKey); err != nil {
 			return runtimeServices{}, err
 		}
 	}
