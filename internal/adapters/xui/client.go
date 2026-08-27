@@ -216,23 +216,9 @@ func (c *Client) UpdateManagedGroup(ctx context.Context, desired DesiredGroup, m
 	if err != nil {
 		return ManagedGroup{}, err
 	}
-	wanted := map[int64]string{
-		managed.VLESSInboundID: managed.VLESSInboundTag,
-		managed.MixedInboundID: managed.MixedInboundTag,
-	}
-	found := make(map[int64]bool, len(wanted))
-	for _, inbound := range snapshot.Inbounds {
-		tag, owned := wanted[inbound.ID]
-		if !owned {
-			continue
-		}
-		if inbound.Tag != tag || !strings.HasPrefix(inbound.Remark, "Aimili Gateway ") {
-			return ManagedGroup{}, &AdapterError{Code: "ownership_conflict"}
-		}
-		found[inbound.ID] = true
-	}
-	if len(found) != len(wanted) {
-		return ManagedGroup{}, &AdapterError{Code: "managed_resource_missing"}
+	managed, err = resolveManagedInboundIDs(snapshot.Inbounds, desired, managed)
+	if err != nil {
+		return ManagedGroup{}, err
 	}
 	publicKey, shortID, serverName, err := c.currentRealityMaterial(ctx, desired, managed)
 	if err != nil {
@@ -249,6 +235,37 @@ func (c *Client) UpdateManagedGroup(ctx context.Context, desired DesiredGroup, m
 	managed.PublicKey = publicKey
 	managed.ShortID = shortID
 	managed.ServerName = serverName
+	return managed, nil
+}
+
+func resolveManagedInboundIDs(inbounds []Inbound, desired DesiredGroup, managed ManagedGroup) (ManagedGroup, error) {
+	var vless, mixed *Inbound
+	for index := range inbounds {
+		inbound := &inbounds[index]
+		if inbound.ID == managed.VLESSInboundID && inbound.Tag != managed.VLESSInboundTag {
+			return ManagedGroup{}, &AdapterError{Code: "ownership_conflict"}
+		}
+		if inbound.ID == managed.MixedInboundID && inbound.Tag != managed.MixedInboundTag {
+			return ManagedGroup{}, &AdapterError{Code: "ownership_conflict"}
+		}
+		switch inbound.Tag {
+		case managed.VLESSInboundTag:
+			if vless != nil || inbound.Protocol != "vless" || inbound.Port != desired.VLESSPort || !strings.HasPrefix(inbound.Remark, "Aimili Gateway ") {
+				return ManagedGroup{}, &AdapterError{Code: "ownership_conflict"}
+			}
+			vless = inbound
+		case managed.MixedInboundTag:
+			if mixed != nil || inbound.Protocol != "mixed" || inbound.Port != desired.MixedPort || !strings.HasPrefix(inbound.Remark, "Aimili Gateway ") {
+				return ManagedGroup{}, &AdapterError{Code: "ownership_conflict"}
+			}
+			mixed = inbound
+		}
+	}
+	if vless == nil || mixed == nil {
+		return ManagedGroup{}, &AdapterError{Code: "managed_resource_missing"}
+	}
+	managed.VLESSInboundID = vless.ID
+	managed.MixedInboundID = mixed.ID
 	return managed, nil
 }
 

@@ -97,6 +97,8 @@ func (o *Orchestrator) SetMixedPolicy(ctx context.Context, requested store.Mixed
 	for _, update := range applied {
 		changed := update.group
 		changed.ConfigFingerprint = update.updated.Fingerprint
+		changed.VLESSInboundID = update.updated.VLESSInboundID
+		changed.MixedInboundID = update.updated.MixedInboundID
 		changed.RealityPublicKey = update.updated.PublicKey
 		changed.RealityShortID = update.updated.ShortID
 		changed.RealityServerName = update.updated.ServerName

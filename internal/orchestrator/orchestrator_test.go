@@ -261,15 +261,17 @@ func (a *fakeAimili) slot(ip string) aimili.Slot {
 }
 
 type fakeXUI struct {
-	calls              *[]string
-	deleteError        error
-	desired            xui.DesiredGroup
-	updated            []xui.DesiredGroup
-	updateNames        []string
-	updateErrors       map[int]error
-	returnedPublicKey  string
-	returnedShortID    string
-	returnedServerName string
+	calls                  *[]string
+	deleteError            error
+	desired                xui.DesiredGroup
+	updated                []xui.DesiredGroup
+	updateNames            []string
+	updateErrors           map[int]error
+	returnedPublicKey      string
+	returnedShortID        string
+	returnedServerName     string
+	returnedVLESSInboundID int64
+	returnedMixedInboundID int64
 }
 
 func (x *fakeXUI) EnsureManagedGroup(_ context.Context, desired xui.DesiredGroup) (xui.ManagedGroup, error) {
@@ -296,6 +298,12 @@ func (x *fakeXUI) UpdateManagedGroup(_ context.Context, desired xui.DesiredGroup
 	}
 	if x.returnedServerName != "" {
 		managed.ServerName = x.returnedServerName
+	}
+	if x.returnedVLESSInboundID != 0 {
+		managed.VLESSInboundID = x.returnedVLESSInboundID
+	}
+	if x.returnedMixedInboundID != 0 {
+		managed.MixedInboundID = x.returnedMixedInboundID
 	}
 	return managed, nil
 }

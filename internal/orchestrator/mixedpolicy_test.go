@@ -124,12 +124,15 @@ func TestRepairManagedPersistsRealityMaterialReturnedByXUI(t *testing.T) {
 	fixture.xui.returnedPublicKey = "current-public-key"
 	fixture.xui.returnedShortID = "current-short-id"
 	fixture.xui.returnedServerName = "proxy.example.test"
+	fixture.xui.returnedVLESSInboundID = 51
+	fixture.xui.returnedMixedInboundID = 52
 
 	if err := fixture.orchestrator(t).RepairManaged(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	group := fixture.store.groups["agw-jp-dc-a"]
-	if group.RealityPublicKey != "current-public-key" || group.RealityShortID != "current-short-id" || group.RealityServerName != "proxy.example.test" {
+	if group.RealityPublicKey != "current-public-key" || group.RealityShortID != "current-short-id" || group.RealityServerName != "proxy.example.test" ||
+		group.VLESSInboundID != 51 || group.MixedInboundID != 52 {
 		t.Fatalf("repaired Reality material was not persisted: %#v", group)
 	}
 }

@@ -361,6 +361,37 @@ func TestUpdateManagedGroupRejectsRealityClientDriftBeforeChangingRouting(t *tes
 	}
 }
 
+func TestUpdateManagedGroupRebindsMissingStoredIDsToExactOwnedTags(t *testing.T) {
+	fixture := &xuiFixture{}
+	client := newXUIFixtureClient(t, fixture)
+	desired := DesiredGroup{
+		ResourceName: "agw-jp-dc", SOCKSPort: 17930, VLESSPort: 20000, MixedPort: 30000,
+		VLESSClientID: "client-id", MixedUsername: "proxy-user", MixedPassword: "proxy-password",
+		MixedSourceRestrictionEnabled: true, MixedSourceCIDRs: []string{"198.51.100.0/24"},
+		RealityTarget: "127.0.0.1:443", RealityServerName: "proxy.example.test",
+	}
+	managed, err := client.EnsureManagedGroup(context.Background(), desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, inbound := range fixture.inbounds {
+		switch inbound["protocol"] {
+		case "vless":
+			inbound["id"] = float64(501)
+		case "mixed":
+			inbound["id"] = float64(502)
+		}
+	}
+
+	updated, err := client.UpdateManagedGroup(context.Background(), desired, managed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.VLESSInboundID != 501 || updated.MixedInboundID != 502 {
+		t.Fatalf("missing stored IDs were not rebound: %#v", updated)
+	}
+}
+
 func TestEnsureManagedGroupRejectsSameTagWithoutOwnershipMarker(t *testing.T) {
 	fixture := &xuiFixture{inbounds: []map[string]any{{
 		"id": float64(9), "tag": "agw-jp-dc-vless", "remark": "User inbound", "protocol": "vless", "port": float64(20000),
