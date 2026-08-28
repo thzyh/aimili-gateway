@@ -201,6 +201,37 @@ func TestEnsureManagedGroupPreservesUnmanagedXrayResources(t *testing.T) {
 	}
 }
 
+func TestVLESSInboundUsesOneResourceScopedClientIdentity(t *testing.T) {
+	clientEmail := func(resourceName string) string {
+		desired := DesiredGroup{ResourceName: resourceName, VLESSClientID: "client-id", VLESSPort: 20000}
+		inbound := vlessInbound(desired, resourceName+"-vless", "private", "public", "short")
+		var settings struct {
+			Clients []struct {
+				Email string `json:"email"`
+			} `json:"clients"`
+		}
+		if err := json.Unmarshal([]byte(inbound["settings"].(string)), &settings); err != nil {
+			t.Fatal(err)
+		}
+		if len(settings.Clients) != 1 {
+			t.Fatalf("managed VLESS inbound clients = %d, want 1", len(settings.Clients))
+		}
+		return settings.Clients[0].Email
+	}
+
+	jp := clientEmail("agw-jp-dc")
+	kr := clientEmail("agw-kr-dc")
+	if jp != "aimili-gateway-jp-dc" {
+		t.Fatalf("JP client email = %q", jp)
+	}
+	if kr != "aimili-gateway-kr-dc" {
+		t.Fatalf("KR client email = %q", kr)
+	}
+	if jp == kr {
+		t.Fatal("managed groups reused a global 3x-ui client email")
+	}
+}
+
 func TestEnsureManagedGroupUsesConfiguredLocalRealityTarget(t *testing.T) {
 	fixture := &xuiFixture{}
 	client := newXUIFixtureClient(t, fixture)

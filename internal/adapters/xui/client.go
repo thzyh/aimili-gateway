@@ -802,10 +802,14 @@ func vlessInbound(desired DesiredGroup, tag, privateKey, publicKey, shortID stri
 		"up": 0, "down": 0, "total": 0, "remark": "Aimili Gateway " + desired.ResourceName + " VLESS",
 		"enable": true, "expiryTime": 0, "trafficReset": "never", "trafficResetDay": 1,
 		"listen": "", "port": desired.VLESSPort, "protocol": "vless", "tag": tag,
-		"settings":       mustJSONString(map[string]any{"clients": []any{map[string]any{"id": desired.VLESSClientID, "email": "aimili-gateway", "flow": "xtls-rprx-vision", "enable": true}}, "decryption": "none"}),
+		"settings":       mustJSONString(map[string]any{"clients": []any{map[string]any{"id": desired.VLESSClientID, "email": managedClientEmail(desired.ResourceName), "flow": "xtls-rprx-vision", "enable": true}}, "decryption": "none"}),
 		"streamSettings": mustJSONString(map[string]any{"network": "tcp", "security": "reality", "realitySettings": map[string]any{"show": false, "xver": 0, "target": desired.RealityTarget, "serverNames": []any{desired.RealityServerName}, "privateKey": privateKey, "shortIds": []any{shortID}, "settings": map[string]any{"publicKey": publicKey, "fingerprint": "chrome", "spiderX": "/"}}}),
 		"sniffing":       mustJSONString(map[string]any{"enabled": true, "destOverride": []any{"http", "tls", "quic"}, "metadataOnly": false, "routeOnly": false}),
 	}
+}
+
+func managedClientEmail(resourceName string) string {
+	return "aimili-gateway-" + strings.TrimPrefix(resourceName, "agw-")
 }
 
 func mixedInbound(desired DesiredGroup, tag string) map[string]any {
