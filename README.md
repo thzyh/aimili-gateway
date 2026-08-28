@@ -4,6 +4,8 @@ Aimili Gateway 是 AimiliVPN 与 3x-ui 的轻量统一控制台项目。统一�
 
 ## 当前阶段
 
+2026-08-28 增量正在执行：AimiliVPN 和 Gateway 已增加按国家刷新、刷新状态轮询和当前筛选结果批量复制；Gateway 在新建代理组前保证实际出口 IP 唯一。3x-ui 升级目标固定为官方 `v3.7.0`，使用固定 amd64 资产大小与 SHA-256、整体备份和整体回滚。生产结果必须以本次最新验证记录为准，在 VPS 阶梯验收完成前不把本地通过描述为生产完成。
+
 V1-C 低内存按需资源池已经完成服务器端验收：统一控制台主界面改为“VPN 节点池、SOCKS5H 代理池、高级设置”，移除旧服务状态卡和国家大卡片。Gateway 显示 AimiliVPN 当前有效候选，并在 512 MiB 生产环境中维持一个成对的 VLESS Reality、mixed/SOCKS5H 在线出口；只有双协议真实验证为 `ready` 的记录允许复制或导出。Windows 外部用户客户端应用层最终验收仍未完成。
 
 V1-B 单代理组闭环已于 2026-08-26 完成真实 VPS 端到端验收：在 V1-A 个人单管理员、可选 TOTP、服务端会话和独立 3x-ui 专家模式基础上，增加国家候选目录、住宅/机房分类、AimiliVPN 槽位与 `agw-` Xray 资源编排、VLESS Reality、mixed/SOCKS5H、同类型换 IP、反向补偿和真实协议验证器。验收证据见 `docs/verification/2026-08-26-ny-v1b.md`。
@@ -17,6 +19,8 @@ Gateway 只管理 `agw-` 命名空间；不接管非受管 3x-ui/Xray 资源，�
 - `docs/superpowers/specs/2026-08-25-country-proxy-console-design.md`：当前后续设计，定义国家代理目录、VLESS＋mixed 成对编排、容量、安全、统一高级设置和真实出口验收。
 - `docs/superpowers/specs/2026-08-26-online-proxy-pools-design.md`：V1-C 正式设计，定义每候选出口实例、在线双协议资源池、紧凑前端和阶梯容量门槛。
 - `docs/superpowers/specs/2026-08-27-advanced-settings-unified-credentials-design.md`：已批准的 V1-D 正式设计，定义高级设置、三账户同步、服务端自动代登录、SOCKS5H 来源开关和状态简化。
+- `docs/superpowers/specs/2026-08-28-xui-upgrade-capacity-country-refresh-design.md`：3x-ui v3.7.0、按国家刷新、出口去重和 512 MiB 容量阶梯的批准设计。
+- `docs/superpowers/plans/2026-08-28-xui-upgrade-capacity-country-refresh.md`：本次增量的实施与生产验收计划。
 - `docs/superpowers/plans/2026-08-27-advanced-settings-unified-credentials-v1d.md`：V1-D 实施、迁移、回退和真实 VPS 验收计划。
 - `docs/superpowers/plans/2026-08-26-online-proxy-pools-v1c.md`：V1-C 实施与真实 VPS 验收计划。
 - `docs/superpowers/plans/2026-08-25-country-proxy-v1b-single-group.md`：V1-B 单代理组控制面、协议验证与部署验收计划。
@@ -78,7 +82,9 @@ V1-D 中该命令是三服务统一用户名和密码的唯一受支持修改入
 
 ## 验证
 
-V1-C 本地验证入口为 `scripts/verify-online-pools-v1c.ps1`。生产配置可将 `maxProxyGroups` 设置到 `64`，但它只是代码上限；实际值必须从 1 开始逐级验证，不能把配置上限当作稳定在线数量。
+本次 512 MiB 生产验证使用 `scripts/verify-capacity-step-remote.sh`：容量只按 1→2→3 提升，每级默认采样 15 分钟，触发低可用内存、Swap、服务重启、failed unit、OOM 或 SSH 探测门槛就回退；不尝试 4。3x-ui 固定升级使用 `scripts/upgrade-xui-v370-remote.sh`，必须先运行 `--preflight`，再运行 `--apply`，必要时用生成的固定备份目录执行 `--rollback`。
+
+V1-C 既有本地验证入口仍为 `scripts/verify-online-pools-v1c.ps1`。配置中的代码上限不等于稳定在线数量，生产实际值必须由上述阶梯采样决定。
 
 V1-B 的本地验证入口为 `scripts/verify-country-proxy-v1b.ps1`；日常修改至少完成以下检查：
 
