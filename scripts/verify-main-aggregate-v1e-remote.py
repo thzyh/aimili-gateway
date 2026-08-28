@@ -21,6 +21,8 @@ XRAY = "/usr/local/x-ui/bin/xray-linux-amd64"
 def call(opener, method: str, path: str, payload=None):
     data = None
     headers = {"Accept": "application/json"}
+    if method != "GET":
+        headers["Origin"] = BASE
     if payload is not None:
         data = json.dumps(payload, separators=(",", ":")).encode()
         headers["Content-Type"] = "application/json"
