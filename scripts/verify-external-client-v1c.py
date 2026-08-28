@@ -31,7 +31,6 @@ def call(method,path,payload=None,csrf=''):
 call('POST','/api/v1/auth/login',{'username':account['username'],'password':account['password'],'totp':''})
 session=call('GET','/api/v1/auth/session'); groups=call('GET','/api/v1/proxy-groups'); ready=[g for g in groups if g['status']=='ready']
 if len(ready)!=1: raise SystemExit('ready group count mismatch')
-call('POST','/api/v1/auth/reauth',{'password':account['password'],'totp':''},session['csrfToken'])
 connections=call('GET','/api/v1/proxy-groups/'+urllib.parse.quote(ready[0]['id'],safe='')+'/connections')
 print(json.dumps({'exitIp':ready[0]['exitIp'],'vlessUri':connections['vlessUri'],'socks5hUri':connections['socks5hUri']},separators=(',',':')))
 '''
