@@ -17,7 +17,8 @@ require_root() {
 }
 
 current_version() {
-    /usr/local/x-ui/x-ui version 2>/dev/null | grep -Eo 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true
+    local binary="${1:-/usr/local/x-ui/x-ui}"
+    "$binary" -v 2>/dev/null | grep -Eo 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true
 }
 
 preflight() {
@@ -141,11 +142,24 @@ apply_upgrade() {
 }
 
 self_test() {
+    local work fake detected
     [[ "$XUI_VERSION" == "v3.7.0" ]]
     [[ "$XUI_ASSET" == "x-ui-linux-amd64.tar.gz" ]]
     [[ "$XUI_ASSET_SIZE" == "80280886" ]]
     [[ "$XUI_ASSET_SHA256" =~ ^[0-9a-f]{64}$ ]]
     [[ "$XUI_VERSION" != "latest" && "$XUI_VERSION" != "main" && "$XUI_VERSION" != "dev-latest" ]]
+    work="$(mktemp -d)"
+    trap 'rm -rf -- "$work"' EXIT
+    fake="$work/x-ui"
+    printf '%s\n' \
+        '#!/usr/bin/env bash' \
+        '[[ "${1:-}" == "-v" ]] || exit 42' \
+        'printf "3.7.0\n"' > "$fake"
+    chmod +x "$fake"
+    detected="$(current_version "$fake")"
+    [[ "$detected" == "3.7.0" ]] || die "版本探测必须使用 3x-ui 的 -v 参数。"
+    rm -rf -- "$work"
+    trap - EXIT
     printf 'self-test: ok\n'
 }
 
