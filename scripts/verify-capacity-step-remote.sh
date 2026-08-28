@@ -28,6 +28,7 @@ evaluate_thresholds() {
 }
 
 self_test() {
+    local work legacy live ready
     LOW_MEMORY_STREAK=0
     evaluate_thresholds 81000 0 0 0 0 0 1 || die "首次低内存样本不应立即失败。"
     ! evaluate_thresholds 80000 0 0 0 0 0 1 || die "连续两次低内存未被拒绝。"
@@ -42,6 +43,24 @@ self_test() {
             ssh) ! evaluate_thresholds 100000 0 0 0 0 0 0 ;;
         esac || die "门槛自测失败：$field"
     done
+    work="$(mktemp -d)"
+    trap 'rm -rf -- "$work"' EXIT
+    legacy="$work/legacy.db"
+    live="$work/live.db"
+    python3 - "$legacy" "$live" <<'PY'
+import sqlite3
+import sys
+
+with sqlite3.connect(sys.argv[1]) as db:
+    db.execute("create table legacy_marker(id integer primary key)")
+with sqlite3.connect(sys.argv[2]) as db:
+    db.execute("create table proxy_groups(status text not null)")
+    db.executemany("insert into proxy_groups(status) values (?)", [("ready",), ("ready",), ("degraded",)])
+PY
+    ready="$(ready_groups "$legacy" "$live")"
+    [[ "$ready" == "2" ]] || die "容量计数必须跳过不含代理组表的旧数据库。"
+    rm -rf -- "$work"
+    trap - EXIT
     printf 'self-test: ok\n'
 }
 
@@ -72,13 +91,23 @@ ssh_probe() {
 }
 
 ready_groups() {
-    python3 - <<'PY' 2>/dev/null || printf '0'
-import os, sqlite3
-for path in ("/var/lib/aimili-gateway/gateway.db", "/var/lib/aimili-gateway/aimili-gateway.db"):
+    python3 - "$@" <<'PY' 2>/dev/null || printf '0'
+import os
+import sqlite3
+import sys
+
+paths = tuple(sys.argv[1:]) or (
+    "/var/lib/aimili-gateway/gateway.db",
+    "/var/lib/aimili-gateway/aimili-gateway.db",
+)
+for path in paths:
     if os.path.isfile(path):
-        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as db:
-            print(db.execute("select count(*) from proxy_groups where status = 'ready'").fetchone()[0])
-        break
+        try:
+            with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as db:
+                print(db.execute("select count(*) from proxy_groups where status = 'ready'").fetchone()[0])
+            break
+        except sqlite3.Error:
+            continue
 else:
     print(0)
 PY
