@@ -57,3 +57,17 @@
 ## 回滚要求
 
 若主连接 mixed 或聚合入口导致 Xray 无法启动：恢复本轮前 3x-ui 数据库和 Xray setting，恢复 Gateway 二进制及数据库，然后重启 `x-ui` 和 `aimili-gateway.service`。回滚后必须验证原三个组和旧 `8443`，不得仅以 systemd `active` 判断恢复完成。
+
+## 本次已执行清理
+
+- 通过 SQLite backup API 备份后删除 16 个无入站引用的 clients 和 16 个对应的 client_traffics。
+- 删除 0 字节且非当前配置的 /var/lib/aimili-gateway/gateway.db。
+- 复审结果：孤儿客户端和孤儿流量均为 0，当前客户端/流量均为 5 条。
+- 未删除 8443、任何非受管 3x-ui 资源、AimiliVPN stash、systemd 单元或生产备份。
+
+## 当前明确保留项
+
+- 最近一次通过端到端验收的 Gateway、AimiliVPN、3x-ui 联合回滚备份。
+- 非受管的 aimili-reality 入站身份和所有非受管 3x-ui 资源。
+- AimiliVPN Git 历史和 stash（当前 stash 数为 0，后续升级仍需先审计）。
+- x-ui-caddy-sync.timer/service 等 systemd 单元，即使当前未加载，也不在无依赖证据前删除。

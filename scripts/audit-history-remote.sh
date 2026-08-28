@@ -13,12 +13,41 @@ fi
 [[ "$mode" == "--audit" ]] || { printf '%s\n' '用法：audit-history-remote.sh [--audit|--self-test]' >&2; exit 2; }
 
 python3 - <<'PY'
+import base64
+import hmac
 import json
 import pathlib
 import sqlite3
 import subprocess
 
 result = {"schema": 1, "checks": {}, "cleanup_candidates": [], "retain": []}
+
+def reality_key_summary(reality):
+    private_key = str(reality.get("privateKey") or "")
+    client_settings = reality.get("settings", {}) if isinstance(reality, dict) else {}
+    public_key = str(client_settings.get("publicKey") or "") if isinstance(client_settings, dict) else ""
+    summary = {
+        "private_key_present": bool(private_key),
+        "public_key_present": bool(public_key),
+        "key_pair_matches": False,
+        "derive_supported": False,
+    }
+    if not private_key or not public_key:
+        return summary
+    try:
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+        private_raw = base64.urlsafe_b64decode(private_key + "=" * (-len(private_key) % 4))
+        public_raw = X25519PrivateKey.from_private_bytes(private_raw).public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+        derived = base64.urlsafe_b64encode(public_raw).decode("ascii").rstrip("=")
+        summary["derive_supported"] = True
+        summary["key_pair_matches"] = hmac.compare_digest(derived, public_key)
+    except (ImportError, ValueError):
+        pass
+    return summary
 
 def service(name):
     run = subprocess.run(["systemctl", "is-active", name], text=True, capture_output=True)
@@ -30,12 +59,54 @@ xui = pathlib.Path("/etc/x-ui/x-ui.db")
 if xui.is_file():
     db = sqlite3.connect(f"file:{xui}?mode=ro", uri=True)
     tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    result["checks"]["xui_tables"] = sorted(tables)
     inbounds = []
     if "inbounds" in tables:
         columns = {row[1] for row in db.execute("PRAGMA table_info(inbounds)")}
         wanted = [name for name in ("id", "tag", "remark", "protocol", "port") if name in columns]
         if wanted:
             inbounds = [dict(zip(wanted, row)) for row in db.execute(f"SELECT {', '.join(wanted)} FROM inbounds ORDER BY id")]
+        if {"tag", "settings", "stream_settings"}.issubset(columns):
+            row = db.execute("SELECT settings, stream_settings FROM inbounds WHERE tag='aimili-reality'").fetchone()
+            if row:
+                settings = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+                stream = json.loads(row[1]) if isinstance(row[1], str) else row[1]
+                clients = settings.get("clients", []) if isinstance(settings, dict) else []
+                reality = stream.get("realitySettings", {}) if isinstance(stream, dict) else {}
+                key_summary = reality_key_summary(reality)
+                result["checks"]["legacy_reality"] = {
+                    "client_count": len(clients),
+                    "client_enabled": bool(clients[0].get("enable")) if len(clients) == 1 else False,
+                    "flow": str(clients[0].get("flow") or "") if len(clients) == 1 else "",
+                    "target": str(reality.get("target") or ""),
+                    "server_name_count": len(reality.get("serverNames") or []),
+                    "short_id_count": len(reality.get("shortIds") or []),
+                    "public_key_present": key_summary["public_key_present"],
+                    "key_pair_matches": key_summary["key_pair_matches"],
+                }
+            summaries = {}
+            for tag in ("aimili-reality", "agw-aggregate-vless-vless"):
+                row = db.execute("SELECT settings, stream_settings FROM inbounds WHERE tag=?", (tag,)).fetchone()
+                if not row:
+                    continue
+                settings = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+                stream = json.loads(row[1]) if isinstance(row[1], str) else row[1]
+                clients = settings.get("clients", []) if isinstance(settings, dict) else []
+                reality = stream.get("realitySettings", {}) if isinstance(stream, dict) else {}
+                summaries[tag] = {
+                    "client_count": len(clients),
+                    "client_enabled": bool(clients[0].get("enable")) if len(clients) == 1 else False,
+                    "flow": str(clients[0].get("flow") or "") if len(clients) == 1 else "",
+                    "network": str(stream.get("network") or "") if isinstance(stream, dict) else "",
+                    "security": str(stream.get("security") or "") if isinstance(stream, dict) else "",
+                    "target": str(reality.get("target") or ""),
+                    "server_name_count": len(reality.get("serverNames") or []),
+                    "short_id_count": len(reality.get("shortIds") or []),
+                    **reality_key_summary(reality),
+                    "show": bool(reality.get("show")),
+                    "xver": int(reality.get("xver") or 0),
+                }
+            result["checks"]["reality_inbound_summaries"] = summaries
     result["checks"]["xui_inbounds"] = inbounds
     if "clients" in tables:
         columns = {row[1] for row in db.execute("PRAGMA table_info(clients)")}
@@ -66,7 +137,49 @@ if xui.is_file():
             result["checks"]["orphan_client_traffic_count"] = orphan_traffic_count
             if orphan_count or orphan_traffic_count:
                 result["cleanup_candidates"].append({"kind": "xui_orphan_clients", "count": orphan_count, "traffic_count": orphan_traffic_count, "reason": "client email has no traffic reference to an existing inbound"})
+    if "settings" in tables:
+        settings_columns = [row[1] for row in db.execute("PRAGMA table_info(settings)")]
+        result["checks"]["settings_columns"] = settings_columns
+        key_column = next((name for name in ("key", "name") if name in settings_columns), "")
+        if key_column:
+            result["checks"]["settings_keys"] = sorted(str(row[0]) for row in db.execute(f"SELECT {key_column} FROM settings"))
     db.close()
+
+runtime_config = pathlib.Path("/usr/local/x-ui/bin/config.json")
+if runtime_config.is_file():
+    try:
+        runtime = json.loads(runtime_config.read_text(encoding="utf-8"))
+        runtime_inbounds = {}
+        for inbound in runtime.get("inbounds", []):
+            tag = str(inbound.get("tag") or "")
+            if tag not in ("aimili-reality", "agw-aggregate-vless-vless"):
+                continue
+            stream = inbound.get("streamSettings", {})
+            reality = stream.get("realitySettings", {}) if isinstance(stream, dict) else {}
+            runtime_inbounds[tag] = {
+                "port": int(inbound.get("port") or 0),
+                "network": str(stream.get("network") or ""),
+                "security": str(stream.get("security") or ""),
+                "target": str(reality.get("target") or ""),
+                **reality_key_summary(reality),
+            }
+        runtime_routes = []
+        for rule in runtime.get("routing", {}).get("rules", []):
+            inbound_tags = [str(tag) for tag in rule.get("inboundTag", [])]
+            relevant = sorted(set(inbound_tags) & {"aimili-reality", "agw-aggregate-vless-vless"})
+            if relevant:
+                runtime_routes.append({
+                    "inbound_tags": relevant,
+                    "outbound_tag": str(rule.get("outboundTag") or ""),
+                    "balancer_tag": str(rule.get("balancerTag") or ""),
+                })
+        result["checks"]["xray_runtime"] = {
+            "config_bytes": runtime_config.stat().st_size,
+            "inbounds": runtime_inbounds,
+            "routes": runtime_routes,
+        }
+    except Exception:
+        result["checks"]["xray_runtime"] = {"readable": False}
 
 config_path = pathlib.Path("/etc/aimili-gateway/config.json")
 current_db = ""

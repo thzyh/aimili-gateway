@@ -97,6 +97,8 @@ type LegacyMainDesired struct {
 	MixedPassword                 string
 	MixedSourceRestrictionEnabled bool
 	MixedSourceCIDRs              []string
+	RealityTarget                 string
+	RealityServerName             string
 }
 
 type LegacyMain struct {

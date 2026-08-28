@@ -20,7 +20,6 @@ apply=0
 python3 - "$apply" <<'PY'
 import datetime
 import json
-import json
 import os
 import pathlib
 import sqlite3

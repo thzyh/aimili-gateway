@@ -19,6 +19,7 @@ type xuiFixture struct {
 	csrfCalls          int
 	loginCalls         int
 	addedProtocols     []string
+	updatedInboundIDs  []int64
 	deletedClients     []string
 	updatedXray        map[string]any
 	inbounds           []map[string]any
@@ -91,6 +92,26 @@ func (fixture *xuiFixture) handler(response http.ResponseWriter, request *http.R
 	case "/panel/panel/api/server/getNewX25519Cert":
 		fmt.Fprint(response, `{"success":true,"obj":{"privateKey":"test-private","publicKey":"test-public"}}`)
 	default:
+		if strings.HasPrefix(request.URL.Path, "/panel/panel/api/inbounds/update/") {
+			var id int64
+			_, _ = fmt.Sscanf(strings.TrimPrefix(request.URL.Path, "/panel/panel/api/inbounds/update/"), "%d", &id)
+			var payload map[string]any
+			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+				testingError(response, "invalid inbound")
+				return
+			}
+			for index, inbound := range fixture.inbounds {
+				if int64(inbound["id"].(float64)) == id {
+					payload["id"] = float64(id)
+					fixture.inbounds[index] = payload
+					fixture.updatedInboundIDs = append(fixture.updatedInboundIDs, id)
+					fmt.Fprint(response, `{"success":true,"obj":null}`)
+					return
+				}
+			}
+			http.NotFound(response, request)
+			return
+		}
 		if strings.HasPrefix(request.URL.Path, "/panel/panel/api/clients/del/") {
 			fixture.deletedClients = append(fixture.deletedClients, strings.TrimPrefix(request.URL.Path, "/panel/panel/api/clients/del/"))
 			fmt.Fprint(response, `{"success":true,"obj":null}`)
@@ -365,12 +386,21 @@ func TestEnsureLegacyMainPreserves8443AndAddsOnlyMixedInbound(t *testing.T) {
 		},
 		inbounds: []map[string]any{{
 			"id": float64(1), "tag": "aimili-reality", "remark": "Aimili Reality", "protocol": "vless", "port": float64(8443),
-			"settings":       mustJSONString(map[string]any{"clients": []any{map[string]any{"id": "legacy-client", "flow": "xtls-rprx-vision"}}}),
-			"streamSettings": mustJSONString(map[string]any{"realitySettings": map[string]any{"serverNames": []any{"www.microsoft.com"}, "shortIds": []any{"short"}, "settings": map[string]any{"publicKey": "public"}}}),
+			"settings": mustJSONString(map[string]any{"clients": []any{map[string]any{"id": "legacy-client", "flow": "xtls-rprx-vision"}}}),
+			"streamSettings": mustJSONString(map[string]any{
+				"network": "tcp", "security": "reality",
+				"realitySettings": map[string]any{
+					"target": "127.0.0.1:443", "serverNames": []any{"proxy.example.test"}, "privateKey": "private",
+					"shortIds": []any{"short"}, "settings": map[string]any{"publicKey": "public"},
+				},
+			}),
 		}},
 	}
 	client := newXUIFixtureClient(t, fixture)
-	managed, err := client.EnsureLegacyMain(context.Background(), LegacyMainDesired{VLESSPort: 8443, MixedPort: 31000, SOCKSPort: 7928, MixedUsername: "user", MixedPassword: "password"})
+	managed, err := client.EnsureLegacyMain(context.Background(), LegacyMainDesired{
+		VLESSPort: 8443, MixedPort: 31000, SOCKSPort: 7928, MixedUsername: "user", MixedPassword: "password",
+		RealityTarget: "127.0.0.1:443", RealityServerName: "proxy.example.test",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -379,6 +409,64 @@ func TestEnsureLegacyMainPreserves8443AndAddsOnlyMixedInbound(t *testing.T) {
 	}
 	if len(fixture.addedProtocols) != 1 || fixture.addedProtocols[0] != "mixed" {
 		t.Fatalf("added protocols=%#v", fixture.addedProtocols)
+	}
+	if len(fixture.updatedInboundIDs) != 0 {
+		t.Fatalf("already migrated 8443 was unexpectedly updated: %v", fixture.updatedInboundIDs)
+	}
+}
+
+func TestEnsureLegacyMainMigratesOnlyHistoricalRealityCoverTarget(t *testing.T) {
+	legacySettings := mustJSONString(map[string]any{"clients": []any{map[string]any{"id": "legacy-client", "flow": "xtls-rprx-vision", "enable": true}}, "decryption": "none"})
+	legacyStream := mustJSONString(map[string]any{
+		"network": "tcp", "security": "reality",
+		"realitySettings": map[string]any{
+			"show": false, "xver": 0, "target": "www.microsoft.com:443",
+			"serverNames": []any{"www.microsoft.com"}, "privateKey": "legacy-private", "shortIds": []any{"legacy-short"},
+			"settings": map[string]any{"publicKey": "legacy-public", "fingerprint": "chrome", "spiderX": "/"},
+		},
+	})
+	fixture := &xuiFixture{
+		initialXray: map[string]any{
+			"outbounds": []any{
+				map[string]any{
+					"tag": "aimili-socks", "protocol": "socks",
+					"settings": map[string]any{
+						"servers": []any{map[string]any{"address": "127.0.0.1", "port": 7928}},
+					},
+				},
+			},
+			"routing": map[string]any{
+				"rules": []any{map[string]any{"type": "field", "inboundTag": []any{"aimili-reality"}, "outboundTag": "aimili-socks"}},
+			},
+		},
+		inbounds: []map[string]any{{
+			"id": float64(1), "tag": "aimili-reality", "remark": "Aimili Reality", "protocol": "vless", "port": float64(8443),
+			"enable": true, "settings": legacySettings, "streamSettings": legacyStream, "sniffing": "{}",
+		}},
+	}
+	client := newXUIFixtureClient(t, fixture)
+	managed, err := client.EnsureLegacyMain(context.Background(), LegacyMainDesired{
+		VLESSPort: 8443, MixedPort: 31000, SOCKSPort: 7928, MixedUsername: "user", MixedPassword: "password",
+		RealityTarget: "127.0.0.1:443", RealityServerName: "proxy.example.test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(fixture.updatedInboundIDs) != "[1]" {
+		t.Fatalf("updated inbound IDs=%v", fixture.updatedInboundIDs)
+	}
+	updated := fixture.inbounds[0]
+	if updated["settings"] != legacySettings || managed.ClientID != "legacy-client" || managed.PublicKey != "legacy-public" || managed.ShortID != "legacy-short" {
+		t.Fatal("legacy client identity or Reality key material changed")
+	}
+	stream, ok := decodeObject(updated["streamSettings"])
+	if !ok {
+		t.Fatal("updated stream settings are invalid")
+	}
+	reality, ok := decodeObject(stream["realitySettings"])
+	if !ok || reality["target"] != "127.0.0.1:443" || fmt.Sprint(reality["serverNames"]) != "[proxy.example.test]" ||
+		reality["privateKey"] != "legacy-private" || fmt.Sprint(reality["shortIds"]) != "[legacy-short]" {
+		t.Fatalf("unexpected migrated Reality settings: %#v", reality)
 	}
 }
 

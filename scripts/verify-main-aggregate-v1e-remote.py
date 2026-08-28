@@ -94,7 +94,7 @@ def vless_exit(uri: str) -> str:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
     config = {
-        "log": {"loglevel": "warning"},
+        "log": {"loglevel": "debug"},
         "inbounds": [{"listen": "127.0.0.1", "port": port, "protocol": "socks", "settings": {"udp": False}}],
         "outbounds": [{
             "protocol": "vless",
@@ -113,7 +113,8 @@ def vless_exit(uri: str) -> str:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(config, handle, separators=(",", ":"))
         os.chmod(name, 0o600)
-        process = subprocess.Popen([XRAY, "run", "-config", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        error_log = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
+        process = subprocess.Popen([XRAY, "run", "-config", name], stdout=subprocess.DEVNULL, stderr=error_log, text=True)
         for _ in range(50):
             if process.poll() is not None:
                 raise RuntimeError("Xray test client exited")
@@ -124,7 +125,22 @@ def vless_exit(uri: str) -> str:
                 time.sleep(0.2)
         completed = subprocess.run(["curl", "-4", "-fsS", "--socks5-hostname", f"127.0.0.1:{port}", "--max-time", "30", "https://api.ipify.org"], capture_output=True, text=True, timeout=40)
         if completed.returncode != 0:
-            raise RuntimeError("VLESS probe failed")
+            error_log.seek(0)
+            diagnostic = (error_log.read() + "\n" + completed.stderr).lower()
+            category = "unknown"
+            for name, markers in (
+                ("reality_rejected", ("reality", "rejected")),
+                ("connection_reset", ("reset by peer", "forcibly closed")),
+                ("connection_refused", ("connection refused",)),
+                ("invalid_version", ("invalid request version", "minimum version")),
+                ("timeout", ("timeout", "deadline exceeded")),
+                ("config", ("failed to load config", "unknown field", "failed to parse")),
+                ("tls_connect", ("ssl_connect", "tls connect error", "unexpected eof while reading")),
+            ):
+                if any(marker in diagnostic for marker in markers):
+                    category = name
+                    break
+            raise RuntimeError(f"VLESS probe failed: {category}")
         return str(ipaddress.ip_address(completed.stdout.strip()))
     finally:
         if process is not None:
@@ -133,6 +149,8 @@ def vless_exit(uri: str) -> str:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 process.kill(); process.wait(timeout=5)
+        if 'error_log' in locals():
+            error_log.close()
         pathlib.Path(name).unlink(missing_ok=True)
 
 
@@ -154,18 +172,31 @@ def main() -> int:
     wait_port(urllib.parse.urlparse(main_connections["socks5hUri"]).port)
     wait_port(urllib.parse.urlparse(aggregate["vlessUri"]).port)
     main_socks_exit = socks_exit(main_connections["socks5hUri"])
-    main_vless_exit = vless_exit(main_connections["vlessUri"])
-    aggregate_exit = vless_exit(aggregate["vlessUri"])
+    main_vless_exit = ""
+    aggregate_exit = ""
+    main_vless_error = ""
+    aggregate_error = ""
+    try:
+        main_vless_exit = vless_exit(main_connections["vlessUri"])
+    except RuntimeError as error:
+        main_vless_error = str(error).rsplit(":", 1)[-1].strip()
+    try:
+        aggregate_exit = vless_exit(aggregate["vlessUri"])
+    except RuntimeError as error:
+        aggregate_error = str(error).rsplit(":", 1)[-1].strip()
     result = {
         "ready_groups": len(ready),
         "main_socks5h": main_socks_exit == main_group["exitIp"],
         "main_vless": main_vless_exit == main_group["exitIp"],
+        "main_vless_error": main_vless_error,
         "aggregate_single_uri": isinstance(aggregate.get("vlessUri"), str) and "\n" not in aggregate["vlessUri"],
         "aggregate_healthy_exit": aggregate_exit in exits,
+        "aggregate_error": aggregate_error,
         "unique_ready_exits": len(exits) == len(ready),
     }
     print(json.dumps(result, sort_keys=True))
-    return 0 if all(value for key, value in result.items() if key != "ready_groups") and len(ready) == 4 else 2
+    passed_keys = ("main_socks5h", "main_vless", "aggregate_single_uri", "aggregate_healthy_exit", "unique_ready_exits")
+    return 0 if all(result[key] for key in passed_keys) and len(ready) == 4 else 2
 
 
 if __name__ == "__main__":

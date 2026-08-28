@@ -327,13 +327,14 @@ func (c *Client) verifyCurrentMixedAccount(ctx context.Context, desired DesiredG
 }
 
 type inboundDetail struct {
-	ID             int64  `json:"id"`
-	Tag            string `json:"tag"`
-	Remark         string `json:"remark"`
-	Protocol       string `json:"protocol"`
-	Port           int    `json:"port"`
-	Settings       any    `json:"settings"`
-	StreamSettings any    `json:"streamSettings"`
+	ID             int64          `json:"id"`
+	Tag            string         `json:"tag"`
+	Remark         string         `json:"remark"`
+	Protocol       string         `json:"protocol"`
+	Port           int            `json:"port"`
+	Settings       any            `json:"settings"`
+	StreamSettings any            `json:"streamSettings"`
+	Raw            map[string]any `json:"-"`
 }
 
 func (c *Client) currentRealityMaterial(ctx context.Context, desired DesiredGroup, managed ManagedGroup) (string, string, string, error) {
@@ -382,9 +383,22 @@ func (c *Client) inboundDetails(ctx context.Context) ([]inboundDetail, error) {
 	if err != nil {
 		return nil, err
 	}
-	var result []inboundDetail
-	if json.Unmarshal(obj, &result) != nil {
+	var raw []map[string]any
+	if json.Unmarshal(obj, &raw) != nil {
 		return nil, &AdapterError{Code: "invalid_response"}
+	}
+	result := make([]inboundDetail, 0, len(raw))
+	for _, item := range raw {
+		encoded, encodeErr := json.Marshal(item)
+		if encodeErr != nil {
+			return nil, &AdapterError{Code: "invalid_response"}
+		}
+		var detail inboundDetail
+		if json.Unmarshal(encoded, &detail) != nil {
+			return nil, &AdapterError{Code: "invalid_response"}
+		}
+		detail.Raw = item
+		result = append(result, detail)
 	}
 	return result, nil
 }
@@ -638,6 +652,14 @@ func (c *Client) updateXray(ctx context.Context, setting map[string]any, probeUR
 
 func (c *Client) addInbound(ctx context.Context, inbound map[string]any) error {
 	_, err := c.call(ctx, http.MethodPost, "panel/api/inbounds/add", inbound, false)
+	return err
+}
+
+func (c *Client) updateInbound(ctx context.Context, id int64, inbound map[string]any) error {
+	if id <= 0 || inbound == nil {
+		return &AdapterError{Code: "invalid_request"}
+	}
+	_, err := c.call(ctx, http.MethodPost, "panel/api/inbounds/update/"+strconv.FormatInt(id, 10), inbound, false)
 	return err
 }
 
@@ -998,7 +1020,9 @@ func verifyLegacyMainChain(inbounds []Inbound, setting map[string]any, vlessPort
 func (c *Client) EnsureLegacyMain(ctx context.Context, desired LegacyMainDesired) (LegacyMain, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if desired.VLESSPort != 8443 || desired.SOCKSPort != 7928 || desired.MixedPort < 1 || desired.MixedPort > 65535 || desired.MixedUsername == "" || desired.MixedPassword == "" || (desired.MixedSourceRestrictionEnabled && len(desired.MixedSourceCIDRs) == 0) {
+	if desired.VLESSPort != 8443 || desired.SOCKSPort != 7928 || desired.MixedPort < 1 || desired.MixedPort > 65535 || desired.MixedUsername == "" || desired.MixedPassword == "" ||
+		desired.RealityTarget != "127.0.0.1:443" || strings.TrimSpace(desired.RealityServerName) == "" || net.ParseIP(desired.RealityServerName) != nil || strings.ContainsAny(desired.RealityServerName, "/:") ||
+		(desired.MixedSourceRestrictionEnabled && len(desired.MixedSourceCIDRs) == 0) {
 		return LegacyMain{}, &AdapterError{Code: "invalid_request"}
 	}
 	if err := c.authenticate(ctx); err != nil {
@@ -1013,6 +1037,8 @@ func (c *Client) EnsureLegacyMain(ctx context.Context, desired LegacyMainDesired
 	}
 	originalSetting := cloneObject(snapshot.XraySetting)
 	result := LegacyMain{VLESSPort: desired.VLESSPort, MixedPort: desired.MixedPort, OutboundTag: "aimili-socks"}
+	var legacyOriginal, legacyMigrated map[string]any
+	var legacyPrivateKey string
 	details, err := c.inboundDetails(ctx)
 	if err != nil {
 		return LegacyMain{}, err
@@ -1032,19 +1058,37 @@ func (c *Client) EnsureLegacyMain(ctx context.Context, desired LegacyMainDesired
 		}
 		result.ClientID = stringValue(clients[0]["id"])
 		stream, ok := decodeObject(inbound.StreamSettings)
-		if !ok {
-			return LegacyMain{}, &AdapterError{Code: "invalid_response"}
+		if !ok || stringValue(stream["network"]) != "tcp" || stringValue(stream["security"]) != "reality" {
+			return LegacyMain{}, &AdapterError{Code: "managed_resource_drift"}
 		}
 		reality, ok := decodeObject(stream["realitySettings"])
 		if !ok {
-			return LegacyMain{}, &AdapterError{Code: "invalid_response"}
+			return LegacyMain{}, &AdapterError{Code: "managed_resource_drift"}
 		}
 		names, ids := stringValues(reality["serverNames"]), stringValues(reality["shortIds"])
 		clientSettings, ok := decodeObject(reality["settings"])
-		if !ok || len(names) != 1 || len(ids) != 1 {
+		privateKey := stringValue(reality["privateKey"])
+		if !ok || len(names) != 1 || len(ids) != 1 || !validRealityValue(privateKey, 256) ||
+			!validRealityValue(stringValue(clientSettings["publicKey"]), 256) || !validRealityValue(ids[0], 64) {
 			return LegacyMain{}, &AdapterError{Code: "managed_resource_drift"}
 		}
 		result.PublicKey, result.ShortID, result.ServerName = stringValue(clientSettings["publicKey"]), ids[0], names[0]
+		legacyPrivateKey = privateKey
+		currentTarget := stringValue(reality["target"])
+		switch {
+		case currentTarget == desired.RealityTarget && names[0] == desired.RealityServerName:
+		case currentTarget == "www.microsoft.com:443" && names[0] == "www.microsoft.com":
+			legacyOriginal = cloneObject(inbound.Raw)
+			legacyMigrated = cloneObject(inbound.Raw)
+			migratedStream := cloneObject(stream)
+			migratedReality := cloneObject(reality)
+			migratedReality["target"] = desired.RealityTarget
+			migratedReality["serverNames"] = []any{desired.RealityServerName}
+			migratedStream["realitySettings"] = migratedReality
+			legacyMigrated["streamSettings"] = mustJSONString(migratedStream)
+		default:
+			return LegacyMain{}, &AdapterError{Code: "managed_resource_drift"}
+		}
 	}
 	if result.VLESSInboundID == 0 || result.ClientID == "" || result.PublicKey == "" || result.ShortID == "" || result.ServerName == "" {
 		return LegacyMain{}, &AdapterError{Code: "managed_resource_drift"}
@@ -1131,6 +1175,39 @@ func (c *Client) EnsureLegacyMain(ctx context.Context, desired LegacyMainDesired
 	}
 	if result.MixedInboundID == 0 {
 		return LegacyMain{}, &AdapterError{Code: "write_verification_failed"}
+	}
+	if legacyMigrated != nil {
+		if err := c.updateInbound(ctx, result.VLESSInboundID, legacyMigrated); err != nil {
+			return LegacyMain{}, err
+		}
+		verified := false
+		updatedDetails, verifyErr := c.inboundDetails(ctx)
+		if verifyErr == nil {
+			for _, inbound := range updatedDetails {
+				if inbound.ID != result.VLESSInboundID {
+					continue
+				}
+				settings, settingsOK := decodeObject(inbound.Settings)
+				stream, streamOK := decodeObject(inbound.StreamSettings)
+				reality, realityOK := decodeObject(stream["realitySettings"])
+				clientSettings, clientSettingsOK := decodeObject(reality["settings"])
+				clients := asObjectSlice(settings["clients"])
+				names, ids := stringValues(reality["serverNames"]), stringValues(reality["shortIds"])
+				verified = settingsOK && streamOK && realityOK && clientSettingsOK && len(clients) == 1 &&
+					stringValue(clients[0]["id"]) == result.ClientID && stringValue(clients[0]["flow"]) == "xtls-rprx-vision" &&
+					stringValue(reality["target"]) == desired.RealityTarget && len(names) == 1 && names[0] == desired.RealityServerName &&
+					stringValue(reality["privateKey"]) == legacyPrivateKey && len(ids) == 1 && ids[0] == result.ShortID &&
+					stringValue(clientSettings["publicKey"]) == result.PublicKey
+				break
+			}
+		}
+		if !verified {
+			if rollbackErr := c.updateInbound(ctx, result.VLESSInboundID, legacyOriginal); rollbackErr != nil {
+				return LegacyMain{}, &AdapterError{Code: "partial_inbound_update"}
+			}
+			return LegacyMain{}, &AdapterError{Code: "write_verification_failed"}
+		}
+		result.ServerName = desired.RealityServerName
 	}
 	return result, nil
 }
