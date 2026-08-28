@@ -110,21 +110,47 @@ wait_for_panel_endpoint() {
     return 1
 }
 
+xray_process_running() {
+    local parent_pid="${1:-}"
+    if [[ -z "$parent_pid" ]]; then
+        parent_pid="$(systemctl show x-ui.service -p MainPID --value 2>/dev/null)"
+    fi
+    [[ "$parent_pid" =~ ^[1-9][0-9]*$ ]] || return 1
+    pgrep -P "$parent_pid" -f '(^|/)xray-linux-amd64([[:space:]]|$)' >/dev/null
+}
+
 health_check() {
-    local attempt base
+    local attempt base version
     for attempt in {1..60}; do
         systemctl is-active --quiet x-ui && break
         sleep 1
     done
     systemctl is-active --quiet x-ui || return 1
-    base="$(wait_for_panel_endpoint /usr/local/x-ui/x-ui)" || return 1
+    base="$(wait_for_panel_endpoint /usr/local/x-ui/x-ui)" || {
+        log "健康检查失败阶段=panel-settings"
+        return 1
+    }
     for attempt in {1..60}; do
         curl -fsS --max-time 2 "$base/csrf-token" >/dev/null 2>&1 && break
         sleep 1
     done
-    curl -fsS --max-time 2 "$base/csrf-token" >/dev/null 2>&1 || return 1
-    pgrep -f '/usr/local/x-ui/bin/xray-linux-amd64' >/dev/null || return 1
-    [[ "$(current_version)" == "$XUI_VERSION" || "$(current_version)" == "${XUI_VERSION#v}" ]]
+    curl -fsS --max-time 2 "$base/csrf-token" >/dev/null 2>&1 || {
+        log "健康检查失败阶段=panel-csrf"
+        return 1
+    }
+    for attempt in {1..60}; do
+        xray_process_running && break
+        sleep 1
+    done
+    xray_process_running || {
+        log "健康检查失败阶段=xray-process"
+        return 1
+    }
+    version="$(current_version)"
+    [[ "$version" == "$XUI_VERSION" || "$version" == "${XUI_VERSION#v}" ]] || {
+        log "健康检查失败阶段=version"
+        return 1
+    }
 }
 
 apply_upgrade() {
@@ -159,14 +185,14 @@ apply_upgrade() {
 }
 
 self_test() {
-    local work fake detected
+    local work fake detected xray_pid=""
     [[ "$XUI_VERSION" == "v3.7.0" ]]
     [[ "$XUI_ASSET" == "x-ui-linux-amd64.tar.gz" ]]
     [[ "$XUI_ASSET_SIZE" == "80280886" ]]
     [[ "$XUI_ASSET_SHA256" =~ ^[0-9a-f]{64}$ ]]
     [[ "$XUI_VERSION" != "latest" && "$XUI_VERSION" != "main" && "$XUI_VERSION" != "dev-latest" ]]
     work="$(mktemp -d)"
-    trap 'rm -rf -- "$work"' EXIT
+    trap '[[ -z "${xray_pid:-}" ]] || kill "$xray_pid" 2>/dev/null || true; rm -rf -- "$work"' EXIT
     fake="$work/x-ui"
     printf '%s\n' \
         '#!/usr/bin/env bash' \
@@ -189,6 +215,15 @@ self_test() {
     detected="$(FAKE_XUI_STATE="$work/state" wait_for_panel_endpoint "$fake" 2 0)"
     [[ "$detected" == "http://127.0.0.1:2001/panel" ]] || die "面板设置瞬时不可用后未正确恢复。"
     [[ "$(<"$work/state")" == "2" ]] || die "面板设置健康检查没有执行预期重试。"
+    install -d "$work/bin"
+    ln -s /bin/sleep "$work/bin/xray-linux-amd64"
+    (cd "$work" && exec bin/xray-linux-amd64 30) &
+    xray_pid=$!
+    declare -F xray_process_running >/dev/null || die "健康检查必须识别相对路径启动的 Xray 子进程。"
+    xray_process_running "$$" || die "未识别相对路径启动的 Xray 子进程。"
+    kill "$xray_pid"
+    wait "$xray_pid" 2>/dev/null || true
+    xray_pid=""
     rm -rf -- "$work"
     trap - EXIT
     printf 'self-test: ok\n'
