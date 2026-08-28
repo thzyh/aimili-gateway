@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"sort"
 	"strings"
 
 	"github.com/thzyh/aimili-gateway/internal/adapters/aimili"
@@ -31,6 +32,8 @@ func (o *Orchestrator) Reconcile(ctx context.Context) ReconcileResult {
 		return result
 	}
 	groups = o.adoptLegacyGroups(ctx, groups, candidates)
+	groups, historyFailures := o.degradeHistoricalDuplicateExits(ctx, groups)
+	result.Failed += historyFailures
 	existing := make(map[string]domain.ProxyGroup, len(groups))
 	byExit := make(map[string]domain.ProxyGroup, len(groups))
 	activeCount := len(groups)
@@ -38,8 +41,10 @@ func (o *Orchestrator) Reconcile(ctx context.Context) ReconcileResult {
 		if group.CandidateID != "" {
 			existing[group.CandidateID] = group
 		}
-		if group.Status == domain.ProxyGroupReady && group.ExitIP != "" {
-			byExit[group.ExitIP] = group
+		if group.Status == domain.ProxyGroupReady {
+			if normalized, ok := normalizeExitIP(group.ExitIP); ok {
+				byExit[normalized] = group
+			}
 		}
 	}
 	for _, candidate := range candidates {
@@ -68,7 +73,8 @@ func (o *Orchestrator) Reconcile(ctx context.Context) ReconcileResult {
 		}
 		existing[candidate.ID] = group
 		activeCount++
-		if current, duplicate := byExit[group.ExitIP]; duplicate && current.ID != group.ID {
+		normalizedExit, _ := normalizeExitIP(group.ExitIP)
+		if current, duplicate := byExit[normalizedExit]; duplicate && current.ID != group.ID {
 			keep, remove := current, group
 			if egressScore(group) < egressScore(current) {
 				keep, remove = group, current
@@ -78,10 +84,10 @@ func (o *Orchestrator) Reconcile(ctx context.Context) ReconcileResult {
 			} else {
 				activeCount--
 				delete(existing, remove.CandidateID)
-				byExit[group.ExitIP] = keep
+				byExit[normalizedExit] = keep
 			}
 		} else {
-			byExit[group.ExitIP] = group
+			byExit[normalizedExit] = group
 		}
 	}
 	if finalGroups, listErr := o.store.ListProxyGroups(ctx); listErr == nil {
@@ -92,6 +98,38 @@ func (o *Orchestrator) Reconcile(ctx context.Context) ReconcileResult {
 		}
 	}
 	return result
+}
+
+func (o *Orchestrator) degradeHistoricalDuplicateExits(ctx context.Context, groups []domain.ProxyGroup) ([]domain.ProxyGroup, int) {
+	sort.SliceStable(groups, func(i, j int) bool {
+		if groups[i].CreatedAt.Equal(groups[j].CreatedAt) {
+			return groups[i].ID < groups[j].ID
+		}
+		return groups[i].CreatedAt.Before(groups[j].CreatedAt)
+	})
+	seen := make(map[string]string, len(groups))
+	failures := 0
+	for index := range groups {
+		group := &groups[index]
+		if group.Status != domain.ProxyGroupReady {
+			continue
+		}
+		normalized, ok := normalizeExitIP(group.ExitIP)
+		if !ok {
+			continue
+		}
+		if _, duplicate := seen[normalized]; !duplicate {
+			seen[normalized] = group.ID
+			continue
+		}
+		group.Status = domain.ProxyGroupDegraded
+		group.LastErrorCode = "duplicate_exit_ip"
+		group.UpdatedAt = o.config.Now().UTC()
+		if err := o.save(ctx, group); err != nil {
+			failures++
+		}
+	}
+	return groups, failures
 }
 
 // Pool merges the safe Aimili candidate catalog with the bounded set of live

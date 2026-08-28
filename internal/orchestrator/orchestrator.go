@@ -266,6 +266,10 @@ func (o *Orchestrator) Enable(ctx context.Context, request EnableRequest) (domai
 	if err != nil || !checked.EgressOK || net.ParseIP(checked.ExitIP) == nil {
 		return domain.ProxyGroup{}, o.rollbackEnable(ctx, &group, xui.ManagedGroup{}, codeOr(err, "egress_unavailable"))
 	}
+	checked, err = o.ensureUniqueExit(ctx, group.ID, checked)
+	if err != nil {
+		return domain.ProxyGroup{}, o.rollbackEnable(ctx, &group, xui.ManagedGroup{}, errorCode(err))
+	}
 	group.ExitIP = checked.ExitIP
 	managed, err := o.xui.EnsureManagedGroup(ctx, xui.DesiredGroup{
 		ResourceName: group.ResourceName, SOCKSPort: checked.Port, VLESSPort: group.VLESSPort, MixedPort: group.MixedPort,
@@ -529,6 +533,59 @@ func (o *Orchestrator) waitForSlot(ctx context.Context, slot int) (aimili.SlotCh
 		}
 	}
 }
+
+func (o *Orchestrator) readyExitIPs(ctx context.Context, exceptID string) (map[string]struct{}, error) {
+	groups, err := o.store.ListProxyGroups(ctx)
+	if err != nil {
+		return nil, &Error{Code: "storage_failed"}
+	}
+	result := make(map[string]struct{}, len(groups))
+	for _, group := range groups {
+		if group.ID == exceptID || group.Status != domain.ProxyGroupReady {
+			continue
+		}
+		if normalized, ok := normalizeExitIP(group.ExitIP); ok {
+			result[normalized] = struct{}{}
+		}
+	}
+	return result, nil
+}
+
+func (o *Orchestrator) ensureUniqueExit(ctx context.Context, groupID string, slot aimili.Slot) (aimili.Slot, error) {
+	for rotations := 0; ; rotations++ {
+		normalized, valid := normalizeExitIP(slot.ExitIP)
+		if !slot.EgressOK || !valid {
+			return aimili.Slot{}, &Error{Code: "egress_unavailable"}
+		}
+		existing, err := o.readyExitIPs(ctx, groupID)
+		if err != nil {
+			return aimili.Slot{}, err
+		}
+		if _, duplicate := existing[normalized]; !duplicate {
+			slot.ExitIP = normalized
+			return slot, nil
+		}
+		if rotations >= 3 {
+			return aimili.Slot{}, &Error{Code: "duplicate_exit_ip"}
+		}
+		if _, err := o.aimili.RotateSlot(ctx, slot.Number); err != nil {
+			return aimili.Slot{}, operationError(err)
+		}
+		slot, err = o.waitForSlot(ctx, slot.Number)
+		if err != nil {
+			return aimili.Slot{}, err
+		}
+	}
+}
+
+func normalizeExitIP(raw string) (string, bool) {
+	ip := net.ParseIP(strings.TrimSpace(raw))
+	if ip == nil {
+		return "", false
+	}
+	return ip.String(), true
+}
+
 func (o *Orchestrator) save(ctx context.Context, g *domain.ProxyGroup) error {
 	expected := g.Version
 	if err := o.store.UpdateProxyGroup(ctx, *g, expected); err != nil {
@@ -572,6 +629,10 @@ func prefixStrings(values []netip.Prefix) []string {
 func errorCode(err error) string {
 	if err == nil {
 		return ""
+	}
+	var orchestratorError *Error
+	if errors.As(err, &orchestratorError) {
+		return orchestratorError.Code
 	}
 	var validationError *validator.Error
 	if errors.As(err, &validationError) {

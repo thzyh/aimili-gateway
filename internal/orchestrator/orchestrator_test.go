@@ -53,6 +53,86 @@ func TestEnableWaitsForAimiliSlotToCarryRealTraffic(t *testing.T) {
 	}
 }
 
+func TestEnableRotatesANewSlotUntilItsExitIsUnique(t *testing.T) {
+	fixture := newFixture()
+	existing, _ := domain.NewProxyGroupIdentity("US", domain.ProxyTypeDatacenter, "existing")
+	existing.Status = domain.ProxyGroupReady
+	existing.ExitIP = "203.0.113.7"
+	existing.VLESSPort = 20000
+	existing.MixedPort = 30000
+	existing.CreatedAt = fixture.now().Add(-time.Hour)
+	fixture.store.groups[existing.ID] = existing
+	fixture.aimili.rotatedExitIPs = []string{"203.0.113.7", "203.0.113.8"}
+
+	created, err := fixture.orchestratorWithMax(t, 2).Enable(context.Background(), EnableRequest{CountryCode: "JP", ProxyType: domain.ProxyTypeDatacenter, CandidateID: "new-candidate"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.ExitIP != "203.0.113.8" {
+		t.Fatalf("new group exit = %q", created.ExitIP)
+	}
+	rotations := 0
+	for _, call := range fixture.calls {
+		if call == "slot.rotate" {
+			rotations++
+		}
+	}
+	if rotations != 2 || fixture.store.groups[existing.ID].ExitIP != "203.0.113.7" {
+		t.Fatalf("rotations=%d existing=%#v calls=%#v", rotations, fixture.store.groups[existing.ID], fixture.calls)
+	}
+}
+
+func TestEnableRollsBackAfterThreeDuplicateExitRotations(t *testing.T) {
+	fixture := newFixture()
+	existing, _ := domain.NewProxyGroupIdentity("US", domain.ProxyTypeDatacenter, "existing")
+	existing.Status = domain.ProxyGroupReady
+	existing.ExitIP = "203.0.113.7"
+	existing.VLESSPort = 20000
+	existing.MixedPort = 30000
+	fixture.store.groups[existing.ID] = existing
+	fixture.aimili.rotatedExitIPs = []string{"203.0.113.7", "203.0.113.7", "203.0.113.7"}
+
+	_, err := fixture.orchestratorWithMax(t, 2).Enable(context.Background(), EnableRequest{CountryCode: "JP", ProxyType: domain.ProxyTypeDatacenter, CandidateID: "duplicate-candidate"})
+	if codeOf(err) != "duplicate_exit_ip" {
+		t.Fatalf("error = %v", err)
+	}
+	rotations := 0
+	for _, call := range fixture.calls {
+		if call == "slot.rotate" {
+			rotations++
+		}
+	}
+	if rotations != 3 || !contains(fixture.calls, "slot.delete") || contains(fixture.calls, "xui.ensure") {
+		t.Fatalf("calls = %#v", fixture.calls)
+	}
+	if len(fixture.store.groups) != 1 || fixture.store.groups[existing.ID].Status != domain.ProxyGroupReady {
+		t.Fatalf("rollback changed existing groups: %#v", fixture.store.groups)
+	}
+}
+
+func TestReadyExitIPsNormalizesAddressesAndExcludesOneGroup(t *testing.T) {
+	fixture := newFixture()
+	first, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter, "first")
+	first.Status = domain.ProxyGroupReady
+	first.ExitIP = "2001:0db8:0:0:0:0:0:1"
+	second, _ := domain.NewProxyGroupIdentity("US", domain.ProxyTypeDatacenter, "second")
+	second.Status = domain.ProxyGroupDegraded
+	second.ExitIP = "203.0.113.9"
+	fixture.store.groups[first.ID] = first
+	fixture.store.groups[second.ID] = second
+
+	exits, err := fixture.orchestratorWithMax(t, 3).readyExitIPs(context.Background(), second.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(exits) != 1 {
+		t.Fatalf("exits = %#v", exits)
+	}
+	if _, ok := exits["2001:db8::1"]; !ok {
+		t.Fatalf("IPv6 exit was not normalized: %#v", exits)
+	}
+}
+
 func TestEnableCompensatesInReverseOrderWhenVLESSValidationFails(t *testing.T) {
 	fixture := newFixture()
 	fixture.validator.vlessError = &validator.Error{Code: "protocol_failed"}
@@ -193,6 +273,8 @@ func (s *fakeStore) ReplaceMixedSourcePolicy(_ context.Context, policy store.Mix
 type fakeAimili struct {
 	calls            *[]string
 	rotatedExitIP    string
+	rotatedExitIPs   []string
+	rotateCalls      int
 	unreadyChecks    int
 	candidates       []aimili.Candidate
 	slotsByCandidate map[string]aimili.Slot
@@ -245,12 +327,27 @@ func (a *fakeAimili) CheckSlot(_ context.Context, number int) (aimili.SlotCheck,
 	}
 	return a.slot(ip), nil
 }
-func (a *fakeAimili) RotateSlot(context.Context, int) (aimili.Slot, error) {
+func (a *fakeAimili) RotateSlot(_ context.Context, number int) (aimili.Slot, error) {
 	*a.calls = append(*a.calls, "slot.rotate")
+	if a.rotateCalls < len(a.rotatedExitIPs) {
+		a.rotatedExitIP = a.rotatedExitIPs[a.rotateCalls]
+		a.rotateCalls++
+		rotated := a.slot(a.rotatedExitIP)
+		rotated.Number = number
+		if a.createdSlots != nil {
+			a.createdSlots[number] = rotated
+		}
+		return rotated, nil
+	}
 	if a.rotatedExitIP == "" {
 		a.rotatedExitIP = "203.0.113.8"
 	}
-	return a.slot(a.rotatedExitIP), nil
+	rotated := a.slot(a.rotatedExitIP)
+	rotated.Number = number
+	if a.createdSlots != nil {
+		a.createdSlots[number] = rotated
+	}
+	return rotated, nil
 }
 func (a *fakeAimili) DeleteSlot(context.Context, int) error {
 	*a.calls = append(*a.calls, "slot.delete")

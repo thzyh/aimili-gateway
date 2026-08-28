@@ -146,7 +146,7 @@ func TestReconcileContinuesAfterOneCandidateFails(t *testing.T) {
 	}
 }
 
-func TestReconcileKeepsOnlyTheBestCandidateForOneActualExit(t *testing.T) {
+func TestReconcileRotatesANewDuplicateExitInsteadOfRemovingEitherCandidate(t *testing.T) {
 	fixture := newFixture()
 	fixture.aimili.candidates = []aimili.Candidate{
 		{ID: "jp-fast", CountryCode: "JP", CountryName: "日本", ProxyType: "datacenter", LatencyMS: 10, ProbeStatus: "available"},
@@ -160,7 +160,37 @@ func TestReconcileKeepsOnlyTheBestCandidateForOneActualExit(t *testing.T) {
 	result := fixture.orchestratorWithMax(t, 4).Reconcile(context.Background())
 	groups, _ := fixture.store.ListProxyGroups(context.Background())
 
-	if result.Ready != 1 || len(groups) != 1 || groups[0].CandidateID != "jp-fast" {
-		t.Fatalf("duplicate actual exit was retained: result=%#v groups=%#v", result, groups)
+	if result.Ready != 2 || len(groups) != 2 || groups[0].ExitIP == groups[1].ExitIP || !contains(fixture.calls, "slot.rotate") {
+		t.Fatalf("new duplicate exit was not rotated: result=%#v groups=%#v calls=%#v", result, groups, fixture.calls)
+	}
+}
+
+func TestReconcileDegradesOnlyTheNewerHistoricalDuplicate(t *testing.T) {
+	fixture := newFixture()
+	fixture.aimili.candidates = []aimili.Candidate{
+		{ID: "older", CountryCode: "JP", CountryName: "日本", ProxyType: "datacenter", ProbeStatus: "available"},
+		{ID: "newer", CountryCode: "US", CountryName: "美国", ProxyType: "datacenter", ProbeStatus: "available"},
+	}
+	older, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter, "older")
+	older.Status = domain.ProxyGroupReady
+	older.ExitIP = "203.0.113.80"
+	older.CreatedAt = time.Unix(1_699_999_000, 0).UTC()
+	older.UpdatedAt = older.CreatedAt
+	newer, _ := domain.NewProxyGroupIdentity("US", domain.ProxyTypeDatacenter, "newer")
+	newer.Status = domain.ProxyGroupReady
+	newer.ExitIP = "203.0.113.80"
+	newer.CreatedAt = time.Unix(1_699_999_500, 0).UTC()
+	newer.UpdatedAt = newer.CreatedAt
+	fixture.store.groups[older.ID] = older
+	fixture.store.groups[newer.ID] = newer
+
+	result := fixture.orchestratorWithMax(t, 3).Reconcile(context.Background())
+	storedOlder := fixture.store.groups[older.ID]
+	storedNewer := fixture.store.groups[newer.ID]
+	if result.Ready != 1 || result.Failed != 1 || storedOlder.Status != domain.ProxyGroupReady || storedNewer.Status != domain.ProxyGroupDegraded || storedNewer.LastErrorCode != "duplicate_exit_ip" {
+		t.Fatalf("result=%#v older=%#v newer=%#v", result, storedOlder, storedNewer)
+	}
+	if contains(fixture.calls, "slot.delete") || contains(fixture.calls, "xui.delete") {
+		t.Fatalf("historical duplicate resources were deleted: %#v", fixture.calls)
 	}
 }
