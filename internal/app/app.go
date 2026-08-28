@@ -139,6 +139,16 @@ func startInitialReconcile(ctx context.Context, reconciler initialReconciler) {
 	}()
 }
 
+func newMaintenanceConfig(ctx context.Context, maxOnline int, reconciler initialReconciler) maintenance.Config {
+	return maintenance.Config{
+		MaxOnline:       maxOnline,
+		LifetimeContext: ctx,
+		Reconcile: func(reconcileContext context.Context) {
+			_ = reconciler.Reconcile(reconcileContext)
+		},
+	}
+}
+
 type runtimeServices struct {
 	proxy        *orchestrator.Orchestrator
 	accounts     *accountsync.Coordinator
@@ -205,7 +215,7 @@ func newRuntimeServices(ctx context.Context, cfg config.Config, database *store.
 	if err != nil {
 		return runtimeServices{}, err
 	}
-	maintenanceService, err := maintenance.New(maintenance.Config{MaxOnline: cfg.MaxProxyGroups}, aimiliClient, xuiClient, proxy, accounts)
+	maintenanceService, err := maintenance.New(newMaintenanceConfig(ctx, cfg.MaxProxyGroups, proxy), aimiliClient, xuiClient, proxy, accounts)
 	if err != nil {
 		return runtimeServices{}, err
 	}

@@ -33,6 +33,25 @@ func TestInitialReconcileRunsInBackground(t *testing.T) {
 	}
 }
 
+func TestMaintenanceConfigUsesGatewayLifetimeAndReconciler(t *testing.T) {
+	lifetime, cancel := context.WithCancel(context.Background())
+	called := make(chan struct{})
+	config := newMaintenanceConfig(lifetime, 3, recordingReconciler{called: called})
+	if config.MaxOnline != 3 || config.LifetimeContext != lifetime || config.Reconcile == nil {
+		t.Fatalf("maintenance config = %#v", config)
+	}
+	config.Reconcile(context.Background())
+	select {
+	case <-called:
+	case <-time.After(time.Second):
+		t.Fatal("maintenance reconcile callback did not invoke proxy reconciler")
+	}
+	cancel()
+	if lifetime.Err() == nil {
+		t.Fatal("maintenance lifetime did not follow Gateway cancellation")
+	}
+}
+
 func TestLegacyXUICredentialsMigrateToEncryptedUnifiedCredentialsWithoutChangingResetState(t *testing.T) {
 	directory := t.TempDir()
 	database, err := store.Open(t.Context(), filepath.Join(directory, "gateway.db"))

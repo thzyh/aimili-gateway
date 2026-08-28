@@ -299,6 +299,95 @@ func TestClientIssueAdminSessionRejectsUnknownCookieAndFields(t *testing.T) {
 	}
 }
 
+func TestClientCountryRefreshUsesVersionedClosedRequests(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		requests++
+		if request.Header.Get("Authorization") != "Bearer test-token" {
+			t.Fatal("missing control bearer token")
+		}
+		response.Header().Set("Content-Type", "application/json")
+		switch requests {
+		case 1:
+			if request.Method != http.MethodGet || request.URL.Path != "/control/v1/candidates/countries" {
+				t.Fatalf("unexpected countries request %s %s", request.Method, request.URL.Path)
+			}
+			fmt.Fprint(response, `{"data":[{"code":"JP","name":"日本","candidateCount":8,"observedAt":1700000000,"futureField":"ignored"}]}`)
+		case 2:
+			if request.Method != http.MethodPost || request.URL.Path != "/control/v1/candidates/refresh" {
+				t.Fatalf("unexpected refresh request %s %s", request.Method, request.URL.Path)
+			}
+			var body map[string]string
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if len(body) != 1 || body["country"] != "JP" {
+				t.Fatalf("refresh body = %#v", body)
+			}
+			response.WriteHeader(http.StatusAccepted)
+			fmt.Fprint(response, `{"data":{"state":"running","country":"JP","phase":"fetching","catalogCount":0,"countryCandidateCount":0,"testedCount":0,"validCount":0,"preservedCount":0,"startedAt":1700000000,"finishedAt":0,"errorCode":"","futureField":"ignored"}}`)
+		case 3:
+			if request.Method != http.MethodGet || request.URL.Path != "/control/v1/candidates/refresh" {
+				t.Fatalf("unexpected status request %s %s", request.Method, request.URL.Path)
+			}
+			fmt.Fprint(response, `{"data":{"state":"completed","country":"JP","phase":"","catalogCount":20,"countryCandidateCount":8,"testedCount":5,"validCount":4,"preservedCount":1,"startedAt":1700000000,"finishedAt":1700000010,"errorCode":""}}`)
+		default:
+			t.Fatalf("unexpected extra request %d", requests)
+		}
+	}))
+	t.Cleanup(server.Close)
+	client, err := NewClient(server.URL+"/", []byte("test-token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	countries, err := client.CandidateCountries(context.Background())
+	if err != nil || len(countries) != 1 || countries[0].Code != "JP" || countries[0].CandidateCount != 8 {
+		t.Fatalf("countries = %#v, err = %v", countries, err)
+	}
+	started, err := client.StartCountryRefresh(context.Background(), "jp")
+	if err != nil || started.State != "running" || started.Country != "JP" {
+		t.Fatalf("started = %#v, err = %v", started, err)
+	}
+	status, err := client.CountryRefresh(context.Background())
+	if err != nil || status.State != "completed" || status.TestedCount != 5 || status.ValidCount != 4 {
+		t.Fatalf("status = %#v, err = %v", status, err)
+	}
+}
+
+func TestClientCountryRefreshMapsSafeErrorsAndRejectsMissingData(t *testing.T) {
+	tests := []struct {
+		name     string
+		status   int
+		body     string
+		wantCode string
+	}{
+		{name: "busy", status: http.StatusConflict, body: `{"error":{"code":"maintenance_busy"},"detail":"secret-upstream-text"}`, wantCode: "maintenance_busy"},
+		{name: "unauthorized", status: http.StatusUnauthorized, body: `{"error":{"code":"unauthorized"}}`, wantCode: "unauthorized"},
+		{name: "missing data", status: http.StatusAccepted, body: `{}`, wantCode: "invalid_response"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+				response.WriteHeader(test.status)
+				fmt.Fprint(response, test.body)
+			}))
+			t.Cleanup(server.Close)
+			client, err := NewClient(server.URL+"/", []byte("test-token"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = client.StartCountryRefresh(context.Background(), "JP")
+			var adapterError *AdapterError
+			if !errors.As(err, &adapterError) || adapterError.Code != test.wantCode {
+				t.Fatalf("error = %v", err)
+			}
+			if strings.Contains(err.Error(), "secret-upstream-text") {
+				t.Fatal("adapter error exposed upstream response")
+			}
+		})
+	}
+}
+
 func TestReadTokenFileReturnsTrimmedSecretAndRejectsEmptyFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "control.token")
 	if err := os.WriteFile(path, []byte("file-token\n"), 0o600); err != nil {

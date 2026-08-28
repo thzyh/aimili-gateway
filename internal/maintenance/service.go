@@ -16,7 +16,13 @@ type Error struct{ Code string }
 
 func (err *Error) Error() string { return "maintenance operation failed: " + err.Code }
 
-type Config struct{ MaxOnline int }
+type Config struct {
+	MaxOnline       int
+	LifetimeContext context.Context
+	PollInterval    time.Duration
+	PollTimeout     time.Duration
+	Reconcile       func(context.Context)
+}
 
 type Summary struct {
 	AccountSyncStatus store.AccountSyncStatus `json:"accountSyncStatus"`
@@ -43,6 +49,9 @@ type XUISummary struct {
 
 type aimiliSource interface {
 	Candidates(context.Context) ([]aimili.Candidate, error)
+	CandidateCountries(context.Context) ([]aimili.CandidateCountry, error)
+	StartCountryRefresh(context.Context, string) (aimili.CountryRefresh, error)
+	CountryRefresh(context.Context) (aimili.CountryRefresh, error)
 	ListSlots(context.Context) ([]aimili.Slot, error)
 	CheckSlot(context.Context, int) (aimili.SlotCheck, error)
 }
@@ -61,18 +70,37 @@ type accountStatus interface {
 }
 
 type Service struct {
-	config   Config
-	aimili   aimiliSource
-	xui      xuiSource
-	groups   groupSource
-	accounts accountStatus
+	config       Config
+	aimili       aimiliSource
+	xui          xuiSource
+	groups       groupSource
+	accounts     accountStatus
+	lifetime     context.Context
+	pollInterval time.Duration
+	pollTimeout  time.Duration
+	reconcile    func(context.Context)
 }
 
 func New(config Config, aimiliClient aimiliSource, xuiClient xuiSource, groups groupSource, accounts accountStatus) (*Service, error) {
 	if config.MaxOnline < 1 || aimiliClient == nil || xuiClient == nil || groups == nil || accounts == nil {
 		return nil, errors.New("maintenance dependencies are required")
 	}
-	return &Service{config: config, aimili: aimiliClient, xui: xuiClient, groups: groups, accounts: accounts}, nil
+	lifetime := config.LifetimeContext
+	if lifetime == nil {
+		lifetime = context.Background()
+	}
+	pollInterval := config.PollInterval
+	if pollInterval <= 0 {
+		pollInterval = 2 * time.Second
+	}
+	pollTimeout := config.PollTimeout
+	if pollTimeout <= 0 {
+		pollTimeout = 10 * time.Minute
+	}
+	return &Service{
+		config: config, aimili: aimiliClient, xui: xuiClient, groups: groups, accounts: accounts,
+		lifetime: lifetime, pollInterval: pollInterval, pollTimeout: pollTimeout, reconcile: config.Reconcile,
+	}, nil
 }
 
 func (service *Service) Summary(ctx context.Context) (Summary, error) {
@@ -117,7 +145,72 @@ func (service *Service) AimiliVPN(ctx context.Context) (AimiliSummary, error) {
 }
 
 func (service *Service) RefreshAimiliVPN(ctx context.Context) (AimiliSummary, error) {
-	return service.AimiliVPN(ctx)
+	return AimiliSummary{}, &Error{Code: "country_required"}
+}
+
+func (service *Service) CandidateCountries(ctx context.Context) ([]aimili.CandidateCountry, error) {
+	countries, err := service.aimili.CandidateCountries(ctx)
+	if err != nil {
+		return nil, countryRefreshError(err)
+	}
+	return countries, nil
+}
+
+func (service *Service) StartAimiliVPNRefresh(ctx context.Context, country string) (aimili.CountryRefresh, error) {
+	refresh, err := service.aimili.StartCountryRefresh(ctx, country)
+	if err != nil {
+		return aimili.CountryRefresh{}, countryRefreshError(err)
+	}
+	if refresh.State == "running" && service.reconcile != nil {
+		go service.pollAimiliVPNRefresh()
+	}
+	return refresh, nil
+}
+
+func (service *Service) AimiliVPNRefresh(ctx context.Context) (aimili.CountryRefresh, error) {
+	refresh, err := service.aimili.CountryRefresh(ctx)
+	if err != nil {
+		return aimili.CountryRefresh{}, countryRefreshError(err)
+	}
+	return refresh, nil
+}
+
+func (service *Service) pollAimiliVPNRefresh() {
+	ctx, cancel := context.WithTimeout(service.lifetime, service.pollTimeout)
+	defer cancel()
+	ticker := time.NewTicker(service.pollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			refresh, err := service.aimili.CountryRefresh(ctx)
+			if err != nil {
+				return
+			}
+			switch refresh.State {
+			case "completed":
+				service.reconcile(ctx)
+				return
+			case "failed", "idle":
+				return
+			}
+		}
+	}
+}
+
+func countryRefreshError(err error) error {
+	var adapterError *aimili.AdapterError
+	if errors.As(err, &adapterError) {
+		switch adapterError.Code {
+		case "maintenance_busy":
+			return &Error{Code: "maintenance_busy"}
+		case "invalid_request", "invalid_country":
+			return &Error{Code: "invalid_request"}
+		}
+	}
+	return &Error{Code: "service_unavailable"}
 }
 
 func (service *Service) CheckAimiliVPN(ctx context.Context) (AimiliSummary, error) {

@@ -3,7 +3,9 @@ package maintenance
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -90,10 +92,108 @@ func TestServiceChecksManagedSlotsAndRepairsOnlyManagedResources(t *testing.T) {
 	}
 }
 
+func TestServiceStartsCountryRefreshAndReconcilesAfterCompletion(t *testing.T) {
+	lifetime, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	aimiliSource := &fakeAimiliSource{
+		countries:    []aimili.CandidateCountry{{Code: "JP", Name: "日本", CandidateCount: 8, ObservedAt: 1_700_000_000}},
+		startRefresh: aimili.CountryRefresh{State: "running", Country: "JP", Phase: "fetching"},
+		refreshes: []aimili.CountryRefresh{
+			{State: "running", Country: "JP", Phase: "probing", TestedCount: 1},
+			{State: "completed", Country: "JP", TestedCount: 5, ValidCount: 4},
+		},
+	}
+	reconciled := make(chan struct{}, 1)
+	service, err := New(Config{
+		MaxOnline:       1,
+		LifetimeContext: lifetime,
+		PollInterval:    time.Millisecond,
+		PollTimeout:     100 * time.Millisecond,
+		Reconcile: func(context.Context) {
+			reconciled <- struct{}{}
+		},
+	}, aimiliSource, &fakeXUISource{}, &fakeGroupSource{}, &fakeAccountStatus{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	countries, err := service.CandidateCountries(context.Background())
+	if err != nil || len(countries) != 1 || countries[0].Code != "JP" {
+		t.Fatalf("countries = %#v, err = %v", countries, err)
+	}
+	started, err := service.StartAimiliVPNRefresh(context.Background(), "jp")
+	if err != nil || started.State != "running" || started.Country != "JP" {
+		t.Fatalf("started = %#v, err = %v", started, err)
+	}
+	select {
+	case <-reconciled:
+	case <-time.After(time.Second):
+		t.Fatal("completed refresh did not trigger reconcile")
+	}
+	status, err := service.AimiliVPNRefresh(context.Background())
+	if err != nil || status.State != "completed" || status.ValidCount != 4 {
+		t.Fatalf("status = %#v, err = %v", status, err)
+	}
+}
+
+func TestServicePreservesRefreshErrorCodesAndCancelsPollingWithGateway(t *testing.T) {
+	aimiliSource := &fakeAimiliSource{startError: &aimili.AdapterError{Code: "maintenance_busy"}}
+	service, err := New(Config{MaxOnline: 1}, aimiliSource, &fakeXUISource{}, &fakeGroupSource{}, &fakeAccountStatus{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.StartAimiliVPNRefresh(context.Background(), "JP"); errorCode(err) != "maintenance_busy" {
+		t.Fatalf("busy error = %v", err)
+	}
+
+	lifetime, cancel := context.WithCancel(context.Background())
+	pollObserved := make(chan struct{}, 1)
+	aimiliSource = &fakeAimiliSource{
+		startRefresh: aimili.CountryRefresh{State: "running", Country: "JP"},
+		refreshes:    []aimili.CountryRefresh{{State: "running", Country: "JP"}},
+		pollObserved: pollObserved,
+	}
+	service, err = New(Config{
+		MaxOnline:       1,
+		LifetimeContext: lifetime,
+		PollInterval:    time.Millisecond,
+		PollTimeout:     time.Second,
+		Reconcile: func(context.Context) {
+			t.Error("canceled Gateway polling triggered reconcile")
+		},
+	}, aimiliSource, &fakeXUISource{}, &fakeGroupSource{}, &fakeAccountStatus{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.StartAimiliVPNRefresh(context.Background(), "JP"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-pollObserved:
+	case <-time.After(time.Second):
+		t.Fatal("refresh polling did not start")
+	}
+	cancel()
+	time.Sleep(10 * time.Millisecond)
+}
+
+func errorCode(err error) string {
+	var maintenanceError *Error
+	if !errors.As(err, &maintenanceError) {
+		return ""
+	}
+	return maintenanceError.Code
+}
+
 type fakeAimiliSource struct {
 	candidates   []aimili.Candidate
 	slots        []aimili.Slot
 	checkedSlots []int
+	countries    []aimili.CandidateCountry
+	startRefresh aimili.CountryRefresh
+	startError   error
+	refreshes    []aimili.CountryRefresh
+	pollObserved chan struct{}
+	mu           sync.Mutex
 }
 
 func (fake *fakeAimiliSource) Candidates(context.Context) ([]aimili.Candidate, error) {
@@ -105,6 +205,30 @@ func (fake *fakeAimiliSource) ListSlots(context.Context) ([]aimili.Slot, error) 
 func (fake *fakeAimiliSource) CheckSlot(_ context.Context, slot int) (aimili.SlotCheck, error) {
 	fake.checkedSlots = append(fake.checkedSlots, slot)
 	return aimili.SlotCheck{Number: slot, EgressOK: true}, nil
+}
+func (fake *fakeAimiliSource) CandidateCountries(context.Context) ([]aimili.CandidateCountry, error) {
+	return append([]aimili.CandidateCountry(nil), fake.countries...), nil
+}
+func (fake *fakeAimiliSource) StartCountryRefresh(context.Context, string) (aimili.CountryRefresh, error) {
+	return fake.startRefresh, fake.startError
+}
+func (fake *fakeAimiliSource) CountryRefresh(context.Context) (aimili.CountryRefresh, error) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if fake.pollObserved != nil {
+		select {
+		case fake.pollObserved <- struct{}{}:
+		default:
+		}
+	}
+	if len(fake.refreshes) == 0 {
+		return aimili.CountryRefresh{}, nil
+	}
+	result := fake.refreshes[0]
+	if len(fake.refreshes) > 1 {
+		fake.refreshes = fake.refreshes[1:]
+	}
+	return result, nil
 }
 
 type fakeXUISource struct{ snapshot xui.Snapshot }

@@ -44,6 +44,27 @@ type Candidate struct {
 	LastProbeAt float64 `json:"last_probe_at"`
 }
 
+type CandidateCountry struct {
+	Code           string  `json:"code"`
+	Name           string  `json:"name"`
+	CandidateCount int     `json:"candidateCount"`
+	ObservedAt     float64 `json:"observedAt"`
+}
+
+type CountryRefresh struct {
+	State                 string  `json:"state"`
+	Country               string  `json:"country"`
+	Phase                 string  `json:"phase"`
+	CatalogCount          int     `json:"catalogCount"`
+	CountryCandidateCount int     `json:"countryCandidateCount"`
+	TestedCount           int     `json:"testedCount"`
+	ValidCount            int     `json:"validCount"`
+	PreservedCount        int     `json:"preservedCount"`
+	StartedAt             float64 `json:"startedAt"`
+	FinishedAt            float64 `json:"finishedAt"`
+	ErrorCode             string  `json:"errorCode"`
+}
+
 type CreateSlotRequest struct {
 	Country     string `json:"country"`
 	ProxyType   string `json:"proxyType"`
@@ -164,6 +185,61 @@ func (c *Client) Candidates(ctx context.Context) ([]Candidate, error) {
 	return result, err
 }
 
+func (c *Client) CandidateCountries(ctx context.Context) ([]CandidateCountry, error) {
+	var result []CandidateCountry
+	if err := c.doAllowUnknown(ctx, c.readTimeout, http.MethodGet, "control/v1/candidates/countries", nil, &result); err != nil {
+		return nil, err
+	}
+	for _, country := range result {
+		if len(country.Code) != 2 || country.Code != strings.ToUpper(country.Code) || country.CandidateCount < 0 || country.ObservedAt < 0 {
+			return nil, &AdapterError{Code: "invalid_response"}
+		}
+	}
+	return result, nil
+}
+
+func (c *Client) StartCountryRefresh(ctx context.Context, country string) (CountryRefresh, error) {
+	normalized := strings.ToUpper(strings.TrimSpace(country))
+	if len(normalized) != 2 || normalized[0] < 'A' || normalized[0] > 'Z' || normalized[1] < 'A' || normalized[1] > 'Z' {
+		return CountryRefresh{}, &AdapterError{Code: "invalid_request"}
+	}
+	var result CountryRefresh
+	input := struct {
+		Country string `json:"country"`
+	}{Country: normalized}
+	if err := c.doAllowUnknown(ctx, c.readTimeout, http.MethodPost, "control/v1/candidates/refresh", input, &result); err != nil {
+		return CountryRefresh{}, err
+	}
+	if !validCountryRefresh(result) {
+		return CountryRefresh{}, &AdapterError{Code: "invalid_response"}
+	}
+	return result, nil
+}
+
+func (c *Client) CountryRefresh(ctx context.Context) (CountryRefresh, error) {
+	var result CountryRefresh
+	if err := c.doAllowUnknown(ctx, c.readTimeout, http.MethodGet, "control/v1/candidates/refresh", nil, &result); err != nil {
+		return CountryRefresh{}, err
+	}
+	if !validCountryRefresh(result) {
+		return CountryRefresh{}, &AdapterError{Code: "invalid_response"}
+	}
+	return result, nil
+}
+
+func validCountryRefresh(refresh CountryRefresh) bool {
+	switch refresh.State {
+	case "idle", "running", "completed", "failed":
+	default:
+		return false
+	}
+	if refresh.Country != "" && (len(refresh.Country) != 2 || refresh.Country != strings.ToUpper(refresh.Country)) {
+		return false
+	}
+	return refresh.CatalogCount >= 0 && refresh.CountryCandidateCount >= 0 && refresh.TestedCount >= 0 &&
+		refresh.ValidCount >= 0 && refresh.PreservedCount >= 0 && refresh.StartedAt >= 0 && refresh.FinishedAt >= 0
+}
+
 func (c *Client) CreateSlot(ctx context.Context, input CreateSlotRequest) (Slot, error) {
 	var result Slot
 	err := c.do(ctx, c.operationTimeout, http.MethodPost, "control/v1/slots", input, &result)
@@ -256,6 +332,14 @@ func (c *Client) IssueAdminSession(ctx context.Context) (AdminSession, error) {
 }
 
 func (c *Client) do(ctx context.Context, timeout time.Duration, method, path string, input, output any) error {
+	return c.doJSON(ctx, timeout, method, path, input, output, false)
+}
+
+func (c *Client) doAllowUnknown(ctx context.Context, timeout time.Duration, method, path string, input, output any) error {
+	return c.doJSON(ctx, timeout, method, path, input, output, true)
+}
+
+func (c *Client) doJSON(ctx context.Context, timeout time.Duration, method, path string, input, output any, allowUnknownData bool) error {
 	endpoint, err := url.JoinPath(c.baseURL.String(), path)
 	if err != nil {
 		return &AdapterError{Code: "invalid_configuration"}
@@ -320,7 +404,9 @@ func (c *Client) do(ctx context.Context, timeout time.Duration, method, path str
 		return &AdapterError{Code: "invalid_response"}
 	}
 	dataDecoder := json.NewDecoder(bytes.NewReader(envelope.Data))
-	dataDecoder.DisallowUnknownFields()
+	if !allowUnknownData {
+		dataDecoder.DisallowUnknownFields()
+	}
 	if err := dataDecoder.Decode(output); err != nil {
 		return &AdapterError{Code: "invalid_response"}
 	}
