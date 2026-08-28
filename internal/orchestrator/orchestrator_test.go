@@ -53,6 +53,32 @@ func TestEnableWaitsForAimiliSlotToCarryRealTraffic(t *testing.T) {
 	}
 }
 
+func TestEnableReservesAFreeAimiliSlotBeforePersistingSecondGroup(t *testing.T) {
+	fixture := newFixture()
+	fixture.store.enforceUniqueSlots = true
+	existing, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter, "jp-existing")
+	existing.Status = domain.ProxyGroupReady
+	existing.AimiliSlot = 0
+	existing.VLESSPort = 20000
+	existing.MixedPort = 30000
+	existing.ExitIP = "203.0.113.7"
+	fixture.store.groups[existing.ID] = existing
+	fixture.aimili.createdSlots = map[int]aimili.Slot{0: {Number: 0, Country: "JP", ProxyType: "datacenter", EgressOK: true}}
+	fixture.aimili.slotsByCandidate = map[string]aimili.Slot{
+		"kr-new": {Number: 1, Country: "KR", CountryName: "韩国", ProxyType: "datacenter", Port: 17931, Status: "up", ExitIP: "203.0.113.8", EgressOK: true},
+	}
+
+	created, err := fixture.orchestratorWithMax(t, 2).Enable(context.Background(), EnableRequest{
+		CountryCode: "KR", ProxyType: domain.ProxyTypeDatacenter, CandidateID: "kr-new",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.AimiliSlot != 1 || len(fixture.store.groups) != 2 {
+		t.Fatalf("created=%#v groups=%#v", created, fixture.store.groups)
+	}
+}
+
 func TestEnableRotatesANewSlotUntilItsExitIsUnique(t *testing.T) {
 	fixture := newFixture()
 	existing, _ := domain.NewProxyGroupIdentity("US", domain.ProxyTypeDatacenter, "existing")
@@ -189,11 +215,12 @@ func TestCheckNeverRotatesAndRotateKeepsEntryStable(t *testing.T) {
 }
 
 type fakeStore struct {
-	mu          sync.Mutex
-	groups      map[string]domain.ProxyGroup
-	credentials map[string][]byte
-	cidrs       []netip.Prefix
-	policy      store.MixedSourcePolicy
+	mu                 sync.Mutex
+	groups             map[string]domain.ProxyGroup
+	credentials        map[string][]byte
+	cidrs              []netip.Prefix
+	policy             store.MixedSourcePolicy
+	enforceUniqueSlots bool
 }
 
 func (s *fakeStore) CreateProxyGroup(_ context.Context, group domain.ProxyGroup) error {
@@ -201,6 +228,13 @@ func (s *fakeStore) CreateProxyGroup(_ context.Context, group domain.ProxyGroup)
 	defer s.mu.Unlock()
 	if _, exists := s.groups[group.ID]; exists {
 		return store.ErrProxyGroupExists
+	}
+	if s.enforceUniqueSlots {
+		for _, current := range s.groups {
+			if current.AimiliSlot == group.AimiliSlot {
+				return store.ErrProxyGroupExists
+			}
+		}
 	}
 	s.groups[group.ID] = group
 	return nil

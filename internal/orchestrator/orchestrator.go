@@ -243,7 +243,11 @@ func (o *Orchestrator) Enable(ctx context.Context, request EnableRequest) (domai
 		return domain.ProxyGroup{}, &Error{Code: "port_capacity_exceeded"}
 	}
 	now := o.config.Now().UTC()
-	identity.AimiliSlot = 0
+	reservedSlot, err := o.reserveAimiliSlot(ctx, groups)
+	if err != nil {
+		return domain.ProxyGroup{}, operationError(err)
+	}
+	identity.AimiliSlot = reservedSlot
 	identity.CandidateIP = request.CandidateIP
 	identity.CandidateLatencyMS = request.CandidateLatencyMS
 	identity.LastSeenAt = now
@@ -304,6 +308,25 @@ func (o *Orchestrator) Enable(ctx context.Context, request EnableRequest) (domai
 		return domain.ProxyGroup{}, o.rollbackEnable(ctx, &group, managed, "storage_failed")
 	}
 	return group, nil
+}
+
+func (o *Orchestrator) reserveAimiliSlot(ctx context.Context, groups []domain.ProxyGroup) (int, error) {
+	slots, err := o.aimili.ListSlots(ctx)
+	if err != nil {
+		return 0, err
+	}
+	used := make(map[int]struct{}, len(groups)+len(slots))
+	for _, group := range groups {
+		used[group.AimiliSlot] = struct{}{}
+	}
+	for _, slot := range slots {
+		used[slot.Number] = struct{}{}
+	}
+	for number := 0; ; number++ {
+		if _, exists := used[number]; !exists {
+			return number, nil
+		}
+	}
 }
 
 func durationMillis(value time.Duration) int {
