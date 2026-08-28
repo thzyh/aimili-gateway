@@ -19,6 +19,7 @@ type xuiFixture struct {
 	csrfCalls          int
 	loginCalls         int
 	addedProtocols     []string
+	deletedClients     []string
 	updatedXray        map[string]any
 	inbounds           []map[string]any
 	failProtocol       string
@@ -90,6 +91,11 @@ func (fixture *xuiFixture) handler(response http.ResponseWriter, request *http.R
 	case "/panel/panel/api/server/getNewX25519Cert":
 		fmt.Fprint(response, `{"success":true,"obj":{"privateKey":"test-private","publicKey":"test-public"}}`)
 	default:
+		if strings.HasPrefix(request.URL.Path, "/panel/panel/api/clients/del/") {
+			fixture.deletedClients = append(fixture.deletedClients, strings.TrimPrefix(request.URL.Path, "/panel/panel/api/clients/del/"))
+			fmt.Fprint(response, `{"success":true,"obj":null}`)
+			return
+		}
 		if strings.HasPrefix(request.URL.Path, "/panel/panel/api/inbounds/del/") {
 			var id int64
 			_, _ = fmt.Sscanf(strings.TrimPrefix(request.URL.Path, "/panel/panel/api/inbounds/del/"), "%d", &id)
@@ -585,6 +591,9 @@ func TestDeleteManagedGroupRemovesOnlyNamedResources(t *testing.T) {
 	if len(fixture.inbounds) != 0 {
 		t.Fatalf("managed inbounds remain: %#v", fixture.inbounds)
 	}
+	if len(fixture.deletedClients) != 1 || fixture.deletedClients[0] != "aimili-gateway-jp-dc" {
+		t.Fatalf("managed client was not fully deleted: %#v", fixture.deletedClients)
+	}
 	outbounds := fixture.updatedXray["outbounds"].([]any)
 	if len(outbounds) != 1 || outbounds[0].(map[string]any)["tag"] != "direct" {
 		t.Fatalf("delete changed unmanaged outbounds: %#v", outbounds)
@@ -605,6 +614,9 @@ func TestEnsureManagedGroupRollsBackPartialInboundCreation(t *testing.T) {
 	}
 	if len(fixture.inbounds) != 0 {
 		t.Fatalf("partial inbound was not rolled back: %#v", fixture.inbounds)
+	}
+	if len(fixture.deletedClients) != 1 || fixture.deletedClients[0] != "aimili-gateway-jp-dc" {
+		t.Fatalf("partial client was not fully rolled back: %#v", fixture.deletedClients)
 	}
 	outbounds := fixture.updatedXray["outbounds"].([]any)
 	if len(outbounds) != 1 || outbounds[0].(map[string]any)["tag"] != "direct" {

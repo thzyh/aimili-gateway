@@ -166,7 +166,7 @@ func (c *Client) EnsureManagedGroup(ctx context.Context, desired DesiredGroup) (
 		return ManagedGroup{}, err
 	}
 	if err := c.addInbound(ctx, mixedInbound(desired, mixedTag)); err != nil {
-		if rollbackErr := c.rollbackEnsure(ctx, originalSetting, snapshot.OutboundTestURL, vlessTag, mixedTag); rollbackErr != nil {
+		if rollbackErr := c.rollbackEnsure(ctx, originalSetting, snapshot.OutboundTestURL, desired.ResourceName, vlessTag, mixedTag); rollbackErr != nil {
 			return ManagedGroup{}, &AdapterError{Code: "partial_inbound_create"}
 		}
 		return ManagedGroup{}, &AdapterError{Code: "inbound_create_failed"}
@@ -424,7 +424,7 @@ func validRealityValue(value string, limit int) bool {
 	return value != "" && len(value) <= limit && value == strings.TrimSpace(value) && !strings.ContainsAny(value, "\x00\r\n")
 }
 
-func (c *Client) rollbackEnsure(ctx context.Context, original map[string]any, probeURL string, tags ...string) error {
+func (c *Client) rollbackEnsure(ctx context.Context, original map[string]any, probeURL, resourceName string, tags ...string) error {
 	tagSet := make(map[string]bool, len(tags))
 	for _, tag := range tags {
 		tagSet[tag] = true
@@ -439,6 +439,9 @@ func (c *Client) rollbackEnsure(ctx context.Context, original map[string]any, pr
 				return err
 			}
 		}
+	}
+	if err := c.deleteManagedClient(ctx, resourceName); err != nil {
+		return err
 	}
 	return c.updateXray(ctx, original, probeURL)
 }
@@ -478,6 +481,9 @@ func (c *Client) DeleteManagedGroup(ctx context.Context, managed ManagedGroup) e
 		if _, err := c.call(ctx, http.MethodPost, "panel/api/inbounds/del/"+formatInt64(id), map[string]any{}, false); err != nil {
 			return &AdapterError{Code: "partial_delete"}
 		}
+	}
+	if err := c.deleteManagedClient(ctx, managed.ResourceName); err != nil {
+		return &AdapterError{Code: "partial_delete"}
 	}
 	setting := snapshot.XraySetting
 	outbounds := make([]any, 0)
@@ -810,6 +816,14 @@ func vlessInbound(desired DesiredGroup, tag, privateKey, publicKey, shortID stri
 
 func managedClientEmail(resourceName string) string {
 	return "aimili-gateway-" + strings.TrimPrefix(resourceName, "agw-")
+}
+
+func (c *Client) deleteManagedClient(ctx context.Context, resourceName string) error {
+	if !strings.HasPrefix(resourceName, "agw-") {
+		return &AdapterError{Code: "invalid_request"}
+	}
+	_, err := c.call(ctx, http.MethodPost, "panel/api/clients/del/"+url.PathEscape(managedClientEmail(resourceName)), map[string]any{}, false)
+	return err
 }
 
 func mixedInbound(desired DesiredGroup, tag string) map[string]any {
