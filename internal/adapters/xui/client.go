@@ -780,6 +780,164 @@ func mergeManagedXray(setting map[string]any, desired DesiredGroup, vlessTag, mi
 	return setting, nil
 }
 
+func mergeAggregateXray(setting map[string]any, desired AggregateDesired) (map[string]any, error) {
+	if !strings.HasPrefix(desired.ResourceName, "agw-") || desired.VLESSPort < 1 || desired.VLESSPort > 65535 || len(desired.OutboundTags) == 0 {
+		return nil, &AdapterError{Code: "invalid_request"}
+	}
+	seen := map[string]bool{}
+	selectors := make([]any, 0, len(desired.OutboundTags))
+	for _, tag := range desired.OutboundTags {
+		tag = strings.TrimSpace(tag)
+		if tag == "" || seen[tag] {
+			continue
+		}
+		seen[tag] = true
+		selectors = append(selectors, tag)
+	}
+	if len(selectors) == 0 {
+		return nil, &AdapterError{Code: "invalid_request"}
+	}
+	routing, _ := setting["routing"].(map[string]any)
+	if routing == nil {
+		routing = map[string]any{"domainStrategy": "AsIs"}
+		setting["routing"] = routing
+	}
+	balancers := make([]any, 0)
+	for _, item := range asObjectSlice(routing["balancers"]) {
+		if stringValue(item["tag"]) != "agw-aggregate" {
+			balancers = append(balancers, item)
+		}
+	}
+	balancers = append(balancers, map[string]any{"tag": "agw-aggregate", "selector": selectors})
+	balancers[len(balancers)-1].(map[string]any)["strategy"] = map[string]any{"type": "leastPing"}
+	routing["balancers"] = balancers
+	setting["observatory"] = map[string]any{"subjectSelector": selectors, "probeURL": "https://www.google.com/generate_204", "probeInterval": "30s", "enableConcurrency": true}
+	rules := make([]any, 0)
+	aggregateTag := desired.ResourceName + "-vless"
+	for _, rule := range asObjectSlice(routing["rules"]) {
+		if stringValue(rule["balancerTag"]) == "agw-aggregate" || ruleContainsInbound(rule, aggregateTag) {
+			continue
+		}
+		rules = append(rules, rule)
+	}
+	routing["rules"] = append([]any{map[string]any{"type": "field", "inboundTag": []any{aggregateTag}, "balancerTag": "agw-aggregate"}}, rules...)
+	return setting, nil
+}
+
+func aggregateVLESSInbound(desired AggregateDesired, tag, privateKey, publicKey, shortID string) map[string]any {
+	return map[string]any{
+		"up": 0, "down": 0, "total": 0, "remark": "Aimili Gateway aggregate VLESS", "enable": true,
+		"expiryTime": 0, "trafficReset": "never", "trafficResetDay": 1, "listen": "", "port": desired.VLESSPort,
+		"protocol": "vless", "tag": tag,
+		"settings":       mustJSONString(map[string]any{"clients": []any{map[string]any{"id": desired.VLESSClientID, "email": "aimili-gateway-aggregate", "flow": "xtls-rprx-vision", "enable": true}}, "decryption": "none"}),
+		"streamSettings": mustJSONString(map[string]any{"network": "tcp", "security": "reality", "realitySettings": map[string]any{"show": false, "xver": 0, "target": desired.RealityTarget, "serverNames": []any{desired.RealityServerName}, "privateKey": privateKey, "shortIds": []any{shortID}, "settings": map[string]any{"publicKey": publicKey, "fingerprint": "chrome", "spiderX": "/"}}}),
+		"sniffing":       mustJSONString(map[string]any{"enabled": true, "destOverride": []any{"http", "tls", "quic"}, "metadataOnly": false, "routeOnly": false}),
+	}
+}
+
+func validateAggregateDesired(desired AggregateDesired) error {
+	if !strings.HasPrefix(desired.ResourceName, "agw-") || desired.VLESSPort < 1 || desired.VLESSPort > 65535 || strings.TrimSpace(desired.VLESSClientID) == "" || desired.RealityTarget != "127.0.0.1:443" || strings.TrimSpace(desired.RealityServerName) == "" || net.ParseIP(desired.RealityServerName) != nil || strings.ContainsAny(desired.RealityServerName, "/:") {
+		return &AdapterError{Code: "invalid_request"}
+	}
+	return nil
+}
+
+func (c *Client) EnsureAggregate(ctx context.Context, desired AggregateDesired) (ManagedAggregate, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := validateAggregateDesired(desired); err != nil {
+		return ManagedAggregate{}, err
+	}
+	if err := c.authenticate(ctx); err != nil {
+		return ManagedAggregate{}, err
+	}
+	snapshot, err := c.snapshot(ctx)
+	if err != nil {
+		return ManagedAggregate{}, err
+	}
+	tag := desired.ResourceName + "-vless"
+	var current *Inbound
+	for i := range snapshot.Inbounds {
+		if snapshot.Inbounds[i].Tag == tag {
+			current = &snapshot.Inbounds[i]
+			break
+		}
+	}
+	publicKey, shortID := "", ""
+	if current != nil {
+		if current.Protocol != "vless" || current.Port != desired.VLESSPort || !strings.HasPrefix(current.Remark, "Aimili Gateway") {
+			return ManagedAggregate{}, &AdapterError{Code: "ownership_conflict"}
+		}
+		details, detailErr := c.inboundDetails(ctx)
+		if detailErr != nil {
+			return ManagedAggregate{}, detailErr
+		}
+		for _, inbound := range details {
+			if inbound.ID != current.ID {
+				continue
+			}
+			stream, ok := decodeObject(inbound.StreamSettings)
+			if !ok {
+				return ManagedAggregate{}, &AdapterError{Code: "invalid_response"}
+			}
+			reality, ok := decodeObject(stream["realitySettings"])
+			if !ok {
+				return ManagedAggregate{}, &AdapterError{Code: "invalid_response"}
+			}
+			names := stringValues(reality["serverNames"])
+			ids := stringValues(reality["shortIds"])
+			settings, ok := decodeObject(reality["settings"])
+			if !ok || len(names) != 1 || len(ids) != 1 || names[0] != desired.RealityServerName {
+				return ManagedAggregate{}, &AdapterError{Code: "managed_resource_drift"}
+			}
+			publicKey, shortID = stringValue(settings["publicKey"]), ids[0]
+		}
+	} else {
+		privateKey, generatedPublicKey, keyErr := c.newX25519(ctx)
+		if keyErr != nil {
+			return ManagedAggregate{}, keyErr
+		}
+		publicKey = generatedPublicKey
+		bytesID := make([]byte, 4)
+		if _, keyErr = rand.Read(bytesID); keyErr != nil {
+			return ManagedAggregate{}, &AdapterError{Code: "random_failed"}
+		}
+		shortID = hex.EncodeToString(bytesID)
+		setting, mergeErr := mergeAggregateXray(cloneObject(snapshot.XraySetting), desired)
+		if mergeErr != nil {
+			return ManagedAggregate{}, mergeErr
+		}
+		if updateErr := c.updateXray(ctx, setting, snapshot.OutboundTestURL); updateErr != nil {
+			return ManagedAggregate{}, updateErr
+		}
+		if addErr := c.addInbound(ctx, aggregateVLESSInbound(desired, tag, privateKey, publicKey, shortID)); addErr != nil {
+			_ = c.updateXray(ctx, snapshot.XraySetting, snapshot.OutboundTestURL)
+			return ManagedAggregate{}, addErr
+		}
+		updated, listErr := c.inbounds(ctx)
+		if listErr != nil {
+			return ManagedAggregate{}, listErr
+		}
+		for _, inbound := range updated {
+			if inbound.Tag == tag {
+				current = &inbound
+				break
+			}
+		}
+	}
+	setting, mergeErr := mergeAggregateXray(cloneObject(snapshot.XraySetting), desired)
+	if mergeErr != nil {
+		return ManagedAggregate{}, mergeErr
+	}
+	if updateErr := c.updateXray(ctx, setting, snapshot.OutboundTestURL); updateErr != nil {
+		return ManagedAggregate{}, updateErr
+	}
+	if current == nil {
+		return ManagedAggregate{}, &AdapterError{Code: "write_verification_failed"}
+	}
+	return ManagedAggregate{ResourceName: desired.ResourceName, VLESSInboundID: current.ID, VLESSInboundTag: tag, VLESSPort: desired.VLESSPort, PublicKey: publicKey, ShortID: shortID, ServerName: desired.RealityServerName}, nil
+}
+
 func mixedSourceRestrictionEnabled(desired DesiredGroup) bool {
 	return desired.MixedSourceRestrictionEnabled || len(desired.MixedSourceCIDRs) > 0
 }
@@ -801,6 +959,180 @@ func managedSocksOutboundMatches(outbound map[string]any, port int) bool {
 		return false
 	}
 	return int(value) == port
+}
+
+func verifyLegacyMainChain(inbounds []Inbound, setting map[string]any, vlessPort, socksPort int) error {
+	foundInbound := false
+	for _, inbound := range inbounds {
+		if inbound.Tag == "aimili-reality" {
+			if inbound.Protocol != "vless" || inbound.Port != vlessPort || inbound.Remark != "Aimili Reality" {
+				return &AdapterError{Code: "ownership_conflict"}
+			}
+			foundInbound = true
+		}
+	}
+	if !foundInbound {
+		return &AdapterError{Code: "managed_resource_missing"}
+	}
+	foundOutbound := false
+	for _, outbound := range asObjectSlice(setting["outbounds"]) {
+		if stringValue(outbound["tag"]) == "aimili-socks" {
+			if !managedSocksOutboundMatches(outbound, socksPort) {
+				return &AdapterError{Code: "ownership_conflict"}
+			}
+			foundOutbound = true
+		}
+	}
+	if !foundOutbound {
+		return &AdapterError{Code: "managed_resource_missing"}
+	}
+	routing, _ := setting["routing"].(map[string]any)
+	for _, rule := range asObjectSlice(routing["rules"]) {
+		if stringValue(rule["outboundTag"]) == "aimili-socks" && ruleContainsInbound(rule, "aimili-reality") {
+			return nil
+		}
+	}
+	return &AdapterError{Code: "managed_resource_missing"}
+}
+
+func (c *Client) EnsureLegacyMain(ctx context.Context, desired LegacyMainDesired) (LegacyMain, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if desired.VLESSPort != 8443 || desired.SOCKSPort != 7928 || desired.MixedPort < 1 || desired.MixedPort > 65535 || desired.MixedUsername == "" || desired.MixedPassword == "" || (desired.MixedSourceRestrictionEnabled && len(desired.MixedSourceCIDRs) == 0) {
+		return LegacyMain{}, &AdapterError{Code: "invalid_request"}
+	}
+	if err := c.authenticate(ctx); err != nil {
+		return LegacyMain{}, err
+	}
+	snapshot, err := c.snapshot(ctx)
+	if err != nil {
+		return LegacyMain{}, err
+	}
+	if err := verifyLegacyMainChain(snapshot.Inbounds, snapshot.XraySetting, desired.VLESSPort, desired.SOCKSPort); err != nil {
+		return LegacyMain{}, err
+	}
+	originalSetting := cloneObject(snapshot.XraySetting)
+	result := LegacyMain{VLESSPort: desired.VLESSPort, MixedPort: desired.MixedPort, OutboundTag: "aimili-socks"}
+	details, err := c.inboundDetails(ctx)
+	if err != nil {
+		return LegacyMain{}, err
+	}
+	for _, inbound := range details {
+		if inbound.Tag != "aimili-reality" {
+			continue
+		}
+		result.VLESSInboundID = inbound.ID
+		settings, ok := decodeObject(inbound.Settings)
+		if !ok {
+			return LegacyMain{}, &AdapterError{Code: "invalid_response"}
+		}
+		clients := asObjectSlice(settings["clients"])
+		if len(clients) != 1 || stringValue(clients[0]["flow"]) != "xtls-rprx-vision" {
+			return LegacyMain{}, &AdapterError{Code: "managed_resource_drift"}
+		}
+		result.ClientID = stringValue(clients[0]["id"])
+		stream, ok := decodeObject(inbound.StreamSettings)
+		if !ok {
+			return LegacyMain{}, &AdapterError{Code: "invalid_response"}
+		}
+		reality, ok := decodeObject(stream["realitySettings"])
+		if !ok {
+			return LegacyMain{}, &AdapterError{Code: "invalid_response"}
+		}
+		names, ids := stringValues(reality["serverNames"]), stringValues(reality["shortIds"])
+		clientSettings, ok := decodeObject(reality["settings"])
+		if !ok || len(names) != 1 || len(ids) != 1 {
+			return LegacyMain{}, &AdapterError{Code: "managed_resource_drift"}
+		}
+		result.PublicKey, result.ShortID, result.ServerName = stringValue(clientSettings["publicKey"]), ids[0], names[0]
+	}
+	if result.VLESSInboundID == 0 || result.ClientID == "" || result.PublicKey == "" || result.ShortID == "" || result.ServerName == "" {
+		return LegacyMain{}, &AdapterError{Code: "managed_resource_drift"}
+	}
+	mixedTag := "agw-main-mixed"
+	for _, inbound := range snapshot.Inbounds {
+		if inbound.Tag == mixedTag {
+			if inbound.Protocol != "mixed" || inbound.Port != desired.MixedPort || !strings.HasPrefix(inbound.Remark, "Aimili Gateway") {
+				return LegacyMain{}, &AdapterError{Code: "ownership_conflict"}
+			}
+			result.MixedInboundID = inbound.ID
+		} else if inbound.Port == desired.MixedPort {
+			return LegacyMain{}, &AdapterError{Code: "port_conflict"}
+		}
+	}
+	if result.MixedInboundID != 0 {
+		for _, inbound := range details {
+			if inbound.ID != result.MixedInboundID {
+				continue
+			}
+			settings, ok := decodeObject(inbound.Settings)
+			if !ok {
+				return LegacyMain{}, &AdapterError{Code: "invalid_response"}
+			}
+			accounts := asObjectSlice(settings["accounts"])
+			if stringValue(settings["auth"]) != "password" || len(accounts) != 1 || stringValue(accounts[0]["user"]) != desired.MixedUsername || stringValue(accounts[0]["pass"]) != desired.MixedPassword {
+				return LegacyMain{}, &AdapterError{Code: "managed_resource_drift"}
+			}
+		}
+	}
+	if desired.MixedSourceRestrictionEnabled {
+		outbounds := make([]any, 0)
+		foundBlackhole := false
+		for _, outbound := range asObjectSlice(snapshot.XraySetting["outbounds"]) {
+			if stringValue(outbound["tag"]) == "agw-blackhole" {
+				if stringValue(outbound["protocol"]) != "blackhole" {
+					return LegacyMain{}, &AdapterError{Code: "ownership_conflict"}
+				}
+				foundBlackhole = true
+			}
+			outbounds = append(outbounds, outbound)
+		}
+		if !foundBlackhole {
+			outbounds = append(outbounds, map[string]any{"tag": "agw-blackhole", "protocol": "blackhole", "settings": map[string]any{}})
+		}
+		snapshot.XraySetting["outbounds"] = outbounds
+	}
+	routing, _ := snapshot.XraySetting["routing"].(map[string]any)
+	if routing == nil {
+		routing = map[string]any{"domainStrategy": "AsIs"}
+		snapshot.XraySetting["routing"] = routing
+	}
+	kept := make([]any, 0)
+	for _, rule := range asObjectSlice(routing["rules"]) {
+		if !ruleContainsInbound(rule, mixedTag) {
+			kept = append(kept, rule)
+		}
+	}
+	if desired.MixedSourceRestrictionEnabled {
+		allowed := append(append([]string{}, desired.MixedSourceCIDRs...), "127.0.0.1/32", "::1/128")
+		kept = append([]any{map[string]any{"type": "field", "inboundTag": []any{mixedTag}, "source": stringsToAny(allowed), "outboundTag": "aimili-socks"}, map[string]any{"type": "field", "inboundTag": []any{mixedTag}, "outboundTag": "agw-blackhole"}}, kept...)
+	} else {
+		kept = append([]any{map[string]any{"type": "field", "inboundTag": []any{mixedTag}, "outboundTag": "aimili-socks"}}, kept...)
+	}
+	routing["rules"] = kept
+	if err := c.updateXray(ctx, snapshot.XraySetting, snapshot.OutboundTestURL); err != nil {
+		return LegacyMain{}, err
+	}
+	if result.MixedInboundID == 0 {
+		groupDesired := DesiredGroup{ResourceName: "agw-main", MixedPort: desired.MixedPort, MixedUsername: desired.MixedUsername, MixedPassword: desired.MixedPassword}
+		if err := c.addInbound(ctx, mixedInbound(groupDesired, mixedTag)); err != nil {
+			_ = c.updateXray(ctx, originalSetting, snapshot.OutboundTestURL)
+			return LegacyMain{}, err
+		}
+		updated, listErr := c.inbounds(ctx)
+		if listErr != nil {
+			return LegacyMain{}, listErr
+		}
+		for _, inbound := range updated {
+			if inbound.Tag == mixedTag {
+				result.MixedInboundID = inbound.ID
+			}
+		}
+	}
+	if result.MixedInboundID == 0 {
+		return LegacyMain{}, &AdapterError{Code: "write_verification_failed"}
+	}
+	return result, nil
 }
 
 func vlessInbound(desired DesiredGroup, tag, privateKey, publicKey, shortID string) map[string]any {

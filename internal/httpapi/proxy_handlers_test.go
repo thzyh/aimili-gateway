@@ -67,6 +67,21 @@ func TestConnectionsRequireOnlyAnAuthenticatedSession(t *testing.T) {
 	}
 }
 
+func TestAggregateConnectionsReturnExactlyOneVLESSAddress(t *testing.T) {
+	manager := &fakeProxyManager{}
+	environment := newAuthTestEnvironmentConfigured(t, true, func(dependencies *Dependencies) { dependencies.ProxyManager = manager })
+	assertResponseStatus(t, environment.login(t), http.StatusNoContent)
+	response := environment.request(t, http.MethodGet, "/api/v1/proxy-groups/aggregate/connections", nil, "", "")
+	defer response.Body.Close()
+	var connections orchestrator.Connections
+	if err := json.NewDecoder(response.Body).Decode(&connections); err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK || connections.VLESSURI != "vless://aggregate-masked-test" || connections.SOCKS5HURI != "" {
+		t.Fatalf("status=%d connections=%#v", response.StatusCode, connections)
+	}
+}
+
 func TestProxyPoolFiltersAndExposesProtocolLatenciesWithoutSecrets(t *testing.T) {
 	manager := &fakeProxyManager{groups: []domain.ProxyGroup{
 		{ID: "agw-jp-dc-one", CountryCode: "JP", CountryName: "日本", ProxyType: domain.ProxyTypeDatacenter, Status: domain.ProxyGroupReady, ExitIP: "203.0.113.10", VLESSLatencyMS: 82, SOCKSLatencyMS: 71, Version: 2, LastCheckedAt: time.Unix(1_700_000_000, 0).UTC()},
@@ -230,6 +245,9 @@ func (*fakeProxyManager) Rotate(context.Context, string) (domain.ProxyGroup, err
 func (*fakeProxyManager) Disable(context.Context, string) error { return nil }
 func (*fakeProxyManager) Connections(context.Context, string) (orchestrator.Connections, error) {
 	return orchestrator.Connections{VLESSURI: "vless://masked-test", SOCKS5HURI: "socks5h://masked-test"}, nil
+}
+func (*fakeProxyManager) AggregateConnections(context.Context) (orchestrator.Connections, error) {
+	return orchestrator.Connections{VLESSURI: "vless://aggregate-masked-test"}, nil
 }
 func (m *fakeProxyManager) MixedPolicy(context.Context) (store.MixedSourcePolicy, error) {
 	return m.mixedPolicy, nil

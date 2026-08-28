@@ -131,6 +131,17 @@ async function copyAll(): Promise<void> {
   finally { busy.value = '' }
 }
 
+async function copyAggregate(): Promise<void> {
+  busy.value = 'copy-aggregate'; notice.value = ''
+  try {
+    const value = await apiFetch<ConnectionsPayload>('/api/v1/proxy-groups/aggregate/connections')
+    if (!value.vlessUri) { notice.value = '当前没有可用的聚合入口。'; return }
+    await navigator.clipboard.writeText(value.vlessUri)
+    notice.value = '单个聚合 VLESS 地址已复制；由 Xray 自动选择健康出口。'
+  } catch (error) { notice.value = messageFor(error, '聚合地址复制失败') }
+  finally { busy.value = '' }
+}
+
 async function exportRows(): Promise<void> {
   busy.value = 'export'; notice.value = ''
   try {
@@ -177,7 +188,7 @@ function messageFor(error: unknown, fallback: string): string {
   <AppShell>
     <section class="page-heading">
       <div><p class="eyebrow">ONLINE EGRESS POOL</p><h1>{{ title }}</h1><p>{{ description }}</p></div>
-      <div class="heading-actions"><button data-sync-pool class="secondary" :disabled="busy !== ''" @click="refreshPool">{{ busy === 'refresh' ? '正在同步…' : '同步代理状态' }}</button><button data-refresh-country class="secondary" :disabled="busy !== '' || !country" @click="refreshCountry">{{ busy === 'country-refresh' ? '正在刷新…' : '刷新所选国家' }}</button><button data-copy-all :disabled="busy !== ''" @click="copyAll">复制全部</button><button data-export :disabled="busy !== ''" @click="exportRows">导出</button></div>
+      <div class="heading-actions"><button data-sync-pool class="secondary" :disabled="busy !== ''" @click="refreshPool">{{ busy === 'refresh' ? '正在同步…' : '同步代理状态' }}</button><button data-refresh-country class="secondary" :disabled="busy !== '' || !country" @click="refreshCountry">{{ busy === 'country-refresh' ? '正在刷新…' : '刷新所选国家' }}</button><button v-if="protocol === 'vless'" data-copy-aggregate :disabled="busy !== ''" @click="copyAggregate">复制单地址聚合入口</button><button data-copy-all class="secondary" :disabled="busy !== ''" @click="copyAll">复制节点列表</button><button data-export class="secondary" :disabled="busy !== ''" @click="exportRows">导出</button></div>
     </section>
     <p v-if="notice" class="notice" role="status">{{ notice }}</p>
     <p v-if="refreshStateLabel()" class="refresh-state">{{ refreshStateLabel() }}</p>

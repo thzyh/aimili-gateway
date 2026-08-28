@@ -25,17 +25,19 @@ const (
 )
 
 type Config struct {
-	MaxGroups      int
-	VLESSPortStart int
-	VLESSPortEnd   int
-	MixedPortStart int
-	MixedPortEnd   int
-	PublicHost     string
-	XrayPath       string
-	ProbeHost      string
-	ReadyTimeout   time.Duration
-	PollInterval   time.Duration
-	Now            func() time.Time
+	MaxGroups          int
+	VLESSPortStart     int
+	VLESSPortEnd       int
+	MixedPortStart     int
+	MixedPortEnd       int
+	AggregateVLESSPort int
+	MainMixedPort      int
+	PublicHost         string
+	XrayPath           string
+	ProbeHost          string
+	ReadyTimeout       time.Duration
+	PollInterval       time.Duration
+	Now                func() time.Time
 }
 
 type EnableRequest struct {
@@ -73,6 +75,8 @@ type groupStore interface {
 	ReplaceMixedCIDRs(context.Context, []netip.Prefix) error
 	GetMixedSourcePolicy(context.Context) (store.MixedSourcePolicy, error)
 	ReplaceMixedSourcePolicy(context.Context, store.MixedSourcePolicy) error
+	SaveMainEgress(context.Context, store.MainEgress) error
+	SaveAggregateConfig(context.Context, store.AggregateConfig) error
 }
 
 type aimiliClient interface {
@@ -82,12 +86,21 @@ type aimiliClient interface {
 	CheckSlot(context.Context, int) (aimili.SlotCheck, error)
 	RotateSlot(context.Context, int) (aimili.Slot, error)
 	DeleteSlot(context.Context, int) error
+	MainStatus(context.Context) (aimili.MainStatus, error)
 }
 
 type xuiClient interface {
 	EnsureManagedGroup(context.Context, xui.DesiredGroup) (xui.ManagedGroup, error)
 	UpdateManagedGroup(context.Context, xui.DesiredGroup, xui.ManagedGroup) (xui.ManagedGroup, error)
 	DeleteManagedGroup(context.Context, xui.ManagedGroup) error
+}
+
+type aggregateXUIClient interface {
+	EnsureAggregate(context.Context, xui.AggregateDesired) (xui.ManagedAggregate, error)
+}
+
+type legacyMainXUIClient interface {
+	EnsureLegacyMain(context.Context, xui.LegacyMainDesired) (xui.LegacyMain, error)
 }
 
 type proxyValidator interface {
@@ -120,6 +133,18 @@ func New(config Config, database groupStore, aimiliAdapter aimiliClient, xuiAdap
 	}
 	if config.PollInterval <= 0 {
 		config.PollInterval = 2 * time.Second
+	}
+	if config.AggregateVLESSPort == 0 {
+		config.AggregateVLESSPort = config.VLESSPortEnd + 1
+	}
+	if config.MainMixedPort == 0 {
+		config.MainMixedPort = 31000
+	}
+	if config.MainMixedPort < 1 || config.MainMixedPort > 65535 || (config.MainMixedPort >= config.MixedPortStart && config.MainMixedPort <= config.MixedPortEnd) {
+		return nil, errors.New("invalid main mixed port")
+	}
+	if config.AggregateVLESSPort < 1 || config.AggregateVLESSPort > 65535 || (config.AggregateVLESSPort >= config.VLESSPortStart && config.AggregateVLESSPort <= config.VLESSPortEnd) {
+		return nil, errors.New("invalid aggregate VLESS port")
 	}
 	return &Orchestrator{config: config, store: database, aimili: aimiliAdapter, xui: xuiAdapter, validator: validation, masterKey: append([]byte(nil), masterKey...)}, nil
 }
@@ -453,6 +478,9 @@ func (o *Orchestrator) Disable(ctx context.Context, id string) error {
 }
 
 func (o *Orchestrator) Connections(ctx context.Context, id string) (Connections, error) {
+	if id == "agw-main" {
+		return o.mainConnections(ctx)
+	}
 	group, err := o.store.GetProxyGroup(ctx, id)
 	if err != nil {
 		return Connections{}, operationError(err)
@@ -477,6 +505,108 @@ func (o *Orchestrator) Connections(ctx context.Context, id string) (Connections,
 	vless.RawQuery = query.Encode()
 	socks := url.URL{Scheme: "socks5h", User: url.UserPassword(string(credentials.mixedUsername), string(credentials.mixedPassword)), Host: net.JoinHostPort(o.config.PublicHost, fmt.Sprint(group.MixedPort))}
 	return Connections{VLESSURI: vless.String(), SOCKS5HURI: socks.String()}, nil
+}
+
+func (o *Orchestrator) mainConnections(ctx context.Context) (Connections, error) {
+	status, err := o.aimili.MainStatus(ctx)
+	if err != nil {
+		return Connections{}, operationError(err)
+	}
+	if !status.Active || !status.EgressOK || status.Port != 7928 {
+		return Connections{}, &Error{Code: "not_ready"}
+	}
+	manager, ok := o.xui.(legacyMainXUIClient)
+	if !ok {
+		return Connections{}, &Error{Code: "not_configured"}
+	}
+	policy, credentials, err := o.runtimeInputs(ctx)
+	if err != nil {
+		return Connections{}, err
+	}
+	legacy, err := manager.EnsureLegacyMain(ctx, xui.LegacyMainDesired{VLESSPort: 8443, MixedPort: o.config.MainMixedPort, SOCKSPort: 7928, MixedUsername: string(credentials.mixedUsername), MixedPassword: string(credentials.mixedPassword), MixedSourceRestrictionEnabled: policy.Enabled, MixedSourceCIDRs: prefixStrings(policy.CIDRs)})
+	if err != nil {
+		return Connections{}, operationError(err)
+	}
+	proxyType := domain.ProxyType(status.ProxyType)
+	if !proxyType.Valid() {
+		proxyType = domain.ProxyTypeDatacenter
+	}
+	country := strings.ToUpper(strings.TrimSpace(status.Country))
+	if len(country) != 2 {
+		country = "ZZ"
+	}
+	if err := o.store.SaveMainEgress(ctx, store.MainEgress{ResourceName: "agw-main", CountryCode: country, CountryName: status.CountryName, ProxyType: proxyType, ExitIP: status.ExitIP, VLESSInboundID: legacy.VLESSInboundID, MixedInboundID: legacy.MixedInboundID, VLESSPort: legacy.VLESSPort, MixedPort: legacy.MixedPort, Enabled: true, UpdatedAt: o.config.Now().UTC()}); err != nil {
+		return Connections{}, &Error{Code: "storage_failed"}
+	}
+	vless := url.URL{Scheme: "vless", User: url.User(legacy.ClientID), Host: net.JoinHostPort(o.config.PublicHost, fmt.Sprint(legacy.VLESSPort)), Fragment: "aimili-main"}
+	query := vless.Query()
+	query.Set("encryption", "none")
+	query.Set("flow", "xtls-rprx-vision")
+	query.Set("security", "reality")
+	query.Set("sni", legacy.ServerName)
+	query.Set("fp", "chrome")
+	query.Set("pbk", legacy.PublicKey)
+	query.Set("sid", legacy.ShortID)
+	query.Set("type", "tcp")
+	vless.RawQuery = query.Encode()
+	socks := url.URL{Scheme: "socks5h", User: url.UserPassword(string(credentials.mixedUsername), string(credentials.mixedPassword)), Host: net.JoinHostPort(o.config.PublicHost, fmt.Sprint(legacy.MixedPort))}
+	return Connections{VLESSURI: vless.String(), SOCKS5HURI: socks.String()}, nil
+}
+
+// AggregateConnections ensures one Xray VLESS inbound backed by a balancer
+// over every ready Gateway SOCKS egress and returns its single URI.
+func (o *Orchestrator) AggregateConnections(ctx context.Context) (Connections, error) {
+	manager, ok := o.xui.(aggregateXUIClient)
+	if !ok {
+		return Connections{}, &Error{Code: "not_configured"}
+	}
+	groups, err := o.store.ListProxyGroups(ctx)
+	if err != nil {
+		return Connections{}, &Error{Code: "storage_failed"}
+	}
+	selectors := make([]string, 0, len(groups))
+	for _, group := range groups {
+		if group.Status == domain.ProxyGroupReady {
+			selectors = append(selectors, group.ResourceName+"-socks")
+		}
+	}
+	if main, mainErr := o.aimili.MainStatus(ctx); mainErr == nil && main.Active && main.EgressOK && main.Port == 7928 {
+		legacy, legacyOK := o.xui.(legacyMainXUIClient)
+		if legacyOK {
+			policy, credentials, inputErr := o.runtimeInputs(ctx)
+			if inputErr == nil {
+				if _, ensureErr := legacy.EnsureLegacyMain(ctx, xui.LegacyMainDesired{VLESSPort: 8443, MixedPort: o.config.MainMixedPort, SOCKSPort: 7928, MixedUsername: string(credentials.mixedUsername), MixedPassword: string(credentials.mixedPassword), MixedSourceRestrictionEnabled: policy.Enabled, MixedSourceCIDRs: prefixStrings(policy.CIDRs)}); ensureErr == nil {
+					selectors = append(selectors, "aimili-socks")
+				}
+			}
+		}
+	}
+	if len(selectors) == 0 {
+		return Connections{}, &Error{Code: "not_ready"}
+	}
+	_, credentials, err := o.runtimeInputs(ctx)
+	if err != nil {
+		return Connections{}, err
+	}
+	aggregate, err := manager.EnsureAggregate(ctx, xui.AggregateDesired{ResourceName: "agw-aggregate-vless", VLESSPort: o.config.AggregateVLESSPort, VLESSClientID: string(credentials.vlessID), RealityTarget: "127.0.0.1:443", RealityServerName: o.config.PublicHost, OutboundTags: selectors})
+	if err != nil {
+		return Connections{}, operationError(err)
+	}
+	if err := o.store.SaveAggregateConfig(ctx, store.AggregateConfig{ResourceName: aggregate.ResourceName, VLESSInboundID: aggregate.VLESSInboundID, VLESSPort: aggregate.VLESSPort, Enabled: true, UpdatedAt: o.config.Now().UTC()}); err != nil {
+		return Connections{}, &Error{Code: "storage_failed"}
+	}
+	vless := url.URL{Scheme: "vless", User: url.User(string(credentials.vlessID)), Host: net.JoinHostPort(o.config.PublicHost, fmt.Sprint(aggregate.VLESSPort)), Fragment: "aimili-gateway-aggregate"}
+	query := vless.Query()
+	query.Set("encryption", "none")
+	query.Set("flow", "xtls-rprx-vision")
+	query.Set("security", "reality")
+	query.Set("sni", aggregate.ServerName)
+	query.Set("fp", "chrome")
+	query.Set("pbk", aggregate.PublicKey)
+	query.Set("sid", aggregate.ShortID)
+	query.Set("type", "tcp")
+	vless.RawQuery = query.Encode()
+	return Connections{VLESSURI: vless.String()}, nil
 }
 
 type runtimeCredentials struct{ vlessID, mixedUsername, mixedPassword []byte }

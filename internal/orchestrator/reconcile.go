@@ -181,7 +181,31 @@ func (o *Orchestrator) Pool(ctx context.Context) ([]domain.ProxyGroup, error) {
 			result = append(result, group)
 		}
 	}
-	return append(legacy, result...), nil
+	result = append(legacy, result...)
+	if main, mainErr := o.aimili.MainStatus(ctx); mainErr == nil && main.Active {
+		proxyType := domain.ProxyType(main.ProxyType)
+		if !proxyType.Valid() {
+			proxyType = domain.ProxyTypeDatacenter
+		}
+		country := strings.ToUpper(strings.TrimSpace(main.Country))
+		if len(country) != 2 {
+			country = "ZZ"
+		}
+		status := domain.ProxyGroupDegraded
+		lastError := "egress_unavailable"
+		if main.EgressOK {
+			status, lastError = domain.ProxyGroupReady, ""
+		}
+		mainGroup := domain.ProxyGroup{ID: "agw-main", ResourceName: "agw-main", CountryCode: country, CountryName: main.CountryName, ProxyType: proxyType, CandidateID: "main-tun0", Status: status, EgressSource: domain.EgressSourceMain, AimiliSlot: -1, VLESSPort: 8443, MixedPort: o.config.MainMixedPort, ExitIP: main.ExitIP, LastErrorCode: lastError, Version: 1, LastCheckedAt: o.config.Now().UTC()}
+		for _, group := range result {
+			if group.Status == domain.ProxyGroupReady && group.ExitIP != "" && group.ExitIP == mainGroup.ExitIP {
+				mainGroup.Status = domain.ProxyGroupDegraded
+				mainGroup.LastErrorCode = "duplicate_exit_ip"
+			}
+		}
+		result = append([]domain.ProxyGroup{mainGroup}, result...)
+	}
+	return result, nil
 }
 
 func (o *Orchestrator) adoptLegacyGroups(ctx context.Context, groups []domain.ProxyGroup, candidates []aimili.Candidate) []domain.ProxyGroup {

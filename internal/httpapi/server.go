@@ -129,6 +129,7 @@ func NewServer(dependencies Dependencies) http.Handler {
 	mux.HandleFunc("POST /api/v1/proxy-groups/{id}/rotate", server.handleRotateProxyGroup)
 	mux.HandleFunc("DELETE /api/v1/proxy-groups/{id}", server.handleDisableProxyGroup)
 	mux.HandleFunc("GET /api/v1/proxy-groups/{id}/connections", server.handleConnections)
+	mux.HandleFunc("GET /api/v1/proxy-groups/aggregate/connections", server.handleAggregateConnections)
 	mux.HandleFunc("GET /api/v1/settings/mixed-source-policy", server.handleGetMixedPolicy)
 	mux.HandleFunc("PUT /api/v1/settings/mixed-source-policy", server.handleSetMixedPolicy)
 	mux.HandleFunc("GET /api/v1/settings/summary", server.handleSettingsSummary)

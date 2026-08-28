@@ -235,3 +235,34 @@ func TestMixedSourcePolicyRequiresSpecificCIDRsWhenEnabled(t *testing.T) {
 		})
 	}
 }
+
+func TestAggregateConfigRoundTrip(t *testing.T) {
+	database := openTestStore(t)
+	want := AggregateConfig{ResourceName: "agw-aggregate-vless", VLESSInboundID: 41, VLESSPort: 21000, Enabled: true, UpdatedAt: time.Unix(1700000000, 0).UTC()}
+	if err := database.SaveAggregateConfig(context.Background(), want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := database.GetAggregateConfig(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ResourceName != want.ResourceName || got.VLESSInboundID != want.VLESSInboundID || got.VLESSPort != want.VLESSPort || !got.Enabled || !got.UpdatedAt.Equal(want.UpdatedAt) {
+		t.Fatalf("aggregate config=%#v", got)
+	}
+}
+
+func TestMainEgressMetadataPersistsWithoutUsingASlot(t *testing.T) {
+	database := openTestStore(t)
+	want := MainEgress{ResourceName: "agw-main", CountryCode: "JP", CountryName: "日本", ProxyType: domain.ProxyTypeDatacenter, ExitIP: "203.0.113.20", VLESSInboundID: 1, MixedInboundID: 99, VLESSPort: 8443, MixedPort: 31000, Enabled: true, UpdatedAt: time.Unix(1700000000, 0).UTC()}
+	if err := database.SaveMainEgress(context.Background(), want); err != nil {
+		t.Fatal(err)
+	}
+	var name string
+	var vlessPort, mixedPort, enabled int
+	if err := database.db.QueryRowContext(context.Background(), `SELECT resource_name, vless_port, mixed_port, enabled FROM main_egress WHERE id=1`).Scan(&name, &vlessPort, &mixedPort, &enabled); err != nil {
+		t.Fatal(err)
+	}
+	if name != "agw-main" || vlessPort != 8443 || mixedPort != 31000 || enabled != 1 {
+		t.Fatalf("main metadata=%q %d %d %d", name, vlessPort, mixedPort, enabled)
+	}
+}

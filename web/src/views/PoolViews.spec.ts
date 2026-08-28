@@ -106,6 +106,21 @@ it('copies the selected protocol address only for a ready row', async () => {
   expect(wrapper.get('[data-copy="kr-one"]').attributes('disabled')).toBeDefined()
 })
 
+it('copies a single aggregate VLESS address', async () => {
+  mocks.apiFetch.mockImplementation((path: string) => {
+    if (path === '/api/v1/proxy-groups') return Promise.resolve(rows)
+    if (path === '/api/v1/settings/aimilivpn/countries') return Promise.resolve([])
+    if (path === '/api/v1/settings/aimilivpn/refresh') return Promise.resolve({ state: 'idle', country: '', phase: '', testedCount: 0, validCount: 0 })
+    if (path === '/api/v1/proxy-groups/aggregate/connections') return Promise.resolve({ vlessUri: 'vless://aggregate-masked', socks5hUri: '' })
+    return Promise.resolve(undefined)
+  })
+  const wrapper = mount(VpnPoolView)
+  await flushPromises()
+  await wrapper.get('[data-copy-aggregate]').trigger('click')
+  await flushPromises()
+  expect(mocks.clipboard).toHaveBeenCalledWith('vless://aggregate-masked')
+})
+
 it('exports the current filters as a text list', async () => {
   const wrapper = mount(VpnPoolView)
   await flushPromises()

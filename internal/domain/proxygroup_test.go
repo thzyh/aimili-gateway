@@ -87,3 +87,14 @@ func TestProxyGroupCarriesRestartSafeManagedMetadata(t *testing.T) {
 		t.Fatalf("managed metadata was not retained: %#v", group)
 	}
 }
+
+func TestProxyGroupSupportsMainEgressSource(t *testing.T) {
+	group, err := NewProxyGroupIdentity("US", ProxyTypeDatacenter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	group.EgressSource = EgressSourceMain
+	if !group.EgressSource.Valid() {
+		t.Fatal("main egress source should be valid")
+	}
+}

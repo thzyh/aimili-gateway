@@ -25,14 +25,15 @@ func (s *Store) CreateProxyGroup(ctx context.Context, group domain.ProxyGroup) e
 		INSERT INTO proxy_groups(
 			id, resource_name, country_code, country_name, proxy_type,
 			candidate_id, candidate_ip, candidate_latency_ms, vless_latency_ms, socks_latency_ms, status,
+			egress_source,
 			aimili_slot, vless_port, mixed_port, exit_ip, config_fingerprint,
 			vless_inbound_id, mixed_inbound_id, reality_public_key, reality_short_id, reality_server_name,
 			last_error_code, recovery_state, version, created_at, updated_at,
 			last_checked_at, last_rotated_at, last_seen_at
-		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		group.ID, group.ResourceName, group.CountryCode, group.CountryName,
 		group.ProxyType, group.CandidateID, group.CandidateIP, group.CandidateLatencyMS,
-		group.VLESSLatencyMS, group.SOCKSLatencyMS, group.Status, group.AimiliSlot, group.VLESSPort,
+		group.VLESSLatencyMS, group.SOCKSLatencyMS, group.Status, normalizedEgressSource(group.EgressSource), group.AimiliSlot, group.VLESSPort,
 		group.MixedPort, group.ExitIP, group.ConfigFingerprint,
 		group.VLESSInboundID, group.MixedInboundID, group.RealityPublicKey,
 		group.RealityShortID, group.RealityServerName,
@@ -53,6 +54,7 @@ func (s *Store) GetProxyGroup(ctx context.Context, id string) (domain.ProxyGroup
 	return scanProxyGroup(s.db.QueryRowContext(ctx, `
 		SELECT id, resource_name, country_code, country_name, proxy_type,
 			candidate_id, candidate_ip, candidate_latency_ms, vless_latency_ms, socks_latency_ms, status,
+			egress_source,
 			aimili_slot, vless_port, mixed_port, exit_ip, config_fingerprint,
 			vless_inbound_id, mixed_inbound_id, reality_public_key, reality_short_id, reality_server_name,
 			last_error_code, recovery_state, version, created_at, updated_at,
@@ -64,6 +66,7 @@ func (s *Store) ListProxyGroups(ctx context.Context) ([]domain.ProxyGroup, error
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, resource_name, country_code, country_name, proxy_type,
 			candidate_id, candidate_ip, candidate_latency_ms, vless_latency_ms, socks_latency_ms, status,
+			egress_source,
 			aimili_slot, vless_port, mixed_port, exit_ip, config_fingerprint,
 			vless_inbound_id, mixed_inbound_id, reality_public_key, reality_short_id, reality_server_name,
 			last_error_code, recovery_state, version, created_at, updated_at,
@@ -95,13 +98,14 @@ func (s *Store) UpdateProxyGroup(ctx context.Context, group domain.ProxyGroup, e
 		UPDATE proxy_groups SET
 			resource_name = ?, country_name = ?, candidate_id = ?, candidate_ip = ?, candidate_latency_ms = ?, vless_latency_ms = ?, socks_latency_ms = ?,
 			status = ?, aimili_slot = ?, vless_port = ?, mixed_port = ?,
+			egress_source = ?,
 			exit_ip = ?, config_fingerprint = ?, vless_inbound_id = ?, mixed_inbound_id = ?,
 			reality_public_key = ?, reality_short_id = ?, reality_server_name = ?, last_error_code = ?, recovery_state = ?,
 			version = version + 1, updated_at = ?, last_checked_at = ?, last_rotated_at = ?, last_seen_at = ?
 		WHERE id = ? AND version = ?`,
 		group.ResourceName, group.CountryName, group.CandidateID, group.CandidateIP, group.CandidateLatencyMS, group.VLESSLatencyMS, group.SOCKSLatencyMS,
-		group.Status, group.AimiliSlot, group.VLESSPort,
-		group.MixedPort, group.ExitIP, group.ConfigFingerprint, group.VLESSInboundID,
+		group.Status, group.AimiliSlot, group.VLESSPort, group.MixedPort, normalizedEgressSource(group.EgressSource),
+		group.ExitIP, group.ConfigFingerprint, group.VLESSInboundID,
 		group.MixedInboundID, group.RealityPublicKey, group.RealityShortID, group.RealityServerName, group.LastErrorCode,
 		group.RecoveryState, group.UpdatedAt.UTC().UnixMilli(),
 		unixMillis(group.LastCheckedAt), unixMillis(group.LastRotatedAt), unixMillis(group.LastSeenAt),
@@ -148,7 +152,7 @@ func scanProxyGroup(row rowScanner) (domain.ProxyGroup, error) {
 	err := row.Scan(
 		&group.ID, &group.ResourceName, &group.CountryCode, &group.CountryName,
 		&group.ProxyType, &group.CandidateID, &group.CandidateIP, &group.CandidateLatencyMS,
-		&group.VLESSLatencyMS, &group.SOCKSLatencyMS, &group.Status, &group.AimiliSlot, &group.VLESSPort,
+		&group.VLESSLatencyMS, &group.SOCKSLatencyMS, &group.Status, &group.EgressSource, &group.AimiliSlot, &group.VLESSPort,
 		&group.MixedPort, &group.ExitIP, &group.ConfigFingerprint,
 		&group.VLESSInboundID, &group.MixedInboundID, &group.RealityPublicKey,
 		&group.RealityShortID, &group.RealityServerName,
@@ -172,6 +176,7 @@ func scanProxyGroup(row rowScanner) (domain.ProxyGroup, error) {
 func validateProxyGroup(group domain.ProxyGroup) error {
 	if !strings.HasPrefix(group.ID, "agw-") || !strings.HasPrefix(group.ResourceName, "agw-") ||
 		len(group.CountryCode) != 2 || !group.ProxyType.Valid() || !group.Status.Valid() ||
+		(group.EgressSource != "" && !group.EgressSource.Valid()) ||
 		group.AimiliSlot < 0 || group.VLESSPort < 1 || group.VLESSPort > 65535 ||
 		group.MixedPort < 1 || group.MixedPort > 65535 || group.Version < 1 ||
 		len(group.CandidateID) > 256 || group.CandidateLatencyMS < 0 || group.VLESSLatencyMS < 0 || group.SOCKSLatencyMS < 0 ||
@@ -179,6 +184,13 @@ func validateProxyGroup(group domain.ProxyGroup) error {
 		return errors.New("invalid proxy group")
 	}
 	return nil
+}
+
+func normalizedEgressSource(source domain.EgressSource) domain.EgressSource {
+	if source == "" {
+		return domain.EgressSourceSlot
+	}
+	return source
 }
 
 func unixMillis(value time.Time) int64 {

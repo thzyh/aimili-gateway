@@ -18,6 +18,15 @@ const (
 
 type ProxyGroupStatus string
 
+type EgressSource string
+
+const (
+	EgressSourceSlot EgressSource = "slot"
+	EgressSourceMain EgressSource = "main"
+)
+
+func (s EgressSource) Valid() bool { return s == EgressSourceSlot || s == EgressSourceMain }
+
 const (
 	ProxyGroupStandby        ProxyGroupStatus = "standby"
 	ProxyGroupProvisioning   ProxyGroupStatus = "provisioning"
@@ -42,6 +51,7 @@ type ProxyGroup struct {
 	VLESSLatencyMS     int
 	SOCKSLatencyMS     int
 	Status             ProxyGroupStatus
+	EgressSource       EgressSource
 	AimiliSlot         int
 	VLESSPort          int
 	MixedPort          int

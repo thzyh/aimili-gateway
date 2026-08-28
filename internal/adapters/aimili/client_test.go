@@ -41,6 +41,23 @@ func TestClientCandidatesSendsBearerTokenAndDecodesSafeFields(t *testing.T) {
 	}
 }
 
+func TestClientMainStatusReadsSafeMainEgress(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet || request.URL.Path != "/control/v1/main" {
+			t.Fatalf("unexpected request %s %s", request.Method, request.URL.Path)
+		}
+		fmt.Fprint(response, `{"data":{"country":"JP","country_name":"Japan","proxy_type":"datacenter","exit_ip":"203.0.113.20","port":7928,"egress_ok":true,"active":true}}`)
+	}))
+	t.Cleanup(server.Close)
+	client, err := NewClient(server.URL+"/", []byte("test-token"))
+	if err != nil { t.Fatal(err) }
+	status, err := client.MainStatus(context.Background())
+	if err != nil { t.Fatal(err) }
+	if status.Country != "JP" || status.Port != 7928 || status.ExitIP != "203.0.113.20" || !status.EgressOK {
+		t.Fatalf("main status = %#v", status)
+	}
+}
+
 func TestClientCreateSlotUsesClosedRequestAndResponseTypes(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodPost || request.URL.Path != "/control/v1/slots" {

@@ -89,6 +89,16 @@ type Slot struct {
 
 type SlotCheck = Slot
 
+type MainStatus struct {
+	Country     string `json:"country"`
+	CountryName string `json:"country_name"`
+	ProxyType   string `json:"proxy_type"`
+	ExitIP      string `json:"exit_ip"`
+	Port        int    `json:"port"`
+	EgressOK    bool   `json:"egress_ok"`
+	Active      bool   `json:"active"`
+}
+
 type AdminStatus struct {
 	Username      string `json:"username"`
 	TOTPSupported bool   `json:"totpSupported"`
@@ -251,6 +261,25 @@ func (c *Client) ListSlots(ctx context.Context) ([]Slot, error) {
 	err := c.do(ctx, c.readTimeout, http.MethodGet, "control/v1/slots", nil, &result)
 	return result, err
 }
+
+func (c *Client) MainStatus(ctx context.Context) (MainStatus, error) {
+	var result MainStatus
+	if err := c.doAllowUnknown(ctx, c.readTimeout, http.MethodGet, "control/v1/main", nil, &result); err != nil {
+		return MainStatus{}, err
+	}
+	if result.Country != "" && (len(result.Country) != 2 || result.Country != strings.ToUpper(result.Country)) {
+		return MainStatus{}, &AdapterError{Code: "invalid_response"}
+	}
+	if result.ProxyType != "" && !domainProxyTypeValid(result.ProxyType) {
+		return MainStatus{}, &AdapterError{Code: "invalid_response"}
+	}
+	if result.Port < 0 || result.Port > 65535 || (result.ExitIP != "" && net.ParseIP(result.ExitIP) == nil) {
+		return MainStatus{}, &AdapterError{Code: "invalid_response"}
+	}
+	return result, nil
+}
+
+func domainProxyTypeValid(value string) bool { return value == "residential" || value == "datacenter" }
 
 func (c *Client) GetSlot(ctx context.Context, slot int) (Slot, error) {
 	var result Slot

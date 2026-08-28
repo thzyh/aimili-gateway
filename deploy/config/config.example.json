@@ -14,6 +14,8 @@
 	"vlessPortEnd": 20999,
 	"mixedPortStart": 30000,
 	"mixedPortEnd": 30999,
+	"aggregateVlessPort": 21000,
+	"mainMixedPort": 31000,
 	"xrayPath": "/usr/local/x-ui/bin/xray-linux-amd64",
 	"probeHost": "api.ipify.org",
 	"mixedSourceCidrs": ["203.0.113.24/32"],

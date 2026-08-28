@@ -159,6 +159,45 @@ func TestReadyExitIPsNormalizesAddressesAndExcludesOneGroup(t *testing.T) {
 	}
 }
 
+func TestPoolIncludesHealthyLegacyMainAsFourthEgress(t *testing.T) {
+	fixture := newFixture()
+	fixture.aimili.mainStatus = aimili.MainStatus{Country: "JP", CountryName: "日本", ProxyType: "datacenter", ExitIP: "203.0.113.20", Port: 7928, EgressOK: true, Active: true}
+	pool, err := fixture.orchestratorWithMax(t, 3).Pool(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var main *domain.ProxyGroup
+	for i := range pool {
+		if pool[i].ID == "agw-main" {
+			main = &pool[i]
+			break
+		}
+	}
+	if main == nil || main.EgressSource != domain.EgressSourceMain || main.VLESSPort != 8443 || main.ExitIP != "203.0.113.20" {
+		t.Fatalf("main group=%#v pool=%#v", main, pool)
+	}
+}
+
+func TestAggregateConnectionsIncludesHealthyMainAndReturnsOneURI(t *testing.T) {
+	fixture := newFixture()
+	ready, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter, "slot-one")
+	ready.Status = domain.ProxyGroupReady
+	ready.ResourceName = "agw-jp-dc-one"
+	ready.ExitIP = "203.0.113.7"
+	fixture.store.groups[ready.ID] = ready
+	fixture.aimili.mainStatus = aimili.MainStatus{Country: "US", ProxyType: "datacenter", ExitIP: "203.0.113.20", Port: 7928, EgressOK: true, Active: true}
+	connections, err := fixture.orchestratorWithMax(t, 3).AggregateConnections(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if connections.VLESSURI == "" || connections.SOCKS5HURI != "" {
+		t.Fatalf("connections=%#v", connections)
+	}
+	if !equalStrings(fixture.xui.aggregateDesired.OutboundTags, []string{"agw-jp-dc-one-socks", "aimili-socks"}) {
+		t.Fatalf("selectors=%#v", fixture.xui.aggregateDesired.OutboundTags)
+	}
+}
+
 func TestEnableCompensatesInReverseOrderWhenVLESSValidationFails(t *testing.T) {
 	fixture := newFixture()
 	fixture.validator.vlessError = &validator.Error{Code: "protocol_failed"}
@@ -303,6 +342,8 @@ func (s *fakeStore) ReplaceMixedSourcePolicy(_ context.Context, policy store.Mix
 	s.cidrs = append([]netip.Prefix(nil), policy.CIDRs...)
 	return nil
 }
+func (s *fakeStore) SaveMainEgress(context.Context, store.MainEgress) error           { return nil }
+func (s *fakeStore) SaveAggregateConfig(context.Context, store.AggregateConfig) error { return nil }
 
 type fakeAimili struct {
 	calls            *[]string
@@ -314,7 +355,10 @@ type fakeAimili struct {
 	slotsByCandidate map[string]aimili.Slot
 	createdSlots     map[int]aimili.Slot
 	createErrors     map[string]error
+	mainStatus       aimili.MainStatus
 }
+
+func (a *fakeAimili) MainStatus(context.Context) (aimili.MainStatus, error) { return a.mainStatus, nil }
 
 func (a *fakeAimili) Candidates(context.Context) ([]aimili.Candidate, error) {
 	if a.candidates != nil {
@@ -404,6 +448,16 @@ type fakeXUI struct {
 	returnedVLESSInboundID int64
 	returnedMixedInboundID int64
 	returnedResourceName   string
+	aggregateDesired       xui.AggregateDesired
+}
+
+func (x *fakeXUI) EnsureAggregate(_ context.Context, desired xui.AggregateDesired) (xui.ManagedAggregate, error) {
+	x.aggregateDesired = desired
+	return xui.ManagedAggregate{ResourceName: desired.ResourceName, VLESSInboundID: 99, VLESSInboundTag: desired.ResourceName + "-vless", VLESSPort: desired.VLESSPort, PublicKey: "aggregate-public", ShortID: "aggregate-short", ServerName: desired.RealityServerName}, nil
+}
+
+func (x *fakeXUI) EnsureLegacyMain(_ context.Context, desired xui.LegacyMainDesired) (xui.LegacyMain, error) {
+	return xui.LegacyMain{VLESSInboundID: 1, MixedInboundID: 98, VLESSPort: desired.VLESSPort, MixedPort: desired.MixedPort, ClientID: "legacy-client", PublicKey: "legacy-public", ShortID: "legacy-short", ServerName: "www.microsoft.com", OutboundTag: "aimili-socks"}, nil
 }
 
 func (x *fakeXUI) EnsureManagedGroup(_ context.Context, desired xui.DesiredGroup) (xui.ManagedGroup, error) {

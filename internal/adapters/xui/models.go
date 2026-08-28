@@ -70,6 +70,47 @@ type ManagedGroup struct {
 	ServerName      string
 }
 
+type AggregateDesired struct {
+	ResourceName      string
+	VLESSPort         int
+	VLESSClientID     string
+	RealityTarget     string
+	RealityServerName string
+	OutboundTags      []string
+}
+
+type ManagedAggregate struct {
+	ResourceName    string
+	VLESSInboundID  int64
+	VLESSInboundTag string
+	VLESSPort       int
+	PublicKey       string
+	ShortID         string
+	ServerName      string
+}
+
+type LegacyMainDesired struct {
+	VLESSPort                     int
+	MixedPort                     int
+	SOCKSPort                     int
+	MixedUsername                 string
+	MixedPassword                 string
+	MixedSourceRestrictionEnabled bool
+	MixedSourceCIDRs              []string
+}
+
+type LegacyMain struct {
+	VLESSInboundID int64
+	MixedInboundID int64
+	VLESSPort      int
+	MixedPort      int
+	ClientID       string
+	PublicKey      string
+	ShortID        string
+	ServerName     string
+	OutboundTag    string
+}
+
 type AdapterError struct {
 	Code string
 }

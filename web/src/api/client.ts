@@ -35,6 +35,7 @@ export type ProxyGroupStatus = 'standby' | 'provisioning' | 'ready' | 'rotating'
 export interface CountryPayload { code: string; name: string; residentialCount: number; datacenterCount: number }
 export interface ProxyGroupPayload {
   id: string; countryCode: string; countryName: string; proxyType: ProxyType; status: ProxyGroupStatus
+  egressSource?: 'slot' | 'main'
   vlessPort: number; mixedPort: number; exitIp: string; candidateLatencyMs: number; vlessLatencyMs: number; socksLatencyMs: number
   lastErrorCode?: string; version: number; lastCheckedAt?: string
 }

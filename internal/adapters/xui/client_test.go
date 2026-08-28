@@ -293,6 +293,95 @@ func TestMergeManagedXrayCanDisableMixedSourceRestriction(t *testing.T) {
 	}
 }
 
+func TestMergeAggregateXrayUsesSingleInboundAndHealthyOutboundSelector(t *testing.T) {
+	desired := AggregateDesired{ResourceName: "agw-aggregate-vless", VLESSPort: 21000, OutboundTags: []string{"agw-jp-dc-socks", "agw-us-res-socks"}}
+	setting, err := mergeAggregateXray(map[string]any{"outbounds": []any{map[string]any{"tag": "direct", "protocol": "freedom"}}, "routing": map[string]any{"rules": []any{}}}, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	routing := setting["routing"].(map[string]any)
+	balancers := asObjectSlice(routing["balancers"])
+	if len(balancers) != 1 || stringValue(balancers[0]["tag"]) != "agw-aggregate" {
+		t.Fatalf("balancers=%#v", balancers)
+	}
+	if fmt.Sprint(balancers[0]["selector"]) != "[agw-jp-dc-socks agw-us-res-socks]" {
+		t.Fatalf("selector=%#v", balancers[0]["selector"])
+	}
+	strategy, _ := balancers[0]["strategy"].(map[string]any)
+	if stringValue(strategy["type"]) != "leastPing" {
+		t.Fatalf("balancer strategy=%#v", strategy)
+	}
+	observatory, _ := setting["observatory"].(map[string]any)
+	if fmt.Sprint(observatory["subjectSelector"]) != "[agw-jp-dc-socks agw-us-res-socks]" {
+		t.Fatalf("observatory=%#v", observatory)
+	}
+	rules := asObjectSlice(routing["rules"])
+	if len(rules) != 1 || stringValue(rules[0]["balancerTag"]) != "agw-aggregate" {
+		t.Fatalf("rules=%#v", rules)
+	}
+}
+
+func TestEnsureAggregateCreatesOneOwnedVLESSInbound(t *testing.T) {
+	fixture := &xuiFixture{}
+	client := newXUIFixtureClient(t, fixture)
+	managed, err := client.EnsureAggregate(context.Background(), AggregateDesired{ResourceName: "agw-aggregate-vless", VLESSPort: 21000, VLESSClientID: "client-id", RealityTarget: "127.0.0.1:443", RealityServerName: "proxy.example.test", OutboundTags: []string{"agw-jp-dc-socks"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if managed.VLESSInboundID == 0 || managed.VLESSInboundTag != "agw-aggregate-vless-vless" || managed.PublicKey == "" || managed.ShortID == "" {
+		t.Fatalf("aggregate=%#v", managed)
+	}
+	if len(fixture.addedProtocols) != 1 || fixture.addedProtocols[0] != "vless" {
+		t.Fatalf("added protocols=%#v", fixture.addedProtocols)
+	}
+}
+
+func TestInspectLegacyMainRequiresExact8443To7928Chain(t *testing.T) {
+	setting := map[string]any{
+		"outbounds": []any{map[string]any{
+			"tag": "aimili-socks", "protocol": "socks",
+			"settings": map[string]any{"servers": []any{map[string]any{"address": "127.0.0.1", "port": 7928}}},
+		}},
+		"routing": map[string]any{"rules": []any{map[string]any{"type": "field", "inboundTag": []any{"aimili-reality"}, "outboundTag": "aimili-socks"}}},
+	}
+	inbounds := []Inbound{{ID: 1, Tag: "aimili-reality", Remark: "Aimili Reality", Protocol: "vless", Port: 8443}}
+	if err := verifyLegacyMainChain(inbounds, setting, 8443, 7928); err != nil {
+		t.Fatal(err)
+	}
+	setting["outbounds"].([]any)[0].(map[string]any)["settings"].(map[string]any)["servers"].([]any)[0].(map[string]any)["port"] = 9999
+	if err := verifyLegacyMainChain(inbounds, setting, 8443, 7928); err == nil {
+		t.Fatal("wrong SOCKS port was accepted")
+	}
+}
+
+func TestEnsureLegacyMainPreserves8443AndAddsOnlyMixedInbound(t *testing.T) {
+	fixture := &xuiFixture{
+		initialXray: map[string]any{
+			"outbounds": []any{map[string]any{
+				"tag": "aimili-socks", "protocol": "socks",
+				"settings": map[string]any{"servers": []any{map[string]any{"address": "127.0.0.1", "port": 7928}}},
+			}},
+			"routing": map[string]any{"rules": []any{map[string]any{"type": "field", "inboundTag": []any{"aimili-reality"}, "outboundTag": "aimili-socks"}}},
+		},
+		inbounds: []map[string]any{{
+			"id": float64(1), "tag": "aimili-reality", "remark": "Aimili Reality", "protocol": "vless", "port": float64(8443),
+			"settings":       mustJSONString(map[string]any{"clients": []any{map[string]any{"id": "legacy-client", "flow": "xtls-rprx-vision"}}}),
+			"streamSettings": mustJSONString(map[string]any{"realitySettings": map[string]any{"serverNames": []any{"www.microsoft.com"}, "shortIds": []any{"short"}, "settings": map[string]any{"publicKey": "public"}}}),
+		}},
+	}
+	client := newXUIFixtureClient(t, fixture)
+	managed, err := client.EnsureLegacyMain(context.Background(), LegacyMainDesired{VLESSPort: 8443, MixedPort: 31000, SOCKSPort: 7928, MixedUsername: "user", MixedPassword: "password"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if managed.VLESSInboundID != 1 || managed.MixedInboundID == 0 || managed.ClientID != "legacy-client" {
+		t.Fatalf("legacy main=%#v", managed)
+	}
+	if len(fixture.addedProtocols) != 1 || fixture.addedProtocols[0] != "mixed" {
+		t.Fatalf("added protocols=%#v", fixture.addedProtocols)
+	}
+}
+
 func TestUpdateManagedGroupChangesOnlyOwnedRouting(t *testing.T) {
 	fixture := &xuiFixture{}
 	client := newXUIFixtureClient(t, fixture)

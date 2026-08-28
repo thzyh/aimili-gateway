@@ -21,6 +21,7 @@ type proxyGroupResponse struct {
 	CountryName        string                  `json:"countryName"`
 	ProxyType          domain.ProxyType        `json:"proxyType"`
 	Status             domain.ProxyGroupStatus `json:"status"`
+	EgressSource       domain.EgressSource     `json:"egressSource"`
 	VLESSPort          int                     `json:"vlessPort"`
 	MixedPort          int                     `json:"mixedPort"`
 	ExitIP             string                  `json:"exitIp"`
@@ -280,6 +281,29 @@ func (s *server) handleConnections(response http.ResponseWriter, request *http.R
 	writeJSON(response, http.StatusOK, connections)
 }
 
+func (s *server) handleAggregateConnections(response http.ResponseWriter, request *http.Request) {
+	if _, ok := s.authenticateOrWrite(response, request); !ok {
+		return
+	}
+	manager, ok := s.proxyManager.(interface {
+		AggregateConnections(context.Context) (orchestrator.Connections, error)
+	})
+	if !ok {
+		writeAPIError(response, http.StatusServiceUnavailable, "not_configured")
+		return
+	}
+	connections, err := manager.AggregateConnections(request.Context())
+	if err != nil {
+		writeProxyError(response, err)
+		return
+	}
+	if connections.VLESSURI == "" {
+		writeAPIError(response, http.StatusConflict, "not_ready")
+		return
+	}
+	writeJSON(response, http.StatusOK, connections)
+}
+
 type mixedPolicyResponse struct {
 	Enabled     bool     `json:"enabled"`
 	CIDRs       []string `json:"cidrs"`
@@ -404,7 +428,7 @@ func writeCached(response http.ResponseWriter, cached cachedResponse) {
 	_, _ = response.Write(append(cached.body, '\n'))
 }
 func safeProxyGroup(group domain.ProxyGroup) proxyGroupResponse {
-	result := proxyGroupResponse{ID: group.ID, CountryCode: group.CountryCode, CountryName: group.CountryName, ProxyType: group.ProxyType, Status: group.Status, VLESSPort: group.VLESSPort, MixedPort: group.MixedPort, ExitIP: group.ExitIP, CandidateLatencyMS: group.CandidateLatencyMS, VLESSLatencyMS: group.VLESSLatencyMS, SOCKSLatencyMS: group.SOCKSLatencyMS, LastErrorCode: group.LastErrorCode, Version: group.Version}
+	result := proxyGroupResponse{ID: group.ID, CountryCode: group.CountryCode, CountryName: group.CountryName, ProxyType: group.ProxyType, Status: group.Status, EgressSource: group.EgressSource, VLESSPort: group.VLESSPort, MixedPort: group.MixedPort, ExitIP: group.ExitIP, CandidateLatencyMS: group.CandidateLatencyMS, VLESSLatencyMS: group.VLESSLatencyMS, SOCKSLatencyMS: group.SOCKSLatencyMS, LastErrorCode: group.LastErrorCode, Version: group.Version}
 	if !group.LastCheckedAt.IsZero() {
 		checked := group.LastCheckedAt
 		result.LastCheckedAt = &checked

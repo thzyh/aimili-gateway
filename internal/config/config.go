@@ -38,6 +38,8 @@ type Config struct {
 	VLESSPortEnd           int      `json:"vlessPortEnd"`
 	MixedPortStart         int      `json:"mixedPortStart"`
 	MixedPortEnd           int      `json:"mixedPortEnd"`
+	AggregateVLESSPort     int      `json:"aggregateVlessPort"`
+	MainMixedPort          int      `json:"mainMixedPort"`
 	XrayPath               string   `json:"xrayPath"`
 	ProbeHost              string   `json:"probeHost"`
 	MixedSourceCIDRs       []string `json:"mixedSourceCidrs"`
@@ -60,6 +62,8 @@ func Load(path string) (Config, error) {
 		VLESSPortEnd:           20999,
 		MixedPortStart:         30000,
 		MixedPortEnd:           30999,
+		AggregateVLESSPort:     21000,
+		MainMixedPort:          31000,
 		XrayPath:               filepath.FromSlash("/usr/local/x-ui/bin/xray-linux-amd64"),
 		ProbeHost:              "api.ipify.org",
 		localTest:              path == "",
@@ -93,6 +97,12 @@ func (c Config) WithRuntimeDefaults() Config {
 	}
 	if c.MixedPortEnd == 0 {
 		c.MixedPortEnd = 30999
+	}
+	if c.AggregateVLESSPort == 0 {
+		c.AggregateVLESSPort = 21000
+	}
+	if c.MainMixedPort == 0 {
+		c.MainMixedPort = 31000
 	}
 	if strings.TrimSpace(c.XrayPath) == "" {
 		c.XrayPath = filepath.FromSlash("/usr/local/x-ui/bin/xray-linux-amd64")
@@ -144,6 +154,11 @@ func (c Config) Validate() error {
 		c.VLESSPortEnd < c.VLESSPortStart || c.MixedPortStart < 1 || c.MixedPortEnd > 65535 || c.MixedPortEnd < c.MixedPortStart ||
 		!(c.VLESSPortEnd < c.MixedPortStart || c.MixedPortEnd < c.VLESSPortStart) {
 		return errors.New("invalid proxy group capacity or port ranges")
+	}
+	if c.AggregateVLESSPort < 1 || c.AggregateVLESSPort > 65535 || c.MainMixedPort < 1 || c.MainMixedPort > 65535 || c.AggregateVLESSPort == c.MainMixedPort ||
+		(c.AggregateVLESSPort >= c.VLESSPortStart && c.AggregateVLESSPort <= c.VLESSPortEnd) ||
+		(c.MainMixedPort >= c.MixedPortStart && c.MainMixedPort <= c.MixedPortEnd) {
+		return errors.New("aggregate and main ports must be reserved outside managed ranges")
 	}
 	if strings.TrimSpace(c.XrayPath) == "" || strings.TrimSpace(c.ProbeHost) == "" || net.ParseIP(c.ProbeHost) != nil || strings.ContainsAny(c.ProbeHost, "/:") {
 		return errors.New("xrayPath and a DNS probeHost are required")
