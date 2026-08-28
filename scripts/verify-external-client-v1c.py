@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import argparse
 import ipaddress
 import json
 import os
@@ -17,7 +18,7 @@ import urllib.parse
 
 
 REMOTE_HELPER = r'''
-import http.cookiejar, urllib.request, json, urllib.parse
+import http.cookiejar, urllib.request, json, urllib.parse, socket
 base='https://ny.zouyunhui.cc.cd'
 account=json.load(open('/opt/aimilivpn/vpngate_data/ui_auth.json',encoding='utf-8'))
 jar=http.cookiejar.CookieJar(); op=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
@@ -28,11 +29,41 @@ def call(method,path,payload=None,csrf=''):
  req=urllib.request.Request(base+path,data=data,headers=headers,method=method)
  with op.open(req,timeout=180) as r:
   raw=r.read(); return json.loads(raw) if raw else None
+def recv_exact(sock,size):
+ chunks=[]
+ while size:
+  chunk=sock.recv(size)
+  if not chunk: raise RuntimeError('unexpected eof')
+  chunks.append(chunk); size-=len(chunk)
+ return b''.join(chunks)
+def authorized_socks(uri,expected):
+ u=urllib.parse.urlparse(uri)
+ with socket.create_connection(('127.0.0.1',u.port),timeout=30) as s:
+  s.settimeout(30); s.sendall(b'\x05\x01\x02')
+  if recv_exact(s,2)!=b'\x05\x02': return False
+  user=urllib.parse.unquote(u.username or '').encode(); password=urllib.parse.unquote(u.password or '').encode()
+  s.sendall(bytes((1,len(user)))+user+bytes((len(password),))+password)
+  if recv_exact(s,2)!=b'\x01\x00': return False
+  host=b'api.ipify.org'; s.sendall(b'\x05\x01\x00\x03'+bytes((len(host),))+host+(80).to_bytes(2,'big'))
+  h=recv_exact(s,4)
+  if h[1]!=0: return False
+  n={1:4,4:16}.get(h[3]); n=recv_exact(s,1)[0] if h[3]==3 else n
+  if n is None: return False
+  recv_exact(s,n+2); s.sendall(b'GET / HTTP/1.1\r\nHost: api.ipify.org\r\nConnection: close\r\n\r\n')
+  response=b''
+  while True:
+   chunk=s.recv(4096)
+   if not chunk: break
+   response+=chunk
+  return response.partition(b'\r\n\r\n')[2].decode().strip()==expected
 call('POST','/api/v1/auth/login',{'username':account['username'],'password':account['password'],'totp':''})
 session=call('GET','/api/v1/auth/session'); groups=call('GET','/api/v1/proxy-groups'); ready=[g for g in groups if g['status']=='ready']
-if len(ready)!=1: raise SystemExit('ready group count mismatch')
-connections=call('GET','/api/v1/proxy-groups/'+urllib.parse.quote(ready[0]['id'],safe='')+'/connections')
-print(json.dumps({'exitIp':ready[0]['exitIp'],'vlessUri':connections['vlessUri'],'socks5hUri':connections['socks5hUri']},separators=(',',':')))
+policy=call('GET','/api/v1/settings/mixed-source-policy')
+materials=[]
+for group in ready:
+ connections=call('GET','/api/v1/proxy-groups/'+urllib.parse.quote(group['id'],safe='')+'/connections')
+ materials.append({'exitIp':group['exitIp'],'vlessUri':connections['vlessUri'],'socks5hUri':connections['socks5hUri'],'authorizedSocks5h':authorized_socks(connections['socks5hUri'],group['exitIp'])})
+print(json.dumps({'sourceRestrictionEnabled':bool(policy.get('enabled')),'groups':materials},separators=(',',':')))
 '''
 
 
@@ -98,22 +129,60 @@ def tcp_reachable(host: str, port: int) -> bool:
         return False
 
 
-def main() -> int:
-    completed = subprocess.run(
-        ["ssh", "ny", "python3", "-"], input=REMOTE_HELPER, text=True,
-        capture_output=True, timeout=240, check=True,
-    )
-    payload = json.loads(completed.stdout)
+def require_ready_materials(materials: object) -> list[dict[str, str]]:
+    if not isinstance(materials, list) or not materials:
+        raise RuntimeError("no ready groups")
+    required = ("exitIp", "vlessUri", "socks5hUri")
+    for material in materials:
+        if not isinstance(material, dict) or any(not material.get(field) for field in required):
+            raise RuntimeError("incomplete ready group material")
+    return materials
+
+
+def stop_process(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+
+
+def group_passes(*, source_restriction_enabled: bool, public_socks: bool,
+                 public_socks_tcp: bool, authorized_socks: bool, vless: bool) -> bool:
+    socks_ok = authorized_socks and public_socks_tcp
+    if not source_restriction_enabled:
+        socks_ok = socks_ok and public_socks
+    return socks_ok and vless
+
+
+def should_probe_public_socks(source_restriction_enabled: bool) -> bool:
+    return not source_restriction_enabled
+
+
+def select_materials(materials: list[dict[str, str]], index: int | None) -> list[dict[str, str]]:
+    if index is None:
+        return materials
+    if index < 0 or index >= len(materials):
+        raise ValueError("ready group index is out of range")
+    return [materials[index]]
+
+
+def verify_group(payload: dict[str, str], probe_public_socks: bool = True) -> dict[str, object]:
     expected = str(ipaddress.ip_address(payload["exitIp"]))
     socks = urllib.parse.urlparse(payload["socks5hUri"])
     proxy_environment = os.environ.copy()
     proxy_environment["ALL_PROXY"] = payload["socks5hUri"]
     proxy_environment["HTTPS_PROXY"] = payload["socks5hUri"]
     proxy_environment["NO_PROXY"] = ""
-    socks_result = subprocess.run(
-        ["curl.exe", "-4", "-fsS", "--max-time", "25", "https://api.ipify.org"],
-        capture_output=True, text=True, env=proxy_environment,
-    )
+    socks_result = subprocess.CompletedProcess([], -1, "", "")
+    if probe_public_socks:
+        socks_result = subprocess.run(
+            ["curl.exe", "-4", "-fsS", "--max-time", "25", "https://api.ipify.org"],
+            capture_output=True, text=True, env=proxy_environment,
+        )
     try:
         socks_response_is_ip = bool(ipaddress.ip_address(socks_result.stdout.strip()))
     except ValueError:
@@ -141,12 +210,19 @@ def main() -> int:
     }
     xray = r"E:\SoftWare\v2rayN-windows-64\bin\xray\xray.exe"
     handle = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".json", delete=False)
+    process: subprocess.Popen[str] | None = None
+    result = subprocess.CompletedProcess([], 125, "", "not started")
+    diagnostic = ""
     try:
         json.dump(config, handle, separators=(",", ":"))
         handle.close()
-        process = subprocess.Popen([xray, "run", "-config", handle.name], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
-        vless_error_category = "none"
-        try:
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as error_log:
+            process = subprocess.Popen(
+                [xray, "run", "-config", handle.name],
+                stdout=subprocess.DEVNULL, stderr=error_log, text=True,
+                creationflags=creationflags,
+            )
             for _ in range(50):
                 try:
                     with socket.create_connection(("127.0.0.1", local_port), timeout=0.2):
@@ -163,38 +239,77 @@ def main() -> int:
             except ValueError:
                 vless_response_is_ip = False
             vless_ok = result.returncode == 0 and vless_response_is_ip and result.stdout.strip() == expected
-        finally:
-            process.terminate()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=5)
-            diagnostic = (process.stderr.read() if process.stderr is not None else "").lower()
-            for category, markers in (
-                ("timeout", ("timeout", "deadline exceeded")),
-                ("reality_rejected", ("reality", "rejected")),
-                ("connection_rejected", ("rejected", "reset by peer", "forcibly closed")),
-                ("dns", ("failed to lookup", "no such host")),
-                ("config", ("failed to load config", "unknown field", "failed to parse")),
-            ):
-                if any(marker in diagnostic for marker in markers):
-                    vless_error_category = category
-                    break
+            stop_process(process)
+            process = None
+            error_log.seek(0)
+            diagnostic = error_log.read().lower()
     finally:
+        if process is not None:
+            stop_process(process)
         try:
             os.unlink(handle.name)
         except FileNotFoundError:
             pass
-    print(json.dumps({
+    vless_error_category = "none"
+    for category, markers in (
+        ("timeout", ("timeout", "deadline exceeded")),
+        ("reality_rejected", ("reality", "rejected")),
+        ("connection_rejected", ("rejected", "reset by peer", "forcibly closed")),
+        ("dns", ("failed to lookup", "no such host")),
+        ("config", ("failed to load config", "unknown field", "failed to parse")),
+    ):
+        if any(marker in diagnostic for marker in markers):
+            vless_error_category = category
+            break
+    return {
         "external_socks5h": socks_ok, "external_socks5h_proxy_dns": socks_ok,
         "external_socks_tcp": public_socks_tcp, "socks_curl_exit": socks_result.returncode,
         "socks_response_is_ip": socks_response_is_ip, "external_vless": vless_ok,
         "external_vless_tcp": public_vless_tcp, "vless_curl_exit": result.returncode,
         "vless_response_is_ip": vless_response_is_ip, "vless_error_category": vless_error_category,
+    }
+
+
+def main(index: int | None = None) -> int:
+    completed = subprocess.run(
+        ["ssh", "ny", "python3", "-"], input=REMOTE_HELPER, text=True,
+        capture_output=True, timeout=240, check=True,
+    )
+    remote = json.loads(completed.stdout)
+    if not isinstance(remote, dict):
+        raise RuntimeError("invalid remote payload")
+    source_restriction_enabled = bool(remote.get("sourceRestrictionEnabled"))
+    all_materials = require_ready_materials(remote.get("groups"))
+    materials = select_materials(all_materials, index)
+    public_socks_probe = should_probe_public_socks(source_restriction_enabled)
+    verified = [verify_group(material, public_socks_probe) for material in materials]
+    results = []
+    for material, result in zip(materials, verified):
+        result["authorized_socks5h"] = bool(material.get("authorizedSocks5h"))
+        results.append(result)
+    exit_ips = [str(ipaddress.ip_address(material["exitIp"])) for material in all_materials]
+    passed = all(group_passes(
+        source_restriction_enabled=source_restriction_enabled,
+        public_socks=bool(result["external_socks5h"]),
+        public_socks_tcp=bool(result["external_socks_tcp"]),
+        authorized_socks=bool(result["authorized_socks5h"]),
+        vless=bool(result["external_vless"]),
+    ) for result in results)
+    print(json.dumps({
+        "ready_groups": len(all_materials),
+        "verified_groups": len(results),
+        "source_restriction_enabled": source_restriction_enabled,
+        "unique_exit_ips": len(set(exit_ips)) == len(exit_ips),
+        "all_public_socks5h": all(result["external_socks5h"] for result in results),
+        "all_authorized_socks5h": all(result["authorized_socks5h"] for result in results),
+        "all_external_vless": all(result["external_vless"] for result in results),
+        "groups": results,
     }, sort_keys=True))
-    return 0 if socks_ok and vless_ok else 2
+    return 0 if passed and len(set(exit_ips)) == len(exit_ips) else 2
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--index", type=int)
+    arguments = parser.parse_args()
+    raise SystemExit(main(arguments.index))

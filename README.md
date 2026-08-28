@@ -84,6 +84,8 @@ V1-D 中该命令是三服务统一用户名和密码的唯一受支持修改入
 
 本次 512 MiB 生产验证使用 `scripts/verify-capacity-step-remote.sh`：容量只按 1→2→3 提升，每级默认采样 15 分钟，触发低可用内存、Swap、服务重启、failed unit、OOM 或 SSH 探测门槛就回退；不尝试 4。3x-ui 固定升级使用 `scripts/upgrade-xui-v370-remote.sh`，必须先运行 `--preflight`，再运行 `--apply`，必要时用生成的固定备份目录执行 `--rollback`。
 
+生产容量修改使用 `scripts/set-capacity-safe-remote.py`：只接受 1、2、3，修改前以 0700 目录备份 Gateway 配置和数据库，原子写回并保持原 owner/mode。`scripts/verify-external-client-v1c.py` 会逐个验证 ready 组；来源限制开启时，分别核对公网 mixed 端口、授权回环 SOCKS5H/代理 DNS和公网 VLESS，不会把未授权来源被黑洞规则拒绝误报为代理失效。
+
 V1-C 既有本地验证入口仍为 `scripts/verify-online-pools-v1c.ps1`。配置中的代码上限不等于稳定在线数量，生产实际值必须由上述阶梯采样决定。
 
 V1-B 的本地验证入口为 `scripts/verify-country-proxy-v1b.ps1`；日常修改至少完成以下检查：
