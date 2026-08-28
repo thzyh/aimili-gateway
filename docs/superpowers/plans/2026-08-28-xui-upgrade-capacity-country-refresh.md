@@ -85,7 +85,7 @@ def test_merge_country_pool_preserves_other_countries_and_active_slots():
 
 - [ ] **步骤 2：确认测试失败**
 
-运行：`python -m unittest tests.test_node_pool -v`  
+运行：`python -m unittest tests.test_node_pool -v`
 预期：新增函数不存在或断言失败。
 
 - [ ] **步骤 3：实现最小纯函数**
@@ -94,7 +94,7 @@ def test_merge_country_pool_preserves_other_countries_and_active_slots():
 
 - [ ] **步骤 4：确认测试通过**
 
-运行：`python -m unittest tests.test_node_pool -v`  
+运行：`python -m unittest tests.test_node_pool -v`
 预期：全部通过。
 
 - [ ] **步骤 5：提交 AimiliVPN 纯函数**
@@ -133,7 +133,7 @@ def test_country_refresh_caps_real_probes_and_preserves_slots():
 
 - [ ] **步骤 2：确认测试失败**
 
-运行：`python -m unittest tests.test_pool_maintenance tests.test_probe_batches -v`  
+运行：`python -m unittest tests.test_pool_maintenance tests.test_probe_batches -v`
 预期：刷新接口不存在或行为不符合断言。
 
 - [ ] **步骤 3：实现后台状态机**
@@ -142,7 +142,7 @@ def test_country_refresh_caps_real_probes_and_preserves_slots():
 
 - [ ] **步骤 4：确认刷新测试通过**
 
-运行：`python -m unittest tests.test_pool_maintenance tests.test_probe_batches -v`  
+运行：`python -m unittest tests.test_pool_maintenance tests.test_probe_batches -v`
 预期：全部通过，测试中没有真实网络或 OpenVPN 调用。
 
 - [ ] **步骤 5：提交后台任务**
@@ -179,7 +179,7 @@ self.assertEqual(body["data"]["state"], "running")
 
 - [ ] **步骤 2：确认合同测试失败**
 
-运行：`python -m unittest tests.test_control_api -v`  
+运行：`python -m unittest tests.test_control_api -v`
 预期：新路径返回 404。
 
 - [ ] **步骤 3：实现端点和错误映射**
@@ -188,7 +188,7 @@ self.assertEqual(body["data"]["state"], "running")
 
 - [ ] **步骤 4：运行 AimiliVPN 全量测试**
 
-运行：`python -m unittest discover -s tests -v`  
+运行：`python -m unittest discover -s tests -v`
 预期：全部通过。
 
 - [ ] **步骤 5：提交控制合同**
@@ -221,7 +221,7 @@ git commit -m "feat: expose country refresh control API"
 
 - [ ] **步骤 2：确认适配器测试失败**
 
-运行：`go test ./internal/adapters/aimili ./internal/maintenance -count=1`  
+运行：`go test ./internal/adapters/aimili ./internal/maintenance -count=1`
 预期：新类型或方法不存在。
 
 - [ ] **步骤 3：实现类型、适配器和维护服务**
@@ -230,7 +230,7 @@ git commit -m "feat: expose country refresh control API"
 
 - [ ] **步骤 4：确认适配器与服务测试通过**
 
-运行：`go test ./internal/adapters/aimili ./internal/maintenance -count=1`  
+运行：`go test ./internal/adapters/aimili ./internal/maintenance -count=1`
 预期：全部通过。
 
 - [ ] **步骤 5：提交 Gateway 适配层**
@@ -267,7 +267,7 @@ assertResponseStatus(t, response, http.StatusAccepted)
 
 - [ ] **步骤 2：确认 HTTP 测试失败**
 
-运行：`go test ./internal/httpapi -count=1`  
+运行：`go test ./internal/httpapi -count=1`
 预期：路由 404 或接口不匹配。
 
 - [ ] **步骤 3：实现处理器**
@@ -276,7 +276,7 @@ POST 使用现有 mutation 授权和幂等缓存；GET 只需有效登录。响�
 
 - [ ] **步骤 4：确认 HTTP 测试通过**
 
-运行：`go test ./internal/httpapi -count=1`  
+运行：`go test ./internal/httpapi -count=1`
 预期：全部通过。
 
 - [ ] **步骤 5：提交 HTTP API**
@@ -307,7 +307,7 @@ git commit -m "feat: add Gateway country refresh endpoints"
 
 - [ ] **步骤 2：确认编排测试失败**
 
-运行：`go test ./internal/orchestrator -count=1`  
+运行：`go test ./internal/orchestrator -count=1`
 预期：重复出口仍被接受。
 
 - [ ] **步骤 3：实现最小去重**
@@ -316,7 +316,7 @@ git commit -m "feat: add Gateway country refresh endpoints"
 
 - [ ] **步骤 4：确认编排测试通过**
 
-运行：`go test ./internal/orchestrator -count=1`  
+运行：`go test ./internal/orchestrator -count=1`
 预期：全部通过。
 
 - [ ] **步骤 5：提交出口去重**
@@ -355,7 +355,7 @@ expect(mocks.clipboard).toHaveBeenCalledWith('vless://one\nvless://two')
 
 - [ ] **步骤 2：确认组件测试失败**
 
-运行：`npm test --prefix web -- PoolViews.spec.ts AimiliSettingsView.spec.ts`  
+运行：`npm test --prefix web -- PoolViews.spec.ts AimiliSettingsView.spec.ts`
 预期：新按钮、类型或请求不存在。
 
 - [ ] **步骤 3：实现前端交互**
@@ -364,8 +364,9 @@ expect(mocks.clipboard).toHaveBeenCalledWith('vless://one\nvless://two')
 
 - [ ] **步骤 4：运行前端测试和构建**
 
-运行：`npm test --prefix web`  
-运行：`npm run build --prefix web`  
+运行：`npm test --prefix web`
+
+运行：`npm run build --prefix web`
 预期：全部通过且 TypeScript 构建成功。
 
 - [ ] **步骤 5：提交前端**
@@ -398,8 +399,9 @@ git commit -m "feat: refresh countries and copy pooled addresses"
 
 - [ ] **步骤 2：确认测试失败**
 
-运行：`go test ./internal/adapters/xui -count=1`  
-运行：`powershell -NoProfile -File ..\aimili-3xui-simple-deploy\tests\run.ps1`  
+运行：`go test ./internal/adapters/xui -count=1`
+
+运行：`powershell -NoProfile -File ..\aimili-3xui-simple-deploy\tests\run.ps1`
 预期：v3.7.0 夹具或固定版本断言失败。
 
 - [ ] **步骤 3：实现固定升级脚本**
@@ -408,9 +410,11 @@ git commit -m "feat: refresh countries and copy pooled addresses"
 
 - [ ] **步骤 4：确认合同和静态测试通过**
 
-运行：`go test ./internal/adapters/xui -count=1`  
-运行：`powershell -NoProfile -File ..\aimili-3xui-simple-deploy\tests\run.ps1`  
-运行：`bash -n scripts/upgrade-xui-v370-remote.sh`  
+运行：`go test ./internal/adapters/xui -count=1`
+
+运行：`powershell -NoProfile -File ..\aimili-3xui-simple-deploy\tests\run.ps1`
+
+运行：`bash -n scripts/upgrade-xui-v370-remote.sh`
 预期：全部通过。
 
 - [ ] **步骤 5：分别保存项目变更**
@@ -442,7 +446,7 @@ git commit -m "chore: prepare verified 3x-ui v3.7.0 upgrade"
 
 - [ ] **步骤 2：确认自测先失败**
 
-运行：`bash scripts/verify-capacity-step-remote.sh --self-test`  
+运行：`bash scripts/verify-capacity-step-remote.sh --self-test`
 预期：脚本尚不存在或用例失败。
 
 - [ ] **步骤 3：实现采样和脱敏摘要**
@@ -451,9 +455,11 @@ git commit -m "chore: prepare verified 3x-ui v3.7.0 upgrade"
 
 - [ ] **步骤 4：运行所有本地验证**
 
-AimiliVPN：`python -m unittest discover -s tests -v`  
-Gateway：`npm test --prefix web`、`npm run build --prefix web`、`go test ./... -race`、`go vet ./...`、构建两个 Go 二进制。  
-脚本：`bash -n scripts/*.sh`、容量脚本 `--self-test`、简化部署 `tests/run.ps1`。  
+AimiliVPN：`python -m unittest discover -s tests -v`
+
+Gateway：`npm test --prefix web`、`npm run build --prefix web`、`go test ./... -race`、`go vet ./...`、构建两个 Go 二进制。
+
+脚本：`bash -n scripts/*.sh`、容量脚本 `--self-test`、简化部署 `tests/run.ps1`。
 预期：全部退出 0；Windows 不支持的竞态测试必须在 VPS 补跑并如实记录。
 
 - [ ] **步骤 5：提交本地验证工具**
