@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { APIError, apiDownloadText, apiFetch, idempotencyHeaders, type ConnectionsPayload, type ProxyGroupPayload, type ProxyType } from '../api/client'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { apiDownloadText, apiFetch, idempotencyHeaders, type CandidateCountryPayload, type ConnectionsPayload, type CountryRefreshPayload, type ProxyGroupPayload, type ProxyType } from '../api/client'
 import AppShell from '../components/AppShell.vue'
 import PoolFilters from '../components/PoolFilters.vue'
 import PoolTable from '../components/PoolTable.vue'
@@ -8,6 +8,8 @@ import { poolStatusGroup, type PoolStatusGroup } from '../components/poolStatus'
 
 const props = defineProps<{ protocol: 'vless' | 'socks5h' }>()
 const groups = ref<ProxyGroupPayload[]>([])
+const candidateCountries = ref<CandidateCountryPayload[]>([])
+const refreshState = ref<CountryRefreshPayload | null>(null)
 const country = ref('')
 const proxyType = ref<'' | ProxyType>('')
 const status = ref<'' | PoolStatusGroup>('')
@@ -15,11 +17,16 @@ const sort = ref('latency')
 const busy = ref('')
 const loading = ref(true)
 const notice = ref('')
+let refreshTimer: ReturnType<typeof setTimeout> | undefined
 
 const title = computed(() => props.protocol === 'vless' ? 'VPN 节点池' : 'SOCKS5H 代理池')
 const description = computed(() => props.protocol === 'vless' ? '复制或导出可直接用于代理客户端和代码的 VLESS Reality 节点。' : '每个在线出口对应一个支持代理 DNS 的 SOCKS5H 地址。')
-const countries = computed(() => [...new Map(groups.value.map(row => [row.countryCode, { code: row.countryCode, name: row.countryName }])).values()].sort((a,b)=>a.code.localeCompare(b.code)))
-const rows = computed(() => groups.value.filter(row => (!country.value || row.countryCode === country.value) && (!proxyType.value || row.proxyType === proxyType.value) && (!status.value || poolStatusGroup(row.status) === status.value)).sort((a,b) => {
+const countries = computed(() => {
+  const merged = new Map(groups.value.map(row => [row.countryCode, { code: row.countryCode, name: row.countryName }]))
+  for (const item of candidateCountries.value) merged.set(item.code, { code: item.code, name: item.name })
+  return [...merged.values()].sort((a, b) => a.code.localeCompare(b.code))
+})
+const rows = computed(() => groups.value.filter(row => (!country.value || row.countryCode === country.value) && (!proxyType.value || row.proxyType === proxyType.value) && (!status.value || poolStatusGroup(row.status) === status.value)).sort((a, b) => {
   if (sort.value === 'country') return a.countryCode.localeCompare(b.countryCode)
   if (sort.value === 'updated') return (b.lastCheckedAt ?? '').localeCompare(a.lastCheckedAt ?? '')
   const left = props.protocol === 'vless' ? a.vlessLatencyMs : a.socksLatencyMs
@@ -27,22 +34,76 @@ const rows = computed(() => groups.value.filter(row => (!country.value || row.co
   return (left || Number.MAX_SAFE_INTEGER) - (right || Number.MAX_SAFE_INTEGER)
 }))
 
-onMounted(load)
+onMounted(loadInitial)
+onBeforeUnmount(() => { if (refreshTimer !== undefined) clearTimeout(refreshTimer) })
 
-async function load(): Promise<void> {
-  loading.value = true
+async function loadInitial(): Promise<void> {
+  await Promise.all([loadGroups(), loadCatalog(), readRefreshStatus()])
+}
+
+async function loadGroups(showLoading = true): Promise<void> {
+  if (showLoading) loading.value = true
   try { groups.value = await apiFetch<ProxyGroupPayload[]>('/api/v1/proxy-groups') }
   catch { notice.value = '暂时无法读取代理池。' }
-  finally { loading.value = false }
+  finally { if (showLoading) loading.value = false }
+}
+
+async function loadCatalog(): Promise<void> {
+  try { candidateCountries.value = await apiFetch<CandidateCountryPayload[]>('/api/v1/settings/aimilivpn/countries') }
+  catch { candidateCountries.value = [] }
+}
+
+async function readRefreshStatus(): Promise<void> {
+  try {
+    refreshState.value = await apiFetch<CountryRefreshPayload>('/api/v1/settings/aimilivpn/refresh')
+    if (refreshState.value.state === 'running') scheduleRefreshPoll()
+  } catch { /* 代理池仍可独立使用 */ }
+}
+
+function scheduleRefreshPoll(): void {
+  if (refreshTimer !== undefined) clearTimeout(refreshTimer)
+  refreshTimer = setTimeout(pollRefreshStatus, 2_000)
+}
+
+async function pollRefreshStatus(): Promise<void> {
+  refreshTimer = undefined
+  try {
+    const current = await apiFetch<CountryRefreshPayload>('/api/v1/settings/aimilivpn/refresh')
+    refreshState.value = current
+    if (current.state === 'running') {
+      scheduleRefreshPoll()
+    } else if (current.state === 'completed') {
+      notice.value = `${current.country} 节点刷新已完成：精验 ${current.testedCount} 个，保留 ${current.validCount} 个。`
+      await Promise.all([loadGroups(false), loadCatalog()])
+    } else if (current.state === 'failed') {
+      notice.value = `节点刷新失败：${current.errorCode || 'refresh_failed'}`
+    }
+  } catch { notice.value = '暂时无法读取节点刷新状态。' }
 }
 
 async function refreshPool(): Promise<void> {
   busy.value = 'refresh'; notice.value = ''
   try {
     await apiFetch('/api/v1/proxy-groups/reconcile', { method: 'POST' })
-    notice.value = '节点池刷新已在后台开始；在线节点不会被整批中断。'
-    await load()
-  } catch (error) { notice.value = messageFor(error, '刷新失败') }
+    notice.value = '代理状态已同步；在线节点不会被整批中断。'
+    await loadGroups(false)
+  } catch (error) { notice.value = messageFor(error, '同步失败') }
+  finally { busy.value = '' }
+}
+
+async function refreshCountry(): Promise<void> {
+  if (!country.value) {
+    notice.value = '请先选择要刷新的国家。'
+    return
+  }
+  busy.value = 'country-refresh'; notice.value = ''
+  try {
+    refreshState.value = await apiFetch<CountryRefreshPayload>('/api/v1/settings/aimilivpn/refresh', {
+      method: 'POST', headers: idempotencyHeaders(), body: JSON.stringify({ country: country.value }),
+    })
+    notice.value = `${country.value} 节点刷新已开始；当前在线代理不会中断。`
+    if (refreshState.value.state === 'running') scheduleRefreshPoll()
+  } catch (error) { notice.value = messageFor(error, '国家刷新失败') }
   finally { busy.value = '' }
 }
 
@@ -56,14 +117,24 @@ async function copyAddress(row: ProxyGroupPayload): Promise<void> {
   finally { busy.value = '' }
 }
 
+async function copyAll(): Promise<void> {
+  busy.value = 'copy-all'; notice.value = ''
+  try {
+    const text = (await apiDownloadText(exportPath())).replace(/\s+$/u, '')
+    if (!text) {
+      notice.value = '当前没有可用地址。'
+      return
+    }
+    await navigator.clipboard.writeText(text)
+    notice.value = `已复制 ${text.split('\n').length} 条当前筛选结果。`
+  } catch (error) { notice.value = messageFor(error, '批量复制失败') }
+  finally { busy.value = '' }
+}
+
 async function exportRows(): Promise<void> {
   busy.value = 'export'; notice.value = ''
-  const query = new URLSearchParams({ protocol: props.protocol })
-  if (country.value) query.set('country', country.value)
-  if (proxyType.value) query.set('proxyType', proxyType.value)
-  if (status.value === 'standby' || status.value === 'ready') query.set('status', status.value)
   try {
-    const text = await apiDownloadText(`/api/v1/proxy-groups/export?${query}`)
+    const text = await apiDownloadText(exportPath())
     if (typeof URL.createObjectURL === 'function') {
       const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }))
       const link = document.createElement('a'); link.href = url; link.download = `aimili-${props.protocol}.txt`; link.click(); URL.revokeObjectURL(url)
@@ -73,13 +144,28 @@ async function exportRows(): Promise<void> {
   finally { busy.value = '' }
 }
 
+function exportPath(): string {
+  const query = new URLSearchParams({ protocol: props.protocol })
+  if (country.value) query.set('country', country.value)
+  if (proxyType.value) query.set('proxyType', proxyType.value)
+  if (status.value === 'standby' || status.value === 'ready') query.set('status', status.value)
+  return `/api/v1/proxy-groups/export?${query}`
+}
+
 async function mutate(row: ProxyGroupPayload, action: 'activate' | 'check' | 'rotate'): Promise<void> {
   busy.value = `${action}-${row.id}`; notice.value = ''
   try {
     await apiFetch(`/api/v1/proxy-groups/${row.id}/${action}`, { method: 'POST', ...(['activate', 'rotate'].includes(action) ? { headers: idempotencyHeaders() } : {}) })
-    await load()
+    await loadGroups(false)
   } catch (error) { notice.value = messageFor(error, action === 'activate' ? '启用失败' : action === 'check' ? '检测失败' : '换 IP 失败') }
   finally { busy.value = '' }
+}
+
+function refreshStateLabel(): string {
+  if (!refreshState.value || refreshState.value.state === 'idle') return ''
+  if (refreshState.value.state === 'running') return `${refreshState.value.country} 正在刷新 · 已精验 ${refreshState.value.testedCount} 个`
+  if (refreshState.value.state === 'completed') return `${refreshState.value.country} 已完成 · 精验 ${refreshState.value.testedCount} 个，保留 ${refreshState.value.validCount} 个`
+  return `${refreshState.value.country || '节点'} 刷新失败`
 }
 
 function messageFor(error: unknown, fallback: string): string {
@@ -91,9 +177,10 @@ function messageFor(error: unknown, fallback: string): string {
   <AppShell>
     <section class="page-heading">
       <div><p class="eyebrow">ONLINE EGRESS POOL</p><h1>{{ title }}</h1><p>{{ description }}</p></div>
-      <div class="heading-actions"><button class="secondary" :disabled="busy !== ''" @click="refreshPool">{{ busy === 'refresh' ? '正在刷新…' : '刷新节点池' }}</button><button data-export :disabled="busy !== ''" @click="exportRows">导出当前结果</button></div>
+      <div class="heading-actions"><button data-sync-pool class="secondary" :disabled="busy !== ''" @click="refreshPool">{{ busy === 'refresh' ? '正在同步…' : '同步代理状态' }}</button><button data-refresh-country class="secondary" :disabled="busy !== '' || !country" @click="refreshCountry">{{ busy === 'country-refresh' ? '正在刷新…' : '刷新所选国家' }}</button><button data-copy-all :disabled="busy !== ''" @click="copyAll">复制全部</button><button data-export :disabled="busy !== ''" @click="exportRows">导出</button></div>
     </section>
     <p v-if="notice" class="notice" role="status">{{ notice }}</p>
+    <p v-if="refreshStateLabel()" class="refresh-state">{{ refreshStateLabel() }}</p>
     <section class="pool-toolbar">
       <PoolFilters :countries="countries" :country="country" :proxy-type="proxyType" :status="status" :sort="sort" @country="country=$event" @proxy-type="proxyType=$event" @status="status=$event" @sort="sort=$event" />
       <span>{{ rows.length }} 个候选 · {{ rows.filter(row => row.status === 'ready').length }} 个在线</span>
@@ -104,5 +191,5 @@ function messageFor(error: unknown, fallback: string): string {
 </template>
 
 <style scoped>
-.page-heading{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin-bottom:20px}.eyebrow{margin:0 0 6px;color:var(--accent);font-size:11px;font-weight:800;letter-spacing:.14em}.page-heading h1{margin:0;font-size:28px;letter-spacing:-.035em}.page-heading p:not(.eyebrow){margin:8px 0 0;color:var(--muted-text);font-size:14px}.heading-actions{display:flex;gap:8px}.notice,.loading{margin:0 0 14px;padding:10px 13px;border:1px solid var(--border);border-radius:9px;background:var(--panel);color:var(--muted-text);font-size:13px}.pool-toolbar{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:12px}.pool-toolbar>span{flex:none;color:var(--muted-text);font-size:12px}@media(max-width:760px){.page-heading{align-items:flex-start;flex-direction:column}.heading-actions{width:100%}.heading-actions button{flex:1}.pool-toolbar{align-items:stretch;flex-direction:column}.pool-toolbar>span{align-self:flex-end}}
+.page-heading{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin-bottom:20px}.eyebrow{margin:0 0 6px;color:var(--accent);font-size:11px;font-weight:800;letter-spacing:.14em}.page-heading h1{margin:0;font-size:28px;letter-spacing:-.035em}.page-heading p:not(.eyebrow){margin:8px 0 0;color:var(--muted-text);font-size:14px}.heading-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px}.notice,.loading{margin:0 0 14px;padding:10px 13px;border:1px solid var(--border);border-radius:9px;background:var(--panel);color:var(--muted-text);font-size:13px}.refresh-state{margin:-5px 0 14px;color:var(--muted-text);font-size:12px}.pool-toolbar{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:12px}.pool-toolbar>span{flex:none;color:var(--muted-text);font-size:12px}@media(max-width:760px){.page-heading{align-items:flex-start;flex-direction:column}.heading-actions{width:100%;justify-content:flex-start}.heading-actions button{flex:1}.pool-toolbar{align-items:stretch;flex-direction:column}.pool-toolbar>span{align-self:flex-end}}
 </style>

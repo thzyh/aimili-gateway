@@ -1,5 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import { beforeEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   apiFetch: vi.fn(),
@@ -39,11 +39,18 @@ beforeEach(() => {
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: mocks.clipboard } })
   mocks.apiFetch.mockImplementation((path: string) => {
     if (path === '/api/v1/proxy-groups') return Promise.resolve(rows)
+    if (path === '/api/v1/settings/aimilivpn/countries') return Promise.resolve([
+      { code: 'JP', name: '日本', candidateCount: 8, observedAt: 1_700_000_000 },
+      { code: 'SG', name: '新加坡', candidateCount: 6, observedAt: 1_700_000_000 },
+    ])
+    if (path === '/api/v1/settings/aimilivpn/refresh') return Promise.resolve({ state: 'idle', country: '', phase: '', testedCount: 0, validCount: 0 })
     if (path === '/api/v1/proxy-groups/jp-one/connections') return Promise.resolve({ vlessUri: 'vless://masked-test', socks5hUri: 'socks5h://masked-test' })
     return Promise.resolve(undefined)
   })
   mocks.apiDownloadText.mockResolvedValue('vless://masked-test\n')
 })
+
+afterEach(() => vi.useRealTimers())
 
 it('renders a compact pool without service status cards and filters by country', async () => {
   const wrapper = mount(VpnPoolView)
@@ -108,4 +115,67 @@ it('exports the current filters as a text list', async () => {
 
   expect(mocks.apiDownloadText).toHaveBeenCalledWith(expect.stringContaining('protocol=vless'))
   expect(mocks.apiDownloadText).toHaveBeenCalledWith(expect.stringContaining('country=JP'))
+})
+
+it('uses the official country catalog and refreshes only the selected country', async () => {
+	const wrapper = mount(VpnPoolView)
+	await flushPromises()
+
+	expect(wrapper.get('[data-country-filter]').text()).toContain('新加坡')
+	expect(wrapper.get('[data-refresh-country]').attributes('disabled')).toBeDefined()
+	await wrapper.get('[data-country-filter]').setValue('JP')
+	await wrapper.get('[data-refresh-country]').trigger('click')
+	await flushPromises()
+
+	expect(mocks.apiFetch).toHaveBeenCalledWith('/api/v1/settings/aimilivpn/refresh', {
+		method: 'POST',
+		headers: { 'Idempotency-Key': 'test-key' },
+		body: JSON.stringify({ country: 'JP' }),
+	})
+	expect(wrapper.get('[data-sync-pool]').text()).toContain('同步代理状态')
+})
+
+it('polls a running country refresh and reloads the pool after completion', async () => {
+	vi.useFakeTimers()
+	let refreshReads = 0
+	mocks.apiFetch.mockImplementation((path: string, init?: RequestInit) => {
+		if (path === '/api/v1/proxy-groups') return Promise.resolve(rows)
+		if (path === '/api/v1/settings/aimilivpn/countries') return Promise.resolve([{ code: 'JP', name: '日本', candidateCount: 8, observedAt: 1_700_000_000 }])
+		if (path === '/api/v1/settings/aimilivpn/refresh' && init?.method === 'POST') return Promise.resolve({ state: 'running', country: 'JP', phase: 'fetching', testedCount: 0, validCount: 0 })
+		if (path === '/api/v1/settings/aimilivpn/refresh') {
+			refreshReads++
+			return Promise.resolve(refreshReads < 2 ? { state: 'running', country: 'JP', phase: 'probing', testedCount: 1, validCount: 0 } : { state: 'completed', country: 'JP', phase: '', testedCount: 5, validCount: 4 })
+		}
+		return Promise.resolve(undefined)
+	})
+	const wrapper = mount(VpnPoolView)
+	await flushPromises()
+	await wrapper.get('[data-country-filter]').setValue('JP')
+	await wrapper.get('[data-refresh-country]').trigger('click')
+	await flushPromises()
+	await vi.advanceTimersByTimeAsync(4_000)
+	await flushPromises()
+
+	expect(refreshReads).toBeGreaterThanOrEqual(2)
+	expect(wrapper.text()).toContain('已完成')
+	expect(mocks.apiFetch.mock.calls.filter(([path]) => path === '/api/v1/proxy-groups').length).toBeGreaterThan(1)
+	wrapper.unmount()
+})
+
+it('copies all filtered addresses without a trailing newline and leaves the clipboard unchanged for an empty export', async () => {
+	const wrapper = mount(VpnPoolView)
+	await flushPromises()
+	await wrapper.get('[data-country-filter]').setValue('JP')
+	mocks.apiDownloadText.mockResolvedValueOnce('vless://one\nvless://two\n')
+	await wrapper.get('[data-copy-all]').trigger('click')
+	await flushPromises()
+	expect(mocks.clipboard).toHaveBeenCalledWith('vless://one\nvless://two')
+	expect(mocks.apiDownloadText).toHaveBeenCalledWith(expect.stringContaining('country=JP'))
+
+	mocks.clipboard.mockClear()
+	mocks.apiDownloadText.mockResolvedValueOnce('\n')
+	await wrapper.get('[data-copy-all]').trigger('click')
+	await flushPromises()
+	expect(mocks.clipboard).not.toHaveBeenCalled()
+	expect(wrapper.text()).toContain('当前没有可用地址')
 })

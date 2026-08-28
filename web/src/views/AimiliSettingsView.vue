@@ -1,24 +1,32 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
-import { apiFetch, openBackend, type AimiliSettingsPayload } from '../api/client'
+import { apiFetch, openBackend, type AimiliSettingsPayload, type CountryRefreshPayload } from '../api/client'
 import AppShell from '../components/AppShell.vue'
 
 const data = ref<AimiliSettingsPayload | null>(null)
+const refresh = ref<CountryRefreshPayload | null>(null)
 const busy = ref('')
 const notice = ref('')
 
 onMounted(load)
 
 async function load(): Promise<void> {
-  try { data.value = await apiFetch<AimiliSettingsPayload>('/api/v1/settings/aimilivpn') }
+  try {
+    const [summary, refreshStatus] = await Promise.all([
+      apiFetch<AimiliSettingsPayload>('/api/v1/settings/aimilivpn'),
+      apiFetch<CountryRefreshPayload>('/api/v1/settings/aimilivpn/refresh'),
+    ])
+    data.value = summary
+    refresh.value = refreshStatus
+  }
   catch { notice.value = 'AimiliVPN 维护信息暂时不可用。' }
 }
 
 async function run(path: string, action: string): Promise<void> {
   busy.value = action
   notice.value = ''
-  try { data.value = await apiFetch<AimiliSettingsPayload>(path, { method: 'POST' }); notice.value = action === 'refresh' ? '候选目录已刷新。' : '受管槽位检测完成。' }
+  try { data.value = await apiFetch<AimiliSettingsPayload>(path, { method: 'POST' }); notice.value = '代理状态已同步。' }
   catch { notice.value = '操作失败，请稍后重试。' }
   finally { busy.value = '' }
 }
@@ -34,6 +42,12 @@ async function openOriginal(): Promise<void> {
 }
 
 function formatTime(value?: string): string { return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '尚无记录' }
+function refreshTitle(): string {
+  if (!refresh.value || refresh.value.state === 'idle') return '尚未执行国家刷新'
+  if (refresh.value.state === 'running') return `${refresh.value.country} 正在刷新`
+  if (refresh.value.state === 'completed') return `${refresh.value.country} 刷新已完成`
+  return `${refresh.value.country || '节点'} 刷新失败`
+}
 </script>
 
 <template>
@@ -48,7 +62,7 @@ function formatTime(value?: string): string { return value ? new Date(value).toL
         <article><span>机房 IP</span><strong>{{ data?.datacenterCount ?? '—' }}</strong><small>Datacenter</small></article>
         <article><span>受管槽位</span><strong>{{ data?.managedSlotCount ?? '—' }}</strong><small>Gateway 在线出口</small></article>
       </section>
-      <section class="action-panel"><div><h2>目录与槽位维护</h2><p>刷新不会修改账户；检测只检查 Gateway 已接管的出口槽位。</p><small>最近刷新：{{ formatTime(data?.lastRefreshedAt) }}</small></div><div class="actions"><button data-refresh-aimili class="secondary" :disabled="!!busy" @click="run('/api/v1/settings/aimilivpn/refresh','refresh')">{{ busy === 'refresh' ? '刷新中' : '刷新候选目录' }}</button><button data-check-aimili :disabled="!!busy" @click="run('/api/v1/settings/aimilivpn/check','check')">{{ busy === 'check' ? '检测中' : '检测受管槽位' }}</button></div></section>
+      <section class="action-panel"><div><h2>目录与槽位维护</h2><p>{{ refreshTitle() }}<template v-if="refresh?.state === 'completed'"> · 精验 {{ refresh.testedCount }} 个，保留 {{ refresh.validCount }} 个</template></p><small>代理目录最近探测：{{ formatTime(data?.lastRefreshedAt) }}</small></div><div class="actions"><button data-check-aimili :disabled="!!busy" @click="run('/api/v1/settings/aimilivpn/check','check')">{{ busy === 'check' ? '正在同步' : '同步代理状态' }}</button></div></section>
       <p class="boundary">原后台保留自身完整功能与独立会话。自动进入由 Gateway 服务端创建短期会话，浏览器不处理管理凭据，也不是真正 SSO。</p>
     </div>
   </AppShell>

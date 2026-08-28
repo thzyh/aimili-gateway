@@ -13,7 +13,11 @@ import AimiliSettingsView from './AimiliSettingsView.vue'
 beforeEach(() => {
   mocks.apiFetch.mockReset()
   mocks.openBackend.mockReset()
-  mocks.apiFetch.mockResolvedValue({ candidateCount: 18, residentialCount: 7, datacenterCount: 11, managedSlotCount: 1, lastRefreshedAt: '2026-08-27T00:00:00Z' })
+  mocks.apiFetch.mockImplementation((path: string) => {
+    if (path === '/api/v1/settings/aimilivpn') return Promise.resolve({ candidateCount: 18, residentialCount: 7, datacenterCount: 11, managedSlotCount: 1, lastRefreshedAt: '2026-08-27T00:00:00Z' })
+    if (path === '/api/v1/settings/aimilivpn/refresh') return Promise.resolve({ state: 'completed', country: 'JP', phase: '', testedCount: 5, validCount: 4, errorCode: '' })
+    return Promise.resolve({ candidateCount: 18, residentialCount: 7, datacenterCount: 11, managedSlotCount: 1, lastRefreshedAt: '2026-08-27T00:00:00Z' })
+  })
 })
 
 it('shows only approved AimiliVPN maintenance fields and fixed actions', async () => {
@@ -25,11 +29,13 @@ it('shows only approved AimiliVPN maintenance fields and fixed actions', async (
   expect(wrapper.text()).not.toContain('密码')
   expect(wrapper.text()).not.toContain('Cookie')
 
-  await wrapper.get('[data-refresh-aimili]').trigger('click')
   await wrapper.get('[data-check-aimili]').trigger('click')
   await flushPromises()
-  expect(mocks.apiFetch).toHaveBeenCalledWith('/api/v1/settings/aimilivpn/refresh', { method: 'POST' })
+  expect(mocks.apiFetch).toHaveBeenCalledWith('/api/v1/settings/aimilivpn/refresh')
   expect(mocks.apiFetch).toHaveBeenCalledWith('/api/v1/settings/aimilivpn/check', { method: 'POST' })
+  expect(wrapper.text()).toContain('刷新已完成')
+  expect(wrapper.text()).toContain('精验 5 个，保留 4 个')
+  expect(wrapper.get('[data-check-aimili]').text()).toContain('同步代理状态')
 })
 
 it('opens the original AimiliVPN backend through one fixed POST helper and does not retry failures', async () => {
