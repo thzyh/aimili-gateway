@@ -52,10 +52,11 @@ func (c *Client) UpdateAdmin(ctx context.Context, current, next Credentials) err
 		return err
 	}
 	payload := map[string]string{
-		"oldUsername": current.Username,
-		"oldPassword": current.Password,
-		"newUsername": next.Username,
-		"newPassword": next.Password,
+		"oldUsername":   current.Username,
+		"oldPassword":   current.Password,
+		"newUsername":   next.Username,
+		"newPassword":   next.Password,
+		"twoFactorCode": "",
 	}
 	if _, err := client.call(ctx, "POST", "panel/api/setting/updateUser", payload, false); err != nil {
 		return err

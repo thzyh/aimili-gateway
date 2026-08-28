@@ -68,6 +68,10 @@ func (fixture *adminXUIFixture) handler(response http.ResponseWriter, request *h
 		}
 		fixture.updateCalls++
 		fixture.lastUpdate = input
+		if code, exists := input["twoFactorCode"]; !exists || code != "" {
+			fmt.Fprint(response, `{"success":false,"msg":"two factor code contract mismatch","obj":null}`)
+			return
+		}
 		if input["oldUsername"] != fixture.username || input["oldPassword"] != fixture.password {
 			fmt.Fprint(response, `{"success":false,"msg":"credentials rejected","obj":null}`)
 			return
@@ -104,7 +108,7 @@ func TestVerifyAdminAuthenticatesWithExplicitCredentials(t *testing.T) {
 	}
 }
 
-func TestUpdateAdminUsesVersionedEndpointAndVerifiesNewCredentials(t *testing.T) {
+func TestUpdateAdminUsesV370EmptyTOTPContractAndVerifiesNewCredentials(t *testing.T) {
 	fixture := &adminXUIFixture{username: "owner", password: "old-password-marker", cookieNames: []string{"session"}}
 	client := newAdminXUIClient(t, fixture)
 	current := Credentials{Username: "owner", Password: "old-password-marker"}
@@ -112,14 +116,15 @@ func TestUpdateAdminUsesVersionedEndpointAndVerifiesNewCredentials(t *testing.T)
 	if err := client.UpdateAdmin(context.Background(), current, next); err != nil {
 		t.Fatal(err)
 	}
-	if fixture.updateCalls != 1 || len(fixture.lastUpdate) != 4 {
+	if fixture.updateCalls != 1 || len(fixture.lastUpdate) != 5 {
 		t.Fatalf("update calls=%d body=%#v", fixture.updateCalls, fixture.lastUpdate)
 	}
 	for key, want := range map[string]string{
-		"oldUsername": "owner",
-		"oldPassword": "old-password-marker",
-		"newUsername": "renamed",
-		"newPassword": "new-password-marker",
+		"oldUsername":   "owner",
+		"oldPassword":   "old-password-marker",
+		"newUsername":   "renamed",
+		"newPassword":   "new-password-marker",
+		"twoFactorCode": "",
 	} {
 		if fixture.lastUpdate[key] != want {
 			t.Fatalf("%s = %q", key, fixture.lastUpdate[key])
