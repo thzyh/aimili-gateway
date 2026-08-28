@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/thzyh/aimili-gateway/internal/adapters"
+	"github.com/thzyh/aimili-gateway/internal/adapters/aimili"
 	"github.com/thzyh/aimili-gateway/internal/backendlogin"
 	"github.com/thzyh/aimili-gateway/internal/domain"
 	"github.com/thzyh/aimili-gateway/internal/maintenance"
@@ -35,7 +36,9 @@ type Dependencies struct {
 type MaintenanceService interface {
 	Summary(context.Context) (maintenance.Summary, error)
 	AimiliVPN(context.Context) (maintenance.AimiliSummary, error)
-	RefreshAimiliVPN(context.Context) (maintenance.AimiliSummary, error)
+	CandidateCountries(context.Context) ([]aimili.CandidateCountry, error)
+	StartAimiliVPNRefresh(context.Context, string) (aimili.CountryRefresh, error)
+	AimiliVPNRefresh(context.Context) (aimili.CountryRefresh, error)
 	CheckAimiliVPN(context.Context) (maintenance.AimiliSummary, error)
 	XUI(context.Context) (maintenance.XUISummary, error)
 	CheckXUI(context.Context) (maintenance.XUISummary, error)
@@ -130,6 +133,8 @@ func NewServer(dependencies Dependencies) http.Handler {
 	mux.HandleFunc("PUT /api/v1/settings/mixed-source-policy", server.handleSetMixedPolicy)
 	mux.HandleFunc("GET /api/v1/settings/summary", server.handleSettingsSummary)
 	mux.HandleFunc("GET /api/v1/settings/aimilivpn", server.handleAimiliSettings)
+	mux.HandleFunc("GET /api/v1/settings/aimilivpn/countries", server.handleAimiliCountries)
+	mux.HandleFunc("GET /api/v1/settings/aimilivpn/refresh", server.handleAimiliRefreshStatus)
 	mux.HandleFunc("POST /api/v1/settings/aimilivpn/refresh", server.handleRefreshAimiliSettings)
 	mux.HandleFunc("POST /api/v1/settings/aimilivpn/check", server.handleCheckAimiliSettings)
 	mux.HandleFunc("GET /api/v1/settings/3x-ui", server.handleXUISettings)

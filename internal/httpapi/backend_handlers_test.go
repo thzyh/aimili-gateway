@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/thzyh/aimili-gateway/internal/adapters/aimili"
 	"github.com/thzyh/aimili-gateway/internal/backendlogin"
 	"github.com/thzyh/aimili-gateway/internal/maintenance"
 )
@@ -90,9 +91,57 @@ func TestSettingsRoutesExposeOnlyMaintenanceServiceResults(t *testing.T) {
 		}
 	}
 	csrf := environment.session(t).CSRFToken
-	for _, path := range []string{"/api/v1/settings/aimilivpn/refresh", "/api/v1/settings/aimilivpn/check", "/api/v1/settings/3x-ui/check", "/api/v1/settings/3x-ui/repair"} {
+	for _, path := range []string{"/api/v1/settings/aimilivpn/check", "/api/v1/settings/3x-ui/check", "/api/v1/settings/3x-ui/repair"} {
 		assertResponseStatus(t, environment.request(t, http.MethodPost, path, nil, environment.origin, csrf), http.StatusOK)
 	}
+}
+
+func TestAimiliCountryRefreshRoutesEnforceSessionMutationAndIdempotency(t *testing.T) {
+	service := &fakeMaintenance{
+		countries:   []aimili.CandidateCountry{{Code: "JP", Name: "日本", CandidateCount: 8, ObservedAt: 1_700_000_000}},
+		refresh:     aimili.CountryRefresh{State: "completed", Country: "JP", TestedCount: 5, ValidCount: 4},
+		startResult: aimili.CountryRefresh{State: "running", Country: "JP", Phase: "fetching"},
+	}
+	environment := newAuthTestEnvironmentConfigured(t, true, func(dependencies *Dependencies) { dependencies.Maintenance = service })
+	assertResponseStatus(t, environment.request(t, http.MethodGet, "/api/v1/settings/aimilivpn/countries", nil, "", ""), http.StatusUnauthorized)
+	assertResponseStatus(t, environment.login(t), http.StatusNoContent)
+
+	for _, path := range []string{"/api/v1/settings/aimilivpn/countries", "/api/v1/settings/aimilivpn/refresh"} {
+		response := environment.request(t, http.MethodGet, path, nil, "", "")
+		if response.StatusCode != http.StatusOK {
+			assertResponseStatus(t, response, http.StatusOK)
+		}
+		var payload any
+		if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		_ = response.Body.Close()
+		encoded, _ := json.Marshal(payload)
+		for _, forbidden := range []string{"password", "token", "config", "exception"} {
+			if strings.Contains(strings.ToLower(string(encoded)), forbidden) {
+				t.Fatalf("%s leaked %q: %s", path, forbidden, encoded)
+			}
+		}
+	}
+
+	path := "/api/v1/settings/aimilivpn/refresh"
+	csrf := environment.session(t).CSRFToken
+	assertResponseStatus(t, environment.request(t, http.MethodPost, path, map[string]string{"country": "JP"}, "", csrf), http.StatusForbidden)
+	assertResponseStatus(t, environment.request(t, http.MethodPost, path, map[string]string{"country": "JP"}, environment.origin, ""), http.StatusForbidden)
+	assertResponseStatus(t, environment.request(t, http.MethodPost, path, map[string]string{"country": "JP"}, environment.origin, csrf), http.StatusPreconditionRequired)
+	assertResponseStatus(t, environment.requestWithHeaders(t, http.MethodPost, path, map[string]any{"country": "JP", "config": "forbidden"}, environment.origin, csrf, map[string]string{"Idempotency-Key": "bad-refresh"}), http.StatusBadRequest)
+
+	response := environment.requestWithHeaders(t, http.MethodPost, path, map[string]string{"country": "jp"}, environment.origin, csrf, map[string]string{"Idempotency-Key": "refresh-jp"})
+	assertResponseStatus(t, response, http.StatusAccepted)
+	response = environment.requestWithHeaders(t, http.MethodPost, path, map[string]string{"country": "jp"}, environment.origin, csrf, map[string]string{"Idempotency-Key": "refresh-jp"})
+	assertResponseStatus(t, response, http.StatusAccepted)
+	if len(service.startedCountries) != 1 || service.startedCountries[0] != "JP" {
+		t.Fatalf("started countries = %#v", service.startedCountries)
+	}
+
+	service.startErr = &maintenance.Error{Code: "maintenance_busy"}
+	response = environment.requestWithHeaders(t, http.MethodPost, path, map[string]string{"country": "US"}, environment.origin, csrf, map[string]string{"Idempotency-Key": "refresh-us"})
+	assertResponseStatus(t, response, http.StatusConflict)
 }
 
 type fakeBackendLogin struct {
@@ -106,7 +155,13 @@ func (fake *fakeBackendLogin) Login(_ context.Context, target backendlogin.Targe
 	return fake.sessions[target], fake.err
 }
 
-type fakeMaintenance struct{}
+type fakeMaintenance struct {
+	countries        []aimili.CandidateCountry
+	refresh          aimili.CountryRefresh
+	startResult      aimili.CountryRefresh
+	startErr         error
+	startedCountries []string
+}
 
 func (*fakeMaintenance) Summary(context.Context) (maintenance.Summary, error) {
 	return maintenance.Summary{CandidateCount: 3, OnlineCount: 1, MaxOnline: 1}, nil
@@ -114,8 +169,15 @@ func (*fakeMaintenance) Summary(context.Context) (maintenance.Summary, error) {
 func (*fakeMaintenance) AimiliVPN(context.Context) (maintenance.AimiliSummary, error) {
 	return maintenance.AimiliSummary{CandidateCount: 3}, nil
 }
-func (*fakeMaintenance) RefreshAimiliVPN(context.Context) (maintenance.AimiliSummary, error) {
-	return maintenance.AimiliSummary{CandidateCount: 3}, nil
+func (fake *fakeMaintenance) CandidateCountries(context.Context) ([]aimili.CandidateCountry, error) {
+	return append([]aimili.CandidateCountry(nil), fake.countries...), nil
+}
+func (fake *fakeMaintenance) StartAimiliVPNRefresh(_ context.Context, country string) (aimili.CountryRefresh, error) {
+	fake.startedCountries = append(fake.startedCountries, country)
+	return fake.startResult, fake.startErr
+}
+func (fake *fakeMaintenance) AimiliVPNRefresh(context.Context) (aimili.CountryRefresh, error) {
+	return fake.refresh, nil
 }
 func (*fakeMaintenance) CheckAimiliVPN(context.Context) (maintenance.AimiliSummary, error) {
 	return maintenance.AimiliSummary{CandidateCount: 3}, nil
