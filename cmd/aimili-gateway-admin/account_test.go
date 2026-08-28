@@ -132,6 +132,30 @@ func TestAccountMenuSetsCustomPasswordWithoutEchoingIt(t *testing.T) {
 	}
 }
 
+func TestAccountMenuExitsAfterRepairSoGatewayCanReloadCredentials(t *testing.T) {
+	environment := newAdminTestEnvironment(t)
+	database, _ := seedAccountAdmin(t, environment, false)
+	database.Close()
+	password := "repaired-unified-password"
+	var output bytes.Buffer
+	code := runWithDependencies(
+		[]string{"account"},
+		strings.NewReader("7\n"+password+"\n"+password+"\n"),
+		&output,
+		&bytes.Buffer{},
+		commandDependencies{Now: environment.now, Random: bytes.NewReader(bytes.Repeat([]byte{6}, 64)), Synchronizer: newTestAccountSynchronizer(environment)},
+	)
+	if code != 0 {
+		t.Fatalf("exit code = %d", code)
+	}
+	if !strings.Contains(output.String(), "Gateway 将立即重载") {
+		t.Fatal("repair did not explain that Gateway credentials will be reloaded")
+	}
+	if strings.Count(output.String(), "Aimili Gateway 账户管理") != 1 {
+		t.Fatal("repair returned to the menu instead of exiting for the runtime reload")
+	}
+}
+
 func TestAccountMenuRejectsInvalidCustomPasswords(t *testing.T) {
 	for _, testCase := range []struct {
 		name         string

@@ -48,9 +48,10 @@ func runAccountMenu(ctx context.Context, database *store.Store, masterKeyPath st
 		if err != nil {
 			return errors.New("read menu choice")
 		}
+		choice = strings.TrimSpace(choice)
 
 		var operationErr error
-		switch strings.TrimSpace(choice) {
+		switch choice {
 		case "0":
 			return nil
 		case "1":
@@ -78,7 +79,21 @@ func runAccountMenu(ctx context.Context, database *store.Store, masterKeyPath st
 		}
 		if operationErr != nil {
 			_, _ = fmt.Fprintf(out, "操作失败：%v\n", operationErr)
+			continue
 		}
+		if unifiedCredentialsChanged(choice) {
+			_, _ = fmt.Fprintln(out, "统一账户已更新，Gateway 将立即重载；请等待数秒后重新登录。")
+			return nil
+		}
+	}
+}
+
+func unifiedCredentialsChanged(choice string) bool {
+	switch choice {
+	case "2", "3", "4", "7":
+		return true
+	default:
+		return false
 	}
 }
 
