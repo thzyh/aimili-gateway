@@ -42,6 +42,17 @@ def recv_exact(sock: socket.socket, size: int) -> bytes:
     return result
 
 
+def wait_port(port: int, timeout: float = 15.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                return
+        except OSError:
+            time.sleep(0.25)
+    raise RuntimeError("proxy port did not become ready")
+
+
 def socks_exit(uri: str) -> str:
     parsed = urllib.parse.urlparse(uri)
     with socket.create_connection(("127.0.0.1", parsed.port), timeout=30) as sock:
@@ -140,6 +151,8 @@ def main() -> int:
         raise RuntimeError("ready egress IPs are not unique")
     main_connections = call(opener, "GET", "/api/v1/proxy-groups/agw-main/connections")
     aggregate = call(opener, "GET", "/api/v1/proxy-groups/aggregate/connections")
+    wait_port(urllib.parse.urlparse(main_connections["socks5hUri"]).port)
+    wait_port(urllib.parse.urlparse(aggregate["vlessUri"]).port)
     main_socks_exit = socks_exit(main_connections["socks5hUri"])
     main_vless_exit = vless_exit(main_connections["vlessUri"])
     aggregate_exit = vless_exit(aggregate["vlessUri"])
