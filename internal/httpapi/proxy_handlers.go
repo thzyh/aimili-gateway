@@ -104,7 +104,7 @@ func (s *server) handleProxyGroupExport(response http.ResponseWriter, request *h
 		writeAPIError(response, http.StatusBadRequest, "invalid_protocol")
 		return
 	}
-	groups, err := s.proxyManager.List(request.Context())
+	groups, err := s.proxyManager.Pool(request.Context())
 	if err != nil {
 		writeProxyError(response, err)
 		return
