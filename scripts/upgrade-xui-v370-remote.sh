@@ -87,20 +87,37 @@ restore_backup() {
     log "已恢复 3x-ui 二进制、数据库和 unit。"
 }
 
-health_check() {
-    local attempt shown port path base
-    for attempt in {1..60}; do
-        systemctl is-active --quiet x-ui && break
-        sleep 1
-    done
-    systemctl is-active --quiet x-ui || return 1
-    shown="$(/usr/local/x-ui/x-ui setting -show true 2>/dev/null)" || return 1
+panel_endpoint() {
+    local binary="$1" shown port path
+    shown="$("$binary" setting -show true 2>/dev/null)" || return 1
     port="$(printf '%s\n' "$shown" | sed -nE 's/^[[:space:]]*port:[[:space:]]*([0-9]+).*$/\1/p' | head -n1)"
     path="$(printf '%s\n' "$shown" | sed -nE 's/^[[:space:]]*webBasePath:[[:space:]]*([^[:space:]]+).*$/\1/p' | head -n1)"
     [[ "$port" =~ ^[0-9]+$ && -n "$path" ]] || return 1
     path="/${path#/}"
     path="${path%/}/"
-    base="http://127.0.0.1:${port}${path%/}"
+    printf 'http://127.0.0.1:%s%s' "$port" "${path%/}"
+}
+
+wait_for_panel_endpoint() {
+    local binary="$1" attempts="${2:-60}" delay="${3:-1}" attempt endpoint
+    for ((attempt = 1; attempt <= attempts; attempt++)); do
+        if endpoint="$(panel_endpoint "$binary")"; then
+            printf '%s' "$endpoint"
+            return 0
+        fi
+        ((attempt == attempts)) || sleep "$delay"
+    done
+    return 1
+}
+
+health_check() {
+    local attempt base
+    for attempt in {1..60}; do
+        systemctl is-active --quiet x-ui && break
+        sleep 1
+    done
+    systemctl is-active --quiet x-ui || return 1
+    base="$(wait_for_panel_endpoint /usr/local/x-ui/x-ui)" || return 1
     for attempt in {1..60}; do
         curl -fsS --max-time 2 "$base/csrf-token" >/dev/null 2>&1 && break
         sleep 1
@@ -153,11 +170,25 @@ self_test() {
     fake="$work/x-ui"
     printf '%s\n' \
         '#!/usr/bin/env bash' \
-        '[[ "${1:-}" == "-v" ]] || exit 42' \
-        'printf "3.7.0\n"' > "$fake"
+        'case "${1:-}" in' \
+        '  -v) printf "3.7.0\n" ;;' \
+        '  setting)' \
+        '    count=0' \
+        '    [[ ! -f "$FAKE_XUI_STATE" ]] || count="$(cat "$FAKE_XUI_STATE")"' \
+        '    count=$((count + 1))' \
+        '    printf "%s\n" "$count" > "$FAKE_XUI_STATE"' \
+        '    ((count >= 2)) || exit 42' \
+        '    printf "port: 2001\nwebBasePath: /panel/\n"' \
+        '    ;;' \
+        '  *) exit 42 ;;' \
+        'esac' > "$fake"
     chmod +x "$fake"
     detected="$(current_version "$fake")"
     [[ "$detected" == "3.7.0" ]] || die "版本探测必须使用 3x-ui 的 -v 参数。"
+    declare -F wait_for_panel_endpoint >/dev/null || die "健康检查必须提供面板设置有界重试。"
+    detected="$(FAKE_XUI_STATE="$work/state" wait_for_panel_endpoint "$fake" 2 0)"
+    [[ "$detected" == "http://127.0.0.1:2001/panel" ]] || die "面板设置瞬时不可用后未正确恢复。"
+    [[ "$(<"$work/state")" == "2" ]] || die "面板设置健康检查没有执行预期重试。"
     rm -rf -- "$work"
     trap - EXIT
     printf 'self-test: ok\n'
