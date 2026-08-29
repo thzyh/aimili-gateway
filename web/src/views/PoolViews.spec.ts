@@ -22,7 +22,8 @@ vi.mock('vue-router', () => ({
 import VpnPoolView from './VpnPoolView.vue'
 
 const rows = [
-  { id: 'jp-one', countryCode: 'JP', countryName: '日本', proxyType: 'datacenter', status: 'ready', slotNumber: 1, fixed: true, vlessPort: 20000, mixedPort: 30000, exitIp: '203.0.113.10', candidateLatencyMs: 20, vlessLatencyMs: 81, socksLatencyMs: 70, version: 2, lastCheckedAt: '2026-08-26T00:00:00Z' },
+  { id: 'agw-main', countryCode: 'SG', countryName: '新加坡', proxyType: 'datacenter', status: 'ready', egressSource: 'main', fixed: true, publicPort: 8443, vlessPort: 8443, mixedPort: 31000, exitIp: '203.0.113.9', candidateLatencyMs: 18, vlessLatencyMs: 76, socksLatencyMs: 66, protocolMode: 'vless_tcp_reality_vision', desiredProtocolMode: 'vless_tcp_reality_vision', protocolState: 'ready', subscriptionState: 'ready', availableProtocolModes: ['vless_tcp_reality_vision', 'vless_xhttp_reality', 'hysteria2_quic_tls'], version: 2 },
+  { id: 'jp-one', countryCode: 'JP', countryName: '日本', proxyType: 'datacenter', status: 'ready', slotNumber: 1, fixed: true, publicPort: 20000, vlessPort: 20000, mixedPort: 30000, exitIp: '203.0.113.10', candidateLatencyMs: 20, vlessLatencyMs: 81, socksLatencyMs: 70, protocolMode: 'vless_xhttp_reality', desiredProtocolMode: 'vless_xhttp_reality', protocolState: 'ready', subscriptionState: 'ready', availableProtocolModes: ['vless_tcp_reality_vision', 'vless_xhttp_reality', 'hysteria2_quic_tls'], version: 2, lastCheckedAt: '2026-08-26T00:00:00Z' },
   { id: 'kr-one', countryCode: 'KR', countryName: '韩国', proxyType: 'residential', status: 'degraded', vlessPort: 20001, mixedPort: 30001, exitIp: '203.0.113.11', candidateLatencyMs: 30, vlessLatencyMs: 0, socksLatencyMs: 0, version: 2 },
   { id: 'us-standby', countryCode: 'US', countryName: '美国', proxyType: 'datacenter', status: 'standby', vlessPort: 0, mixedPort: 0, exitIp: '', candidateLatencyMs: 44, vlessLatencyMs: 0, socksLatencyMs: 0, version: 1 },
   { id: 'fr-provisioning', countryCode: 'FR', countryName: '法国', proxyType: 'datacenter', status: 'provisioning', vlessPort: 0, mixedPort: 0, exitIp: '', candidateLatencyMs: 50, vlessLatencyMs: 0, socksLatencyMs: 0, version: 1 },
@@ -44,7 +45,7 @@ beforeEach(() => {
       { code: 'SG', name: '新加坡', candidateCount: 6, observedAt: 1_700_000_000 },
     ])
     if (path === '/api/v1/settings/aimilivpn/refresh') return Promise.resolve({ state: 'idle', country: '', phase: '', testedCount: 0, validCount: 0 })
-    if (path === '/api/v1/proxy-groups/jp-one/connections') return Promise.resolve({ vlessUri: 'vless://masked-test', socks5hUri: 'socks5h://masked-test' })
+    if (path === '/api/v1/proxy-groups/jp-one/connections') return Promise.resolve({ protocolMode: 'vless_xhttp_reality', publicUri: 'vless://masked-public', vlessUri: 'vless://masked-public', socks5hUri: 'socks5h://masked-test' })
     return Promise.resolve(undefined)
   })
   mocks.apiDownloadText.mockResolvedValue('vless://masked-test\n')
@@ -58,9 +59,9 @@ it('renders a compact pool without service status cards and filters by country',
 
   expect(wrapper.text()).not.toContain('AimiliVPN 正常')
   expect(wrapper.text()).not.toContain('3x-ui 正常')
-  expect(wrapper.findAll('[data-pool-row]')).toHaveLength(7)
+  expect(wrapper.findAll('[data-pool-row]')).toHaveLength(8)
   await wrapper.get('[data-country-filter]').setValue('JP')
-  expect(wrapper.findAll('[data-pool-row]')).toHaveLength(1)
+  expect(wrapper.findAll('[data-pool-row]')).toHaveLength(2)
   expect(wrapper.text()).toContain('81 ms')
 })
 
@@ -80,7 +81,7 @@ it('maps exact backend states into four user-facing status groups without enabli
   expect(wrapper.get('[data-copy="us-standby"]').attributes('disabled')).toBeDefined()
 
   await wrapper.get('[data-status-filter]').setValue('processing')
-  expect(wrapper.findAll('[data-pool-row]')).toHaveLength(4)
+  expect(wrapper.findAll('[data-pool-row]')).toHaveLength(5)
   expect(wrapper.get('[data-row-status="jp-one"]').text()).toContain('已启用')
 })
 
@@ -100,7 +101,7 @@ it('copies the selected protocol address only for a ready row', async () => {
   await flushPromises()
 
   expect(mocks.apiFetch).toHaveBeenCalledWith('/api/v1/proxy-groups/jp-one/connections')
-  expect(mocks.clipboard).toHaveBeenCalledWith('vless://masked-test')
+  expect(mocks.clipboard).toHaveBeenCalledWith('vless://masked-public')
   expect(wrapper.get('[data-copy="kr-one"]').attributes('disabled')).toBeDefined()
 })
 
@@ -117,7 +118,7 @@ it('copies a test-style VLESS subscription', async () => {
   await wrapper.get('[data-copy-subscription]').trigger('click')
   await flushPromises()
   expect(mocks.clipboard).toHaveBeenCalledWith('https://example.test/sub/masked')
-  expect(wrapper.text()).toContain('复制 VLESS 订阅')
+  expect(wrapper.text()).toContain('复制节点订阅')
 })
 
 it('shows fixed ready slots and replaces a standby candidate through a closable dialog', async () => {
@@ -127,10 +128,56 @@ it('shows fixed ready slots and replaces a standby candidate through a closable 
   expect(wrapper.findAll('[data-rotate="jp-one"]')).toHaveLength(0)
   await wrapper.get('[data-replace="us-standby"]').trigger('click')
   expect(wrapper.findAll('[data-replace-dialog]')).toHaveLength(1)
+	const targets = wrapper.findAll('[data-replace-target] option')
+	expect(targets[0].text()).toContain('主连接')
+	expect(targets[1].text()).toContain('出口位 1')
+	expect(wrapper.get('[data-replace-target]').text()).not.toContain('出口位 4')
   await wrapper.get('[data-replace-target]').setValue('jp-one')
   await wrapper.get('[data-confirm-replace]').trigger('click')
   await flushPromises()
   expect(mocks.apiFetch).toHaveBeenCalledWith('/api/v1/proxy-groups/us-standby/replace', { method: 'POST', headers: { 'Idempotency-Key': 'test-key' }, body: JSON.stringify({ targetGroupId: 'jp-one' }) })
+})
+
+it('replaces a standby candidate into the main connection with a main-specific result', async () => {
+	const wrapper = mount(VpnPoolView)
+	await flushPromises()
+	await wrapper.get('[data-replace="us-standby"]').trigger('click')
+	expect((wrapper.get('[data-replace-target]').element as HTMLSelectElement).value).toBe('agw-main')
+	await wrapper.get('[data-confirm-replace]').trigger('click')
+	await flushPromises()
+	expect(mocks.apiFetch).toHaveBeenCalledWith('/api/v1/proxy-groups/us-standby/replace', { method: 'POST', headers: { 'Idempotency-Key': 'test-key' }, body: JSON.stringify({ targetGroupId: 'agw-main' }) })
+	expect(wrapper.text()).toContain('主连接替换成功')
+})
+
+it('switches one ready egress protocol without changing mixed or SOCKS5H', async () => {
+	const wrapper = mount(VpnPoolView)
+	await flushPromises()
+	const selector = wrapper.get('[data-protocol="jp-one"]')
+	expect(selector.attributes('disabled')).toBeUndefined()
+	await selector.setValue('hysteria2_quic_tls')
+	await flushPromises()
+	expect(mocks.apiFetch).toHaveBeenCalledWith('/api/v1/proxy-groups/jp-one/protocol-mode', {
+		method: 'PUT', headers: { 'Idempotency-Key': 'test-key' }, body: JSON.stringify({ protocolMode: 'hysteria2_quic_tls' }),
+	})
+	expect(wrapper.text()).toContain('mixed/SOCKS5H 未变化')
+})
+
+it('disables public copy and protocol changes while subscription is pending or repair is required', async () => {
+	const unsafeRows = rows.map(row => row.id === 'jp-one' ? { ...row, protocolState: 'subscription_pending', subscriptionState: 'pending' } : row)
+	unsafeRows.push({ ...rows[1], id: 'repair-protocol', protocolState: 'repair_required', subscriptionState: 'repair_required' })
+	mocks.apiFetch.mockImplementation((path: string) => {
+		if (path === '/api/v1/proxy-groups') return Promise.resolve(unsafeRows)
+		if (path === '/api/v1/settings/aimilivpn/countries') return Promise.resolve([])
+		if (path === '/api/v1/settings/aimilivpn/refresh') return Promise.resolve({ state: 'idle', country: '', phase: '', testedCount: 0, validCount: 0 })
+		return Promise.resolve(undefined)
+	})
+	const wrapper = mount(VpnPoolView)
+	await flushPromises()
+	expect(wrapper.get('[data-protocol="jp-one"]').attributes('disabled')).toBeDefined()
+	expect(wrapper.get('[data-copy="jp-one"]').attributes('disabled')).toBeDefined()
+	expect(wrapper.get('[data-protocol="repair-protocol"]').attributes('disabled')).toBeDefined()
+	expect(wrapper.get('[data-row-detail="jp-one"]').text()).toContain('订阅验证中')
+	expect(wrapper.get('[data-row-detail="repair-protocol"]').text()).toContain('协议需要修复')
 })
 
 it('exports the current filters as a text list', async () => {

@@ -31,16 +31,26 @@ export interface AuthOptionsPayload {
 
 export type ProxyType = 'residential' | 'datacenter'
 export type ProxyGroupStatus = 'standby' | 'provisioning' | 'ready' | 'rotating' | 'degraded' | 'repair_required' | 'disabling'
+export type ProtocolMode = 'vless_tcp_reality_vision' | 'vless_xhttp_reality' | 'hysteria2_quic_tls'
+export type ProtocolState = 'ready' | 'switching' | 'subscription_pending' | 'rolling_back' | 'repair_required'
+export type SubscriptionState = 'ready' | 'pending' | 'repair_required' | 'unavailable'
 
 export interface CountryPayload { code: string; name: string; residentialCount: number; datacenterCount: number }
 export interface ProxyGroupPayload {
   id: string; countryCode: string; countryName: string; proxyType: ProxyType; status: ProxyGroupStatus
   egressSource?: 'slot' | 'main'
 	  slotNumber?: number; fixed?: boolean
+  publicPort?: number
+  protocolMode?: ProtocolMode; desiredProtocolMode?: ProtocolMode; protocolState?: ProtocolState; subscriptionState?: SubscriptionState
+  availableProtocolModes?: ProtocolMode[]
   vlessPort: number; mixedPort: number; exitIp: string; candidateLatencyMs: number; vlessLatencyMs: number; socksLatencyMs: number
   lastErrorCode?: string; version: number; lastCheckedAt?: string
 }
-export interface ConnectionsPayload { vlessUri: string; socks5hUri: string }
+export interface ConnectionsPayload { protocolMode: ProtocolMode; publicUri: string; vlessUri?: string; vlessError?: string; socks5hUri: string }
+export interface ProtocolModePayload {
+  protocolMode: ProtocolMode; desiredProtocolMode: ProtocolMode; protocolState: ProtocolState; subscriptionState: SubscriptionState
+  availableProtocolModes: ProtocolMode[]; lastErrorCode?: string; updatedAt: string
+}
 export interface SubscriptionPayload { url: string; inboundCount: number; updatedAt: string }
 export type AccountSyncStatus = 'reset_required' | 'synced' | 'checking' | 'repair_required' | 'incompatible'
 export type MixedPolicyApplyStatus = 'pending' | 'applying' | 'applied' | 'failed' | 'repair_required'

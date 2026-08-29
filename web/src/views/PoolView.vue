@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { apiDownloadText, apiFetch, idempotencyHeaders, type CandidateCountryPayload, type ConnectionsPayload, type CountryRefreshPayload, type ProxyGroupPayload, type ProxyType, type SubscriptionPayload } from '../api/client'
+import { apiDownloadText, apiFetch, idempotencyHeaders, type CandidateCountryPayload, type ConnectionsPayload, type CountryRefreshPayload, type ProtocolMode, type ProtocolModePayload, type ProxyGroupPayload, type ProxyType, type SubscriptionPayload } from '../api/client'
 import AppShell from '../components/AppShell.vue'
 import PoolFilters from '../components/PoolFilters.vue'
 import PoolTable from '../components/PoolTable.vue'
@@ -23,7 +23,7 @@ const replacementTarget = ref('')
 let refreshTimer: ReturnType<typeof setTimeout> | undefined
 
 const title = computed(() => props.protocol === 'vless' ? 'VPN 节点池' : 'SOCKS5H 代理池')
-const description = computed(() => props.protocol === 'vless' ? '复制或导出可直接用于代理客户端和代码的 VLESS Reality 节点。' : '每个在线出口对应一个支持代理 DNS 的 SOCKS5H 地址。')
+const description = computed(() => props.protocol === 'vless' ? '每个逻辑出口可独立使用 TCP/Vision、XHTTP/REALITY 或 Hysteria2；mixed/SOCKS5H 始终保持不变。' : '每个在线出口对应一个支持代理 DNS 的 SOCKS5H 地址。')
 const countries = computed(() => {
   const merged = new Map(groups.value.map(row => [row.countryCode, { code: row.countryCode, name: row.countryName }]))
   for (const item of candidateCountries.value) merged.set(item.code, { code: item.code, name: item.name })
@@ -41,7 +41,12 @@ const rows = computed(() => groups.value.filter(row => {
   const right = props.protocol === 'vless' ? b.vlessLatencyMs : b.socksLatencyMs
   return (left || Number.MAX_SAFE_INTEGER) - (right || Number.MAX_SAFE_INTEGER)
 }))
-const replacementTargets = computed(() => groups.value.filter(row => row.status === 'ready' && row.egressSource !== 'main' && (row.slotNumber ?? 0) > 0).sort((a, b) => (a.slotNumber ?? 0) - (b.slotNumber ?? 0)))
+const replacementTargets = computed(() => groups.value.filter(row => row.status === 'ready' && (row.egressSource === 'main' || (row.slotNumber ?? 0) > 0)).sort((a, b) => {
+  if (a.egressSource === 'main') return -1
+  if (b.egressSource === 'main') return 1
+  return (a.slotNumber ?? 0) - (b.slotNumber ?? 0)
+}))
+const subscriptionReady = computed(() => groups.value.some(row => row.status === 'ready' && row.protocolState === 'ready' && row.subscriptionState === 'ready'))
 
 onMounted(loadInitial)
 onBeforeUnmount(() => { if (refreshTimer !== undefined) clearTimeout(refreshTimer) })
@@ -120,7 +125,9 @@ async function copyAddress(row: ProxyGroupPayload): Promise<void> {
   busy.value = `copy-${row.id}`; notice.value = ''
   try {
     const value = await apiFetch<ConnectionsPayload>(`/api/v1/proxy-groups/${row.id}/connections`)
-    await navigator.clipboard.writeText(props.protocol === 'vless' ? value.vlessUri : value.socks5hUri)
+    const address = props.protocol === 'vless' ? value.publicUri : value.socks5hUri
+    if (!address) throw new Error(value.vlessError || 'protocol_not_ready')
+    await navigator.clipboard.writeText(address)
     notice.value = '地址已复制；连接秘密不会保存在浏览器存储中。'
   } catch (error) { notice.value = messageFor(error, '复制失败') }
   finally { busy.value = '' }
@@ -144,9 +151,9 @@ async function copySubscription(): Promise<void> {
   busy.value = 'copy-subscription'; notice.value = ''
   try {
     const value = await apiFetch<SubscriptionPayload>('/api/v1/proxy-groups/subscription')
-    if (!value.url) { notice.value = '当前没有可用的 VLESS 订阅。'; return }
+    if (!value.url) { notice.value = '当前没有可用的节点订阅。'; return }
     await navigator.clipboard.writeText(value.url)
-    notice.value = `VLESS 订阅已复制，包含 ${value.inboundCount} 个独立节点。`
+    notice.value = `节点订阅已复制，包含 ${value.inboundCount} 个独立节点。`
   } catch (error) { notice.value = messageFor(error, '订阅复制失败') }
   finally { busy.value = '' }
 }
@@ -194,14 +201,28 @@ function closeReplacement(): void {
 async function confirmReplacement(): Promise<void> {
   if (!replacementCandidate.value || !replacementTarget.value) return
   const candidate = replacementCandidate.value
+  const target = replacementTarget.value
   busy.value = `replace-${candidate.id}`; notice.value = ''
   try {
-    await apiFetch(`/api/v1/proxy-groups/${candidate.id}/replace`, { method: 'POST', headers: idempotencyHeaders(), body: JSON.stringify({ targetGroupId: replacementTarget.value }) })
+    await apiFetch(`/api/v1/proxy-groups/${candidate.id}/replace`, { method: 'POST', headers: idempotencyHeaders(), body: JSON.stringify({ targetGroupId: target }) })
     closeReplacement()
-    notice.value = '出口位替换成功，端口与入站保持不变。'
+    notice.value = target === 'agw-main' ? '主连接替换成功；失败回滚边界已保留。' : '出口位替换成功，端口与入站保持不变。'
     await loadGroups(false)
   } catch (error) { notice.value = messageFor(error, '出口位替换失败') }
   finally { busy.value = '' }
+}
+
+async function switchProtocol(row: ProxyGroupPayload, protocolMode: ProtocolMode): Promise<void> {
+  if (protocolMode === row.protocolMode) return
+  busy.value = `protocol-${row.id}`; notice.value = ''
+  try {
+    await apiFetch<ProtocolModePayload>(`/api/v1/proxy-groups/${row.id}/protocol-mode`, { method: 'PUT', headers: idempotencyHeaders(), body: JSON.stringify({ protocolMode }) })
+    notice.value = '公网协议切换成功；mixed/SOCKS5H 未变化。'
+    await loadGroups(false)
+  } catch (error) {
+    notice.value = messageFor(error, '协议切换失败，已请求恢复旧协议')
+    await loadGroups(false)
+  } finally { busy.value = '' }
 }
 
 async function checkRow(row: ProxyGroupPayload): Promise<void> {
@@ -230,7 +251,7 @@ function messageFor(error: unknown, fallback: string): string {
   <AppShell>
     <section class="page-heading">
       <div><p class="eyebrow">ONLINE EGRESS POOL</p><h1>{{ title }}</h1><p>{{ description }}</p></div>
-      <div class="heading-actions"><button data-sync-pool class="secondary" :disabled="busy !== ''" @click="refreshPool">{{ busy === 'refresh' ? '正在同步…' : '同步代理状态' }}</button><button data-refresh-country class="secondary" :disabled="busy !== '' || !country" @click="refreshCountry">{{ busy === 'country-refresh' ? '正在刷新…' : '刷新所选国家' }}</button><button v-if="protocol === 'vless'" data-copy-subscription :disabled="busy !== ''" @click="copySubscription">复制 VLESS 订阅</button><button data-copy-all class="secondary" :disabled="busy !== ''" @click="copyAll">复制节点列表</button><button data-export class="secondary" :disabled="busy !== ''" @click="exportRows">导出</button></div>
+      <div class="heading-actions"><button data-sync-pool class="secondary" :disabled="busy !== ''" @click="refreshPool">{{ busy === 'refresh' ? '正在同步…' : '同步代理状态' }}</button><button data-refresh-country class="secondary" :disabled="busy !== '' || !country" @click="refreshCountry">{{ busy === 'country-refresh' ? '正在刷新…' : '刷新所选国家' }}</button><button v-if="protocol === 'vless'" data-copy-subscription :disabled="busy !== '' || !subscriptionReady" @click="copySubscription">复制节点订阅</button><button data-copy-all class="secondary" :disabled="busy !== ''" @click="copyAll">复制节点列表</button><button data-export class="secondary" :disabled="busy !== ''" @click="exportRows">导出</button></div>
     </section>
     <p v-if="notice" class="notice" role="status">{{ notice }}</p>
     <p v-if="refreshStateLabel()" class="refresh-state">{{ refreshStateLabel() }}</p>
@@ -239,13 +260,13 @@ function messageFor(error: unknown, fallback: string): string {
       <label class="fixed-toggle"><input v-model="keepEnabledVisible" data-fixed-enabled type="checkbox"> 始终显示已启用节点</label><span>{{ rows.length }} 个候选 · {{ groups.filter(row => row.status === 'ready').length }} 个在线</span>
     </section>
     <div v-if="loading" class="loading">正在读取代理池…</div>
-    <PoolTable v-else :rows="rows" :protocol="protocol" :busy="busy" @copy="copyAddress" @replace="openReplacement" @check="checkRow" />
+    <PoolTable v-else :rows="rows" :protocol="protocol" :busy="busy" @copy="copyAddress" @replace="openReplacement" @check="checkRow" @protocol="switchProtocol" />
     <div v-if="replacementCandidate" class="dialog-backdrop" @click.self="closeReplacement">
       <section data-replace-dialog class="replace-dialog" role="dialog" aria-modal="true" aria-labelledby="replace-title">
         <button class="dialog-close" type="button" aria-label="关闭" @click="closeReplacement">×</button>
         <p class="eyebrow">REPLACE EGRESS SLOT</p><h2 id="replace-title">替换到出口位</h2>
         <p>将 {{ replacementCandidate.countryName || replacementCandidate.countryCode }} {{ replacementCandidate.proxyType === 'residential' ? '住宅' : '机房' }}候选装载到现有出口位。原端口和 VLESS/SOCKS5H 入站保持不变，失败时自动回滚。</p>
-        <label>目标出口位<select v-model="replacementTarget" data-replace-target><option v-for="target in replacementTargets" :key="target.id" :value="target.id">出口位 {{ target.slotNumber }} · {{ target.countryName || target.countryCode }} · {{ target.exitIp }}</option></select></label>
+        <label>目标逻辑出口<select v-model="replacementTarget" data-replace-target><option v-for="target in replacementTargets" :key="target.id" :value="target.id">{{ target.egressSource === 'main' ? '主连接' : `出口位 ${target.slotNumber}` }} · {{ target.countryName || target.countryCode }} · {{ target.exitIp }}</option></select></label>
         <div class="dialog-actions"><button class="secondary" type="button" @click="closeReplacement">取消</button><button data-confirm-replace type="button" :disabled="!replacementTarget || busy !== ''" @click="confirmReplacement">{{ busy.startsWith('replace-') ? '正在替换…' : '确认替换' }}</button></div>
       </section>
     </div>

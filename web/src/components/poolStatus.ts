@@ -14,6 +14,10 @@ export function poolStatusLabel(status: ProxyGroupStatus): string {
 }
 
 export function poolStatusDetail(row: ProxyGroupPayload): string {
+  if (row.protocolState === 'switching') return '公网协议切换中'
+  if (row.protocolState === 'subscription_pending') return '订阅验证中'
+  if (row.protocolState === 'rolling_back') return '正在恢复旧协议'
+  if (row.protocolState === 'repair_required') return '协议需要修复'
   if (row.status === 'repair_required') return '需要修复'
   if (row.status === 'degraded') return '链路检测失败'
   if (row.status === 'provisioning') return '正在创建'
