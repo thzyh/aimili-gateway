@@ -52,7 +52,7 @@ for source, name in ((sys.argv[2], "aimili-gateway.db"), (sys.argv[3], "x-ui.db"
 PY
     ufw status numbered > "$BACKUP_ROOT/ufw-status.txt"
     python3 "$VERIFY" fingerprint --xui-db "$XUI_DB" > "$BACKUP_ROOT/unmanaged-resources.json"
-    systemctl show --property MainPID --value x-ui.service > "$BACKUP_ROOT/xray.pid"
+    pgrep -f '^/usr/local/x-ui/bin/xray-linux-amd64' | sort -n | paste -sd, - > "$BACKUP_ROOT/xray.pid"
     printf '%s\n' '{"status":"not_started"}' > "$BACKUP_ROOT/non-target-probes.json"
     : > "$BACKUP_ROOT/ufw-added.txt"
     for item in \
@@ -122,6 +122,36 @@ required = {'main.assign', 'main.assign.commit', 'main.assign.rollback', 'main.a
 if not required.issubset(capabilities):
     raise SystemExit('main_assignment_capability_missing')
 PY
+}
+
+protocol_stage2_postcheck() {
+    local ready=false current_xray unmanaged_after
+    for _ in $(seq 1 45); do
+        if systemctl is-active --quiet aimili-gateway.service \
+            && curl --silent --show-error --fail --max-time 5 http://127.0.0.1:9080/healthz >/dev/null; then
+            ready=true
+            break
+        fi
+        sleep 2
+    done
+    [[ "$ready" == true ]]
+    python3 - "$GATEWAY_DB" "$XUI_DB" <<'PY'
+import sqlite3, sys
+gateway = sqlite3.connect(f'file:{sys.argv[1]}?mode=ro', uri=True)
+assert gateway.execute('SELECT COUNT(*) FROM schema_migrations WHERE version=10').fetchone()[0] == 1
+assert gateway.execute('SELECT COUNT(*) FROM egress_protocol_modes').fetchone()[0] == 4
+gateway.close()
+xui = sqlite3.connect(f'file:{sys.argv[2]}?mode=ro', uri=True)
+rows = xui.execute('SELECT tag,port FROM inbounds').fetchall(); xui.close()
+managed = [row for row in rows if row[0] == 'aimili-reality' or str(row[0]).startswith('agw-')]
+assert sum(row[1] in (8443,20000,20001,20002) for row in managed) == 4
+assert sum(row[1] in (30000,30001,30002,31000) for row in managed) == 4
+PY
+    current_xray="$(pgrep -f '^/usr/local/x-ui/bin/xray-linux-amd64' | sort -n | paste -sd, -)"
+    [[ -n "$current_xray" && "$current_xray" == "$(<"$BACKUP_ROOT/xray.pid")" ]]
+    unmanaged_after="$(python3 "$VERIFY" fingerprint --xui-db "$XUI_DB")"
+    [[ "$unmanaged_after" == "$(<"$BACKUP_ROOT/unmanaged-resources.json")" ]]
+    python3 "$VERIFY" preflight --xui-db "$XUI_DB" --require-udp >/dev/null
 }
 
 rollback_current_stage() {
@@ -213,7 +243,7 @@ PY
         systemctl daemon-reload
         systemctl enable --now aimili-xui-protocol-transaction.path aimili-xui-protocol-transaction.timer
         systemctl try-restart aimili-gateway.service
-        python3 "$VERIFY" preflight --xui-db "$XUI_DB" --require-udp
+        protocol_stage2_postcheck
         ;;
     3|4|5|6)
         python3 "$VERIFY" preflight --xui-db "$XUI_DB" --require-udp
