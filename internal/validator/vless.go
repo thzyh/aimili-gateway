@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -25,6 +26,7 @@ type VLESSTarget struct {
 	ServerName     string
 	ProbeHost      string
 	ExpectedExitIP string
+	MLDSA65Verify  string
 }
 
 func (v *Validator) ValidateVLESS(ctx context.Context, target VLESSTarget) (Result, error) {
@@ -109,6 +111,13 @@ func buildVLESSClientConfig(target VLESSTarget, localPort int, username, passwor
 	if err != nil || serverPort < 1 || serverPort > 65535 {
 		return nil, validationFailure("invalid_configuration")
 	}
+	if len(target.MLDSA65Verify) > 4096 || strings.ContainsAny(target.MLDSA65Verify, "\x00\r\n") || target.MLDSA65Verify != strings.TrimSpace(target.MLDSA65Verify) {
+		return nil, validationFailure("invalid_configuration")
+	}
+	realitySettings := map[string]any{"fingerprint": "chrome", "serverName": target.ServerName, "password": target.PublicKey, "shortId": target.ShortID, "spiderX": "/"}
+	if target.MLDSA65Verify != "" {
+		realitySettings["mldsa65Verify"] = target.MLDSA65Verify
+	}
 	document := map[string]any{
 		"log": map[string]any{"loglevel": "none"},
 		"inbounds": []any{map[string]any{
@@ -118,7 +127,7 @@ func buildVLESSClientConfig(target VLESSTarget, localPort int, username, passwor
 		"outbounds": []any{map[string]any{
 			"tag": "validation-vless", "protocol": "vless",
 			"settings":       map[string]any{"vnext": []any{map[string]any{"address": host, "port": serverPort, "users": []any{map[string]any{"id": target.ClientID, "encryption": "none", "flow": "xtls-rprx-vision"}}}}},
-			"streamSettings": map[string]any{"network": "tcp", "security": "reality", "realitySettings": map[string]any{"fingerprint": "chrome", "serverName": target.ServerName, "password": target.PublicKey, "shortId": target.ShortID, "spiderX": "/"}},
+			"streamSettings": map[string]any{"network": "tcp", "security": "reality", "realitySettings": realitySettings},
 		}},
 		"routing": map[string]any{"domainStrategy": "AsIs", "rules": []any{map[string]any{"type": "field", "inboundTag": []any{"validation-socks"}, "outboundTag": "validation-vless"}}},
 	}

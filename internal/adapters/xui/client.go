@@ -222,7 +222,7 @@ func (c *Client) UpdateManagedGroup(ctx context.Context, desired DesiredGroup, m
 	}
 	effectiveDesired := desired
 	effectiveDesired.ResourceName = managed.ResourceName
-	publicKey, shortID, serverName, err := c.currentRealityMaterial(ctx, desired, managed)
+	publicKey, shortID, serverName, mldsa65Verify, err := c.currentRealityMaterial(ctx, desired, managed)
 	if err != nil {
 		return ManagedGroup{}, err
 	}
@@ -240,6 +240,7 @@ func (c *Client) UpdateManagedGroup(ctx context.Context, desired DesiredGroup, m
 	managed.PublicKey = publicKey
 	managed.ShortID = shortID
 	managed.ServerName = serverName
+	managed.MLDSA65Verify = mldsa65Verify
 	return managed, nil
 }
 
@@ -337,45 +338,49 @@ type inboundDetail struct {
 	Raw            map[string]any `json:"-"`
 }
 
-func (c *Client) currentRealityMaterial(ctx context.Context, desired DesiredGroup, managed ManagedGroup) (string, string, string, error) {
+func (c *Client) currentRealityMaterial(ctx context.Context, desired DesiredGroup, managed ManagedGroup) (string, string, string, string, error) {
 	details, err := c.inboundDetails(ctx)
 	if err != nil {
-		return "", "", "", err
+		return "", "", "", "", err
 	}
 	for _, inbound := range details {
 		if inbound.ID != managed.VLESSInboundID {
 			continue
 		}
 		if inbound.Tag != managed.VLESSInboundTag || inbound.Protocol != "vless" || inbound.Port != desired.VLESSPort || !strings.HasPrefix(inbound.Remark, "Aimili Gateway ") {
-			return "", "", "", &AdapterError{Code: "ownership_conflict"}
+			return "", "", "", "", &AdapterError{Code: "ownership_conflict"}
 		}
 		settings, ok := decodeObject(inbound.Settings)
 		if !ok {
-			return "", "", "", &AdapterError{Code: "invalid_response"}
+			return "", "", "", "", &AdapterError{Code: "invalid_response"}
 		}
 		clients := asObjectSlice(settings["clients"])
 		if len(clients) != 1 || stringValue(clients[0]["id"]) != desired.VLESSClientID || stringValue(clients[0]["flow"]) != "xtls-rprx-vision" {
-			return "", "", "", &AdapterError{Code: "managed_resource_drift"}
+			return "", "", "", "", &AdapterError{Code: "managed_resource_drift"}
 		}
 		stream, ok := decodeObject(inbound.StreamSettings)
 		if !ok || stringValue(stream["network"]) != "tcp" || stringValue(stream["security"]) != "reality" {
-			return "", "", "", &AdapterError{Code: "managed_resource_drift"}
+			return "", "", "", "", &AdapterError{Code: "managed_resource_drift"}
 		}
 		reality, ok := decodeObject(stream["realitySettings"])
 		if !ok || stringValue(reality["target"]) != desired.RealityTarget {
-			return "", "", "", &AdapterError{Code: "managed_resource_drift"}
+			return "", "", "", "", &AdapterError{Code: "managed_resource_drift"}
 		}
 		serverNames := stringValues(reality["serverNames"])
 		shortIDs := stringValues(reality["shortIds"])
 		clientSettings, ok := decodeObject(reality["settings"])
 		publicKey := stringValue(clientSettings["publicKey"])
+		verify := stringValue(clientSettings["mldsa65Verify"])
 		if !ok || len(serverNames) != 1 || serverNames[0] != desired.RealityServerName || len(shortIDs) != 1 ||
 			!validRealityValue(publicKey, 256) || !validRealityValue(shortIDs[0], 64) {
-			return "", "", "", &AdapterError{Code: "managed_resource_drift"}
+			return "", "", "", "", &AdapterError{Code: "managed_resource_drift"}
 		}
-		return publicKey, shortIDs[0], serverNames[0], nil
+		if verify != "" && !validRealityValue(verify, 4096) {
+			return "", "", "", "", &AdapterError{Code: "managed_resource_drift"}
+		}
+		return publicKey, shortIDs[0], serverNames[0], verify, nil
 	}
-	return "", "", "", &AdapterError{Code: "managed_resource_missing"}
+	return "", "", "", "", &AdapterError{Code: "managed_resource_missing"}
 }
 
 func (c *Client) inboundDetails(ctx context.Context) ([]inboundDetail, error) {
@@ -852,7 +857,7 @@ func aggregateVLESSInbound(desired AggregateDesired, tag, privateKey, publicKey,
 		"expiryTime": 0, "trafficReset": "never", "trafficResetDay": 1, "listen": "", "port": desired.VLESSPort,
 		"protocol": "vless", "tag": tag,
 		"settings":       mustJSONString(map[string]any{"clients": []any{map[string]any{"id": desired.VLESSClientID, "email": "aimili-gateway-aggregate", "flow": "xtls-rprx-vision", "enable": true}}, "decryption": "none"}),
-		"streamSettings": mustJSONString(map[string]any{"network": "tcp", "security": "reality", "realitySettings": map[string]any{"show": false, "xver": 0, "target": desired.RealityTarget, "serverNames": []any{desired.RealityServerName}, "privateKey": privateKey, "shortIds": []any{shortID}, "settings": map[string]any{"publicKey": publicKey, "fingerprint": "chrome", "spiderX": "/"}}}),
+		"streamSettings": mustJSONString(map[string]any{"network": "tcp", "security": "reality", "realitySettings": map[string]any{"show": false, "xver": 0, "target": desired.RealityTarget, "serverNames": []any{desired.RealityServerName}, "privateKey": privateKey, "shortIds": []any{shortID}, "mldsa65Seed": "", "settings": map[string]any{"publicKey": publicKey, "fingerprint": "chrome", "spiderX": "/", "mldsa65Verify": ""}}}),
 		"sniffing":       mustJSONString(map[string]any{"enabled": true, "destOverride": []any{"http", "tls", "quic"}, "metadataOnly": false, "routeOnly": false}),
 	}
 }
@@ -1073,6 +1078,10 @@ func (c *Client) EnsureLegacyMain(ctx context.Context, desired LegacyMainDesired
 			return LegacyMain{}, &AdapterError{Code: "managed_resource_drift"}
 		}
 		result.PublicKey, result.ShortID, result.ServerName = stringValue(clientSettings["publicKey"]), ids[0], names[0]
+		result.MLDSA65Verify = stringValue(clientSettings["mldsa65Verify"])
+		if result.MLDSA65Verify != "" && !validRealityValue(result.MLDSA65Verify, 4096) {
+			return LegacyMain{}, &AdapterError{Code: "managed_resource_drift"}
+		}
 		legacyPrivateKey = privateKey
 		currentTarget := stringValue(reality["target"])
 		switch {
@@ -1218,7 +1227,7 @@ func vlessInbound(desired DesiredGroup, tag, privateKey, publicKey, shortID stri
 		"enable": true, "expiryTime": 0, "trafficReset": "never", "trafficResetDay": 1,
 		"listen": "", "port": desired.VLESSPort, "protocol": "vless", "tag": tag,
 		"settings":       mustJSONString(map[string]any{"clients": []any{map[string]any{"id": desired.VLESSClientID, "email": managedClientEmail(desired.ResourceName), "flow": "xtls-rprx-vision", "enable": true}}, "decryption": "none"}),
-		"streamSettings": mustJSONString(map[string]any{"network": "tcp", "security": "reality", "realitySettings": map[string]any{"show": false, "xver": 0, "target": desired.RealityTarget, "serverNames": []any{desired.RealityServerName}, "privateKey": privateKey, "shortIds": []any{shortID}, "settings": map[string]any{"publicKey": publicKey, "fingerprint": "chrome", "spiderX": "/"}}}),
+		"streamSettings": mustJSONString(map[string]any{"network": "tcp", "security": "reality", "realitySettings": map[string]any{"show": false, "xver": 0, "target": desired.RealityTarget, "serverNames": []any{desired.RealityServerName}, "privateKey": privateKey, "shortIds": []any{shortID}, "mldsa65Seed": "", "settings": map[string]any{"publicKey": publicKey, "fingerprint": "chrome", "spiderX": "/", "mldsa65Verify": ""}}}),
 		"sniffing":       mustJSONString(map[string]any{"enabled": true, "destOverride": []any{"http", "tls", "quic"}, "metadataOnly": false, "routeOnly": false}),
 	}
 }

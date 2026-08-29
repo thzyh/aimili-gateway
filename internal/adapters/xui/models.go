@@ -68,6 +68,7 @@ type ManagedGroup struct {
 	PublicKey       string
 	ShortID         string
 	ServerName      string
+	MLDSA65Verify   string
 }
 
 type AggregateDesired struct {
@@ -111,6 +112,7 @@ type LegacyMain struct {
 	ShortID        string
 	ServerName     string
 	OutboundTag    string
+	MLDSA65Verify  string
 }
 
 // SubscriptionDesired describes the VLESS inbounds that may be exposed by the

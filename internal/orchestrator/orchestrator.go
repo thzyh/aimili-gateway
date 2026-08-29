@@ -339,6 +339,7 @@ func (o *Orchestrator) Enable(ctx context.Context, request EnableRequest) (domai
 	group.RealityPublicKey = managed.PublicKey
 	group.RealityShortID = managed.ShortID
 	group.RealityServerName = managed.ServerName
+	group.RealityMLDSA65Verify = managed.MLDSA65Verify
 	socksResult, err := o.validateSOCKS(ctx, group, credentials)
 	if err != nil {
 		return domain.ProxyGroup{}, o.rollbackEnable(ctx, &group, managed, errorCode(err))
@@ -689,7 +690,7 @@ func (o *Orchestrator) validateSOCKS(ctx context.Context, g domain.ProxyGroup, c
 	return o.validator.ValidateSOCKS5H(ctx, validator.SOCKSTarget{Address: net.JoinHostPort("127.0.0.1", fmt.Sprint(g.MixedPort)), Username: string(c.mixedUsername), Password: string(c.mixedPassword), ProbeHost: o.config.ProbeHost, ExpectedExitIP: g.ExitIP})
 }
 func (o *Orchestrator) validateVLESS(ctx context.Context, g domain.ProxyGroup, c runtimeCredentials) (validator.Result, error) {
-	return o.validator.ValidateVLESS(ctx, validator.VLESSTarget{XrayPath: o.config.XrayPath, InboundAddress: net.JoinHostPort("127.0.0.1", fmt.Sprint(g.VLESSPort)), ClientID: string(c.vlessID), PublicKey: g.RealityPublicKey, ShortID: g.RealityShortID, ServerName: g.RealityServerName, ProbeHost: o.config.ProbeHost, ExpectedExitIP: g.ExitIP})
+	return o.validator.ValidateVLESS(ctx, validator.VLESSTarget{XrayPath: o.config.XrayPath, InboundAddress: net.JoinHostPort("127.0.0.1", fmt.Sprint(g.VLESSPort)), ClientID: string(c.vlessID), PublicKey: g.RealityPublicKey, ShortID: g.RealityShortID, ServerName: g.RealityServerName, ProbeHost: o.config.ProbeHost, ExpectedExitIP: g.ExitIP, MLDSA65Verify: g.RealityMLDSA65Verify})
 }
 
 func (o *Orchestrator) waitForSlot(ctx context.Context, slot int) (aimili.SlotCheck, error) {
@@ -796,7 +797,7 @@ func (o *Orchestrator) rollbackEnable(ctx context.Context, g *domain.ProxyGroup,
 	return &Error{Code: "repair_required"}
 }
 func managedFromGroup(g domain.ProxyGroup) xui.ManagedGroup {
-	return xui.ManagedGroup{ResourceName: g.ResourceName, VLESSInboundID: g.VLESSInboundID, MixedInboundID: g.MixedInboundID, VLESSInboundTag: g.ResourceName + "-vless", MixedInboundTag: g.ResourceName + "-mixed", OutboundTag: g.ResourceName + "-socks", Fingerprint: g.ConfigFingerprint, PublicKey: g.RealityPublicKey, ShortID: g.RealityShortID, ServerName: g.RealityServerName}
+	return xui.ManagedGroup{ResourceName: g.ResourceName, VLESSInboundID: g.VLESSInboundID, MixedInboundID: g.MixedInboundID, VLESSInboundTag: g.ResourceName + "-vless", MixedInboundTag: g.ResourceName + "-mixed", OutboundTag: g.ResourceName + "-socks", Fingerprint: g.ConfigFingerprint, PublicKey: g.RealityPublicKey, ShortID: g.RealityShortID, ServerName: g.RealityServerName, MLDSA65Verify: g.RealityMLDSA65Verify}
 }
 func prefixStrings(values []netip.Prefix) []string {
 	result := make([]string, len(values))

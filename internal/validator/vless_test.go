@@ -55,3 +55,27 @@ func TestBuildVLESSClientConfigRejectsNonLoopbackServer(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestBuildVLESSClientConfigIncludesMLDSAVerifyOnlyWhenProvided(t *testing.T) {
+	target := VLESSTarget{InboundAddress: "127.0.0.1:20000", ClientID: "id", PublicKey: "key", ShortID: "short", ServerName: "proxy.example.test", MLDSA65Verify: "verify-material"}
+	encoded, err := buildVLESSClientConfig(target, 19080, "user", "password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if json.Unmarshal(encoded, &document) != nil {
+		t.Fatal("invalid JSON")
+	}
+	outbound := document["outbounds"].([]any)[0].(map[string]any)
+	reality := outbound["streamSettings"].(map[string]any)["realitySettings"].(map[string]any)
+	if reality["mldsa65Verify"] != "verify-material" {
+		t.Fatalf("reality=%#v", reality)
+	}
+}
+
+func TestBuildVLESSClientConfigRejectsUnsafeMLDSAVerify(t *testing.T) {
+	_, err := buildVLESSClientConfig(VLESSTarget{InboundAddress: "127.0.0.1:20000", ClientID: "id", PublicKey: "key", ShortID: "short", ServerName: "proxy.example.test", MLDSA65Verify: "bad\nvalue"}, 19080, "user", "password")
+	if err == nil {
+		t.Fatal("unsafe ML-DSA verify was accepted")
+	}
+}

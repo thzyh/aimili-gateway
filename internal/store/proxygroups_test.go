@@ -28,6 +28,7 @@ func TestProxyGroupRoundTripAndOptimisticVersion(t *testing.T) {
 	group.RealityPublicKey = "public-key"
 	group.RealityShortID = "short-id"
 	group.RealityServerName = "www.microsoft.com"
+	group.RealityMLDSA65Verify = "verify-material"
 	group.CreatedAt = now
 	group.UpdatedAt = now
 	if err := database.CreateProxyGroup(ctx, group); err != nil {
@@ -40,7 +41,7 @@ func TestProxyGroupRoundTripAndOptimisticVersion(t *testing.T) {
 	}
 	if actual.CountryCode != "JP" || actual.ProxyType != domain.ProxyTypeDatacenter || actual.Version != 1 ||
 		actual.VLESSInboundID != 41 || actual.MixedInboundID != 42 || actual.RealityPublicKey != "public-key" ||
-		actual.RealityShortID != "short-id" || actual.RealityServerName != "www.microsoft.com" {
+		actual.RealityShortID != "short-id" || actual.RealityServerName != "www.microsoft.com" || actual.RealityMLDSA65Verify != "verify-material" {
 		t.Fatalf("unexpected group: %#v", actual)
 	}
 	actual.Status = domain.ProxyGroupReady

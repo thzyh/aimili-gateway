@@ -107,6 +107,7 @@ func (o *Orchestrator) SetMixedPolicy(ctx context.Context, requested store.Mixed
 		changed.RealityPublicKey = update.updated.PublicKey
 		changed.RealityShortID = update.updated.ShortID
 		changed.RealityServerName = update.updated.ServerName
+		changed.RealityMLDSA65Verify = update.updated.MLDSA65Verify
 		changed.UpdatedAt = now
 		if err := o.save(ctx, &changed); err != nil {
 			return o.failMixedPolicyUpdate(ctx, oldPolicy, desired, applied, saved)

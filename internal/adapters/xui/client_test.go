@@ -289,6 +289,9 @@ func TestEnsureManagedGroupUsesConfiguredLocalRealityTarget(t *testing.T) {
 	if reality["target"] != "127.0.0.1:443" || fmt.Sprint(reality["serverNames"]) != "[proxy.example.test]" {
 		t.Fatalf("unexpected Reality target: %#v", reality)
 	}
+	if reality["mldsa65Seed"] != "" || reality["settings"].(map[string]any)["mldsa65Verify"] != "" {
+		t.Fatalf("ML-DSA was enabled without a verified capability gate: %#v", reality)
+	}
 }
 
 func TestMergeManagedXrayCanDisableMixedSourceRestriction(t *testing.T) {
@@ -536,6 +539,34 @@ func TestUpdateManagedGroupReturnsCurrentRealityMaterialFromObjectResponse(t *te
 	}
 	if updated.PublicKey != "current-public-key" || updated.ShortID != "current-short-id" || updated.ServerName != "proxy.example.test" {
 		t.Fatalf("current Reality material was not returned: %#v", updated)
+	}
+}
+
+func TestCurrentRealityMaterialReadsOptionalMLDSAVerifyWithoutExposingSeed(t *testing.T) {
+	fixture := &xuiFixture{}
+	client := newXUIFixtureClient(t, fixture)
+	desired := DesiredGroup{ResourceName: "agw-jp-dc", SOCKSPort: 17930, VLESSPort: 20000, MixedPort: 30000, VLESSClientID: "client-id", MixedUsername: "user", MixedPassword: "password", RealityTarget: "127.0.0.1:443", RealityServerName: "proxy.example.test"}
+	managed, err := client.EnsureManagedGroup(context.Background(), desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, inbound := range fixture.inbounds {
+		if inbound["protocol"] != "vless" {
+			continue
+		}
+		stream, _ := decodeObject(inbound["streamSettings"])
+		reality, _ := decodeObject(stream["realitySettings"])
+		reality["mldsa65Seed"] = "server-secret"
+		settings, _ := decodeObject(reality["settings"])
+		settings["mldsa65Verify"] = "client-verify"
+		inbound["streamSettings"] = stream
+	}
+	updated, err := client.UpdateManagedGroup(context.Background(), desired, managed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.MLDSA65Verify != "client-verify" {
+		t.Fatalf("verify=%q", updated.MLDSA65Verify)
 	}
 }
 

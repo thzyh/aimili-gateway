@@ -176,7 +176,7 @@ func (o *Orchestrator) CheckMain(ctx context.Context) (store.MainEgress, error) 
 	if err != nil {
 		return store.MainEgress{}, operationError(err)
 	}
-	mainGroup := domain.ProxyGroup{VLESSPort: 8443, MixedPort: o.config.MainMixedPort, ExitIP: status.ExitIP, RealityPublicKey: legacy.PublicKey, RealityShortID: legacy.ShortID, RealityServerName: legacy.ServerName}
+	mainGroup := domain.ProxyGroup{VLESSPort: 8443, MixedPort: o.config.MainMixedPort, ExitIP: status.ExitIP, RealityPublicKey: legacy.PublicKey, RealityShortID: legacy.ShortID, RealityServerName: legacy.ServerName, RealityMLDSA65Verify: legacy.MLDSA65Verify}
 	socksResult, err := o.validateSOCKS(ctx, mainGroup, credentials)
 	if err != nil {
 		return store.MainEgress{}, operationError(err)
