@@ -1,6 +1,6 @@
 # 主连接安全切换与每出口独立协议模式实施计划
 
-状态：执行中；Task 1–10 已完成，等待 Task 11 VPS 阶梯部署
+状态：执行中；Task 1–10 与 Task 11 Stage 1 已完成，Stage 2 修复资产上传等待明确授权
 
 > **执行要求：** 使用 `superpowers:executing-plans` 逐任务实施；所有功能与故障修复必须使用 `superpowers:test-driven-development`，先观察新增测试按预期失败，再写最小实现。完成前使用 `superpowers:verification-before-completion`，并按项目规则执行一次 `ponytail-review`。
 

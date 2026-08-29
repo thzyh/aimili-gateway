@@ -2,7 +2,7 @@
 
 日期：2026-08-29
 
-状态：本地验证通过，等待 VPS 阶梯验收
+状态：本地验证通过；VPS Stage 1 通过，Stage 2 已回滚并等待修复资产重新上传授权
 
 本记录只保存提交、版本、计数、端口、布尔结果、资源指标和脱敏错误码。不得写入连接材料、私钥、后台路径或完整订阅地址。
 
@@ -10,10 +10,10 @@
 
 | 项目 | 安全记录 |
 | --- | --- |
-| Gateway 分支/提交 | 待填写 |
-| AimiliVPN 分支/提交 | 待填写 |
-| 3x-ui 版本 | 待填写 |
-| Xray 版本 | 待填写 |
+| Gateway 分支/提交 | `feat/main-switch-protocol-modes` / `731ada5` |
+| AimiliVPN 分支/提交 | `feat/main-switch-protocol-modes` / `c359ba5` |
+| 3x-ui 版本 | 生产命令未返回可解析版本；交接基线为 `3.7.0`，待最终补证 |
+| Xray 版本 | `26.7.28` |
 | v2rayN 版本 | `7.24.4` |
 
 ## 2. 本地验证
@@ -33,39 +33,41 @@
 
 | 指标 | 结果 |
 | --- | --- |
-| 联合备份与摘要 | 待填写 |
-| `MemAvailable` | 待填写 MiB |
-| Swap 空闲 | 待填写 MiB |
-| 证书域名/有效期 | 待填写 |
-| Hysteria2 Xray 离线配置 | 待填写 |
-| 非 Gateway 资源数量 | 待填写 |
-| 非 Gateway 指纹已记录 | 待填写 |
-| Xray 初始 PID 已记录 | 待填写 |
+| 联合备份与摘要 | Stage 1 成功；Stage 2 尝试均在受限目录创建联合备份 |
+| `MemAvailable` | 预检约 186–204 MiB，通过 |
+| Swap 空闲 | 预检约 873–929 MiB，通过 |
+| 证书域名/有效期 | 通过；证书对唯一，至少七天有效且 Xray 可读 |
+| Hysteria2 Xray 离线配置 | 使用真实 Xray `26.7.28` 通过 |
+| 非 Gateway 资源数量 | 0 |
+| 非 Gateway 指纹已记录 | 是，验收记录不保存原始资源正文 |
+| Xray 初始 PID 已记录 | 是 |
 
 ## 4. Stage 1：主事务
 
 | 检查 | 结果 |
 | --- | --- |
-| 受控失败恢复旧主 | 待填写 |
-| `7928` 恢复 | 待填写 |
-| 真实主切换 | 待填写 |
-| 主 mixed 与公网一致 | 待填写 |
-| 三个普通槽位不变 | 待填写 |
-| 本级回滚 | 未执行/已执行：待填写 |
+| 受控失败恢复旧主 | 通过；持久状态为 `rolled_back / assign_failed_rolled_back` |
+| `7928` 恢复 | 通过 |
+| 真实主切换 | 通过；`stage → 三路径验证 → commit` |
+| 主 mixed 与公网一致 | 通过；`7928`、主 mixed、`8443` 出口一致 |
+| 三个普通槽位不变 | 通过 |
+| 本级回滚 | 受控失败路径已执行并通过；真实切换无需回滚 |
 
 ## 5. Stage 2：Gateway 与助手
 
 | 检查 | 结果 |
 | --- | --- |
-| Gateway migration | 待填写 |
-| root helper/path/timer | 待填写 |
-| 精确 UDP 端口 | 待填写 |
-| 不存在节点用 `443/udp` 规则 | 待填写 |
-| 不存在 UDP 范围规则 | 待填写 |
-| 公网入站数 | 待填写，期望 4 |
-| mixed 数 | 待填写，期望 4 |
-| Xray PID不变 | 待填写 |
-| 非 Gateway 指纹不变 | 待填写 |
+| Gateway migration | 尚未部署；第一次 post-check 失败后数据库已恢复旧 schema |
+| root helper/path/timer | 尚未部署；回滚后 absent/not-found |
+| 精确 UDP 端口 | 尚未保留；回滚后规则数 0 |
+| 不存在节点用 `443/udp` 规则 | 是 |
+| 不存在 UDP 范围规则 | 是 |
+| 公网入站数 | 4，仍为 VLESS/TCP 基线 |
+| mixed 数 | 4 |
+| Xray PID不变 | 是；Stage 2 未重启 x-ui/Xray |
+| 非 Gateway 指纹不变 | 是 |
+
+Stage 2 第一次尝试因 UFW IPv4/IPv6 同规则被重复计数而触发自动回滚；回滚资产权限继承了受限备份 mode，导致 Gateway 短暂无法执行和读取 SQLite。已按备份摘要确认内容一致后恢复原 `0755 root:root` 二进制与 `0600 aimili-gateway:aimili-gateway` 数据库权限，Gateway `/healthz` 恢复。相应回归测试和脚本修复已提交。第二次尝试在部署前的联合备份阶段因 Xray PID 匹配过窄而停止，未安装任何 Stage 2 资产；已修复为 `/proc/<pid>/exe` 精确识别。修复归档重新上传被审批系统要求对具体载荷另行明确授权，因此当前停止扩大。
 
 ## 6. Stage 3：XHTTP 往返
 
@@ -127,3 +129,4 @@
 ## 10. 未决项
 
 - 待 VPS 阶梯部署后填写。
+- 待明确授权重新上传不含生产事务配置和连接秘密的 Stage 2 修复资产归档。
