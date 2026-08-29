@@ -59,6 +59,9 @@ type ProxyManager interface {
 	Rotate(context.Context, string) (domain.ProxyGroup, error)
 	Disable(context.Context, string) error
 	Connections(context.Context, string) (orchestrator.Connections, error)
+	Subscription(context.Context) (orchestrator.SubscriptionResult, error)
+	ReplaceCandidate(context.Context, string, string) (domain.ProxyGroup, error)
+	CheckMain(context.Context) (store.MainEgress, error)
 	MixedPolicy(context.Context) (store.MixedSourcePolicy, error)
 	SetMixedPolicy(context.Context, store.MixedSourcePolicy) error
 	Reconcile(context.Context) orchestrator.ReconcileResult
@@ -122,11 +125,14 @@ func NewServer(dependencies Dependencies) http.Handler {
 	mux.HandleFunc("GET /api/v1/countries", server.handleCountries)
 	mux.HandleFunc("GET /api/v1/proxy-groups", server.handleProxyGroups)
 	mux.HandleFunc("GET /api/v1/proxy-groups/export", server.handleProxyGroupExport)
+	mux.HandleFunc("GET /api/v1/proxy-groups/subscription", server.handleProxySubscription)
 	mux.HandleFunc("POST /api/v1/proxy-groups", server.handleEnableProxyGroup)
 	mux.HandleFunc("POST /api/v1/proxy-groups/reconcile", server.handleReconcileProxyGroups)
 	mux.HandleFunc("POST /api/v1/proxy-groups/{id}/activate", server.handleActivateProxyGroup)
 	mux.HandleFunc("POST /api/v1/proxy-groups/{id}/check", server.handleCheckProxyGroup)
 	mux.HandleFunc("POST /api/v1/proxy-groups/{id}/rotate", server.handleRotateProxyGroup)
+	mux.HandleFunc("POST /api/v1/proxy-groups/{id}/replace", server.handleReplaceProxyGroup)
+	mux.HandleFunc("POST /api/v1/proxy-groups/agw-main/check", server.handleCheckMainProxyGroup)
 	mux.HandleFunc("DELETE /api/v1/proxy-groups/{id}", server.handleDisableProxyGroup)
 	mux.HandleFunc("GET /api/v1/proxy-groups/{id}/connections", server.handleConnections)
 	mux.HandleFunc("GET /api/v1/proxy-groups/aggregate/connections", server.handleAggregateConnections)

@@ -260,6 +260,8 @@ type fakeStore struct {
 	cidrs              []netip.Prefix
 	policy             store.MixedSourcePolicy
 	enforceUniqueSlots bool
+	mainEgress         store.MainEgress
+	subscription       store.GatewaySubscription
 }
 
 func (s *fakeStore) CreateProxyGroup(_ context.Context, group domain.ProxyGroup) error {
@@ -342,7 +344,14 @@ func (s *fakeStore) ReplaceMixedSourcePolicy(_ context.Context, policy store.Mix
 	s.cidrs = append([]netip.Prefix(nil), policy.CIDRs...)
 	return nil
 }
-func (s *fakeStore) SaveMainEgress(context.Context, store.MainEgress) error           { return nil }
+func (s *fakeStore) SaveMainEgress(_ context.Context, value store.MainEgress) error {
+	s.mainEgress = value
+	return nil
+}
+func (s *fakeStore) SaveGatewaySubscription(_ context.Context, value store.GatewaySubscription) error {
+	s.subscription = value
+	return nil
+}
 func (s *fakeStore) SaveAggregateConfig(context.Context, store.AggregateConfig) error { return nil }
 
 type fakeAimili struct {
@@ -356,9 +365,15 @@ type fakeAimili struct {
 	createdSlots     map[int]aimili.Slot
 	createErrors     map[string]error
 	mainStatus       aimili.MainStatus
+	assignedSlot     aimili.Slot
+	assignRequests   []aimili.AssignSlotRequest
 }
 
 func (a *fakeAimili) MainStatus(context.Context) (aimili.MainStatus, error) { return a.mainStatus, nil }
+func (a *fakeAimili) AssignSlotNode(_ context.Context, _ int, request aimili.AssignSlotRequest) (aimili.Slot, error) {
+	a.assignRequests = append(a.assignRequests, request)
+	return a.assignedSlot, nil
+}
 
 func (a *fakeAimili) Candidates(context.Context) ([]aimili.Candidate, error) {
 	if a.candidates != nil {
@@ -449,6 +464,17 @@ type fakeXUI struct {
 	returnedMixedInboundID int64
 	returnedResourceName   string
 	aggregateDesired       xui.AggregateDesired
+	snapshot               xui.Snapshot
+	subscriptionDesired    xui.SubscriptionDesired
+}
+
+func (x *fakeXUI) Snapshot(context.Context) (xui.Snapshot, error) { return x.snapshot, nil }
+func (x *fakeXUI) EnsureSubscriptionClient(_ context.Context, desired xui.SubscriptionDesired) (xui.Subscription, error) {
+	x.subscriptionDesired = desired
+	return xui.Subscription{ResourceName: "aimili-gateway-subscription", ClientID: 42, ClientEmail: desired.ClientEmail, ClientUUID: desired.ClientUUID, SubscriptionID: "opaque", InboundIDs: append([]int64(nil), desired.InboundIDs...), SubscriptionPath: "/sub-test/"}, nil
+}
+func (x *fakeXUI) SubscriptionURL(_ context.Context, subscription xui.Subscription) (string, error) {
+	return subscription.SubscriptionPath + subscription.SubscriptionID, nil
 }
 
 func (x *fakeXUI) EnsureAggregate(_ context.Context, desired xui.AggregateDesired) (xui.ManagedAggregate, error) {
@@ -506,6 +532,8 @@ type fakeValidator struct {
 	socksCalls       int
 	socksErrors      []error
 	socksExpectedIPs []string
+	socksLatency     time.Duration
+	vlessLatency     time.Duration
 }
 
 func (v *fakeValidator) ValidateSOCKS5H(_ context.Context, target validator.SOCKSTarget) (validator.Result, error) {
@@ -515,14 +543,14 @@ func (v *fakeValidator) ValidateSOCKS5H(_ context.Context, target validator.SOCK
 	if v.socksCalls <= len(v.socksErrors) && v.socksErrors[v.socksCalls-1] != nil {
 		return validator.Result{}, v.socksErrors[v.socksCalls-1]
 	}
-	return validator.Result{ExitIP: "203.0.113.7", DNSVerified: true}, nil
+	return validator.Result{ExitIP: target.ExpectedExitIP, DNSVerified: true, Latency: v.socksLatency}, nil
 }
 func (v *fakeValidator) ValidateVLESS(_ context.Context, target validator.VLESSTarget) (validator.Result, error) {
 	*v.calls = append(*v.calls, "validate.vless")
 	if v.vlessError != nil {
 		return validator.Result{}, v.vlessError
 	}
-	return validator.Result{ExitIP: target.ExpectedExitIP, DNSVerified: true}, nil
+	return validator.Result{ExitIP: target.ExpectedExitIP, DNSVerified: true, Latency: v.vlessLatency}, nil
 }
 
 type fixture struct {

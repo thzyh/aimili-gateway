@@ -138,6 +138,75 @@ func (s *server) handleProxyGroupExport(response http.ResponseWriter, request *h
 	}
 }
 
+func (s *server) handleProxySubscription(response http.ResponseWriter, request *http.Request) {
+	if _, ok := s.authenticateOrWrite(response, request); !ok {
+		return
+	}
+	if s.proxyManager == nil {
+		writeAPIError(response, http.StatusServiceUnavailable, "not_configured")
+		return
+	}
+	result, err := s.proxyManager.Subscription(request.Context())
+	if err != nil {
+		writeProxyError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
+}
+
+func (s *server) handleReplaceProxyGroup(response http.ResponseWriter, request *http.Request) {
+	session, ok := s.authorizeMutation(response, request)
+	if !ok {
+		return
+	}
+	var input struct {
+		CandidateID string `json:"candidateId"`
+	}
+	if decodeJSON(request, &input) != nil || strings.TrimSpace(input.CandidateID) == "" || len(input.CandidateID) > 256 {
+		writeAPIError(response, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	key, hit, ok := s.idempotencyKey(response, request, session)
+	if !ok {
+		return
+	}
+	if hit != nil {
+		writeCached(response, *hit)
+		return
+	}
+	group, err := s.proxyManager.ReplaceCandidate(request.Context(), strings.TrimSpace(input.CandidateID), request.PathValue("id"))
+	if err != nil {
+		writeProxyError(response, err)
+		return
+	}
+	result := safeProxyGroup(group)
+	s.storeIdempotent(key, http.StatusOK, result)
+	writeJSON(response, http.StatusOK, result)
+}
+
+func (s *server) handleCheckMainProxyGroup(response http.ResponseWriter, request *http.Request) {
+	session, ok := s.authorizeMutation(response, request)
+	if !ok {
+		return
+	}
+	key, hit, ok := s.idempotencyKey(response, request, session)
+	if !ok {
+		return
+	}
+	if hit != nil {
+		writeCached(response, *hit)
+		return
+	}
+	main, err := s.proxyManager.CheckMain(request.Context())
+	if err != nil {
+		writeProxyError(response, err)
+		return
+	}
+	result := map[string]any{"id": "agw-main", "enabled": main.Enabled, "vlessLatencyMs": main.VLESSLatencyMS, "socksLatencyMs": main.SOCKSLatencyMS, "lastCheckedAt": main.LastCheckedAt, "lastErrorCode": main.LastErrorCode}
+	s.storeIdempotent(key, http.StatusOK, result)
+	writeJSON(response, http.StatusOK, result)
+}
+
 func filterProxyGroups(groups []domain.ProxyGroup, request *http.Request) ([]domain.ProxyGroup, bool) {
 	country := strings.ToUpper(strings.TrimSpace(request.URL.Query().Get("country")))
 	proxyType := domain.ProxyType(strings.ToLower(strings.TrimSpace(request.URL.Query().Get("proxyType"))))

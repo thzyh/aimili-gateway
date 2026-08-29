@@ -97,6 +97,10 @@ func (o *Orchestrator) Reconcile(ctx context.Context) ReconcileResult {
 			}
 		}
 	}
+	// Subscription convergence is intentionally best-effort here. Reconcile's
+	// group result remains useful when 3x-ui subscription support is temporarily
+	// unavailable; the authenticated subscription endpoint surfaces that error.
+	_, _ = o.Subscription(ctx)
 	return result
 }
 
@@ -197,6 +201,17 @@ func (o *Orchestrator) Pool(ctx context.Context) ([]domain.ProxyGroup, error) {
 			status, lastError = domain.ProxyGroupReady, ""
 		}
 		mainGroup := domain.ProxyGroup{ID: "agw-main", ResourceName: "agw-main", CountryCode: country, CountryName: main.CountryName, ProxyType: proxyType, CandidateID: "main-tun0", Status: status, EgressSource: domain.EgressSourceMain, AimiliSlot: -1, VLESSPort: 8443, MixedPort: o.config.MainMixedPort, ExitIP: main.ExitIP, LastErrorCode: lastError, Version: 1, LastCheckedAt: o.config.Now().UTC()}
+		if source, ok := o.store.(mainEgressStore); ok {
+			if stored, storedErr := source.GetMainEgress(ctx); storedErr == nil {
+				mainGroup.CandidateLatencyMS = stored.CandidateLatencyMS
+				mainGroup.VLESSLatencyMS = stored.VLESSLatencyMS
+				mainGroup.SOCKSLatencyMS = stored.SOCKSLatencyMS
+				mainGroup.LastCheckedAt = stored.LastCheckedAt
+				if stored.LastErrorCode != "" {
+					mainGroup.LastErrorCode = stored.LastErrorCode
+				}
+			}
+		}
 		for _, group := range result {
 			if group.Status == domain.ProxyGroupReady && group.ExitIP != "" && group.ExitIP == mainGroup.ExitIP {
 				mainGroup.Status = domain.ProxyGroupDegraded

@@ -60,6 +60,12 @@ type Connections struct {
 	SOCKS5HURI string `json:"socks5hUri"`
 }
 
+type SubscriptionResult struct {
+	URL          string    `json:"url"`
+	InboundCount int       `json:"inboundCount"`
+	UpdatedAt    time.Time `json:"updatedAt"`
+}
+
 type Error struct{ Code string }
 
 func (e *Error) Error() string { return "proxy group operation failed: " + e.Code }
@@ -97,6 +103,24 @@ type xuiClient interface {
 
 type aggregateXUIClient interface {
 	EnsureAggregate(context.Context, xui.AggregateDesired) (xui.ManagedAggregate, error)
+}
+
+type subscriptionXUIClient interface {
+	Snapshot(context.Context) (xui.Snapshot, error)
+	EnsureSubscriptionClient(context.Context, xui.SubscriptionDesired) (xui.Subscription, error)
+	SubscriptionURL(context.Context, xui.Subscription) (string, error)
+}
+
+type subscriptionStore interface {
+	SaveGatewaySubscription(context.Context, store.GatewaySubscription) error
+}
+
+type mainEgressStore interface {
+	GetMainEgress(context.Context) (store.MainEgress, error)
+}
+
+type assignAimiliClient interface {
+	AssignSlotNode(context.Context, int, aimili.AssignSlotRequest) (aimili.Slot, error)
 }
 
 type legacyMainXUIClient interface {
@@ -332,6 +356,7 @@ func (o *Orchestrator) Enable(ctx context.Context, request EnableRequest) (domai
 	if err := o.save(ctx, &group); err != nil {
 		return domain.ProxyGroup{}, o.rollbackEnable(ctx, &group, managed, "storage_failed")
 	}
+	_, _ = o.Subscription(ctx)
 	return group, nil
 }
 
@@ -474,6 +499,7 @@ func (o *Orchestrator) Disable(ctx context.Context, id string) error {
 	if err = o.store.DeleteProxyGroup(ctx, id); err != nil {
 		return &Error{Code: "storage_failed"}
 	}
+	_, _ = o.Subscription(ctx)
 	return nil
 }
 

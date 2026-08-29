@@ -82,6 +82,50 @@ func TestAggregateConnectionsReturnExactlyOneVLESSAddress(t *testing.T) {
 	}
 }
 
+func TestSubscriptionRequiresSessionAndReturnsOneNoStoreURL(t *testing.T) {
+	manager := &fakeProxyManager{}
+	environment := newAuthTestEnvironmentConfigured(t, true, func(dependencies *Dependencies) { dependencies.ProxyManager = manager })
+	assertResponseStatus(t, environment.request(t, http.MethodGet, "/api/v1/proxy-groups/subscription", nil, "", ""), http.StatusUnauthorized)
+	assertResponseStatus(t, environment.login(t), http.StatusNoContent)
+	response := environment.request(t, http.MethodGet, "/api/v1/proxy-groups/subscription", nil, "", "")
+	defer response.Body.Close()
+	var result orchestrator.SubscriptionResult
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK || response.Header.Get("Cache-Control") != "no-store" || result.InboundCount != 4 || result.URL == "" {
+		t.Fatalf("status=%d result=%#v", response.StatusCode, result)
+	}
+}
+
+func TestReplaceCandidateRequiresMutationGuardsAndIsIdempotent(t *testing.T) {
+	manager := &fakeProxyManager{}
+	environment := newAuthTestEnvironmentConfigured(t, true, func(dependencies *Dependencies) { dependencies.ProxyManager = manager })
+	assertResponseStatus(t, environment.login(t), http.StatusNoContent)
+	csrf := environment.session(t).CSRFToken
+	path := "/api/v1/proxy-groups/agw-jp-dc/replace"
+	payload := map[string]string{"candidateId": "candidate-safe"}
+	first := environment.requestWithHeaders(t, http.MethodPost, path, payload, environment.origin, csrf, map[string]string{"Idempotency-Key": "replace-jp"})
+	assertResponseStatus(t, first, http.StatusOK)
+	second := environment.requestWithHeaders(t, http.MethodPost, path, payload, environment.origin, csrf, map[string]string{"Idempotency-Key": "replace-jp"})
+	assertResponseStatus(t, second, http.StatusOK)
+	if manager.replaceCalls != 1 || manager.replacedCandidate != "candidate-safe" {
+		t.Fatalf("replace calls=%d candidate=%q", manager.replaceCalls, manager.replacedCandidate)
+	}
+}
+
+func TestCheckMainRequiresMutationGuards(t *testing.T) {
+	manager := &fakeProxyManager{}
+	environment := newAuthTestEnvironmentConfigured(t, true, func(dependencies *Dependencies) { dependencies.ProxyManager = manager })
+	assertResponseStatus(t, environment.login(t), http.StatusNoContent)
+	csrf := environment.session(t).CSRFToken
+	response := environment.requestWithHeaders(t, http.MethodPost, "/api/v1/proxy-groups/agw-main/check", nil, environment.origin, csrf, map[string]string{"Idempotency-Key": "check-main"})
+	assertResponseStatus(t, response, http.StatusOK)
+	if manager.checkMainCalls != 1 {
+		t.Fatalf("main check calls=%d", manager.checkMainCalls)
+	}
+}
+
 func TestProxyPoolFiltersAndExposesProtocolLatenciesWithoutSecrets(t *testing.T) {
 	manager := &fakeProxyManager{groups: []domain.ProxyGroup{
 		{ID: "agw-jp-dc-one", CountryCode: "JP", CountryName: "日本", ProxyType: domain.ProxyTypeDatacenter, Status: domain.ProxyGroupReady, ExitIP: "203.0.113.10", VLESSLatencyMS: 82, SOCKSLatencyMS: 71, Version: 2, LastCheckedAt: time.Unix(1_700_000_000, 0).UTC()},
@@ -208,11 +252,27 @@ func (e *authTestEnvironment) requestWithHeaders(t *testing.T, method, path stri
 }
 
 type fakeProxyManager struct {
-	enableCalls   int
-	activateCalls int
-	activatedID   string
-	groups        []domain.ProxyGroup
-	mixedPolicy   store.MixedSourcePolicy
+	enableCalls       int
+	activateCalls     int
+	activatedID       string
+	groups            []domain.ProxyGroup
+	mixedPolicy       store.MixedSourcePolicy
+	replaceCalls      int
+	replacedCandidate string
+	checkMainCalls    int
+}
+
+func (*fakeProxyManager) Subscription(context.Context) (orchestrator.SubscriptionResult, error) {
+	return orchestrator.SubscriptionResult{URL: "https://example.test/sub/masked", InboundCount: 4, UpdatedAt: time.Unix(1700000000, 0).UTC()}, nil
+}
+func (m *fakeProxyManager) ReplaceCandidate(_ context.Context, candidateID, targetID string) (domain.ProxyGroup, error) {
+	m.replaceCalls++
+	m.replacedCandidate = candidateID
+	return domain.ProxyGroup{ID: targetID, Status: domain.ProxyGroupReady, CountryCode: "JP", ProxyType: domain.ProxyTypeDatacenter}, nil
+}
+func (m *fakeProxyManager) CheckMain(context.Context) (store.MainEgress, error) {
+	m.checkMainCalls++
+	return store.MainEgress{ResourceName: "agw-main", CountryCode: "JP", ProxyType: domain.ProxyTypeDatacenter, Enabled: true, VLESSLatencyMS: 10, SOCKSLatencyMS: 12}, nil
 }
 
 func (*fakeProxyManager) Countries(context.Context) ([]orchestrator.Country, error) {
