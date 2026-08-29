@@ -125,6 +125,12 @@ type assignAimiliClient interface {
 	AssignSlotNode(context.Context, int, aimili.AssignSlotRequest) (aimili.Slot, error)
 }
 
+type mainAssignmentAimiliClient interface {
+	StageMainAssignment(context.Context, aimili.MainAssignmentRequest) (aimili.MainAssignmentStatus, error)
+	CommitMainAssignment(context.Context, string) (aimili.MainAssignmentStatus, error)
+	RollbackMainAssignment(context.Context, string) (aimili.MainAssignmentStatus, error)
+}
+
 type legacyMainXUIClient interface {
 	EnsureLegacyMain(context.Context, xui.LegacyMainDesired) (xui.LegacyMain, error)
 }

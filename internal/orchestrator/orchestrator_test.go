@@ -370,22 +370,42 @@ func (s *fakeStore) SaveAggregateConfig(_ context.Context, value store.Aggregate
 }
 
 type fakeAimili struct {
-	calls            *[]string
-	rotatedExitIP    string
-	rotatedExitIPs   []string
-	rotateCalls      int
-	unreadyChecks    int
-	candidates       []aimili.Candidate
-	slotsByCandidate map[string]aimili.Slot
-	createdSlots     map[int]aimili.Slot
-	createErrors     map[string]error
-	mainStatus       aimili.MainStatus
-	assignedSlot     aimili.Slot
-	assignedSlots    []aimili.Slot
-	assignErrors     []error
-	assignCalls      int
-	checkResults     []aimili.SlotCheck
-	assignRequests   []aimili.AssignSlotRequest
+	calls             *[]string
+	rotatedExitIP     string
+	rotatedExitIPs    []string
+	rotateCalls       int
+	unreadyChecks     int
+	candidates        []aimili.Candidate
+	slotsByCandidate  map[string]aimili.Slot
+	createdSlots      map[int]aimili.Slot
+	createErrors      map[string]error
+	mainStatus        aimili.MainStatus
+	assignedSlot      aimili.Slot
+	assignedSlots     []aimili.Slot
+	assignErrors      []error
+	assignCalls       int
+	checkResults      []aimili.SlotCheck
+	assignRequests    []aimili.AssignSlotRequest
+	stagedMainStatus  aimili.MainStatus
+	mainRollbackError error
+}
+
+func (a *fakeAimili) StageMainAssignment(_ context.Context, request aimili.MainAssignmentRequest) (aimili.MainAssignmentStatus, error) {
+	*a.calls = append(*a.calls, "main.stage")
+	a.mainStatus = a.stagedMainStatus
+	return aimili.MainAssignmentStatus{OperationID: "operation-safe-1", State: "pending_commit", OldCandidateID: request.ExpectedCurrentCandidateID, NewCandidateID: request.CandidateID, Country: request.Country, ProxyType: request.ProxyType, Port: 7928, DNSVerified: true, ExitVerified: true, Available: true}, nil
+}
+func (a *fakeAimili) CommitMainAssignment(context.Context, string) (aimili.MainAssignmentStatus, error) {
+	*a.calls = append(*a.calls, "main.commit")
+	return aimili.MainAssignmentStatus{OperationID: "operation-safe-1", State: "committed"}, nil
+}
+func (a *fakeAimili) RollbackMainAssignment(context.Context, string) (aimili.MainAssignmentStatus, error) {
+	*a.calls = append(*a.calls, "main.rollback")
+	if a.mainRollbackError != nil {
+		return aimili.MainAssignmentStatus{}, a.mainRollbackError
+	}
+	a.mainStatus = aimili.MainStatus{CandidateID: "old-main", Country: "US", CountryName: "United States", ProxyType: "datacenter", ExitIP: "203.0.113.10", Port: 7928, EgressOK: true, Active: true}
+	return aimili.MainAssignmentStatus{OperationID: "operation-safe-1", State: "rolled_back"}, nil
 }
 
 func (a *fakeAimili) MainStatus(context.Context) (aimili.MainStatus, error) { return a.mainStatus, nil }

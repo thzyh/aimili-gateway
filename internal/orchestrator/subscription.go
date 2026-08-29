@@ -2,7 +2,9 @@ package orchestrator
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"net"
 	"net/url"
 	"sort"
@@ -128,8 +130,13 @@ func (o *Orchestrator) CleanupLegacyAggregate(ctx context.Context) (LegacyAggreg
 }
 
 func (o *Orchestrator) ReplaceCandidate(ctx context.Context, candidateID, targetGroupID string) (domain.ProxyGroup, error) {
-	if targetGroupID == "agw-main" || strings.TrimSpace(candidateID) == "" {
+	if strings.TrimSpace(candidateID) == "" {
 		return domain.ProxyGroup{}, &Error{Code: "invalid_request"}
+	}
+	mutationUnlock := o.locks.lock("mutation")
+	defer mutationUnlock()
+	if targetGroupID == "agw-main" {
+		return o.replaceMainCandidate(ctx, candidateID)
 	}
 	assigner, ok := o.aimili.(assignAimiliClient)
 	if !ok {
@@ -217,6 +224,87 @@ func (o *Orchestrator) ReplaceCandidate(ctx context.Context, candidateID, target
 	return group, nil
 }
 
+func (o *Orchestrator) replaceMainCandidate(ctx context.Context, candidateID string) (domain.ProxyGroup, error) {
+	manager, ok := o.aimili.(mainAssignmentAimiliClient)
+	if !ok {
+		return domain.ProxyGroup{}, &Error{Code: "not_configured"}
+	}
+	current, err := o.aimili.MainStatus(ctx)
+	if err != nil || !current.Active || !current.EgressOK || current.CandidateID == "" {
+		return domain.ProxyGroup{}, &Error{Code: "not_ready"}
+	}
+	candidates, err := o.aimili.Candidates(ctx)
+	if err != nil {
+		return domain.ProxyGroup{}, operationError(err)
+	}
+	var candidate *aimili.Candidate
+	for index := range candidates {
+		item := &candidates[index]
+		identity, identityErr := domain.NewProxyGroupIdentity(item.CountryCode, domain.ProxyType(item.ProxyType), item.ID)
+		if identityErr == nil && (identity.ID == strings.TrimSpace(candidateID) || item.ID == strings.TrimSpace(candidateID)) && item.ProbeStatus == "available" {
+			candidate = item
+			break
+		}
+	}
+	if candidate == nil {
+		return domain.ProxyGroup{}, &Error{Code: "not_found"}
+	}
+	digest := sha256.Sum256([]byte(strings.Join([]string{current.CandidateID, candidate.ID, candidate.CountryCode, candidate.ProxyType}, "\x00")))
+	staged, err := manager.StageMainAssignment(ctx, aimili.MainAssignmentRequest{
+		CandidateID:                candidate.ID,
+		Country:                    candidate.CountryCode,
+		ProxyType:                  candidate.ProxyType,
+		ExpectedCurrentCandidateID: current.CandidateID,
+		IdempotencyKey:             fmt.Sprintf("gateway-%x", digest[:]),
+	})
+	if err != nil {
+		return domain.ProxyGroup{}, operationError(err)
+	}
+	if staged.State != "pending_commit" || !staged.DNSVerified || !staged.ExitVerified || !staged.Available {
+		return o.rollbackMainCandidate(ctx, manager, staged.OperationID, &Error{Code: "egress_unavailable"})
+	}
+	checked, err := o.checkMain(ctx, false)
+	if err != nil {
+		return o.rollbackMainCandidate(ctx, manager, staged.OperationID, err)
+	}
+	committed, err := manager.CommitMainAssignment(ctx, staged.OperationID)
+	if err != nil || committed.State != "committed" {
+		if err == nil {
+			err = &Error{Code: "commit_failed"}
+		}
+		return o.rollbackMainCandidate(ctx, manager, staged.OperationID, err)
+	}
+	if err := o.store.SaveMainEgress(ctx, checked); err != nil {
+		return domain.ProxyGroup{}, &Error{Code: "storage_failed"}
+	}
+	return mainEgressGroup(checked), nil
+}
+
+func (o *Orchestrator) rollbackMainCandidate(ctx context.Context, manager mainAssignmentAimiliClient, operationID string, cause error) (domain.ProxyGroup, error) {
+	rolled, rollbackErr := manager.RollbackMainAssignment(ctx, operationID)
+	if rollbackErr != nil || rolled.State != "rolled_back" {
+		return domain.ProxyGroup{}, &Error{Code: "repair_required"}
+	}
+	if _, verifyErr := o.checkMain(ctx, true); verifyErr != nil {
+		return domain.ProxyGroup{}, &Error{Code: "repair_required"}
+	}
+	return domain.ProxyGroup{}, operationError(cause)
+}
+
+func mainEgressGroup(value store.MainEgress) domain.ProxyGroup {
+	return domain.ProxyGroup{
+		ID: value.ResourceName, ResourceName: value.ResourceName,
+		CountryCode: value.CountryCode, CountryName: value.CountryName,
+		ProxyType: value.ProxyType, CandidateID: value.CandidateID,
+		Status: domain.ProxyGroupReady, EgressSource: domain.EgressSourceMain,
+		AimiliSlot: -1, PublicPort: value.PublicPort, MixedPort: value.MixedPort,
+		ExitIP: value.ExitIP, PublicInboundID: value.PublicInboundID,
+		MixedInboundID: value.MixedInboundID, VLESSLatencyMS: value.VLESSLatencyMS,
+		SOCKSLatencyMS: value.SOCKSLatencyMS, LastCheckedAt: value.LastCheckedAt,
+		UpdatedAt: value.UpdatedAt, Version: 1,
+	}
+}
+
 func (o *Orchestrator) rollbackCandidateReplacement(ctx context.Context, group domain.ProxyGroup, previous aimili.Slot, assigner assignAimiliClient, cause error) (domain.ProxyGroup, error) {
 	restored, rollbackErr := assigner.AssignSlotNode(ctx, group.AimiliSlot, aimili.AssignSlotRequest{
 		CandidateID: strings.TrimSpace(previous.NodeID),
@@ -247,6 +335,10 @@ func (o *Orchestrator) rollbackCandidateReplacement(ctx context.Context, group d
 }
 
 func (o *Orchestrator) CheckMain(ctx context.Context) (store.MainEgress, error) {
+	return o.checkMain(ctx, true)
+}
+
+func (o *Orchestrator) checkMain(ctx context.Context, persist bool) (store.MainEgress, error) {
 	status, err := o.aimili.MainStatus(ctx)
 	if err != nil {
 		return store.MainEgress{}, operationError(err)
@@ -281,8 +373,10 @@ func (o *Orchestrator) CheckMain(ctx context.Context) (store.MainEgress, error) 
 	}
 	now := o.config.Now().UTC()
 	result := store.MainEgress{ResourceName: "agw-main", CountryCode: country, CountryName: status.CountryName, ProxyType: proxyType, CandidateID: status.CandidateID, ExitIP: status.ExitIP, PublicInboundID: legacy.VLESSInboundID, MixedInboundID: legacy.MixedInboundID, PublicPort: legacy.VLESSPort, MixedPort: legacy.MixedPort, Enabled: true, VLESSLatencyMS: durationMillis(vlessResult.Latency), SOCKSLatencyMS: durationMillis(socksResult.Latency), LastCheckedAt: now, UpdatedAt: now}
-	if err := o.store.SaveMainEgress(ctx, result); err != nil {
-		return store.MainEgress{}, &Error{Code: "storage_failed"}
+	if persist {
+		if err := o.store.SaveMainEgress(ctx, result); err != nil {
+			return store.MainEgress{}, &Error{Code: "storage_failed"}
+		}
 	}
 	return result, nil
 }

@@ -172,12 +172,9 @@ func TestReplaceCandidateMarksRepairWhenRuntimeRollbackFails(t *testing.T) {
 	}
 }
 
-func TestReplaceCandidateRejectsMainAndStandbyTarget(t *testing.T) {
+func TestReplaceCandidateRejectsMissingTarget(t *testing.T) {
 	fixture := newFixture()
 	o := fixture.orchestratorWithMax(t, 3)
-	if _, err := o.ReplaceCandidate(context.Background(), "candidate", "agw-main"); codeOf(err) != "invalid_request" {
-		t.Fatalf("main error=%v", err)
-	}
 	if _, err := o.ReplaceCandidate(context.Background(), "candidate", "missing"); codeOf(err) != "not_found" {
 		t.Fatalf("missing error=%v", err)
 	}
