@@ -71,6 +71,12 @@ type CreateSlotRequest struct {
 	CandidateID string `json:"candidateId,omitempty"`
 }
 
+type AssignSlotRequest struct {
+	CandidateID string `json:"candidateId"`
+	Country     string `json:"country"`
+	ProxyType   string `json:"proxyType"`
+}
+
 type Slot struct {
 	Number      int     `json:"slot"`
 	Country     string  `json:"country"`
@@ -290,6 +296,20 @@ func (c *Client) GetSlot(ctx context.Context, slot int) (Slot, error) {
 func (c *Client) RotateSlot(ctx context.Context, slot int) (Slot, error) {
 	var result Slot
 	err := c.do(ctx, c.operationTimeout, http.MethodPost, fmt.Sprintf("control/v1/slots/%d/rotate", slot), struct{}{}, &result)
+	return result, err
+}
+
+func (c *Client) AssignSlotNode(ctx context.Context, slot int, input AssignSlotRequest) (Slot, error) {
+	input.CandidateID = strings.TrimSpace(input.CandidateID)
+	input.Country = strings.ToUpper(strings.TrimSpace(input.Country))
+	input.ProxyType = strings.ToLower(strings.TrimSpace(input.ProxyType))
+	if slot < 0 || slot > 255 || input.CandidateID == "" || len(input.CandidateID) > 256 ||
+		len(input.Country) != 2 || input.Country[0] < 'A' || input.Country[0] > 'Z' || input.Country[1] < 'A' || input.Country[1] > 'Z' ||
+		!domainProxyTypeValid(input.ProxyType) {
+		return Slot{}, &AdapterError{Code: "invalid_request"}
+	}
+	var result Slot
+	err := c.do(ctx, c.operationTimeout, http.MethodPost, fmt.Sprintf("control/v1/slots/%d/assign", slot), input, &result)
 	return result, err
 }
 

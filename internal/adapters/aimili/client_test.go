@@ -50,9 +50,13 @@ func TestClientMainStatusReadsSafeMainEgress(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	client, err := NewClient(server.URL+"/", []byte("test-token"))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	status, err := client.MainStatus(context.Background())
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if status.Country != "JP" || status.Port != 7928 || status.ExitIP != "203.0.113.20" || !status.EgressOK {
 		t.Fatalf("main status = %#v", status)
 	}
@@ -85,6 +89,34 @@ func TestClientCreateSlotUsesClosedRequestAndResponseTypes(t *testing.T) {
 	}
 	if slot.Number != 2 || slot.Port != 17930 || slot.ExitIP != "203.0.113.5" {
 		t.Fatalf("unexpected slot: %#v", slot)
+	}
+}
+
+func TestClientAssignSlotNodeUsesVersionedEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || request.URL.Path != "/control/v1/slots/2/assign" {
+			t.Fatalf("unexpected request %s %s", request.Method, request.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["candidateId"] != "node-safe" || body["country"] != "JP" || body["proxyType"] != "datacenter" {
+			t.Fatalf("assign body = %#v", body)
+		}
+		fmt.Fprint(response, `{"data":{"slot":2,"country":"JP","proxy_type":"datacenter","port":17930,"status":"up","node_id":"node-safe","egress_ok":true}}`)
+	}))
+	t.Cleanup(server.Close)
+	client, err := NewClient(server.URL+"/", []byte("test-token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	slot, err := client.AssignSlotNode(context.Background(), 2, AssignSlotRequest{CandidateID: "node-safe", Country: "jp", ProxyType: "datacenter"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slot.Number != 2 || slot.NodeID != "node-safe" {
+		t.Fatalf("slot = %#v", slot)
 	}
 }
 
