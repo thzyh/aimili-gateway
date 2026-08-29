@@ -1,0 +1,11 @@
+[Unit]
+Description=Recover expired Aimili Xray protocol transactions
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=1min
+Persistent=true
+Unit=aimili-xui-protocol-transaction.service
+
+[Install]
+WantedBy=timers.target

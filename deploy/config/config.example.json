@@ -18,6 +18,9 @@
 	"mainMixedPort": 31000,
 	"xrayPath": "/usr/local/x-ui/bin/xray-linux-amd64",
 	"probeHost": "api.ipify.org",
+	"protocolRequestDir": "/var/lib/aimili-gateway/protocol-spool/requests",
+	"protocolResultDir": "/var/lib/aimili-gateway/protocol-spool/results",
+	"protocolTimeoutSeconds": 180,
 	"mixedSourceCidrs": ["203.0.113.24/32"],
   "expertModeUrl": "/EXISTING_3X_UI_ROUTE/"
 }

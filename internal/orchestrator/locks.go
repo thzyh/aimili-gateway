@@ -1,10 +1,23 @@
 package orchestrator
 
-import "sync"
+import (
+	"context"
+	"sync"
+)
+
+type mutationContextKey struct{}
 
 type operationLocks struct {
 	mu    sync.Mutex
 	locks map[string]*sync.Mutex
+}
+
+func (o *Orchestrator) lockMutation(ctx context.Context) (context.Context, func()) {
+	if ctx.Value(mutationContextKey{}) != nil {
+		return ctx, func() {}
+	}
+	unlock := o.locks.lock("mutation")
+	return context.WithValue(ctx, mutationContextKey{}, struct{}{}), unlock
 }
 
 func (l *operationLocks) lock(key string) func() {

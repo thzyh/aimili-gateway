@@ -89,6 +89,8 @@ func (o *Orchestrator) Subscription(ctx context.Context) (SubscriptionResult, er
 // the replacement subscription has been reconciled and its inbound coverage
 // has been checked again. Database backups remain a deployment responsibility.
 func (o *Orchestrator) CleanupLegacyAggregate(ctx context.Context) (LegacyAggregateCleanup, error) {
+	ctx, mutationUnlock := o.lockMutation(ctx)
+	defer mutationUnlock()
 	manager, ok := o.xui.(legacyAggregateCleanupXUIClient)
 	if !ok {
 		return LegacyAggregateCleanup{}, &Error{Code: "not_configured"}
@@ -133,7 +135,7 @@ func (o *Orchestrator) ReplaceCandidate(ctx context.Context, candidateID, target
 	if strings.TrimSpace(candidateID) == "" {
 		return domain.ProxyGroup{}, &Error{Code: "invalid_request"}
 	}
-	mutationUnlock := o.locks.lock("mutation")
+	ctx, mutationUnlock := o.lockMutation(ctx)
 	defer mutationUnlock()
 	if targetGroupID == "agw-main" {
 		return o.replaceMainCandidate(ctx, candidateID)

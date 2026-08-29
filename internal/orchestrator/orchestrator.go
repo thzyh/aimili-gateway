@@ -14,6 +14,7 @@ import (
 	"github.com/thzyh/aimili-gateway/internal/adapters/aimili"
 	"github.com/thzyh/aimili-gateway/internal/adapters/xui"
 	"github.com/thzyh/aimili-gateway/internal/domain"
+	"github.com/thzyh/aimili-gateway/internal/protocoltxn"
 	"github.com/thzyh/aimili-gateway/internal/store"
 	"github.com/thzyh/aimili-gateway/internal/validator"
 )
@@ -25,19 +26,20 @@ const (
 )
 
 type Config struct {
-	MaxGroups          int
-	VLESSPortStart     int
-	VLESSPortEnd       int
-	MixedPortStart     int
-	MixedPortEnd       int
-	AggregateVLESSPort int
-	MainMixedPort      int
-	PublicHost         string
-	XrayPath           string
-	ProbeHost          string
-	ReadyTimeout       time.Duration
-	PollInterval       time.Duration
-	Now                func() time.Time
+	MaxGroups           int
+	VLESSPortStart      int
+	VLESSPortEnd        int
+	MixedPortStart      int
+	MixedPortEnd        int
+	AggregateVLESSPort  int
+	MainMixedPort       int
+	PublicHost          string
+	XrayPath            string
+	ProbeHost           string
+	ReadyTimeout        time.Duration
+	PollInterval        time.Duration
+	Now                 func() time.Time
+	ProtocolTransaction protocolTransactionClient
 }
 
 type EnableRequest struct {
@@ -121,6 +123,17 @@ type mainEgressStore interface {
 	GetMainEgress(context.Context) (store.MainEgress, error)
 }
 
+type protocolModeStore interface {
+	GetEgressProtocolMode(context.Context, string) (domain.EgressProtocolMode, error)
+	UpdateEgressProtocolMode(context.Context, domain.EgressProtocolMode, int64) error
+}
+
+type protocolTransactionClient interface {
+	Apply(context.Context, protocoltxn.Request) (protocoltxn.Result, error)
+	Finalize(context.Context, string) (protocoltxn.Result, error)
+	Rollback(context.Context, string) (protocoltxn.Result, error)
+}
+
 type assignAimiliClient interface {
 	AssignSlotNode(context.Context, int, aimili.AssignSlotRequest) (aimili.Slot, error)
 }
@@ -141,13 +154,14 @@ type proxyValidator interface {
 }
 
 type Orchestrator struct {
-	config    Config
-	store     groupStore
-	aimili    aimiliClient
-	xui       xuiClient
-	validator proxyValidator
-	masterKey []byte
-	locks     operationLocks
+	config              Config
+	store               groupStore
+	aimili              aimiliClient
+	xui                 xuiClient
+	validator           proxyValidator
+	masterKey           []byte
+	locks               operationLocks
+	protocolTransaction protocolTransactionClient
 }
 
 func New(config Config, database groupStore, aimiliAdapter aimiliClient, xuiAdapter xuiClient, validation proxyValidator, masterKey []byte) (*Orchestrator, error) {
@@ -178,7 +192,7 @@ func New(config Config, database groupStore, aimiliAdapter aimiliClient, xuiAdap
 	if config.AggregateVLESSPort < 1 || config.AggregateVLESSPort > 65535 || (config.AggregateVLESSPort >= config.VLESSPortStart && config.AggregateVLESSPort <= config.VLESSPortEnd) {
 		return nil, errors.New("invalid aggregate VLESS port")
 	}
-	return &Orchestrator{config: config, store: database, aimili: aimiliAdapter, xui: xuiAdapter, validator: validation, masterKey: append([]byte(nil), masterKey...)}, nil
+	return &Orchestrator{config: config, store: database, aimili: aimiliAdapter, xui: xuiAdapter, validator: validation, masterKey: append([]byte(nil), masterKey...), protocolTransaction: config.ProtocolTransaction}, nil
 }
 
 func (o *Orchestrator) Countries(ctx context.Context) ([]Country, error) {
@@ -220,6 +234,8 @@ func (o *Orchestrator) List(ctx context.Context) ([]domain.ProxyGroup, error) {
 // capacity, the oldest live group is retired first. A failed switch attempts
 // to restore that previous group before returning the original error.
 func (o *Orchestrator) Activate(ctx context.Context, id string) (domain.ProxyGroup, error) {
+	ctx, mutationUnlock := o.lockMutation(ctx)
+	defer mutationUnlock()
 	unlock := o.locks.lock("activation")
 	defer unlock()
 	candidates, err := o.aimili.Candidates(ctx)
@@ -272,6 +288,8 @@ func (o *Orchestrator) Activate(ctx context.Context, id string) (domain.ProxyGro
 }
 
 func (o *Orchestrator) Enable(ctx context.Context, request EnableRequest) (domain.ProxyGroup, error) {
+	ctx, mutationUnlock := o.lockMutation(ctx)
+	defer mutationUnlock()
 	var identity domain.ProxyGroup
 	var err error
 	if strings.TrimSpace(request.CandidateID) == "" {
@@ -438,6 +456,8 @@ func (o *Orchestrator) Check(ctx context.Context, id string) (domain.ProxyGroup,
 }
 
 func (o *Orchestrator) Rotate(ctx context.Context, id string) (domain.ProxyGroup, error) {
+	ctx, mutationUnlock := o.lockMutation(ctx)
+	defer mutationUnlock()
 	unlock := o.locks.lock(id)
 	defer unlock()
 	group, err := o.store.GetProxyGroup(ctx, id)
@@ -511,6 +531,8 @@ func applySlotSnapshot(group *domain.ProxyGroup, slot aimili.Slot) {
 }
 
 func (o *Orchestrator) Disable(ctx context.Context, id string) error {
+	ctx, mutationUnlock := o.lockMutation(ctx)
+	defer mutationUnlock()
 	unlock := o.locks.lock("all")
 	defer unlock()
 	group, err := o.store.GetProxyGroup(ctx, id)

@@ -80,6 +80,8 @@ class ProtocolTransactionConfig:
     allowed_ports: tuple[int, ...] = (8443, 20000, 20001, 20002)
     profile_dir: pathlib.Path | None = None
     tls_server_name: str = ""
+    spool_request_dir: pathlib.Path | None = None
+    spool_result_dir: pathlib.Path | None = None
 
     def __post_init__(self) -> None:
         for name in (
@@ -94,6 +96,10 @@ class ProtocolTransactionConfig:
         object.__setattr__(self, "allowed_ports", tuple(int(port) for port in self.allowed_ports))
         profile = self.profile_dir or (self.snapshot_dir.parent / "profiles")
         object.__setattr__(self, "profile_dir", pathlib.Path(profile))
+        if self.spool_request_dir is not None:
+            object.__setattr__(self, "spool_request_dir", pathlib.Path(self.spool_request_dir))
+        if self.spool_result_dir is not None:
+            object.__setattr__(self, "spool_result_dir", pathlib.Path(self.spool_result_dir))
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -107,6 +113,8 @@ class ProtocolTransactionConfig:
             "allowed_ports": self.allowed_ports,
             "profile_dir": self.profile_dir,
             "tls_server_name": self.tls_server_name,
+            "spool_request_dir": self.spool_request_dir,
+            "spool_result_dir": self.spool_result_dir,
         }
 
     @classmethod
@@ -122,8 +130,10 @@ class ProtocolTransactionConfig:
             "allowedPorts",
             "profileDir",
             "tlsServerName",
+            "spoolRequestDir",
+            "spoolResultDir",
         }
-        required = allowed - {"profileDir", "tlsServerName"}
+        required = allowed - {"profileDir", "tlsServerName", "spoolRequestDir", "spoolResultDir"}
         if not isinstance(document, dict) or set(document) - allowed or not required.issubset(document):
             raise TransactionError("invalid_config")
         return cls(
@@ -137,6 +147,8 @@ class ProtocolTransactionConfig:
             allowed_ports=tuple(document["allowedPorts"]),
             profile_dir=pathlib.Path(document["profileDir"]) if document.get("profileDir") else None,
             tls_server_name=str(document.get("tlsServerName", "")),
+            spool_request_dir=pathlib.Path(document["spoolRequestDir"]) if document.get("spoolRequestDir") else None,
+            spool_result_dir=pathlib.Path(document["spoolResultDir"]) if document.get("spoolResultDir") else None,
         )
 
 
@@ -227,6 +239,104 @@ def _private_atomic_json(path: pathlib.Path, document: Any) -> None:
                 temporary.unlink()
         except OSError:
             pass
+
+
+def _spool_atomic_result(path: pathlib.Path, document: dict[str, str]) -> None:
+    _reject_symlink_components(path.parent)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+        if path.parent.is_symlink() or not path.parent.is_dir():
+            raise TransactionError("unsafe_path")
+        if os.name != "nt":
+            os.chmod(path.parent, 0o750)
+        if path.exists() and path.is_symlink():
+            raise TransactionError("unsafe_path")
+        temporary = path.parent / ("." + path.name + "." + secrets.token_hex(8) + ".tmp")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(temporary, flags, 0o640)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+                descriptor = -1
+                json.dump(document, output, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, path)
+            if os.name != "nt":
+                os.chmod(path, 0o640)
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            temporary.unlink(missing_ok=True)
+    except TransactionError:
+        raise
+    except OSError as error:
+        raise TransactionError("result_write_failed") from error
+
+
+SPOOL_NAME = re.compile(r"^(?P<operation>[A-Za-z0-9_-]{8,128})\.(?P<action>apply|finalize|rollback)\.json$")
+
+
+def process_spool(manager: Any, request_dir: pathlib.Path, result_dir: pathlib.Path) -> list[dict[str, str]]:
+    request_dir = pathlib.Path(request_dir)
+    result_dir = pathlib.Path(result_dir)
+    _reject_symlink_components(request_dir)
+    _reject_symlink_components(result_dir)
+    if request_dir.is_symlink() or not request_dir.is_dir() or result_dir.is_symlink() or not result_dir.is_dir():
+        raise TransactionError("unsafe_path")
+    processed: list[dict[str, str]] = []
+    for request_path in sorted(request_dir.glob("*.json"), key=lambda item: item.name):
+        match = SPOOL_NAME.fullmatch(request_path.name)
+        if match is None:
+            continue
+        operation_id = match.group("operation")
+        action = match.group("action")
+        result_path = result_dir / request_path.name
+        result = {"operationId": operation_id, "status": "failed", "errorCode": "invalid_request"}
+        try:
+            _require_regular_file(request_path)
+            if request_path.stat().st_size <= 0 or request_path.stat().st_size > 16 * 1024:
+                raise TransactionError("invalid_request")
+            envelope = json.loads(request_path.read_text(encoding="utf-8"))
+            expected_fields = {"action", "operationId", "request"} if action == "apply" else {"action", "operationId"}
+            if not isinstance(envelope, dict) or set(envelope) != expected_fields or envelope.get("action") != action or envelope.get("operationId") != operation_id:
+                raise TransactionError("invalid_request")
+            if action == "apply":
+                if not isinstance(envelope.get("request"), dict) or envelope["request"].get("operationId") != operation_id:
+                    raise TransactionError("invalid_request")
+                candidate = manager.apply(envelope["request"])
+            elif action == "finalize":
+                candidate = manager.finalize(operation_id)
+            else:
+                candidate = manager.rollback(operation_id)
+            if not isinstance(candidate, dict):
+                raise TransactionError("transaction_failed")
+            status = candidate.get("status")
+            error_code = candidate.get("errorCode", "")
+            if candidate.get("operationId") != operation_id or not isinstance(status, str) or not isinstance(error_code, str) or not re.fullmatch(r"[a-z0-9_]{0,64}", error_code):
+                raise TransactionError("transaction_failed")
+            allowed_status = {
+                "apply": {"applied", "failed", "repair_required"},
+                "finalize": {"finalized", "failed", "repair_required"},
+                "rollback": {"rolled_back", "failed", "repair_required"},
+            }
+            if status not in allowed_status[action]:
+                raise TransactionError("transaction_failed")
+            result = {"operationId": operation_id, "status": status, "errorCode": error_code}
+        except TransactionError as error:
+            result = {"operationId": operation_id, "status": "failed", "errorCode": error.code}
+        except (OSError, json.JSONDecodeError):
+            result = {"operationId": operation_id, "status": "failed", "errorCode": "invalid_request"}
+        except Exception:
+            result = {"operationId": operation_id, "status": "failed", "errorCode": "transaction_failed"}
+        _spool_atomic_result(result_path, result)
+        try:
+            request_path.unlink()
+        except OSError as error:
+            raise TransactionError("request_cleanup_failed") from error
+        processed.append(result)
+    return processed
 
 
 def _read_private_json(path: pathlib.Path) -> dict[str, Any]:
@@ -934,8 +1044,10 @@ class ProtocolTransactionManager:
         if remove_on_success:
             self._remove_operation_dir(snapshot_path.parent)
 
-    def recover_pending(self) -> list[dict[str, str]]:
+    def recover_pending(self, min_age_seconds: int = 0) -> list[dict[str, str]]:
         self._validate_config_paths()
+        if not isinstance(min_age_seconds, int) or isinstance(min_age_seconds, bool) or min_age_seconds < 0 or min_age_seconds > 3600:
+            raise TransactionError("invalid_request")
         results: list[dict[str, str]] = []
         for operation_dir in sorted(self.config.snapshot_dir.iterdir(), key=lambda item: item.name):
             if operation_dir.is_symlink() or not operation_dir.is_dir() or not SAFE_OPERATION_ID.fullmatch(operation_dir.name):
@@ -945,6 +1057,9 @@ class ProtocolTransactionManager:
                 continue
             snapshot = _read_private_json(snapshot_path)
             if snapshot.get("phase") == "repair_required":
+                continue
+            created_at = snapshot.get("createdAt")
+            if min_age_seconds and isinstance(created_at, int) and not isinstance(created_at, bool) and int(time.time()) - created_at < min_age_seconds:
                 continue
             try:
                 self._rollback_snapshot(snapshot_path, remove_on_success=True)
@@ -1001,6 +1116,7 @@ def main(argv: list[str] | None = None) -> int:
         action_parser = subparsers.add_parser(action)
         action_parser.add_argument("operation_id")
     subparsers.add_parser("recover")
+    subparsers.add_parser("spool")
     args = parser.parse_args(argv)
     try:
         config = _read_config(pathlib.Path(args.config))
@@ -1011,8 +1127,13 @@ def main(argv: list[str] | None = None) -> int:
             result = manager.finalize(args.operation_id)
         elif args.action == "rollback":
             result = manager.rollback(args.operation_id)
-        else:
+        elif args.action == "recover":
             result = {"operations": manager.recover_pending()}
+        else:
+            if config.spool_request_dir is None or config.spool_result_dir is None:
+                raise TransactionError("invalid_config")
+            recovered = manager.recover_pending(min_age_seconds=180)
+            result = {"recovered": recovered, "operations": process_spool(manager, config.spool_request_dir, config.spool_result_dir)}
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))
         return 0
     except TransactionError as error:

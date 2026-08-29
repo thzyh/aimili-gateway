@@ -37,6 +37,8 @@ func (o *Orchestrator) RepairManaged(ctx context.Context) error {
 }
 
 func (o *Orchestrator) SetMixedPolicy(ctx context.Context, requested store.MixedSourcePolicy) error {
+	ctx, mutationUnlock := o.lockMutation(ctx)
+	defer mutationUnlock()
 	desired, err := canonicalMixedPolicy(requested)
 	if err != nil {
 		return err

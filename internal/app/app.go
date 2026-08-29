@@ -23,6 +23,7 @@ import (
 	"github.com/thzyh/aimili-gateway/internal/httpapi"
 	"github.com/thzyh/aimili-gateway/internal/maintenance"
 	"github.com/thzyh/aimili-gateway/internal/orchestrator"
+	"github.com/thzyh/aimili-gateway/internal/protocoltxn"
 	"github.com/thzyh/aimili-gateway/internal/securefile"
 	"github.com/thzyh/aimili-gateway/internal/store"
 	"github.com/thzyh/aimili-gateway/internal/validator"
@@ -203,10 +204,20 @@ func newRuntimeServices(ctx context.Context, cfg config.Config, database *store.
 		}
 		publicHost = parsed.Hostname()
 	}
+	var protocolClient *protocoltxn.Client
+	if regularDirectoryExists(cfg.ProtocolRequestDir) && regularDirectoryExists(cfg.ProtocolResultDir) {
+		protocolClient, err = protocoltxn.New(protocoltxn.Config{
+			RequestDir: cfg.ProtocolRequestDir, ResultDir: cfg.ProtocolResultDir,
+			Timeout: time.Duration(cfg.ProtocolTimeoutSeconds) * time.Second, PollInterval: 100 * time.Millisecond,
+		})
+		if err != nil {
+			return runtimeServices{}, err
+		}
+	}
 	proxy, err := orchestrator.New(orchestrator.Config{
 		MaxGroups: cfg.MaxProxyGroups, VLESSPortStart: cfg.VLESSPortStart, VLESSPortEnd: cfg.VLESSPortEnd,
 		MixedPortStart: cfg.MixedPortStart, MixedPortEnd: cfg.MixedPortEnd, AggregateVLESSPort: cfg.AggregateVLESSPort, MainMixedPort: cfg.MainMixedPort, PublicHost: publicHost,
-		XrayPath: cfg.XrayPath, ProbeHost: cfg.ProbeHost,
+		XrayPath: cfg.XrayPath, ProbeHost: cfg.ProbeHost, ProtocolTransaction: protocolClient,
 	}, database, aimiliClient, xuiClient, validator.New(20*time.Second), masterKey)
 	if err != nil {
 		return runtimeServices{}, err
@@ -243,6 +254,11 @@ func accountCheckInitialDelay() time.Duration {
 func regularFileExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.Mode().IsRegular()
+}
+
+func regularDirectoryExists(path string) bool {
+	info, err := os.Lstat(path)
+	return err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0
 }
 
 func ensureRuntimeCredentials(ctx context.Context, database *store.Store, masterKey []byte) error {

@@ -271,6 +271,31 @@ type fakeStore struct {
 	mainEgress         store.MainEgress
 	subscription       store.GatewaySubscription
 	aggregate          store.AggregateConfig
+	protocolModes      map[string]domain.EgressProtocolMode
+	protocolUpdates    int
+}
+
+func (s *fakeStore) GetEgressProtocolMode(_ context.Context, egressID string) (domain.EgressProtocolMode, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	value, ok := s.protocolModes[egressID]
+	if !ok {
+		return domain.EgressProtocolMode{}, store.ErrEgressProtocolNotFound
+	}
+	return value, nil
+}
+
+func (s *fakeStore) UpdateEgressProtocolMode(_ context.Context, value domain.EgressProtocolMode, expectedVersion int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, ok := s.protocolModes[value.EgressID]
+	if !ok || current.Version != expectedVersion {
+		return store.ErrEgressProtocolChanged
+	}
+	value.Version = expectedVersion + 1
+	s.protocolModes[value.EgressID] = value
+	s.protocolUpdates++
+	return nil
 }
 
 func (s *fakeStore) CreateProxyGroup(_ context.Context, group domain.ProxyGroup) error {
@@ -357,6 +382,12 @@ func (s *fakeStore) SaveMainEgress(_ context.Context, value store.MainEgress) er
 	s.mainEgress = value
 	return nil
 }
+func (s *fakeStore) GetMainEgress(context.Context) (store.MainEgress, error) {
+	if s.mainEgress.ResourceName == "" {
+		return store.MainEgress{}, store.ErrProxyGroupNotFound
+	}
+	return s.mainEgress, nil
+}
 func (s *fakeStore) SaveGatewaySubscription(_ context.Context, value store.GatewaySubscription) error {
 	s.subscription = value
 	return nil
@@ -388,6 +419,7 @@ type fakeAimili struct {
 	assignRequests    []aimili.AssignSlotRequest
 	stagedMainStatus  aimili.MainStatus
 	mainRollbackError error
+	rotateEntered     chan struct{}
 }
 
 func (a *fakeAimili) StageMainAssignment(_ context.Context, request aimili.MainAssignmentRequest) (aimili.MainAssignmentStatus, error) {
@@ -482,6 +514,13 @@ func (a *fakeAimili) CheckSlot(_ context.Context, number int) (aimili.SlotCheck,
 }
 func (a *fakeAimili) RotateSlot(_ context.Context, number int) (aimili.Slot, error) {
 	*a.calls = append(*a.calls, "slot.rotate")
+	if a.rotateEntered != nil {
+		select {
+		case <-a.rotateEntered:
+		default:
+			close(a.rotateEntered)
+		}
+	}
 	if a.rotateCalls < len(a.rotatedExitIPs) {
 		a.rotatedExitIP = a.rotatedExitIPs[a.rotateCalls]
 		a.rotateCalls++
@@ -630,7 +669,7 @@ type fixture struct {
 
 func newFixture() *fixture {
 	f := &fixture{}
-	f.store = &fakeStore{groups: map[string]domain.ProxyGroup{}, credentials: map[string][]byte{"vless-client-id": []byte("client-id"), "mixed-username": []byte("proxy-user"), "mixed-password": []byte("proxy-password")}, cidrs: []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24")}}
+	f.store = &fakeStore{groups: map[string]domain.ProxyGroup{}, protocolModes: map[string]domain.EgressProtocolMode{}, credentials: map[string][]byte{"vless-client-id": []byte("client-id"), "mixed-username": []byte("proxy-user"), "mixed-password": []byte("proxy-password")}, cidrs: []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24")}}
 	f.store.policy = store.MixedSourcePolicy{Enabled: true, CIDRs: append([]netip.Prefix(nil), f.store.cidrs...), ApplyStatus: store.MixedPolicyApplied, UpdatedAt: f.now()}
 	f.aimili = &fakeAimili{calls: &f.calls}
 	f.xui = &fakeXUI{calls: &f.calls}

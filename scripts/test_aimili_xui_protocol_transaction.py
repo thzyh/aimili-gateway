@@ -7,6 +7,7 @@ import sqlite3
 import stat
 import sys
 import tempfile
+import time
 import unittest
 from contextlib import closing
 
@@ -60,6 +61,127 @@ class FakeRunner:
     def list_inbound_tags(self):
         self._record("lsi", None)
         return set(self.runtime_tags)
+
+
+class FakeSpoolManager:
+    def __init__(self):
+        self.calls = []
+
+    def apply(self, request):
+        self.calls.append(("apply", request["operationId"]))
+        return {"operationId": request["operationId"], "status": "applied", "errorCode": ""}
+
+    def finalize(self, operation_id):
+        self.calls.append(("finalize", operation_id))
+        return {"operationId": operation_id, "status": "finalized", "errorCode": ""}
+
+    def rollback(self, operation_id):
+        self.calls.append(("rollback", operation_id))
+        return {"operationId": operation_id, "status": "rolled_back", "errorCode": ""}
+
+
+class CrashingSpoolManager(FakeSpoolManager):
+    def apply(self, request):
+        raise MODULE.SimulatedCrash("database_committed")
+
+
+class SpoolWorkerTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = pathlib.Path(self.temp.name)
+        self.requests = self.root / "requests"
+        self.results = self.root / "results"
+        self.requests.mkdir(mode=0o700)
+        self.results.mkdir(mode=0o700)
+        self.manager = FakeSpoolManager()
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_processes_closed_actions_and_writes_private_results(self):
+        operation = "operation-safe-1"
+        request = {
+            "operationId": operation,
+            "egressId": "agw-main",
+            "inboundId": 7,
+            "inboundTag": "aimili-reality",
+            "port": 8443,
+            "oldMode": TCP,
+            "newMode": XHTTP,
+            "expectedFingerprint": "0" * 64,
+        }
+        envelopes = {
+            f"{operation}.apply.json": {"action": "apply", "operationId": operation, "request": request},
+            "operation-safe-2.finalize.json": {"action": "finalize", "operationId": "operation-safe-2"},
+            "operation-safe-3.rollback.json": {"action": "rollback", "operationId": "operation-safe-3"},
+        }
+        for name, envelope in envelopes.items():
+            (self.requests / name).write_text(json.dumps(envelope), encoding="utf-8")
+
+        MODULE.process_spool(self.manager, self.requests, self.results)
+
+        self.assertEqual(
+            self.manager.calls,
+            [("apply", operation), ("finalize", "operation-safe-2"), ("rollback", "operation-safe-3")],
+        )
+        self.assertEqual(list(self.requests.iterdir()), [])
+        for name in envelopes:
+            result_path = self.results / name
+            result = json.loads(result_path.read_text(encoding="utf-8"))
+            self.assertEqual(set(result), {"operationId", "status", "errorCode"})
+            if os.name != "nt":
+                self.assertEqual(stat.S_IMODE(result_path.stat().st_mode), 0o640)
+
+    def test_rejects_filename_envelope_mismatch_without_invoking_manager(self):
+        name = "operation-safe-1.apply.json"
+        (self.requests / name).write_text(
+            json.dumps({"action": "rollback", "operationId": "operation-safe-1"}),
+            encoding="utf-8",
+        )
+
+        MODULE.process_spool(self.manager, self.requests, self.results)
+
+        self.assertEqual(self.manager.calls, [])
+        result = json.loads((self.results / name).read_text(encoding="utf-8"))
+        self.assertEqual(result, {"operationId": "operation-safe-1", "status": "failed", "errorCode": "invalid_request"})
+
+    def test_crash_keeps_request_for_recovery_and_retrigger(self):
+        operation = "operation-safe-1"
+        request = {
+            "operationId": operation,
+            "egressId": "agw-main",
+            "inboundId": 7,
+            "inboundTag": "aimili-reality",
+            "port": 8443,
+            "oldMode": TCP,
+            "newMode": XHTTP,
+            "expectedFingerprint": "0" * 64,
+        }
+        name = f"{operation}.apply.json"
+        request_path = self.requests / name
+        request_path.write_text(
+            json.dumps({"action": "apply", "operationId": operation, "request": request}),
+            encoding="utf-8",
+        )
+
+        with self.assertRaises(MODULE.SimulatedCrash):
+            MODULE.process_spool(CrashingSpoolManager(), self.requests, self.results)
+
+        self.assertTrue(request_path.is_file())
+        self.assertFalse((self.results / name).exists())
+
+    @unittest.skipIf(os.name == "nt", "ordinary Windows test accounts may not create symlinks")
+    def test_rejects_symlinked_request(self):
+        target = self.root / "outside.json"
+        target.write_text("{}", encoding="utf-8")
+        name = "operation-safe-1.apply.json"
+        (self.requests / name).symlink_to(target)
+
+        MODULE.process_spool(self.manager, self.requests, self.results)
+
+        self.assertEqual(self.manager.calls, [])
+        result = json.loads((self.results / name).read_text(encoding="utf-8"))
+        self.assertEqual(result["errorCode"], "unsafe_path")
 
 
 class ProtocolTransactionTests(unittest.TestCase):
@@ -499,6 +621,21 @@ class ProtocolTransactionTests(unittest.TestCase):
         recovered = manager.recover_pending()
         self.assertEqual([{"operationId": OPERATION_ID, "status": "rolled_back", "errorCode": ""}], recovered)
         self.assertEqual(original, self._inbound_row(41))
+
+    def test_recover_pending_respects_gateway_commit_lease(self):
+        manager = self._manager()
+        manager.apply(self._request())
+        snapshot_path = self.snapshot_dir / OPERATION_ID / "snapshot.json"
+
+        self.assertEqual([], manager.recover_pending(min_age_seconds=180))
+        self.assertTrue(snapshot_path.exists())
+
+        snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        snapshot["createdAt"] = int(time.time()) - 181
+        snapshot_path.write_text(json.dumps(snapshot), encoding="utf-8")
+        recovered = manager.recover_pending(min_age_seconds=180)
+        self.assertEqual([{"operationId": OPERATION_ID, "status": "rolled_back", "errorCode": ""}], recovered)
+        self.assertFalse(snapshot_path.exists())
 
     def test_request_fingerprint_is_canonical_and_excludes_no_secret_material(self):
         left = {"operationId": OPERATION_ID, "egressId": "agw-slot-one", "inboundId": 41, "inboundTag": "agw-slot-one-vless", "port": 20000, "oldMode": TCP, "newMode": XHTTP}

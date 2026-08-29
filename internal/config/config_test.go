@@ -43,6 +43,26 @@ func TestLoadAppliesSafeLocalDefaults(t *testing.T) {
 		cfg.MixedPortStart != 30000 || cfg.MixedPortEnd != 30999 || cfg.ProbeHost != "api.ipify.org" || cfg.XrayPath == "" {
 		t.Fatalf("proxy runtime defaults are incomplete: %#v", cfg)
 	}
+	if cfg.ProtocolRequestDir != filepath.FromSlash("data/protocol-spool/requests") || cfg.ProtocolResultDir != filepath.FromSlash("data/protocol-spool/results") || cfg.ProtocolTimeoutSeconds != 180 {
+		t.Fatalf("protocol transaction defaults are incomplete: %#v", cfg)
+	}
+}
+
+func TestValidateRequiresSiblingProtocolSpoolDirectories(t *testing.T) {
+	cfg := validProductionConfig()
+	for _, mutate := range []func(*Config){
+		func(value *Config) { value.ProtocolRequestDir = "relative/requests" },
+		func(value *Config) { value.ProtocolResultDir = filepath.FromSlash("/var/lib/other/results") },
+		func(value *Config) { value.ProtocolResultDir = value.ProtocolRequestDir },
+		func(value *Config) { value.ProtocolTimeoutSeconds = 0 },
+		func(value *Config) { value.ProtocolTimeoutSeconds = 601 },
+	} {
+		candidate := cfg
+		mutate(&candidate)
+		if err := candidate.Validate(); err == nil {
+			t.Fatalf("unsafe protocol spool accepted: %#v", candidate)
+		}
+	}
 }
 
 func TestValidateRejectsUnsafeProxyRuntimeRanges(t *testing.T) {
@@ -205,6 +225,9 @@ func validProductionConfig() Config {
 		AimiliControlTokenFile: filepath.FromSlash("data/aimili-control.token"),
 		XUIBaseURL:             "http://127.0.0.1:2001/",
 		XUICredentialsFile:     filepath.FromSlash("data/xui-automation.json"),
+		ProtocolRequestDir:     filepath.FromSlash("/var/lib/aimili-gateway/protocol-spool/requests"),
+		ProtocolResultDir:      filepath.FromSlash("/var/lib/aimili-gateway/protocol-spool/results"),
+		ProtocolTimeoutSeconds: 180,
 		ExpertModeURL:          "/expert/",
 		AimiliBackendURL:       "/aimili-native/",
 	}.WithRuntimeDefaults()
@@ -224,6 +247,8 @@ func clearConfigEnvironment(t *testing.T) {
 		"GATEWAY_XUI_CREDENTIALS_FILE",
 		"GATEWAY_EXPERT_MODE_URL",
 		"GATEWAY_AIMILI_BACKEND_URL",
+		"GATEWAY_PROTOCOL_REQUEST_DIR",
+		"GATEWAY_PROTOCOL_RESULT_DIR",
 	} {
 		t.Setenv(name, "")
 	}

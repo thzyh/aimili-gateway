@@ -18,6 +18,8 @@ type ReconcileResult struct {
 // Reconcile converges every safe Aimili candidate into an independently usable proxy entry.
 // A single candidate failure is isolated so healthy candidates can still become ready.
 func (o *Orchestrator) Reconcile(ctx context.Context) ReconcileResult {
+	ctx, mutationUnlock := o.lockMutation(ctx)
+	defer mutationUnlock()
 	unlock := o.locks.lock("activation")
 	defer unlock()
 	result := ReconcileResult{}

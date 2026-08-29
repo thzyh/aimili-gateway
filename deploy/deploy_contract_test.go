@@ -18,6 +18,7 @@ func TestSystemdUnitIsUnprivilegedAndHardened(t *testing.T) {
 		"ProtectSystem=strict",
 		"ProtectHome=true",
 		"ReadWritePaths=/var/lib/aimili-gateway",
+		"ReadOnlyPaths=/var/lib/aimili-gateway/protocol-spool/results",
 		"CapabilityBoundingSet=",
 		"LoadCredentialEncrypted=gateway-master-key:",
 		"Environment=GATEWAY_CONFIG=/etc/aimili-gateway/config.json",
@@ -42,6 +43,46 @@ func TestSystemdUnitIsUnprivilegedAndHardened(t *testing.T) {
 	}
 }
 
+func TestProtocolTransactionOneshotIsRootOnlyAndPathActivated(t *testing.T) {
+	pathUnit := readAsset(t, "systemd/aimili-xui-protocol-transaction.path")
+	timerUnit := readAsset(t, "systemd/aimili-xui-protocol-transaction.timer")
+	service := readAsset(t, "systemd/aimili-xui-protocol-transaction.service")
+	for _, required := range []string{
+		"PathExistsGlob=/var/lib/aimili-gateway/protocol-spool/requests/*.json",
+		"Unit=aimili-xui-protocol-transaction.service",
+	} {
+		if !strings.Contains(pathUnit, required) {
+			t.Fatalf("protocol path unit missing %q", required)
+		}
+	}
+	for _, required := range []string{"OnBootSec=3min", "OnUnitActiveSec=1min", "Unit=aimili-xui-protocol-transaction.service", "Persistent=true"} {
+		if !strings.Contains(timerUnit, required) {
+			t.Fatalf("protocol recovery timer missing %q", required)
+		}
+	}
+	for _, required := range []string{
+		"Type=oneshot",
+		"User=root",
+		"ExecStart=/usr/local/bin/aimili-xui-protocol-transaction --config /etc/aimili-gateway/protocol-transaction.json spool",
+		"NoNewPrivileges=true",
+		"ProtectSystem=strict",
+		"PrivateTmp=true",
+		"RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",
+		"ReadWritePaths=/etc/x-ui/x-ui.db",
+		"ReadWritePaths=/var/lib/aimili-gateway/protocol-spool/results",
+		"ReadWritePaths=/var/lib/aimili-xui-protocol-transaction",
+	} {
+		if !strings.Contains(service, required) {
+			t.Fatalf("protocol oneshot missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"Type=simple", "Restart=always", "ListenStream=", "ListenDatagram=", "User=aimili-gateway"} {
+		if strings.Contains(service, forbidden) {
+			t.Fatalf("protocol oneshot contains forbidden behavior %q", forbidden)
+		}
+	}
+}
+
 func TestExampleConfigUsesOnlyLoopbackAndPlaceholders(t *testing.T) {
 	contents := readAsset(t, "config/config.example.json")
 	var config struct {
@@ -53,6 +94,9 @@ func TestExampleConfigUsesOnlyLoopbackAndPlaceholders(t *testing.T) {
 		AimiliControlURL       string   `json:"aimiliControlUrl"`
 		AimiliControlTokenFile string   `json:"aimiliControlTokenFile"`
 		XUICredentialsFile     string   `json:"xuiCredentialsFile"`
+		ProtocolRequestDir     string   `json:"protocolRequestDir"`
+		ProtocolResultDir      string   `json:"protocolResultDir"`
+		ProtocolTimeoutSeconds int      `json:"protocolTimeoutSeconds"`
 		MaxProxyGroups         int      `json:"maxProxyGroups"`
 		MixedSourceCIDRs       []string `json:"mixedSourceCidrs"`
 	}
@@ -70,6 +114,9 @@ func TestExampleConfigUsesOnlyLoopbackAndPlaceholders(t *testing.T) {
 	}
 	if config.AimiliControlURL != "http://127.0.0.1:8790/" || !strings.HasPrefix(config.AimiliControlTokenFile, "/run/credentials/") || !strings.HasPrefix(config.XUICredentialsFile, "/run/credentials/") || config.MaxProxyGroups != 64 || len(config.MixedSourceCIDRs) != 1 {
 		t.Fatal("example configuration is missing the V1-C online-pool adapter contract")
+	}
+	if config.ProtocolRequestDir != "/var/lib/aimili-gateway/protocol-spool/requests" || config.ProtocolResultDir != "/var/lib/aimili-gateway/protocol-spool/results" || config.ProtocolTimeoutSeconds != 180 {
+		t.Fatal("example configuration is missing the isolated protocol spool contract")
 	}
 }
 

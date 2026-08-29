@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for Aimili Gateway protocol transaction requests
+
+[Path]
+PathExistsGlob=/var/lib/aimili-gateway/protocol-spool/requests/*.json
+Unit=aimili-xui-protocol-transaction.service
+
+[Install]
+WantedBy=multi-user.target

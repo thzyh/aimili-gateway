@@ -32,6 +32,7 @@ PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/var/lib/aimili-gateway
+ReadOnlyPaths=/var/lib/aimili-gateway/protocol-spool/results
 ProtectClock=true
 ProtectControlGroups=true
 ProtectKernelLogs=true
