@@ -1,0 +1,12 @@
+{
+  "databasePath": "/etc/x-ui/x-ui.db",
+  "snapshotDir": "/var/lib/aimili-xui-protocol-transaction/transactions",
+  "profileDir": "/var/lib/aimili-xui-protocol-transaction/profiles",
+  "runtimeConfigPath": "/usr/local/x-ui/bin/config.json",
+  "certificatePath": "/var/lib/caddy/certificates/example.invalid/example.invalid.crt",
+  "privateKeyPath": "/var/lib/caddy/certificates/example.invalid/example.invalid.key",
+  "tlsServerName": "gateway.example.invalid",
+  "xrayBinary": "/usr/local/x-ui/bin/xray-linux-amd64",
+  "apiServer": "127.0.0.1:62789",
+  "allowedPorts": [8443, 20000, 20001, 20002]
+}
