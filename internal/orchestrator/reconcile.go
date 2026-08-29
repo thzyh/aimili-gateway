@@ -2,11 +2,13 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strings"
 
 	"github.com/thzyh/aimili-gateway/internal/adapters/aimili"
 	"github.com/thzyh/aimili-gateway/internal/domain"
+	"github.com/thzyh/aimili-gateway/internal/store"
 )
 
 type ReconcileResult struct {
@@ -222,7 +224,47 @@ func (o *Orchestrator) Pool(ctx context.Context) ([]domain.ProxyGroup, error) {
 		}
 		result = append([]domain.ProxyGroup{mainGroup}, result...)
 	}
+	if err := o.attachProtocolModes(ctx, result); err != nil {
+		return nil, err
+	}
 	return result, nil
+}
+
+func (o *Orchestrator) attachProtocolModes(ctx context.Context, groups []domain.ProxyGroup) error {
+	persistence, ok := o.store.(protocolModeStore)
+	if !ok {
+		return &Error{Code: "not_configured"}
+	}
+	for index := range groups {
+		group := &groups[index]
+		if group.Status == domain.ProxyGroupStandby || !strings.HasPrefix(group.ID, "agw-") {
+			continue
+		}
+		state, err := persistence.GetEgressProtocolMode(ctx, group.ID)
+		if err != nil {
+			if !errors.Is(err, store.ErrEgressProtocolNotFound) {
+				return &Error{Code: "storage_failed"}
+			}
+			group.Status = domain.ProxyGroupRepairRequired
+			group.ProtocolState = domain.ProtocolRepairRequired
+			group.ProtocolLastErrorCode = "protocol_state_missing"
+			continue
+		}
+		if !state.ActiveMode.Valid() || !state.DesiredMode.Valid() || !state.State.Valid() {
+			group.Status = domain.ProxyGroupRepairRequired
+			group.ProtocolState = domain.ProtocolRepairRequired
+			group.ProtocolLastErrorCode = "protocol_state_invalid"
+			continue
+		}
+		group.ProtocolMode = state.ActiveMode
+		group.DesiredProtocolMode = state.DesiredMode
+		group.ProtocolState = state.State
+		group.ProtocolLastErrorCode = state.LastErrorCode
+		if state.State == domain.ProtocolRepairRequired {
+			group.Status = domain.ProxyGroupRepairRequired
+		}
+	}
+	return nil
 }
 
 func (o *Orchestrator) adoptLegacyGroups(ctx context.Context, groups []domain.ProxyGroup, candidates []aimili.Candidate) []domain.ProxyGroup {

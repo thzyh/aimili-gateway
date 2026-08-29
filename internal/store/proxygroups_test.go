@@ -3,8 +3,10 @@ package store
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
@@ -147,6 +149,46 @@ func TestProxyGroupsAllowMultipleCandidatesInOneCountryAndType(t *testing.T) {
 	}
 	if len(groups) != 2 || groups[1].CandidateID != "candidate-two" || groups[1].SOCKSLatencyMS != 71 {
 		t.Fatalf("unexpected stored candidates: %#v", groups)
+	}
+}
+
+func TestDeleteProxyGroupRemovesOnlyItsProtocolStateAndOperations(t *testing.T) {
+	database := openTestStore(t)
+	ctx := context.Background()
+	now := time.Unix(1_700_000_000, 0).UTC()
+	group, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter, "candidate-one")
+	group.AimiliSlot = 1
+	group.PublicPort = 20000
+	group.MixedPort = 30000
+	group.CreatedAt = now
+	group.UpdatedAt = now
+	if err := database.CreateProxyGroup(ctx, group); err != nil {
+		t.Fatal(err)
+	}
+	mode := domain.EgressProtocolMode{EgressID: group.ID, ActiveMode: domain.ProtocolVLESSTCPRealityVision, DesiredMode: domain.ProtocolVLESSTCPRealityVision, State: domain.ProtocolReady, Version: 1, UpdatedAt: now}
+	if err := database.CreateEgressProtocolMode(ctx, mode); err != nil {
+		t.Fatal(err)
+	}
+	operation := EgressOperation{OperationID: "operation-delete-1", EgressID: group.ID, Kind: "protocol_switch", Phase: "complete", RequestHash: strings.Repeat("c", 64), StartedAt: now, CompletedAt: now}
+	if err := database.CreateEgressOperation(ctx, operation); err != nil {
+		t.Fatal(err)
+	}
+	other := domain.EgressProtocolMode{EgressID: "agw-main", ActiveMode: domain.ProtocolVLESSTCPRealityVision, DesiredMode: domain.ProtocolVLESSTCPRealityVision, State: domain.ProtocolReady, Version: 1, UpdatedAt: now}
+	if err := database.CreateEgressProtocolMode(ctx, other); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := database.DeleteProxyGroup(ctx, group.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.GetEgressProtocolMode(ctx, group.ID); !errors.Is(err, ErrEgressProtocolNotFound) {
+		t.Fatalf("deleted protocol row err=%v", err)
+	}
+	if _, err := database.GetEgressOperationByRequestHash(ctx, group.ID, operation.Kind, operation.RequestHash); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("deleted operation row err=%v", err)
+	}
+	if _, err := database.GetEgressProtocolMode(ctx, "agw-main"); err != nil {
+		t.Fatalf("unrelated protocol state was removed: %v", err)
 	}
 }
 

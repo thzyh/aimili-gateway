@@ -33,6 +33,22 @@ func TestEnableCreatesAndValidatesOneStableProxyGroup(t *testing.T) {
 	if fixture.xui.desired.RealityTarget != "127.0.0.1:443" || fixture.xui.desired.RealityServerName != "proxy.example.test" {
 		t.Fatalf("Reality target = %#v", fixture.xui.desired)
 	}
+	protocol, ok := fixture.store.protocolModes[group.ID]
+	if !ok || protocol.ActiveMode != domain.ProtocolVLESSTCPRealityVision || protocol.DesiredMode != domain.ProtocolVLESSTCPRealityVision || protocol.State != domain.ProtocolReady {
+		t.Fatalf("default protocol state = %#v, present=%v", protocol, ok)
+	}
+}
+
+func TestEnableCompensatesWhenDefaultProtocolStateCannotBeCreated(t *testing.T) {
+	fixture := newFixture()
+	fixture.store.protocolCreateError = errors.New("storage unavailable")
+	_, err := fixture.orchestrator(t).Enable(context.Background(), EnableRequest{CountryCode: "JP", ProxyType: domain.ProxyTypeDatacenter})
+	if codeOf(err) != "storage_failed" {
+		t.Fatalf("error = %v", err)
+	}
+	if len(fixture.store.groups) != 0 || len(fixture.store.protocolModes) != 0 || !contains(fixture.calls, "xui.delete") || !contains(fixture.calls, "slot.delete") {
+		t.Fatalf("incomplete compensation: groups=%#v protocols=%#v calls=%#v", fixture.store.groups, fixture.store.protocolModes, fixture.calls)
+	}
 }
 
 func TestEnableWaitsForAimiliSlotToCarryRealTraffic(t *testing.T) {
@@ -178,6 +194,50 @@ func TestPoolIncludesHealthyLegacyMainAsFourthEgress(t *testing.T) {
 	}
 }
 
+func TestPoolAttachesPersistedProtocolStateToLiveEgress(t *testing.T) {
+	fixture := newFixture()
+	group, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter, "node-one")
+	group.Status = domain.ProxyGroupReady
+	group.AimiliSlot = 0
+	group.PublicPort = 20000
+	group.MixedPort = 30000
+	group.PublicInboundID = 21
+	group.CreatedAt = fixture.now()
+	group.UpdatedAt = fixture.now()
+	fixture.store.groups[group.ID] = group
+	fixture.store.protocolModes[group.ID] = domain.EgressProtocolMode{EgressID: group.ID, ActiveMode: domain.ProtocolVLESSXHTTPReality, DesiredMode: domain.ProtocolVLESSXHTTPReality, State: domain.ProtocolReady, Version: 3, UpdatedAt: fixture.now()}
+	fixture.aimili.candidates = []aimili.Candidate{{ID: "node-one", CountryCode: "JP", ProxyType: "datacenter", ProbeStatus: "available"}}
+
+	pool, err := fixture.orchestratorWithMax(t, 3).Pool(context.Background())
+	if err != nil || len(pool) != 1 {
+		t.Fatalf("pool=%#v err=%v", pool, err)
+	}
+	if pool[0].ProtocolMode != domain.ProtocolVLESSXHTTPReality || pool[0].DesiredProtocolMode != domain.ProtocolVLESSXHTTPReality || pool[0].ProtocolState != domain.ProtocolReady {
+		t.Fatalf("protocol state was not attached: %#v", pool[0])
+	}
+}
+
+func TestPoolMarksLiveEgressWithoutProtocolStateAsRepairRequired(t *testing.T) {
+	fixture := newFixture()
+	group, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter, "node-one")
+	group.Status = domain.ProxyGroupReady
+	group.AimiliSlot = 0
+	group.PublicPort = 20000
+	group.MixedPort = 30000
+	group.CreatedAt = fixture.now()
+	group.UpdatedAt = fixture.now()
+	fixture.store.groups[group.ID] = group
+	fixture.aimili.candidates = []aimili.Candidate{{ID: "node-one", CountryCode: "JP", ProxyType: "datacenter", ProbeStatus: "available"}}
+
+	pool, err := fixture.orchestratorWithMax(t, 3).Pool(context.Background())
+	if err != nil || len(pool) != 1 {
+		t.Fatalf("pool=%#v err=%v", pool, err)
+	}
+	if pool[0].Status != domain.ProxyGroupRepairRequired || pool[0].ProtocolState != domain.ProtocolRepairRequired || pool[0].ProtocolLastErrorCode != "protocol_state_missing" {
+		t.Fatalf("missing protocol state was hidden: %#v", pool[0])
+	}
+}
+
 func TestEnableCompensatesInReverseOrderWhenVLESSValidationFails(t *testing.T) {
 	fixture := newFixture()
 	fixture.validator.vlessError = &validator.Error{Code: "protocol_failed"}
@@ -238,6 +298,7 @@ func TestCheckSynchronizesRuntimeCandidateIdentity(t *testing.T) {
 	group, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter, "stale-node")
 	group.Status = domain.ProxyGroupReady
 	group.AimiliSlot = 2
+	group.PublicInboundID = 21
 	group.PublicPort = 20000
 	group.MixedPort = 30000
 	group.ExitIP = "203.0.113.7"
@@ -247,6 +308,7 @@ func TestCheckSynchronizesRuntimeCandidateIdentity(t *testing.T) {
 	group.CreatedAt = fixture.now()
 	group.UpdatedAt = fixture.now()
 	fixture.store.groups[group.ID] = group
+	fixture.store.protocolModes[group.ID] = domain.EgressProtocolMode{EgressID: group.ID, ActiveMode: domain.ProtocolVLESSTCPRealityVision, DesiredMode: domain.ProtocolVLESSTCPRealityVision, State: domain.ProtocolReady, Version: 1, UpdatedAt: fixture.now()}
 	fixture.aimili.createdSlots = map[int]aimili.Slot{2: {
 		Number: 2, NodeID: "runtime-node", Country: "KR", CountryName: "韩国", ProxyType: "residential",
 		CandidateIP: "198.51.100.8", ExitIP: "203.0.113.8", Port: 17930, Status: "up", EgressOK: true, LatencyMS: 44,
@@ -261,18 +323,58 @@ func TestCheckSynchronizesRuntimeCandidateIdentity(t *testing.T) {
 	}
 }
 
+func TestCheckValidatesTheCurrentXHTTPProfileInsteadOfAssumingTCP(t *testing.T) {
+	fixture := newFixture()
+	group, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter, "node-one")
+	group.Status = domain.ProxyGroupReady
+	group.AimiliSlot = 2
+	group.PublicInboundID = 21
+	group.PublicPort = 20000
+	group.MixedPort = 30000
+	group.ExitIP = "203.0.113.7"
+	group.CreatedAt = fixture.now()
+	group.UpdatedAt = fixture.now()
+	fixture.store.groups[group.ID] = group
+	fixture.store.protocolModes[group.ID] = domain.EgressProtocolMode{EgressID: group.ID, ActiveMode: domain.ProtocolVLESSXHTTPReality, DesiredMode: domain.ProtocolVLESSXHTTPReality, State: domain.ProtocolReady, Version: 1, UpdatedAt: fixture.now()}
+	fixture.aimili.createdSlots = map[int]aimili.Slot{2: {Number: 2, NodeID: "node-one", Country: "JP", ProxyType: "datacenter", ExitIP: "203.0.113.7", Port: 17930, Status: "up", EgressOK: true}}
+	fixture.xui.subscriptionProfiles = []xui.PublicProfile{{InboundID: 21, Mode: domain.ProtocolVLESSXHTTPReality, ClientID: "test-client", PublicKey: "test-public", ShortID: "test-short", ServerName: "proxy.example.test", XHTTPPath: "/test-path"}}
+
+	checked, err := fixture.orchestratorWithMax(t, 3).Check(context.Background(), group.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checked.Status != domain.ProxyGroupReady || fixture.validator.vlessCalls != 0 || len(fixture.validator.publicTargets) != 1 || fixture.validator.publicTargets[0].Mode != domain.ProtocolVLESSXHTTPReality || fixture.validator.publicTargets[0].XHTTPPath != "/test-path" {
+		t.Fatalf("checked=%#v vlessCalls=%d publicTargets=%#v", checked, fixture.validator.vlessCalls, fixture.validator.publicTargets)
+	}
+}
+
 type fakeStore struct {
-	mu                 sync.Mutex
-	groups             map[string]domain.ProxyGroup
-	credentials        map[string][]byte
-	cidrs              []netip.Prefix
-	policy             store.MixedSourcePolicy
-	enforceUniqueSlots bool
-	mainEgress         store.MainEgress
-	subscription       store.GatewaySubscription
-	aggregate          store.AggregateConfig
-	protocolModes      map[string]domain.EgressProtocolMode
-	protocolUpdates    int
+	mu                   sync.Mutex
+	groups               map[string]domain.ProxyGroup
+	credentials          map[string][]byte
+	cidrs                []netip.Prefix
+	policy               store.MixedSourcePolicy
+	enforceUniqueSlots   bool
+	mainEgress           store.MainEgress
+	subscription         store.GatewaySubscription
+	aggregate            store.AggregateConfig
+	protocolModes        map[string]domain.EgressProtocolMode
+	protocolUpdates      int
+	protocolCreateError  error
+	protocolUpdateErrors map[int]error
+}
+
+func (s *fakeStore) CreateEgressProtocolMode(_ context.Context, value domain.EgressProtocolMode) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.protocolCreateError != nil {
+		return s.protocolCreateError
+	}
+	if _, exists := s.protocolModes[value.EgressID]; exists {
+		return errors.New("protocol mode already exists")
+	}
+	s.protocolModes[value.EgressID] = value
+	return nil
 }
 
 func (s *fakeStore) GetEgressProtocolMode(_ context.Context, egressID string) (domain.EgressProtocolMode, error) {
@@ -288,6 +390,11 @@ func (s *fakeStore) GetEgressProtocolMode(_ context.Context, egressID string) (d
 func (s *fakeStore) UpdateEgressProtocolMode(_ context.Context, value domain.EgressProtocolMode, expectedVersion int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	nextUpdate := s.protocolUpdates + 1
+	if err := s.protocolUpdateErrors[nextUpdate]; err != nil {
+		s.protocolUpdates++
+		return err
+	}
 	current, ok := s.protocolModes[value.EgressID]
 	if !ok || current.Version != expectedVersion {
 		return store.ErrEgressProtocolChanged
@@ -347,6 +454,7 @@ func (s *fakeStore) DeleteProxyGroup(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.groups, id)
+	delete(s.protocolModes, id)
 	return nil
 }
 func (s *fakeStore) GetCredential(_ context.Context, purpose string, _ []byte) ([]byte, error) {
@@ -566,12 +674,25 @@ type fakeXUI struct {
 	deleteAggregateError   error
 	snapshot               xui.Snapshot
 	subscriptionDesired    xui.SubscriptionDesired
+	subscriptionProfiles   []xui.PublicProfile
+	profileSequences       [][]xui.PublicProfile
+	ensureLegacyMainCalls  int
 }
 
 func (x *fakeXUI) Snapshot(context.Context) (xui.Snapshot, error) { return x.snapshot, nil }
 func (x *fakeXUI) EnsureSubscriptionClient(_ context.Context, desired xui.SubscriptionDesired) (xui.Subscription, error) {
 	x.subscriptionDesired = desired
-	return xui.Subscription{ResourceName: "aimili-gateway-subscription", ClientID: 42, ClientEmail: desired.ClientEmail, ClientUUID: desired.ClientUUID, SubscriptionID: "opaque", InboundIDs: append([]int64(nil), desired.InboundIDs...), SubscriptionPath: "/sub-test/"}, nil
+	profiles := append([]xui.PublicProfile(nil), x.subscriptionProfiles...)
+	if len(x.profileSequences) > 0 {
+		profiles = append([]xui.PublicProfile(nil), x.profileSequences[0]...)
+		x.profileSequences = x.profileSequences[1:]
+	}
+	if len(profiles) == 0 {
+		for _, id := range desired.InboundIDs {
+			profiles = append(profiles, xui.PublicProfile{InboundID: id, Mode: domain.ProtocolVLESSTCPRealityVision, ClientID: desired.ClientUUID, PublicKey: "public-key", ShortID: "short-id", ServerName: "proxy.example.test"})
+		}
+	}
+	return xui.Subscription{ResourceName: "aimili-gateway-subscription", ClientID: 42, ClientEmail: desired.ClientEmail, ClientUUID: desired.ClientUUID, SubscriptionID: "opaque", InboundIDs: append([]int64(nil), desired.InboundIDs...), SubscriptionPath: "/sub-test/", PublicProfiles: profiles}, nil
 }
 func (x *fakeXUI) SubscriptionURL(_ context.Context, subscription xui.Subscription) (string, error) {
 	return subscription.SubscriptionPath + subscription.SubscriptionID, nil
@@ -583,6 +704,7 @@ func (x *fakeXUI) DeleteManagedAggregate(_ context.Context, managed xui.ManagedA
 }
 
 func (x *fakeXUI) EnsureLegacyMain(_ context.Context, desired xui.LegacyMainDesired) (xui.LegacyMain, error) {
+	x.ensureLegacyMainCalls++
 	return xui.LegacyMain{VLESSInboundID: 1, MixedInboundID: 98, VLESSPort: desired.VLESSPort, MixedPort: desired.MixedPort, ClientID: "legacy-client", PublicKey: "legacy-public", ShortID: "legacy-short", ServerName: "www.microsoft.com", OutboundTag: "aimili-socks"}, nil
 }
 
@@ -636,6 +758,8 @@ type fakeValidator struct {
 	socksExpectedIPs []string
 	socksLatency     time.Duration
 	vlessLatency     time.Duration
+	publicErrors     []error
+	publicTargets    []validator.PublicTarget
 }
 
 func (v *fakeValidator) ValidateSOCKS5H(_ context.Context, target validator.SOCKSTarget) (validator.Result, error) {
@@ -655,6 +779,15 @@ func (v *fakeValidator) ValidateVLESS(_ context.Context, target validator.VLESST
 	}
 	if v.vlessError != nil {
 		return validator.Result{}, v.vlessError
+	}
+	return validator.Result{ExitIP: target.ExpectedExitIP, DNSVerified: true, Latency: v.vlessLatency}, nil
+}
+func (v *fakeValidator) ValidatePublic(_ context.Context, target validator.PublicTarget) (validator.Result, error) {
+	*v.calls = append(*v.calls, "validate.public")
+	v.publicTargets = append(v.publicTargets, target)
+	index := len(v.publicTargets) - 1
+	if index < len(v.publicErrors) && v.publicErrors[index] != nil {
+		return validator.Result{}, v.publicErrors[index]
 	}
 	return validator.Result{ExitIP: target.ExpectedExitIP, DNSVerified: true, Latency: v.vlessLatency}, nil
 }

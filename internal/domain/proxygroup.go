@@ -40,37 +40,41 @@ const (
 var countryCodePattern = regexp.MustCompile(`^[A-Z]{2}$`)
 
 type ProxyGroup struct {
-	ID                   string
-	ResourceName         string
-	CountryCode          string
-	CountryName          string
-	ProxyType            ProxyType
-	CandidateID          string
-	CandidateIP          string
-	CandidateLatencyMS   int
-	VLESSLatencyMS       int
-	SOCKSLatencyMS       int
-	Status               ProxyGroupStatus
-	EgressSource         EgressSource
-	AimiliSlot           int
-	PublicPort           int
-	MixedPort            int
-	ExitIP               string
-	ConfigFingerprint    string
-	PublicInboundID      int64
-	MixedInboundID       int64
-	RealityPublicKey     string
-	RealityShortID       string
-	RealityServerName    string
-	RealityMLDSA65Verify string
-	LastErrorCode        string
-	RecoveryState        string
-	Version              int64
-	CreatedAt            time.Time
-	UpdatedAt            time.Time
-	LastCheckedAt        time.Time
-	LastRotatedAt        time.Time
-	LastSeenAt           time.Time
+	ID                    string
+	ResourceName          string
+	CountryCode           string
+	CountryName           string
+	ProxyType             ProxyType
+	CandidateID           string
+	CandidateIP           string
+	CandidateLatencyMS    int
+	VLESSLatencyMS        int
+	SOCKSLatencyMS        int
+	Status                ProxyGroupStatus
+	EgressSource          EgressSource
+	AimiliSlot            int
+	PublicPort            int
+	MixedPort             int
+	ProtocolMode          ProtocolMode
+	DesiredProtocolMode   ProtocolMode
+	ProtocolState         ProtocolState
+	ProtocolLastErrorCode string
+	ExitIP                string
+	ConfigFingerprint     string
+	PublicInboundID       int64
+	MixedInboundID        int64
+	RealityPublicKey      string
+	RealityShortID        string
+	RealityServerName     string
+	RealityMLDSA65Verify  string
+	LastErrorCode         string
+	RecoveryState         string
+	Version               int64
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+	LastCheckedAt         time.Time
+	LastRotatedAt         time.Time
+	LastSeenAt            time.Time
 }
 
 func NewProxyGroupIdentity(country string, proxyType ProxyType, candidateIDs ...string) (ProxyGroup, error) {

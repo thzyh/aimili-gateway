@@ -1,5 +1,7 @@
 package xui
 
+import "github.com/thzyh/aimili-gateway/internal/domain"
+
 type Credentials struct {
 	Username      string `json:"username"`
 	Password      string `json:"password"`
@@ -123,6 +125,19 @@ type Subscription struct {
 	SubscriptionID   string
 	InboundIDs       []int64
 	SubscriptionPath string
+	PublicProfiles   []PublicProfile
+}
+
+type PublicProfile struct {
+	InboundID     int64
+	Mode          domain.ProtocolMode
+	ClientID      string
+	Auth          string
+	PublicKey     string
+	ShortID       string
+	ServerName    string
+	MLDSA65Verify string
+	XHTTPPath     string
 }
 
 type AdapterError struct {

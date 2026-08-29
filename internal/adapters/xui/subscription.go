@@ -10,12 +10,14 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+
+	"github.com/thzyh/aimili-gateway/internal/domain"
 )
 
 const managedSubscriptionEmail = "aimili-gateway-subscription"
 
 // EnsureSubscriptionClient keeps one 3x-ui client associated with all
-// Gateway-owned VLESS inbounds. Mixed and user-owned inbounds are never
+// Gateway-owned public inbounds. Mixed and user-owned inbounds are never
 // included, even if their IDs are present in the request.
 func (c *Client) EnsureSubscriptionClient(ctx context.Context, desired SubscriptionDesired) (Subscription, error) {
 	c.mu.Lock()
@@ -30,7 +32,7 @@ func (c *Client) EnsureSubscriptionClient(ctx context.Context, desired Subscript
 	if err != nil {
 		return Subscription{}, err
 	}
-	allowed := ownedVLESSIDs(snapshot.Inbounds, desired.InboundIDs)
+	allowed := ownedPublicIDs(snapshot.Inbounds, desired.InboundIDs)
 	if len(allowed) == 0 {
 		return Subscription{}, &AdapterError{Code: "managed_resource_missing"}
 	}
@@ -62,9 +64,11 @@ func (c *Client) EnsureSubscriptionClient(ctx context.Context, desired Subscript
 	if client.email != desired.ClientEmail || client.uuid == "" || client.uuid != desired.ClientUUID {
 		return Subscription{}, &AdapterError{Code: "ownership_conflict"}
 	}
-	attachPath := "panel/api/clients/" + url.PathEscape(desired.ClientEmail) + "/attach"
-	if _, err := c.call(ctx, http.MethodPost, attachPath, map[string]any{"inboundIds": allowed}, false); err != nil {
-		return Subscription{}, err
+	if !sameInboundIDs(client.inboundIDs, allowed) {
+		attachPath := "panel/api/clients/" + url.PathEscape(desired.ClientEmail) + "/attach"
+		if _, err := c.call(ctx, http.MethodPost, attachPath, map[string]any{"inboundIds": allowed}, false); err != nil {
+			return Subscription{}, err
+		}
 	}
 	client, _, err = c.getSubscriptionClient(ctx, desired.ClientEmail)
 	if err != nil {
@@ -72,6 +76,10 @@ func (c *Client) EnsureSubscriptionClient(ctx context.Context, desired Subscript
 	}
 	if client.uuid != desired.ClientUUID || client.email != desired.ClientEmail {
 		return Subscription{}, &AdapterError{Code: "ownership_conflict"}
+	}
+	profiles, err := c.publicProfiles(ctx, allowed, client)
+	if err != nil {
+		return Subscription{}, err
 	}
 	path := c.readSubscriptionPath(ctx)
 	return Subscription{
@@ -82,6 +90,7 @@ func (c *Client) EnsureSubscriptionClient(ctx context.Context, desired Subscript
 		SubscriptionID:   client.subID,
 		InboundIDs:       append([]int64(nil), allowed...),
 		SubscriptionPath: path,
+		PublicProfiles:   profiles,
 	}, nil
 }
 
@@ -107,10 +116,12 @@ func (c *Client) SubscriptionURL(ctx context.Context, subscription Subscription)
 }
 
 type subscriptionClient struct {
-	dbID  int64
-	email string
-	uuid  string
-	subID string
+	dbID       int64
+	email      string
+	uuid       string
+	subID      string
+	auth       string
+	inboundIDs []int64
 }
 
 // ValidateSubscriptionCoverage is used before any legacy aggregate cleanup.
@@ -317,6 +328,7 @@ func parseSubscriptionClient(obj json.RawMessage) (subscriptionClient, error) {
 		email: stringValue(raw["email"]),
 		uuid:  stringValue(raw["uuid"]),
 		subID: stringValue(raw["subId"]),
+		auth:  stringValue(raw["auth"]),
 	}
 	if result.dbID == 0 {
 		result.dbID = integerValue(raw["clientId"])
@@ -338,16 +350,23 @@ func parseSubscriptionClient(obj json.RawMessage) (subscriptionClient, error) {
 	if result.subID == "" {
 		result.subID = stringValue(clientRaw["subId"])
 	}
+	if result.auth == "" {
+		result.auth = stringValue(clientRaw["auth"])
+	}
+	result.inboundIDs = integerValues(raw["inboundIds"])
+	if len(result.inboundIDs) == 0 {
+		result.inboundIDs = integerValues(clientRaw["inboundIds"])
+	}
 	if result.email == "" || result.uuid == "" || result.subID == "" {
 		return subscriptionClient{}, &AdapterError{Code: "invalid_response"}
 	}
 	return result, nil
 }
 
-func ownedVLESSIDs(inbounds []Inbound, requested []int64) []int64 {
+func ownedPublicIDs(inbounds []Inbound, requested []int64) []int64 {
 	byID := make(map[int64]Inbound, len(inbounds))
 	for _, inbound := range inbounds {
-		if inbound.Protocol != "vless" || !isOwnedSubscriptionInbound(inbound) {
+		if (inbound.Protocol != "vless" && inbound.Protocol != "hysteria") || !isOwnedSubscriptionInbound(inbound) {
 			continue
 		}
 		byID[inbound.ID] = inbound
@@ -364,6 +383,116 @@ func ownedVLESSIDs(inbounds []Inbound, requested []int64) []int64 {
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i] < result[j] })
 	return result
+}
+
+func sameInboundIDs(left, right []int64) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	a := append([]int64(nil), left...)
+	b := append([]int64(nil), right...)
+	sort.Slice(a, func(i, j int) bool { return a[i] < a[j] })
+	sort.Slice(b, func(i, j int) bool { return b[i] < b[j] })
+	for index := range a {
+		if a[index] != b[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func integerValues(value any) []int64 {
+	raw, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	result := make([]int64, 0, len(raw))
+	for _, item := range raw {
+		if id := integerValue(item); id > 0 {
+			result = append(result, id)
+		}
+	}
+	return result
+}
+
+func (c *Client) publicProfiles(ctx context.Context, allowed []int64, client subscriptionClient) ([]PublicProfile, error) {
+	details, err := c.inboundDetails(ctx)
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[int64]inboundDetail, len(details))
+	for _, detail := range details {
+		byID[detail.ID] = detail
+	}
+	profiles := make([]PublicProfile, 0, len(allowed))
+	for _, id := range allowed {
+		detail, ok := byID[id]
+		if !ok || !isOwnedSubscriptionInbound(Inbound{ID: detail.ID, Tag: detail.Tag, Remark: detail.Remark, Protocol: detail.Protocol, Port: detail.Port}) {
+			return nil, &AdapterError{Code: "managed_resource_missing"}
+		}
+		profile, err := publicProfile(detail, client)
+		if err != nil {
+			return nil, err
+		}
+		profiles = append(profiles, profile)
+	}
+	return profiles, nil
+}
+
+func publicProfile(detail inboundDetail, client subscriptionClient) (PublicProfile, error) {
+	profile := PublicProfile{InboundID: detail.ID, ClientID: client.uuid}
+	settings, settingsOK := decodeObject(detail.Settings)
+	stream, streamOK := decodeObject(detail.StreamSettings)
+	if !settingsOK || !streamOK {
+		return PublicProfile{}, &AdapterError{Code: "invalid_response"}
+	}
+	if detail.Protocol == "hysteria" {
+		hysteria, ok := decodeObject(stream["hysteriaSettings"])
+		if !ok || stringValue(stream["network"]) != "hysteria" || stringValue(stream["security"]) != "tls" || integerValue(hysteria["version"]) != 2 || integerValue(settings["version"]) != 2 {
+			return PublicProfile{}, &AdapterError{Code: "managed_resource_drift"}
+		}
+		for _, candidate := range asObjectSlice(settings["clients"]) {
+			if stringValue(candidate["email"]) == client.email && stringValue(candidate["auth"]) != "" {
+				profile.Auth = stringValue(candidate["auth"])
+			}
+		}
+		if profile.Auth == "" || (client.auth != "" && profile.Auth != client.auth) {
+			return PublicProfile{}, &AdapterError{Code: "ownership_conflict"}
+		}
+		profile.Mode = domain.ProtocolHysteria2QUICTLS
+		return profile, nil
+	}
+	if detail.Protocol != "vless" || stringValue(stream["security"]) != "reality" {
+		return PublicProfile{}, &AdapterError{Code: "managed_resource_drift"}
+	}
+	reality, ok := decodeObject(stream["realitySettings"])
+	clientSettings, clientSettingsOK := decodeObject(reality["settings"])
+	serverNames := stringValues(reality["serverNames"])
+	shortIDs := stringValues(reality["shortIds"])
+	if !ok || !clientSettingsOK || len(serverNames) != 1 || len(shortIDs) != 1 {
+		return PublicProfile{}, &AdapterError{Code: "managed_resource_drift"}
+	}
+	profile.PublicKey = stringValue(clientSettings["publicKey"])
+	profile.MLDSA65Verify = stringValue(clientSettings["mldsa65Verify"])
+	profile.ShortID = shortIDs[0]
+	profile.ServerName = serverNames[0]
+	if profile.PublicKey == "" || profile.ShortID == "" || profile.ServerName == "" {
+		return PublicProfile{}, &AdapterError{Code: "managed_resource_drift"}
+	}
+	switch stringValue(stream["network"]) {
+	case "tcp":
+		profile.Mode = domain.ProtocolVLESSTCPRealityVision
+	case "xhttp":
+		xhttp, ok := decodeObject(stream["xhttpSettings"])
+		profile.XHTTPPath = stringValue(xhttp["path"])
+		if !ok || !strings.HasPrefix(profile.XHTTPPath, "/") || strings.ContainsAny(profile.XHTTPPath, "?#\\\x00\r\n") {
+			return PublicProfile{}, &AdapterError{Code: "managed_resource_drift"}
+		}
+		profile.Mode = domain.ProtocolVLESSXHTTPReality
+	default:
+		return PublicProfile{}, &AdapterError{Code: "managed_resource_drift"}
+	}
+	return profile, nil
 }
 
 func isOwnedSubscriptionInbound(inbound Inbound) bool {

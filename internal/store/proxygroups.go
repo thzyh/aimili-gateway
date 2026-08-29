@@ -128,7 +128,18 @@ func (s *Store) UpdateProxyGroup(ctx context.Context, group domain.ProxyGroup, e
 }
 
 func (s *Store) DeleteProxyGroup(ctx context.Context, id string) error {
-	result, err := s.db.ExecContext(ctx, `DELETE FROM proxy_groups WHERE id = ?`, id)
+	transaction, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin proxy group delete: %w", err)
+	}
+	defer transaction.Rollback()
+	if _, err := transaction.ExecContext(ctx, `DELETE FROM egress_operations WHERE egress_id = ?`, id); err != nil {
+		return fmt.Errorf("delete proxy group operations: %w", err)
+	}
+	if _, err := transaction.ExecContext(ctx, `DELETE FROM egress_protocol_modes WHERE egress_id = ?`, id); err != nil {
+		return fmt.Errorf("delete proxy group protocol mode: %w", err)
+	}
+	result, err := transaction.ExecContext(ctx, `DELETE FROM proxy_groups WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("delete proxy group: %w", err)
 	}
@@ -138,6 +149,9 @@ func (s *Store) DeleteProxyGroup(ctx context.Context, id string) error {
 	}
 	if changed != 1 {
 		return ErrProxyGroupNotFound
+	}
+	if err := transaction.Commit(); err != nil {
+		return fmt.Errorf("commit proxy group delete: %w", err)
 	}
 	return nil
 }

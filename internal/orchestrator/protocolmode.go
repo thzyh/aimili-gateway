@@ -10,8 +10,10 @@ import (
 	"net"
 	"strings"
 
+	"github.com/thzyh/aimili-gateway/internal/adapters/xui"
 	"github.com/thzyh/aimili-gateway/internal/domain"
 	"github.com/thzyh/aimili-gateway/internal/protocoltxn"
+	"github.com/thzyh/aimili-gateway/internal/validator"
 )
 
 func (o *Orchestrator) SwitchProtocolMode(ctx context.Context, egressID string, target domain.ProtocolMode) (domain.EgressProtocolMode, error) {
@@ -72,10 +74,11 @@ func (o *Orchestrator) SwitchProtocolMode(ctx context.Context, egressID string, 
 		}
 	}
 	if applyErr == nil {
-		_, applyErr = o.Subscription(ctx)
-	}
-	if applyErr == nil {
-		applyErr = o.verifyProtocolTarget(ctx, targetResource)
+		var subscription SubscriptionResult
+		subscription, applyErr = o.Subscription(ctx)
+		if applyErr == nil {
+			applyErr = o.verifyProtocolTarget(ctx, targetResource, target, subscription)
+		}
 	}
 	if applyErr == nil {
 		finalized, finalizeErr := o.protocolTransaction.Finalize(ctx, operationID)
@@ -89,12 +92,23 @@ func (o *Orchestrator) SwitchProtocolMode(ctx context.Context, egressID string, 
 		state.ActiveMode = target
 		state.DesiredMode = target
 		state.LastErrorCode = ""
-		if err := state.Transition(domain.ProtocolReady); err != nil || o.saveProtocolState(ctx, persistence, &state) != nil {
+		if err := state.Transition(domain.ProtocolReady); err != nil {
 			return domain.EgressProtocolMode{}, &Error{Code: "storage_failed"}
+		}
+		if err := o.saveProtocolState(ctx, persistence, &state); err != nil {
+			return o.markFinalizedProtocolRepair(ctx, persistence, state)
 		}
 		return state, nil
 	}
 	return o.rollbackProtocolMode(ctx, persistence, state, targetResource, applyErr, applied)
+}
+
+func (o *Orchestrator) markFinalizedProtocolRepair(ctx context.Context, persistence protocolModeStore, state domain.EgressProtocolMode) (domain.EgressProtocolMode, error) {
+	state.State = domain.ProtocolRepairRequired
+	state.DesiredMode = state.ActiveMode
+	state.LastErrorCode = "final_state_persist_failed"
+	_ = o.saveProtocolState(ctx, persistence, &state)
+	return domain.EgressProtocolMode{}, &Error{Code: "repair_required"}
 }
 
 type protocolTarget struct {
@@ -128,7 +142,7 @@ func (o *Orchestrator) protocolTarget(ctx context.Context, egressID string) (pro
 	return protocolTarget{egressID: egressID, inboundID: group.PublicInboundID, inboundTag: group.ResourceName + "-vless", port: group.PublicPort, group: group}, nil
 }
 
-func (o *Orchestrator) verifyProtocolTarget(ctx context.Context, target protocolTarget) error {
+func (o *Orchestrator) verifyProtocolTarget(ctx context.Context, target protocolTarget, mode domain.ProtocolMode, subscription SubscriptionResult) error {
 	_, credentials, err := o.runtimeInputs(ctx)
 	if err != nil {
 		return err
@@ -148,7 +162,23 @@ func (o *Orchestrator) verifyProtocolTarget(ctx context.Context, target protocol
 	if _, err := o.validateSOCKS(ctx, target.group, credentials); err != nil {
 		return err
 	}
-	_, err = o.validateVLESS(ctx, target.group, credentials)
+	var profile *xui.PublicProfile
+	for index := range subscription.PublicProfiles {
+		candidate := &subscription.PublicProfiles[index]
+		if candidate.InboundID == target.inboundID && candidate.Mode == mode {
+			profile = candidate
+			break
+		}
+	}
+	if profile == nil {
+		return &Error{Code: "subscription_incomplete"}
+	}
+	_, err = o.validator.ValidatePublic(ctx, validator.PublicTarget{
+		Mode: mode, XrayPath: o.config.XrayPath, InboundAddress: net.JoinHostPort("127.0.0.1", fmt.Sprint(target.port)),
+		ClientID: profile.ClientID, Auth: profile.Auth, PublicKey: profile.PublicKey, ShortID: profile.ShortID,
+		ServerName: profile.ServerName, MLDSA65Verify: profile.MLDSA65Verify, XHTTPPath: profile.XHTTPPath,
+		TLSServerName: o.config.PublicHost, ProbeHost: o.config.ProbeHost, ExpectedExitIP: target.group.ExitIP,
+	})
 	return err
 }
 
@@ -170,10 +200,11 @@ func (o *Orchestrator) rollbackProtocolMode(ctx context.Context, persistence pro
 			return o.markProtocolRepair(ctx, persistence, state)
 		}
 	}
-	if _, err := o.Subscription(ctx); err != nil {
+	subscription, err := o.Subscription(ctx)
+	if err != nil {
 		return o.markProtocolRepair(ctx, persistence, state)
 	}
-	if err := o.verifyProtocolTarget(ctx, target); err != nil {
+	if err := o.verifyProtocolTarget(ctx, target, state.ActiveMode, subscription); err != nil {
 		return o.markProtocolRepair(ctx, persistence, state)
 	}
 	state.DesiredMode = state.ActiveMode

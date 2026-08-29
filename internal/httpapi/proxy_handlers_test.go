@@ -62,7 +62,7 @@ func TestConnectionsRequireOnlyAnAuthenticatedSession(t *testing.T) {
 	if err := json.NewDecoder(response.Body).Decode(&connections); err != nil {
 		t.Fatal(err)
 	}
-	if connections["vlessUri"] == "" || connections["socks5hUri"] == "" {
+	if connections["protocolMode"] != string(domain.ProtocolVLESSTCPRealityVision) || connections["publicUri"] == "" || connections["vlessUri"] == "" || connections["socks5hUri"] == "" {
 		t.Fatalf("connections=%#v", connections)
 	}
 }
@@ -125,6 +125,110 @@ func TestReplaceCandidateRequiresMutationGuardsAndIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestMainReplacementReplaysCompletedPersistentOperation(t *testing.T) {
+	manager := &fakeProxyManager{}
+	environment := newAuthTestEnvironmentConfigured(t, true, func(dependencies *Dependencies) { dependencies.ProxyManager = manager })
+	assertResponseStatus(t, environment.login(t), http.StatusNoContent)
+	sessionPayload := environment.session(t)
+	storedSession, err := environment.database.GetSession(context.Background(), environment.sessionTokenHash(t), environment.clock.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/v1/proxy-groups/candidate-one/replace"
+	key := "persistent-main-replacement"
+	keyHash, bodyHash := persistentIdempotencyHashes(storedSession.ID, http.MethodPost, path, key, []any{"agw-main"})
+	now := time.Unix(1_700_000_000, 0).UTC()
+	main := store.MainEgress{ResourceName: "agw-main", CountryCode: "JP", ProxyType: domain.ProxyTypeDatacenter, CandidateID: "candidate-one", ExitIP: "203.0.113.20", PublicInboundID: 1, MixedInboundID: 2, PublicPort: 8443, MixedPort: 31000, Enabled: true, UpdatedAt: now}
+	if err := environment.database.SaveMainEgress(context.Background(), main); err != nil {
+		t.Fatal(err)
+	}
+	if err := environment.database.CreateEgressOperation(context.Background(), store.EgressOperation{OperationID: "http-persistent-main", EgressID: "agw-main", Kind: "main_assign", Phase: "completed", RequestHash: keyHash, TransactionID: bodyHash, StartedAt: now, CompletedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+
+	response := environment.requestWithHeaders(t, http.MethodPost, path, map[string]string{"targetGroupId": "agw-main"}, environment.origin, sessionPayload.CSRFToken, map[string]string{"Idempotency-Key": key})
+	assertResponseStatus(t, response, http.StatusOK)
+	if manager.replaceCalls != 0 {
+		t.Fatalf("completed main assignment was executed again: %d", manager.replaceCalls)
+	}
+}
+
+func TestProtocolModeUpdateRequiresMutationGuardsAndIsIdempotent(t *testing.T) {
+	manager := &fakeProxyManager{}
+	environment := newAuthTestEnvironmentConfigured(t, true, func(dependencies *Dependencies) { dependencies.ProxyManager = manager })
+	path := "/api/v1/proxy-groups/agw-jp-dc/protocol-mode"
+	payload := map[string]string{"protocolMode": "vless_xhttp_reality"}
+	assertResponseStatus(t, environment.request(t, http.MethodPut, path, payload, "", ""), http.StatusUnauthorized)
+	assertResponseStatus(t, environment.login(t), http.StatusNoContent)
+	csrf := environment.session(t).CSRFToken
+	assertResponseStatus(t, environment.request(t, http.MethodPut, path, payload, environment.origin, csrf), http.StatusPreconditionRequired)
+	first := environment.requestWithHeaders(t, http.MethodPut, path, payload, environment.origin, csrf, map[string]string{"Idempotency-Key": "protocol-jp-xhttp"})
+	defer first.Body.Close()
+	if first.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", first.StatusCode)
+	}
+	var result map[string]any
+	if err := json.NewDecoder(first.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result["protocolMode"] != "vless_xhttp_reality" || result["protocolState"] != "ready" || result["subscriptionState"] != "ready" || len(result["availableProtocolModes"].([]any)) != 3 {
+		t.Fatalf("protocol response = %#v", result)
+	}
+	second := environment.requestWithHeaders(t, http.MethodPut, path, payload, environment.origin, csrf, map[string]string{"Idempotency-Key": "protocol-jp-xhttp"})
+	assertResponseStatus(t, second, http.StatusOK)
+	if manager.protocolCalls != 1 || manager.protocolTarget != domain.ProtocolVLESSXHTTPReality {
+		t.Fatalf("protocol calls=%d target=%q", manager.protocolCalls, manager.protocolTarget)
+	}
+}
+
+func TestProtocolModeIdempotencyKeyRejectsDifferentRequestBody(t *testing.T) {
+	manager := &fakeProxyManager{}
+	environment := newAuthTestEnvironmentConfigured(t, true, func(dependencies *Dependencies) { dependencies.ProxyManager = manager })
+	assertResponseStatus(t, environment.login(t), http.StatusNoContent)
+	csrf := environment.session(t).CSRFToken
+	path := "/api/v1/proxy-groups/agw-jp-dc/protocol-mode"
+	headers := map[string]string{"Idempotency-Key": "protocol-body-conflict"}
+	first := environment.requestWithHeaders(t, http.MethodPut, path, map[string]string{"protocolMode": "vless_xhttp_reality"}, environment.origin, csrf, headers)
+	assertResponseStatus(t, first, http.StatusOK)
+	second := environment.requestWithHeaders(t, http.MethodPut, path, map[string]string{"protocolMode": "hysteria2_quic_tls"}, environment.origin, csrf, headers)
+	assertResponseStatus(t, second, http.StatusConflict)
+	if manager.protocolCalls != 1 || manager.protocolTarget != domain.ProtocolVLESSXHTTPReality {
+		t.Fatalf("conflicting request reached manager: calls=%d target=%q", manager.protocolCalls, manager.protocolTarget)
+	}
+}
+
+func TestProtocolModeReplaysCompletedPersistentOperationAfterServerRestart(t *testing.T) {
+	manager := &fakeProxyManager{}
+	environment := newAuthTestEnvironmentConfigured(t, true, func(dependencies *Dependencies) { dependencies.ProxyManager = manager })
+	assertResponseStatus(t, environment.login(t), http.StatusNoContent)
+	sessionPayload := environment.session(t)
+	csrf := sessionPayload.CSRFToken
+	storedSession, err := environment.database.GetSession(context.Background(), environment.sessionTokenHash(t), environment.clock.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/v1/proxy-groups/agw-jp-dc/protocol-mode"
+	key := "persistent-protocol-request"
+	body := []any{domain.ProtocolVLESSXHTTPReality}
+	keyHash, bodyHash := persistentIdempotencyHashes(storedSession.ID, http.MethodPut, path, key, body)
+	now := time.Unix(1_700_000_000, 0).UTC()
+	state := domain.EgressProtocolMode{EgressID: "agw-jp-dc", ActiveMode: domain.ProtocolVLESSXHTTPReality, DesiredMode: domain.ProtocolVLESSXHTTPReality, State: domain.ProtocolReady, Version: 2, UpdatedAt: now}
+	if err := environment.database.CreateEgressProtocolMode(context.Background(), state); err != nil {
+		t.Fatal(err)
+	}
+	if err := environment.database.CreateEgressOperation(context.Background(), store.EgressOperation{OperationID: "http-persistent-protocol", EgressID: "agw-jp-dc", Kind: "protocol_switch", Phase: "completed", RequestHash: keyHash, TransactionID: bodyHash, StartedAt: now, CompletedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+
+	response := environment.requestWithHeaders(t, http.MethodPut, path, map[string]string{"protocolMode": "vless_xhttp_reality"}, environment.origin, csrf, map[string]string{"Idempotency-Key": key})
+	assertResponseStatus(t, response, http.StatusOK)
+	if manager.protocolCalls != 0 {
+		t.Fatalf("completed persistent operation was executed again: %d", manager.protocolCalls)
+	}
+	conflict := environment.requestWithHeaders(t, http.MethodPut, path, map[string]string{"protocolMode": "hysteria2_quic_tls"}, environment.origin, csrf, map[string]string{"Idempotency-Key": key})
+	assertResponseStatus(t, conflict, http.StatusConflict)
+}
+
 func TestCheckMainRequiresMutationGuards(t *testing.T) {
 	manager := &fakeProxyManager{}
 	environment := newAuthTestEnvironmentConfigured(t, true, func(dependencies *Dependencies) { dependencies.ProxyManager = manager })
@@ -139,7 +243,7 @@ func TestCheckMainRequiresMutationGuards(t *testing.T) {
 
 func TestProxyPoolFiltersAndExposesProtocolLatenciesWithoutSecrets(t *testing.T) {
 	manager := &fakeProxyManager{groups: []domain.ProxyGroup{
-		{ID: "agw-jp-dc-one", CountryCode: "JP", CountryName: "日本", ProxyType: domain.ProxyTypeDatacenter, Status: domain.ProxyGroupReady, ExitIP: "203.0.113.10", VLESSLatencyMS: 82, SOCKSLatencyMS: 71, Version: 2, LastCheckedAt: time.Unix(1_700_000_000, 0).UTC()},
+		{ID: "agw-jp-dc-one", CountryCode: "JP", CountryName: "日本", ProxyType: domain.ProxyTypeDatacenter, Status: domain.ProxyGroupReady, ExitIP: "203.0.113.10", PublicPort: 20000, VLESSLatencyMS: 82, SOCKSLatencyMS: 71, ProtocolMode: domain.ProtocolVLESSXHTTPReality, DesiredProtocolMode: domain.ProtocolVLESSXHTTPReality, ProtocolState: domain.ProtocolReady, Version: 2, LastCheckedAt: time.Unix(1_700_000_000, 0).UTC()},
 		{ID: "agw-kr-res-one", CountryCode: "KR", CountryName: "韩国", ProxyType: domain.ProxyTypeResidential, Status: domain.ProxyGroupReady, ExitIP: "203.0.113.11", VLESSLatencyMS: 95, SOCKSLatencyMS: 88, Version: 2},
 	}}
 	environment := newAuthTestEnvironmentConfigured(t, true, func(dependencies *Dependencies) { dependencies.ProxyManager = manager })
@@ -152,6 +256,16 @@ func TestProxyPoolFiltersAndExposesProtocolLatenciesWithoutSecrets(t *testing.T)
 	}
 	if len(groups) != 1 || groups[0].VLESSLatencyMS != 82 || groups[0].SOCKSLatencyMS != 71 {
 		t.Fatalf("unexpected filtered pool: %#v", groups)
+	}
+	if groups[0].PublicPort != 20000 || groups[0].ProtocolMode != domain.ProtocolVLESSXHTTPReality || groups[0].DesiredProtocolMode != domain.ProtocolVLESSXHTTPReality || groups[0].ProtocolState != domain.ProtocolReady || groups[0].SubscriptionState != "ready" || len(groups[0].AvailableProtocolModes) != 3 {
+		t.Fatalf("protocol state missing from pool response: %#v", groups[0])
+	}
+}
+
+func TestSafeProxyGroupExposesMissingProtocolStateAsRepairRequired(t *testing.T) {
+	result := safeProxyGroup(domain.ProxyGroup{ID: "agw-jp-dc", Status: domain.ProxyGroupRepairRequired, ProtocolState: domain.ProtocolRepairRequired, ProtocolLastErrorCode: "protocol_state_missing"})
+	if result.ProtocolState != domain.ProtocolRepairRequired || result.SubscriptionState != "repair_required" || result.LastErrorCode != "protocol_state_missing" || len(result.AvailableProtocolModes) != 3 {
+		t.Fatalf("repair state was hidden: %#v", result)
 	}
 }
 
@@ -272,6 +386,14 @@ type fakeProxyManager struct {
 	replacedCandidate string
 	checkMainCalls    int
 	cleanupCalls      int
+	protocolCalls     int
+	protocolTarget    domain.ProtocolMode
+}
+
+func (m *fakeProxyManager) SwitchProtocolMode(_ context.Context, egressID string, target domain.ProtocolMode) (domain.EgressProtocolMode, error) {
+	m.protocolCalls++
+	m.protocolTarget = target
+	return domain.EgressProtocolMode{EgressID: egressID, ActiveMode: target, DesiredMode: target, State: domain.ProtocolReady, Version: 2, UpdatedAt: time.Unix(1700000000, 0).UTC()}, nil
 }
 
 func (*fakeProxyManager) Subscription(context.Context) (orchestrator.SubscriptionResult, error) {
@@ -316,7 +438,7 @@ func (*fakeProxyManager) Rotate(context.Context, string) (domain.ProxyGroup, err
 }
 func (*fakeProxyManager) Disable(context.Context, string) error { return nil }
 func (*fakeProxyManager) Connections(context.Context, string) (orchestrator.Connections, error) {
-	return orchestrator.Connections{VLESSURI: "vless://masked-test", SOCKS5HURI: "socks5h://masked-test"}, nil
+	return orchestrator.Connections{ProtocolMode: domain.ProtocolVLESSTCPRealityVision, PublicURI: "vless://masked-test", VLESSURI: "vless://masked-test", SOCKS5HURI: "socks5h://masked-test"}, nil
 }
 func (m *fakeProxyManager) CleanupLegacyAggregate(context.Context) (orchestrator.LegacyAggregateCleanup, error) {
 	m.cleanupCalls++

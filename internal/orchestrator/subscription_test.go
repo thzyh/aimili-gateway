@@ -40,6 +40,65 @@ func TestSubscriptionIncludesMainAndReadyManagedVLESSOnly(t *testing.T) {
 	}
 }
 
+func TestSubscriptionIncludesTheOwnedHysteriaMainInbound(t *testing.T) {
+	fixture := newFixture()
+	fixture.store.mainEgress = store.MainEgress{ResourceName: "agw-main", CountryCode: "JP", ProxyType: domain.ProxyTypeDatacenter, CandidateID: "main-node", ExitIP: "203.0.113.20", PublicInboundID: 1, MixedInboundID: 98, PublicPort: 8443, MixedPort: 31000, Enabled: true, UpdatedAt: fixture.now()}
+	fixture.store.protocolModes["agw-main"] = domain.EgressProtocolMode{EgressID: "agw-main", ActiveMode: domain.ProtocolHysteria2QUICTLS, DesiredMode: domain.ProtocolHysteria2QUICTLS, State: domain.ProtocolReady, Version: 2, UpdatedAt: fixture.now()}
+	fixture.xui.snapshot = xui.Snapshot{Inbounds: []xui.Inbound{
+		{ID: 1, Tag: "aimili-reality", Remark: "Aimili Reality", Protocol: "hysteria", Port: 8443},
+		{ID: 98, Tag: "aimili-main-mixed", Remark: "Aimili Gateway main mixed", Protocol: "mixed", Port: 31000},
+	}}
+	fixture.xui.subscriptionProfiles = []xui.PublicProfile{{InboundID: 1, Mode: domain.ProtocolHysteria2QUICTLS, Auth: "test-auth"}}
+
+	result, err := fixture.orchestratorWithMax(t, 3).Subscription(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.InboundCount != 1 || len(result.PublicProfiles) != 1 || result.PublicProfiles[0].Mode != domain.ProtocolHysteria2QUICTLS || len(fixture.xui.subscriptionDesired.InboundIDs) != 1 || fixture.xui.subscriptionDesired.InboundIDs[0] != 1 {
+		t.Fatalf("result=%#v desired=%#v", result, fixture.xui.subscriptionDesired)
+	}
+}
+
+func TestConnectionsUseNeutralPublicURIForHysteria2AndKeepSOCKS5H(t *testing.T) {
+	fixture := newFixture()
+	group, _ := domain.NewProxyGroupIdentity("US", domain.ProxyTypeDatacenter, "hy2-ready")
+	group.Status = domain.ProxyGroupReady
+	group.PublicInboundID = 21
+	group.MixedInboundID = 22
+	group.AimiliSlot = 1
+	group.PublicPort = 20001
+	group.MixedPort = 30001
+	group.ExitIP = "203.0.113.8"
+	fixture.store.groups[group.ID] = group
+	fixture.store.protocolModes[group.ID] = domain.EgressProtocolMode{EgressID: group.ID, ActiveMode: domain.ProtocolHysteria2QUICTLS, DesiredMode: domain.ProtocolHysteria2QUICTLS, State: domain.ProtocolReady, Version: 1, UpdatedAt: fixture.now()}
+	fixture.xui.subscriptionProfiles = []xui.PublicProfile{{InboundID: 21, Mode: domain.ProtocolHysteria2QUICTLS, Auth: "test-auth", ClientID: "must-not-be-used"}}
+
+	connections, err := fixture.orchestratorWithMax(t, 3).Connections(context.Background(), group.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(connections.PublicURI, "hysteria2://") || connections.VLESSURI != "" || connections.VLESSError != "protocol_changed" || !strings.HasPrefix(connections.SOCKS5HURI, "socks5h://") {
+		t.Fatal("neutral connection response is incomplete")
+	}
+	if strings.Contains(connections.PublicURI, "must-not-be-used") {
+		t.Fatal("Hysteria2 connection reused a VLESS identity")
+	}
+}
+
+func TestConnectionsBuildXHTTPPublicURIFromCurrentSubscriptionProfile(t *testing.T) {
+	fixture, group := protocolFixture(t)
+	fixture.store.protocolModes[group.ID] = domain.EgressProtocolMode{EgressID: group.ID, ActiveMode: domain.ProtocolVLESSXHTTPReality, DesiredMode: domain.ProtocolVLESSXHTTPReality, State: domain.ProtocolReady, Version: 1, UpdatedAt: fixture.now()}
+	fixture.xui.subscriptionProfiles = []xui.PublicProfile{{InboundID: group.PublicInboundID, Mode: domain.ProtocolVLESSXHTTPReality, ClientID: "test-client", PublicKey: "test-public", ShortID: "test-short", ServerName: "proxy.example.test", XHTTPPath: "/opaque-path"}}
+
+	connections, err := fixture.orchestratorWithMax(t, 3).Connections(context.Background(), group.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if connections.PublicURI == "" || connections.PublicURI != connections.VLESSURI || !strings.Contains(connections.PublicURI, "type=xhttp") || !strings.Contains(connections.PublicURI, "path=%2Fopaque-path") || strings.Contains(connections.PublicURI, "xtls-rprx-vision") {
+		t.Fatal("XHTTP connection URI does not reflect the current profile")
+	}
+}
+
 func TestCleanupLegacyAggregateRequiresExactOwnedResourceAndSubscriptionCoverage(t *testing.T) {
 	fixture := newFixture()
 	group, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter, "jp-ready")
@@ -90,6 +149,7 @@ func TestReplaceCandidateAssignsExistingSlotAndKeepsStablePorts(t *testing.T) {
 	group.AimiliSlot = 2
 	group.PublicPort = 20000
 	group.MixedPort = 30000
+	group.PublicInboundID = 21
 	group.ExitIP = "203.0.113.7"
 	group.RealityPublicKey = "pk"
 	group.RealityShortID = "sid"
@@ -97,6 +157,7 @@ func TestReplaceCandidateAssignsExistingSlotAndKeepsStablePorts(t *testing.T) {
 	group.CreatedAt = fixture.now()
 	group.UpdatedAt = fixture.now()
 	fixture.store.groups[group.ID] = group
+	fixture.store.protocolModes[group.ID] = domain.EgressProtocolMode{EgressID: group.ID, ActiveMode: domain.ProtocolVLESSTCPRealityVision, DesiredMode: domain.ProtocolVLESSTCPRealityVision, State: domain.ProtocolReady, Version: 1, UpdatedAt: fixture.now()}
 	fixture.aimili.createdSlots = map[int]aimili.Slot{2: {Number: 2, NodeID: "old-node", Country: "JP", CountryName: "日本", ProxyType: "datacenter", ExitIP: "203.0.113.7", Port: 17932, Status: "up", EgressOK: true}}
 	fixture.aimili.candidates = []aimili.Candidate{{ID: "new-node", CountryCode: "KR", CountryName: "韩国", ProxyType: "datacenter", ProbeStatus: "available", IP: "198.51.100.8", LatencyMS: 45}}
 	fixture.aimili.assignedSlot = aimili.Slot{Number: 2, NodeID: "new-node", Country: "KR", CountryName: "韩国", ProxyType: "datacenter", ExitIP: "203.0.113.8", Port: 17932, Status: "up", EgressOK: true}
@@ -117,6 +178,7 @@ func TestReplaceCandidateWaitsForAssignedSlotEgress(t *testing.T) {
 	group.CandidateID = "old-node"
 	group.PublicPort = 20000
 	group.MixedPort = 30000
+	group.PublicInboundID = 21
 	group.ExitIP = "203.0.113.7"
 	group.RealityPublicKey = "pk"
 	group.RealityShortID = "sid"
@@ -124,6 +186,7 @@ func TestReplaceCandidateWaitsForAssignedSlotEgress(t *testing.T) {
 	group.CreatedAt = fixture.now()
 	group.UpdatedAt = fixture.now()
 	fixture.store.groups[group.ID] = group
+	fixture.store.protocolModes[group.ID] = domain.EgressProtocolMode{EgressID: group.ID, ActiveMode: domain.ProtocolVLESSTCPRealityVision, DesiredMode: domain.ProtocolVLESSTCPRealityVision, State: domain.ProtocolReady, Version: 1, UpdatedAt: fixture.now()}
 	fixture.aimili.createdSlots = map[int]aimili.Slot{2: {Number: 2, NodeID: "runtime-old", Country: "JP", CountryName: "日本", ProxyType: "datacenter", ExitIP: "203.0.113.7", Port: 17932, Status: "up", EgressOK: true}}
 	fixture.aimili.candidates = []aimili.Candidate{{ID: "new-node", CountryCode: "KR", CountryName: "韩国", ProxyType: "datacenter", ProbeStatus: "available", IP: "198.51.100.8", LatencyMS: 45}}
 	fixture.aimili.assignedSlot = aimili.Slot{Number: 2, NodeID: "new-node", Country: "KR", CountryName: "韩国", ProxyType: "datacenter", Port: 17932, Status: "starting", EgressOK: false}
@@ -207,5 +270,22 @@ func TestCheckMainWaitsForBothProtocolsAfterXrayReload(t *testing.T) {
 	}
 	if main.SOCKSLatencyMS != 12 || main.VLESSLatencyMS != 18 || fixture.validator.socksCalls != 2 || fixture.validator.vlessCalls != 2 {
 		t.Fatalf("main=%#v socksCalls=%d vlessCalls=%d", main, fixture.validator.socksCalls, fixture.validator.vlessCalls)
+	}
+}
+
+func TestCheckMainValidatesStoredXHTTPProfileWithoutRecreatingLegacyTCP(t *testing.T) {
+	fixture := newFixture()
+	fixture.aimili.mainStatus = aimili.MainStatus{CandidateID: "main-node", Country: "JP", CountryName: "日本", ProxyType: "datacenter", ExitIP: "203.0.113.20", Port: 7928, EgressOK: true, Active: true}
+	fixture.store.mainEgress = store.MainEgress{ResourceName: "agw-main", CandidateID: "main-node", CountryCode: "JP", CountryName: "日本", ProxyType: domain.ProxyTypeDatacenter, ExitIP: "203.0.113.20", PublicInboundID: 1, MixedInboundID: 98, PublicPort: 8443, MixedPort: 30003, Enabled: true, UpdatedAt: fixture.now()}
+	fixture.store.protocolModes["agw-main"] = domain.EgressProtocolMode{EgressID: "agw-main", ActiveMode: domain.ProtocolVLESSXHTTPReality, DesiredMode: domain.ProtocolVLESSXHTTPReality, State: domain.ProtocolReady, Version: 2, UpdatedAt: fixture.now()}
+	fixture.xui.snapshot = xui.Snapshot{Inbounds: []xui.Inbound{{ID: 1, Tag: "aimili-reality", Remark: "Aimili Reality", Protocol: "vless", Port: 8443}}}
+	fixture.xui.subscriptionProfiles = []xui.PublicProfile{{InboundID: 1, Mode: domain.ProtocolVLESSXHTTPReality, ClientID: "test-client", PublicKey: "test-public", ShortID: "test-short", ServerName: "proxy.example.test", XHTTPPath: "/main-test"}}
+
+	main, err := fixture.orchestratorWithMax(t, 3).CheckMain(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fixture.xui.ensureLegacyMainCalls != 0 || len(fixture.validator.publicTargets) != 1 || fixture.validator.publicTargets[0].Mode != domain.ProtocolVLESSXHTTPReality || main.PublicInboundID != 1 || main.ExitIP != "203.0.113.20" {
+		t.Fatalf("main=%#v legacyCalls=%d publicTargets=%#v", main, fixture.xui.ensureLegacyMainCalls, fixture.validator.publicTargets)
 	}
 }

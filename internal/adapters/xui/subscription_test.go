@@ -17,6 +17,7 @@ type subscriptionFixture struct {
 	attached    []int64
 	settingPath int
 	settingVerb string
+	attachCalls int
 }
 
 func (f *subscriptionFixture) handler(w http.ResponseWriter, r *http.Request) {
@@ -30,10 +31,11 @@ func (f *subscriptionFixture) handler(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"success":true,"obj":{"xraySetting":"{\"outbounds\":[],\"routing\":{\"rules\":[]}}","outboundTestUrl":"https://probe.invalid/"}}`)
 	case "/panel/panel/api/inbounds/list":
 		fmt.Fprint(w, `{"success":true,"obj":[
-            {"id":1,"tag":"aimili-reality","remark":"Aimili Reality","protocol":"vless","port":8443},
-            {"id":2,"tag":"agw-jp-dc-vless","remark":"Aimili Gateway agw-jp-dc VLESS","protocol":"vless","port":20000},
+			{"id":1,"tag":"aimili-reality","remark":"Aimili Reality","protocol":"vless","port":8443,"settings":"{\"clients\":[{\"id\":\"stable-client\",\"email\":\"aimili-gateway-subscription\",\"flow\":\"xtls-rprx-vision\"}]}","streamSettings":"{\"network\":\"tcp\",\"security\":\"reality\",\"realitySettings\":{\"serverNames\":[\"proxy.example.test\"],\"shortIds\":[\"short-one\"],\"settings\":{\"publicKey\":\"public-one\",\"fingerprint\":\"chrome\"}}}"},
+			{"id":2,"tag":"agw-jp-dc-vless","remark":"Aimili Gateway agw-jp-dc VLESS","protocol":"vless","port":20000,"settings":"{\"clients\":[{\"id\":\"stable-client\",\"email\":\"aimili-gateway-subscription\",\"flow\":\"\"}]}","streamSettings":"{\"network\":\"xhttp\",\"security\":\"reality\",\"xhttpSettings\":{\"path\":\"/safe-xhttp-path\",\"mode\":\"auto\"},\"realitySettings\":{\"serverNames\":[\"proxy.example.test\"],\"shortIds\":[\"short-two\"],\"settings\":{\"publicKey\":\"public-two\",\"fingerprint\":\"chrome\"}}}"},
             {"id":3,"tag":"agw-jp-dc-mixed","remark":"Aimili Gateway agw-jp-dc mixed","protocol":"mixed","port":30000},
-            {"id":4,"tag":"user-vless","remark":"User VLESS","protocol":"vless","port":40000}
+			{"id":4,"tag":"user-vless","remark":"User VLESS","protocol":"vless","port":40000},
+			{"id":5,"tag":"agw-us-dc-vless","remark":"Aimili Gateway agw-us-dc VLESS","protocol":"hysteria","port":20001,"settings":"{\"version\":2,\"clients\":[{\"auth\":\"stable-auth\",\"email\":\"aimili-gateway-subscription\"}]}","streamSettings":"{\"network\":\"hysteria\",\"security\":\"tls\",\"hysteriaSettings\":{\"version\":2}}"}
         ]}`)
 	case "/panel/panel/api/setting/all":
 		f.settingVerb = r.Method
@@ -63,6 +65,7 @@ func (f *subscriptionFixture) handler(w http.ResponseWriter, r *http.Request) {
 			f.client = map[string]any{"id": 42, "email": client["email"], "subId": client["subId"], "client": client, "inboundIds": []any{}}
 			fmt.Fprint(w, `{"success":true,"obj":null}`)
 		case strings.HasPrefix(r.URL.Path, "/panel/panel/api/clients/") && strings.HasSuffix(r.URL.Path, "/attach"):
+			f.attachCalls++
 			var payload struct {
 				InboundIDs []int64 `json:"inboundIds"`
 			}
@@ -80,6 +83,35 @@ func (f *subscriptionFixture) handler(w http.ResponseWriter, r *http.Request) {
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
+	}
+}
+
+func TestEnsureSubscriptionClientReadsMixedPublicProfilesWithoutReattaching(t *testing.T) {
+	fixture := &subscriptionFixture{client: map[string]any{
+		"id": 42, "email": "aimili-gateway-subscription", "subId": "stable-sub",
+		"uuid": "stable-client", "auth": "stable-auth", "inboundIds": []any{1, 2, 5},
+	}}
+	client := newSubscriptionFixtureClient(t, fixture)
+	subscription, err := client.EnsureSubscriptionClient(context.Background(), SubscriptionDesired{
+		ClientEmail: "aimili-gateway-subscription", ClientUUID: "stable-client", InboundIDs: []int64{1, 2, 5},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fixture.attachCalls != 0 {
+		t.Fatalf("stable attachment set was rewritten %d times", fixture.attachCalls)
+	}
+	if len(subscription.PublicProfiles) != 3 {
+		t.Fatalf("public profile count = %d", len(subscription.PublicProfiles))
+	}
+	wantModes := []string{"vless_tcp_reality_vision", "vless_xhttp_reality", "hysteria2_quic_tls"}
+	for index, profile := range subscription.PublicProfiles {
+		if profile.InboundID != []int64{1, 2, 5}[index] || string(profile.Mode) != wantModes[index] {
+			t.Fatalf("profile %d has wrong identity or mode", index)
+		}
+	}
+	if subscription.PublicProfiles[1].XHTTPPath != "/safe-xhttp-path" || subscription.PublicProfiles[2].Auth != "stable-auth" {
+		t.Fatal("protocol-specific transient material was not resolved")
 	}
 }
 

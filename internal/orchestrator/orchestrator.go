@@ -58,14 +58,18 @@ type Country struct {
 }
 
 type Connections struct {
-	VLESSURI   string `json:"vlessUri"`
-	SOCKS5HURI string `json:"socks5hUri"`
+	ProtocolMode domain.ProtocolMode `json:"protocolMode"`
+	PublicURI    string              `json:"publicUri"`
+	VLESSURI     string              `json:"vlessUri,omitempty"`
+	VLESSError   string              `json:"vlessError,omitempty"`
+	SOCKS5HURI   string              `json:"socks5hUri"`
 }
 
 type SubscriptionResult struct {
-	URL          string    `json:"url"`
-	InboundCount int       `json:"inboundCount"`
-	UpdatedAt    time.Time `json:"updatedAt"`
+	URL            string              `json:"url"`
+	InboundCount   int                 `json:"inboundCount"`
+	UpdatedAt      time.Time           `json:"updatedAt"`
+	PublicProfiles []xui.PublicProfile `json:"-"`
 }
 
 type Error struct{ Code string }
@@ -124,6 +128,7 @@ type mainEgressStore interface {
 }
 
 type protocolModeStore interface {
+	CreateEgressProtocolMode(context.Context, domain.EgressProtocolMode) error
 	GetEgressProtocolMode(context.Context, string) (domain.EgressProtocolMode, error)
 	UpdateEgressProtocolMode(context.Context, domain.EgressProtocolMode, int64) error
 }
@@ -151,6 +156,7 @@ type legacyMainXUIClient interface {
 type proxyValidator interface {
 	ValidateSOCKS5H(context.Context, validator.SOCKSTarget) (validator.Result, error)
 	ValidateVLESS(context.Context, validator.VLESSTarget) (validator.Result, error)
+	ValidatePublic(context.Context, validator.PublicTarget) (validator.Result, error)
 }
 
 type Orchestrator struct {
@@ -383,6 +389,16 @@ func (o *Orchestrator) Enable(ctx context.Context, request EnableRequest) (domai
 	if err := o.save(ctx, &group); err != nil {
 		return domain.ProxyGroup{}, o.rollbackEnable(ctx, &group, managed, "storage_failed")
 	}
+	protocols, ok := o.store.(protocolModeStore)
+	if !ok {
+		return domain.ProxyGroup{}, o.rollbackEnable(ctx, &group, managed, "storage_failed")
+	}
+	if err := protocols.CreateEgressProtocolMode(ctx, domain.EgressProtocolMode{
+		EgressID: group.ID, ActiveMode: domain.ProtocolVLESSTCPRealityVision, DesiredMode: domain.ProtocolVLESSTCPRealityVision,
+		State: domain.ProtocolReady, Version: 1, UpdatedAt: o.config.Now().UTC(),
+	}); err != nil {
+		return domain.ProxyGroup{}, o.rollbackEnable(ctx, &group, managed, "storage_failed")
+	}
 	_, _ = o.Subscription(ctx)
 	return group, nil
 }
@@ -434,7 +450,7 @@ func (o *Orchestrator) Check(ctx context.Context, id string) (domain.ProxyGroup,
 		applySlotSnapshot(&group, checked)
 		_, err = o.validateSOCKS(ctx, group, credentials)
 		if err == nil {
-			_, err = o.validateVLESS(ctx, group, credentials)
+			_, err = o.validateCurrentPublic(ctx, group)
 		}
 	}
 	group.LastCheckedAt = o.config.Now().UTC()
@@ -481,7 +497,7 @@ func (o *Orchestrator) Rotate(ctx context.Context, id string) (domain.ProxyGroup
 		applySlotSnapshot(&group, slot)
 		_, err = o.validateSOCKS(ctx, group, credentials)
 		if err == nil {
-			_, err = o.validateVLESS(ctx, group, credentials)
+			_, err = o.validateCurrentPublic(ctx, group)
 		}
 	}
 	group.LastRotatedAt = o.config.Now().UTC()
@@ -562,33 +578,113 @@ func (o *Orchestrator) Disable(ctx context.Context, id string) error {
 }
 
 func (o *Orchestrator) Connections(ctx context.Context, id string) (Connections, error) {
-	if id == "agw-main" {
-		return o.mainConnections(ctx)
+	persistence, ok := o.store.(protocolModeStore)
+	if !ok {
+		return Connections{}, &Error{Code: "not_configured"}
 	}
-	group, err := o.store.GetProxyGroup(ctx, id)
-	if err != nil {
-		return Connections{}, operationError(err)
-	}
-	if group.Status != domain.ProxyGroupReady {
+	state, err := persistence.GetEgressProtocolMode(ctx, id)
+	if err != nil || state.State != domain.ProtocolReady {
 		return Connections{}, &Error{Code: "not_ready"}
+	}
+	var group domain.ProxyGroup
+	if id == "agw-main" {
+		mainStore, ok := o.store.(mainEgressStore)
+		if !ok {
+			return Connections{}, &Error{Code: "not_configured"}
+		}
+		main, getErr := mainStore.GetMainEgress(ctx)
+		if getErr != nil || !main.Enabled {
+			return Connections{}, &Error{Code: "not_ready"}
+		}
+		status, statusErr := o.aimili.MainStatus(ctx)
+		if statusErr != nil || !status.Active || !status.EgressOK || status.Port != 7928 || status.ExitIP != main.ExitIP {
+			return Connections{}, &Error{Code: "not_ready"}
+		}
+		group = mainEgressGroup(main)
+	} else {
+		group, err = o.store.GetProxyGroup(ctx, id)
+		if err != nil {
+			return Connections{}, operationError(err)
+		}
+		if group.Status != domain.ProxyGroupReady {
+			return Connections{}, &Error{Code: "not_ready"}
+		}
 	}
 	_, credentials, err := o.runtimeInputs(ctx)
 	if err != nil {
 		return Connections{}, err
 	}
-	vless := url.URL{Scheme: "vless", User: url.User(string(credentials.vlessID)), Host: net.JoinHostPort(o.config.PublicHost, fmt.Sprint(group.PublicPort)), Fragment: group.ResourceName}
-	query := vless.Query()
-	query.Set("encryption", "none")
-	query.Set("flow", "xtls-rprx-vision")
-	query.Set("security", "reality")
-	query.Set("sni", group.RealityServerName)
-	query.Set("fp", "chrome")
-	query.Set("pbk", group.RealityPublicKey)
-	query.Set("sid", group.RealityShortID)
-	query.Set("type", "tcp")
-	vless.RawQuery = query.Encode()
+	subscription, err := o.Subscription(ctx)
+	if err != nil {
+		return Connections{}, err
+	}
+	var profile *xui.PublicProfile
+	for index := range subscription.PublicProfiles {
+		candidate := &subscription.PublicProfiles[index]
+		if candidate.InboundID == group.PublicInboundID && candidate.Mode == state.ActiveMode {
+			profile = candidate
+			break
+		}
+	}
+	if profile == nil {
+		return Connections{}, &Error{Code: "subscription_pending"}
+	}
+	publicURI, err := buildPublicURI(o.config.PublicHost, group.PublicPort, group.ResourceName, *profile)
+	if err != nil {
+		return Connections{}, err
+	}
 	socks := url.URL{Scheme: "socks5h", User: url.UserPassword(string(credentials.mixedUsername), string(credentials.mixedPassword)), Host: net.JoinHostPort(o.config.PublicHost, fmt.Sprint(group.MixedPort))}
-	return Connections{VLESSURI: vless.String(), SOCKS5HURI: socks.String()}, nil
+	result := Connections{ProtocolMode: state.ActiveMode, PublicURI: publicURI, SOCKS5HURI: socks.String()}
+	if state.ActiveMode == domain.ProtocolHysteria2QUICTLS {
+		result.VLESSError = "protocol_changed"
+	} else {
+		result.VLESSURI = publicURI
+	}
+	return result, nil
+}
+
+func buildPublicURI(publicHost string, port int, name string, profile xui.PublicProfile) (string, error) {
+	if publicHost == "" || port < 1 || port > 65535 || profile.InboundID < 1 || profile.Mode.Valid() == false {
+		return "", &Error{Code: "invalid_response"}
+	}
+	if profile.Mode == domain.ProtocolHysteria2QUICTLS {
+		if profile.Auth == "" {
+			return "", &Error{Code: "invalid_response"}
+		}
+		uri := url.URL{Scheme: "hysteria2", User: url.User(profile.Auth), Host: net.JoinHostPort(publicHost, fmt.Sprint(port)), Path: "/", Fragment: name}
+		query := uri.Query()
+		query.Set("sni", publicHost)
+		query.Set("insecure", "0")
+		uri.RawQuery = query.Encode()
+		return uri.String(), nil
+	}
+	if profile.ClientID == "" || profile.PublicKey == "" || profile.ShortID == "" || profile.ServerName == "" {
+		return "", &Error{Code: "invalid_response"}
+	}
+	uri := url.URL{Scheme: "vless", User: url.User(profile.ClientID), Host: net.JoinHostPort(publicHost, fmt.Sprint(port)), Fragment: name}
+	query := uri.Query()
+	query.Set("encryption", "none")
+	query.Set("security", "reality")
+	query.Set("sni", profile.ServerName)
+	query.Set("fp", "chrome")
+	query.Set("pbk", profile.PublicKey)
+	query.Set("sid", profile.ShortID)
+	if profile.MLDSA65Verify != "" {
+		query.Set("pqv", profile.MLDSA65Verify)
+	}
+	if profile.Mode == domain.ProtocolVLESSXHTTPReality {
+		if profile.XHTTPPath == "" {
+			return "", &Error{Code: "invalid_response"}
+		}
+		query.Set("type", "xhttp")
+		query.Set("path", profile.XHTTPPath)
+		query.Set("mode", "auto")
+	} else {
+		query.Set("type", "tcp")
+		query.Set("flow", "xtls-rprx-vision")
+	}
+	uri.RawQuery = query.Encode()
+	return uri.String(), nil
 }
 
 func (o *Orchestrator) mainConnections(ctx context.Context) (Connections, error) {
@@ -692,6 +788,34 @@ func (o *Orchestrator) validateSOCKS(ctx context.Context, g domain.ProxyGroup, c
 }
 func (o *Orchestrator) validateVLESS(ctx context.Context, g domain.ProxyGroup, c runtimeCredentials) (validator.Result, error) {
 	return o.validator.ValidateVLESS(ctx, validator.VLESSTarget{XrayPath: o.config.XrayPath, InboundAddress: net.JoinHostPort("127.0.0.1", fmt.Sprint(g.PublicPort)), ClientID: string(c.vlessID), PublicKey: g.RealityPublicKey, ShortID: g.RealityShortID, ServerName: g.RealityServerName, ProbeHost: o.config.ProbeHost, ExpectedExitIP: g.ExitIP, MLDSA65Verify: g.RealityMLDSA65Verify})
+}
+
+func (o *Orchestrator) validateCurrentPublic(ctx context.Context, group domain.ProxyGroup) (validator.Result, error) {
+	persistence, ok := o.store.(protocolModeStore)
+	if !ok {
+		return validator.Result{}, &Error{Code: "not_configured"}
+	}
+	state, err := persistence.GetEgressProtocolMode(ctx, group.ID)
+	if err != nil || state.State != domain.ProtocolReady || !state.ActiveMode.Valid() {
+		return validator.Result{}, &Error{Code: "not_ready"}
+	}
+	subscription, err := o.Subscription(ctx)
+	if err != nil {
+		return validator.Result{}, err
+	}
+	for index := range subscription.PublicProfiles {
+		profile := subscription.PublicProfiles[index]
+		if profile.InboundID != group.PublicInboundID || profile.Mode != state.ActiveMode {
+			continue
+		}
+		return o.validator.ValidatePublic(ctx, validator.PublicTarget{
+			Mode: state.ActiveMode, XrayPath: o.config.XrayPath, InboundAddress: net.JoinHostPort("127.0.0.1", fmt.Sprint(group.PublicPort)),
+			ClientID: profile.ClientID, Auth: profile.Auth, PublicKey: profile.PublicKey, ShortID: profile.ShortID,
+			ServerName: profile.ServerName, MLDSA65Verify: profile.MLDSA65Verify, XHTTPPath: profile.XHTTPPath,
+			TLSServerName: o.config.PublicHost, ProbeHost: o.config.ProbeHost, ExpectedExitIP: group.ExitIP,
+		})
+	}
+	return validator.Result{}, &Error{Code: "subscription_incomplete"}
 }
 
 func (o *Orchestrator) waitForSlot(ctx context.Context, slot int) (aimili.SlotCheck, error) {

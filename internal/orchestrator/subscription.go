@@ -44,12 +44,12 @@ func (o *Orchestrator) Subscription(ctx context.Context) (SubscriptionResult, er
 	}
 	ids := make([]int64, 0, len(groups)+1)
 	for _, inbound := range snapshot.Inbounds {
-		if inbound.ID > 0 && inbound.Tag == "aimili-reality" && inbound.Protocol == "vless" && inbound.Port == 8443 && inbound.Remark == "Aimili Reality" {
+		if inbound.ID > 0 && inbound.Tag == "aimili-reality" && (inbound.Protocol == "vless" || inbound.Protocol == "hysteria") && inbound.Port == 8443 && inbound.Remark == "Aimili Reality" {
 			ids = append(ids, inbound.ID)
 		}
 	}
 	for _, group := range groups {
-		if group.Status == domain.ProxyGroupReady && group.PublicInboundID > 0 {
+		if subscribableProxyGroup(group) && group.PublicInboundID > 0 {
 			ids = append(ids, group.PublicInboundID)
 		}
 	}
@@ -82,7 +82,19 @@ func (o *Orchestrator) Subscription(ctx context.Context) (SubscriptionResult, er
 	if err := persistence.SaveGatewaySubscription(ctx, store.GatewaySubscription{ResourceName: subscription.ResourceName, ClientID: subscription.ClientID, SubscriptionID: subscription.SubscriptionID, UpdatedAt: updatedAt}); err != nil {
 		return SubscriptionResult{}, &Error{Code: "storage_failed"}
 	}
-	return SubscriptionResult{URL: "https://" + o.config.PublicHost + reference.EscapedPath(), InboundCount: len(ids), UpdatedAt: updatedAt}, nil
+	if len(subscription.PublicProfiles) != len(ids) {
+		return SubscriptionResult{}, &Error{Code: "subscription_incomplete"}
+	}
+	return SubscriptionResult{URL: "https://" + o.config.PublicHost + reference.EscapedPath(), InboundCount: len(ids), UpdatedAt: updatedAt, PublicProfiles: append([]xui.PublicProfile(nil), subscription.PublicProfiles...)}, nil
+}
+
+func subscribableProxyGroup(group domain.ProxyGroup) bool {
+	switch group.Status {
+	case domain.ProxyGroupReady, domain.ProxyGroupRotating, domain.ProxyGroupDegraded, domain.ProxyGroupRepairRequired:
+		return true
+	default:
+		return false
+	}
 }
 
 // CleanupLegacyAggregate removes the retired single-entry balancer only after
@@ -205,7 +217,7 @@ func (o *Orchestrator) ReplaceCandidate(ctx context.Context, candidateID, target
 		var socksResult, vlessResult validator.Result
 		socksResult, inputErr = o.validateSOCKS(ctx, group, credentials)
 		if inputErr == nil {
-			vlessResult, inputErr = o.validateVLESS(ctx, group, credentials)
+			vlessResult, inputErr = o.validateCurrentPublic(ctx, group)
 		}
 		if inputErr == nil {
 			group.SOCKSLatencyMS = durationMillis(socksResult.Latency)
@@ -348,6 +360,45 @@ func (o *Orchestrator) checkMain(ctx context.Context, persist bool) (store.MainE
 	if !status.Active || !status.EgressOK || status.Port != 7928 || net.ParseIP(status.ExitIP) == nil {
 		return store.MainEgress{}, &Error{Code: "not_ready"}
 	}
+	if protocols, ok := o.store.(protocolModeStore); ok {
+		if protocol, protocolErr := protocols.GetEgressProtocolMode(ctx, "agw-main"); protocolErr == nil && protocol.State == domain.ProtocolReady && protocol.ActiveMode.Valid() {
+			mainStore, mainOK := o.store.(mainEgressStore)
+			if !mainOK {
+				return store.MainEgress{}, &Error{Code: "not_configured"}
+			}
+			stored, storedErr := mainStore.GetMainEgress(ctx)
+			if storedErr != nil || !stored.Enabled || stored.PublicInboundID < 1 || stored.PublicPort != 8443 || stored.MixedPort < 1 {
+				return store.MainEgress{}, &Error{Code: "not_ready"}
+			}
+			_, credentials, credentialsErr := o.runtimeInputs(ctx)
+			if credentialsErr != nil {
+				return store.MainEgress{}, credentialsErr
+			}
+			group := mainEgressGroup(stored)
+			group.ExitIP = status.ExitIP
+			socksResult, publicResult, validationErr := o.waitForCurrentMainValidation(ctx, group, credentials)
+			if validationErr != nil {
+				return store.MainEgress{}, operationError(validationErr)
+			}
+			now := o.config.Now().UTC()
+			stored.CandidateID = status.CandidateID
+			stored.CountryCode = normalizedMainCountry(status.Country)
+			stored.CountryName = status.CountryName
+			stored.ProxyType = normalizedMainProxyType(status.ProxyType)
+			stored.ExitIP = status.ExitIP
+			stored.SOCKSLatencyMS = durationMillis(socksResult.Latency)
+			stored.VLESSLatencyMS = durationMillis(publicResult.Latency)
+			stored.LastCheckedAt = now
+			stored.LastErrorCode = ""
+			stored.UpdatedAt = now
+			if persist {
+				if err := o.store.SaveMainEgress(ctx, stored); err != nil {
+					return store.MainEgress{}, &Error{Code: "storage_failed"}
+				}
+			}
+			return stored, nil
+		}
+	}
 	manager, ok := o.xui.(legacyMainXUIClient)
 	if !ok {
 		return store.MainEgress{}, &Error{Code: "not_configured"}
@@ -365,14 +416,8 @@ func (o *Orchestrator) checkMain(ctx context.Context, persist bool) (store.MainE
 	if err != nil {
 		return store.MainEgress{}, operationError(err)
 	}
-	proxyType := domain.ProxyType(status.ProxyType)
-	if !proxyType.Valid() {
-		proxyType = domain.ProxyTypeDatacenter
-	}
-	country := strings.ToUpper(status.Country)
-	if len(country) != 2 {
-		country = "ZZ"
-	}
+	proxyType := normalizedMainProxyType(status.ProxyType)
+	country := normalizedMainCountry(status.Country)
 	now := o.config.Now().UTC()
 	result := store.MainEgress{ResourceName: "agw-main", CountryCode: country, CountryName: status.CountryName, ProxyType: proxyType, CandidateID: status.CandidateID, ExitIP: status.ExitIP, PublicInboundID: legacy.VLESSInboundID, MixedInboundID: legacy.MixedInboundID, PublicPort: legacy.VLESSPort, MixedPort: legacy.MixedPort, Enabled: true, VLESSLatencyMS: durationMillis(vlessResult.Latency), SOCKSLatencyMS: durationMillis(socksResult.Latency), LastCheckedAt: now, UpdatedAt: now}
 	if persist {
@@ -381,6 +426,50 @@ func (o *Orchestrator) checkMain(ctx context.Context, persist bool) (store.MainE
 		}
 	}
 	return result, nil
+}
+
+func normalizedMainProxyType(value string) domain.ProxyType {
+	proxyType := domain.ProxyType(strings.ToLower(strings.TrimSpace(value)))
+	if !proxyType.Valid() {
+		return domain.ProxyTypeDatacenter
+	}
+	return proxyType
+}
+
+func normalizedMainCountry(value string) string {
+	country := strings.ToUpper(strings.TrimSpace(value))
+	if len(country) != 2 {
+		return "ZZ"
+	}
+	return country
+}
+
+func (o *Orchestrator) waitForCurrentMainValidation(ctx context.Context, group domain.ProxyGroup, credentials runtimeCredentials) (validator.Result, validator.Result, error) {
+	waitCtx, cancel := context.WithTimeout(ctx, o.config.ReadyTimeout)
+	defer cancel()
+	for {
+		socksResult, socksErr := o.validateSOCKS(waitCtx, group, credentials)
+		publicResult, publicErr := o.validateCurrentPublic(waitCtx, group)
+		if socksErr == nil && publicErr == nil {
+			return socksResult, publicResult, nil
+		}
+		lastErr := socksErr
+		if lastErr == nil {
+			lastErr = publicErr
+		}
+		if !retryableMainValidation(socksErr) || !retryableMainValidation(publicErr) {
+			return validator.Result{}, validator.Result{}, lastErr
+		}
+		timer := time.NewTimer(o.config.PollInterval)
+		select {
+		case <-waitCtx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return validator.Result{}, validator.Result{}, lastErr
+		case <-timer.C:
+		}
+	}
 }
 
 func (o *Orchestrator) waitForMainValidation(ctx context.Context, group domain.ProxyGroup, credentials runtimeCredentials) (validator.Result, validator.Result, error) {

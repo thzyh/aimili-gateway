@@ -63,25 +63,27 @@ type ProxyManager interface {
 	ReplaceCandidate(context.Context, string, string) (domain.ProxyGroup, error)
 	CheckMain(context.Context) (store.MainEgress, error)
 	CleanupLegacyAggregate(context.Context) (orchestrator.LegacyAggregateCleanup, error)
+	SwitchProtocolMode(context.Context, string, domain.ProtocolMode) (domain.EgressProtocolMode, error)
 	MixedPolicy(context.Context) (store.MixedSourcePolicy, error)
 	SetMixedPolicy(context.Context, store.MixedSourcePolicy) error
 	Reconcile(context.Context) orchestrator.ReconcileResult
 }
 
 type server struct {
-	store         *store.Store
-	masterKey     []byte
-	allowedOrigin string
-	now           func() time.Time
-	limiter       *loginLimiter
-	aimiliProbe   adapters.Prober
-	xuiProbe      adapters.Prober
-	expertModeURL string
-	proxyManager  ProxyManager
-	maintenance   MaintenanceService
-	backendLogin  BackendLoginService
-	idempotencyMu sync.Mutex
-	idempotency   map[string]cachedResponse
+	store               *store.Store
+	masterKey           []byte
+	allowedOrigin       string
+	now                 func() time.Time
+	limiter             *loginLimiter
+	aimiliProbe         adapters.Prober
+	xuiProbe            adapters.Prober
+	expertModeURL       string
+	proxyManager        ProxyManager
+	maintenance         MaintenanceService
+	backendLogin        BackendLoginService
+	idempotencyMu       sync.Mutex
+	idempotency         map[string]cachedResponse
+	idempotencyRequests map[string]string
 }
 
 func NewServer(dependencies Dependencies) http.Handler {
@@ -103,18 +105,19 @@ func NewServer(dependencies Dependencies) http.Handler {
 		now = time.Now
 	}
 	server := &server{
-		store:         dependencies.Store,
-		masterKey:     append([]byte(nil), dependencies.MasterKey...),
-		allowedOrigin: origin,
-		now:           now,
-		limiter:       newLoginLimiter(),
-		aimiliProbe:   dependencies.AimiliProbe,
-		xuiProbe:      dependencies.XUIProbe,
-		expertModeURL: dependencies.ExpertModeURL,
-		proxyManager:  dependencies.ProxyManager,
-		maintenance:   dependencies.Maintenance,
-		backendLogin:  dependencies.BackendLogin,
-		idempotency:   make(map[string]cachedResponse),
+		store:               dependencies.Store,
+		masterKey:           append([]byte(nil), dependencies.MasterKey...),
+		allowedOrigin:       origin,
+		now:                 now,
+		limiter:             newLoginLimiter(),
+		aimiliProbe:         dependencies.AimiliProbe,
+		xuiProbe:            dependencies.XUIProbe,
+		expertModeURL:       dependencies.ExpertModeURL,
+		proxyManager:        dependencies.ProxyManager,
+		maintenance:         dependencies.Maintenance,
+		backendLogin:        dependencies.BackendLogin,
+		idempotency:         make(map[string]cachedResponse),
+		idempotencyRequests: make(map[string]string),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/auth/options", server.handleAuthOptions)
@@ -133,6 +136,7 @@ func NewServer(dependencies Dependencies) http.Handler {
 	mux.HandleFunc("POST /api/v1/proxy-groups/{id}/check", server.handleCheckProxyGroup)
 	mux.HandleFunc("POST /api/v1/proxy-groups/{id}/rotate", server.handleRotateProxyGroup)
 	mux.HandleFunc("POST /api/v1/proxy-groups/{id}/replace", server.handleReplaceProxyGroup)
+	mux.HandleFunc("PUT /api/v1/proxy-groups/{id}/protocol-mode", server.handleProtocolMode)
 	mux.HandleFunc("POST /api/v1/proxy-groups/agw-main/check", server.handleCheckMainProxyGroup)
 	mux.HandleFunc("DELETE /api/v1/proxy-groups/{id}", server.handleDisableProxyGroup)
 	mux.HandleFunc("GET /api/v1/proxy-groups/{id}/connections", server.handleConnections)

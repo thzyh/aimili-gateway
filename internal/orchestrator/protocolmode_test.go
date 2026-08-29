@@ -30,7 +30,7 @@ func TestSwitchProtocolModeAppliesVerifiesFinalizesAndPreservesOtherState(t *tes
 	if result.ActiveMode != domain.ProtocolVLESSTCPRealityVision || result.DesiredMode != result.ActiveMode || result.State != domain.ProtocolReady || result.LastErrorCode != "" {
 		t.Fatalf("protocol result = %#v", result)
 	}
-	want := []string{"protocol.apply", "slot.check", "validate.socks", "validate.vless", "protocol.finalize"}
+	want := []string{"protocol.apply", "slot.check", "validate.socks", "validate.public", "protocol.finalize"}
 	if !orderedSubset(fixture.calls, want) {
 		t.Fatalf("calls = %#v, want ordered %#v", fixture.calls, want)
 	}
@@ -44,7 +44,11 @@ func TestSwitchProtocolModeAppliesVerifiesFinalizesAndPreservesOtherState(t *tes
 
 func TestSwitchProtocolModeRollsBackAndRevalidatesOldPath(t *testing.T) {
 	fixture, group := protocolFixture(t)
-	fixture.validator.vlessErrors = []error{&validator.Error{Code: "protocol_failed"}, nil}
+	fixture.validator.publicErrors = []error{&validator.Error{Code: "protocol_failed"}, nil}
+	fixture.xui.profileSequences = [][]xui.PublicProfile{
+		{{InboundID: group.PublicInboundID, Mode: domain.ProtocolVLESSTCPRealityVision, ClientID: "client-id", PublicKey: "public-key", ShortID: "short-id", ServerName: "proxy.example.test"}},
+		{{InboundID: group.PublicInboundID, Mode: domain.ProtocolVLESSXHTTPReality, ClientID: "client-id", PublicKey: "public-key", ShortID: "short-id", ServerName: "proxy.example.test", XHTTPPath: "/old-path"}},
+	}
 	client := &fakeProtocolTransaction{calls: &fixture.calls}
 	orchestrator := fixture.orchestratorWithMax(t, 3)
 	orchestrator.protocolTransaction = client
@@ -53,7 +57,7 @@ func TestSwitchProtocolModeRollsBackAndRevalidatesOldPath(t *testing.T) {
 	if codeOf(err) != "protocol_failed" {
 		t.Fatalf("error = %v", err)
 	}
-	want := []string{"protocol.apply", "validate.vless", "protocol.rollback", "validate.vless"}
+	want := []string{"protocol.apply", "validate.public", "protocol.rollback", "validate.public"}
 	if !orderedSubset(fixture.calls, want) || contains(fixture.calls, "protocol.finalize") {
 		t.Fatalf("rollback calls = %#v", fixture.calls)
 	}
@@ -65,7 +69,7 @@ func TestSwitchProtocolModeRollsBackAndRevalidatesOldPath(t *testing.T) {
 
 func TestSwitchProtocolModeMarksRepairWhenRollbackOrOldVerificationFails(t *testing.T) {
 	fixture, group := protocolFixture(t)
-	fixture.validator.vlessErrors = []error{&validator.Error{Code: "protocol_failed"}, &validator.Error{Code: "protocol_failed"}}
+	fixture.validator.publicErrors = []error{&validator.Error{Code: "protocol_failed"}, &validator.Error{Code: "protocol_failed"}}
 	client := &fakeProtocolTransaction{calls: &fixture.calls, rollbackError: errors.New("rollback failed")}
 	orchestrator := fixture.orchestratorWithMax(t, 3)
 	orchestrator.protocolTransaction = client
@@ -77,6 +81,26 @@ func TestSwitchProtocolModeMarksRepairWhenRollbackOrOldVerificationFails(t *test
 	state := fixture.store.protocolModes[group.ID]
 	if state.State != domain.ProtocolRepairRequired || state.ActiveMode != domain.ProtocolVLESSXHTTPReality {
 		t.Fatalf("repair state = %#v", state)
+	}
+}
+
+func TestSwitchProtocolModeMarksRepairWhenFinalStateCannotBePersistedAfterFinalize(t *testing.T) {
+	fixture, group := protocolFixture(t)
+	fixture.store.protocolUpdateErrors = map[int]error{3: errors.New("storage unavailable")}
+	client := &fakeProtocolTransaction{calls: &fixture.calls}
+	orchestrator := fixture.orchestratorWithMax(t, 3)
+	orchestrator.protocolTransaction = client
+
+	_, err := orchestrator.SwitchProtocolMode(context.Background(), group.ID, domain.ProtocolVLESSTCPRealityVision)
+	if codeOf(err) != "repair_required" {
+		t.Fatalf("error = %v", err)
+	}
+	state := fixture.store.protocolModes[group.ID]
+	if state.State != domain.ProtocolRepairRequired || state.ActiveMode != domain.ProtocolVLESSTCPRealityVision || state.DesiredMode != domain.ProtocolVLESSTCPRealityVision || state.LastErrorCode != "final_state_persist_failed" {
+		t.Fatalf("finalized runtime was not recorded as repair-required: %#v", state)
+	}
+	if !contains(fixture.calls, "protocol.finalize") || contains(fixture.calls, "protocol.rollback") {
+		t.Fatalf("finalized transaction was incorrectly rolled back: %#v", fixture.calls)
 	}
 }
 
@@ -117,7 +141,7 @@ func TestSwitchMainProtocolChecksMainTunnelAndMixedPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.State != domain.ProtocolReady || fixture.validator.socksCalls != 1 || fixture.validator.vlessCalls != 1 {
+	if result.State != domain.ProtocolReady || fixture.validator.socksCalls != 1 || len(fixture.validator.publicTargets) != 1 {
 		t.Fatalf("main path was not fully checked: result=%#v calls=%#v", result, fixture.calls)
 	}
 	if client.applied.InboundTag != "aimili-reality" || client.applied.Port != 8443 {

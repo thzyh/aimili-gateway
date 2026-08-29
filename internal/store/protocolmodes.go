@@ -142,6 +142,27 @@ func (s *Store) GetEgressOperationByRequestHash(ctx context.Context, egressID, k
 	return value, nil
 }
 
+func (s *Store) CompleteEgressOperation(ctx context.Context, operationID string, completedAt time.Time) error {
+	if !safeOperationID.MatchString(operationID) || completedAt.IsZero() {
+		return errors.New("invalid egress operation completion")
+	}
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE egress_operations
+		SET phase = 'completed', completed_at = ?
+		WHERE operation_id = ? AND phase = 'started'`, completedAt.UTC().UnixMilli(), operationID)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed != 1 {
+		return errors.New("egress operation completion conflict")
+	}
+	return nil
+}
+
 func validateEgressOperation(value EgressOperation) error {
 	if !safeOperationID.MatchString(value.OperationID) || !strings.HasPrefix(value.EgressID, "agw-") ||
 		(value.Kind != "main_assign" && value.Kind != "protocol_switch") ||

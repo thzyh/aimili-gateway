@@ -53,7 +53,7 @@ func (s *server) handleRefreshAimiliSettings(response http.ResponseWriter, reque
 		writeAPIError(response, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	key, hit, ok := s.idempotencyKey(response, request, session)
+	key, hit, ok := s.idempotencyKey(response, request, session, country)
 	if !ok {
 		return
 	}
