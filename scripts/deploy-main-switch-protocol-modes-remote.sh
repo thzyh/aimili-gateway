@@ -31,6 +31,19 @@ resource_gate() {
     printf 'MemAvailable=%sMiB SwapFree=%sMiB\n' "$((memory / 1024))" "$((swap / 1024))"
 }
 
+server_xray_pid() {
+    local expected process resolved matches=()
+    expected="$(readlink -f /usr/local/x-ui/bin/xray-linux-amd64)"
+    for process in /proc/[0-9]*; do
+        resolved="$(readlink -f "$process/exe" 2>/dev/null || true)"
+        if [[ "$resolved" == "$expected" ]]; then
+            matches+=("${process##*/}")
+        fi
+    done
+    [[ "${#matches[@]}" -eq 1 ]] || return 1
+    printf '%s\n' "${matches[0]}"
+}
+
 create_joint_backup() {
     install -d -m 0700 "$BACKUP_ROOT"
     cp -a /usr/local/bin/aimili-gateway "$BACKUP_ROOT/aimili-gateway"
@@ -52,7 +65,7 @@ for source, name in ((sys.argv[2], "aimili-gateway.db"), (sys.argv[3], "x-ui.db"
 PY
     ufw status numbered > "$BACKUP_ROOT/ufw-status.txt"
     python3 "$VERIFY" fingerprint --xui-db "$XUI_DB" > "$BACKUP_ROOT/unmanaged-resources.json"
-    pgrep -f '^/usr/local/x-ui/bin/xray-linux-amd64' | sort -n | paste -sd, - > "$BACKUP_ROOT/xray.pid"
+    server_xray_pid > "$BACKUP_ROOT/xray.pid"
     printf '%s\n' '{"status":"not_started"}' > "$BACKUP_ROOT/non-target-probes.json"
     : > "$BACKUP_ROOT/ufw-added.txt"
     for item in \
@@ -147,7 +160,7 @@ managed = [row for row in rows if row[0] == 'aimili-reality' or str(row[0]).star
 assert sum(row[1] in (8443,20000,20001,20002) for row in managed) == 4
 assert sum(row[1] in (30000,30001,30002,31000) for row in managed) == 4
 PY
-    current_xray="$(pgrep -f '^/usr/local/x-ui/bin/xray-linux-amd64' | sort -n | paste -sd, -)"
+    current_xray="$(server_xray_pid)"
     [[ -n "$current_xray" && "$current_xray" == "$(<"$BACKUP_ROOT/xray.pid")" ]]
     unmanaged_after="$(python3 "$VERIFY" fingerprint --xui-db "$XUI_DB")"
     [[ "$unmanaged_after" == "$(<"$BACKUP_ROOT/unmanaged-resources.json")" ]]

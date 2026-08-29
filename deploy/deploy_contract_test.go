@@ -349,6 +349,8 @@ func TestMainSwitchProtocolDeploymentHasBoundedStagesAndRollback(t *testing.T) {
 		"main.assignment.read",
 		"schema_migrations WHERE version=10",
 		"protocol_stage2_postcheck",
+		"server_xray_pid",
+		`readlink -f "$process/exe"`,
 		"127.0.0.1:9080/healthz",
 		"unmanaged_after",
 		"chmod 0755 /usr/local/bin/aimili-gateway",
