@@ -200,7 +200,7 @@ func (o *Orchestrator) Pool(ctx context.Context) ([]domain.ProxyGroup, error) {
 		if main.EgressOK {
 			status, lastError = domain.ProxyGroupReady, ""
 		}
-		mainGroup := domain.ProxyGroup{ID: "agw-main", ResourceName: "agw-main", CountryCode: country, CountryName: main.CountryName, ProxyType: proxyType, CandidateID: "main-tun0", Status: status, EgressSource: domain.EgressSourceMain, AimiliSlot: -1, VLESSPort: 8443, MixedPort: o.config.MainMixedPort, ExitIP: main.ExitIP, LastErrorCode: lastError, Version: 1, LastCheckedAt: o.config.Now().UTC()}
+		mainGroup := domain.ProxyGroup{ID: "agw-main", ResourceName: "agw-main", CountryCode: country, CountryName: main.CountryName, ProxyType: proxyType, CandidateID: main.CandidateID, Status: status, EgressSource: domain.EgressSourceMain, AimiliSlot: -1, PublicPort: 8443, MixedPort: o.config.MainMixedPort, ExitIP: main.ExitIP, LastErrorCode: lastError, Version: 1, LastCheckedAt: o.config.Now().UTC()}
 		if source, ok := o.store.(mainEgressStore); ok {
 			if stored, storedErr := source.GetMainEgress(ctx); storedErr == nil {
 				mainGroup.CandidateLatencyMS = stored.CandidateLatencyMS

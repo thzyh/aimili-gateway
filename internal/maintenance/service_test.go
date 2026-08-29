@@ -26,7 +26,7 @@ func TestServiceReturnsOnlyApprovedMaintenanceSummaries(t *testing.T) {
 		slots: []aimili.Slot{{Number: 1, EgressOK: true}},
 	}
 	groups := []domain.ProxyGroup{
-		{ID: "agw-jp-res-a", ResourceName: "agw-jp-res-a", Status: domain.ProxyGroupReady, VLESSInboundID: 11, MixedInboundID: 12, ConfigFingerprint: "fingerprint-one", LastCheckedAt: now},
+		{ID: "agw-jp-res-a", ResourceName: "agw-jp-res-a", Status: domain.ProxyGroupReady, PublicInboundID: 11, MixedInboundID: 12, ConfigFingerprint: "fingerprint-one", LastCheckedAt: now},
 	}
 	xuiSource := &fakeXUISource{snapshot: xui.Snapshot{
 		Inbounds:        []xui.Inbound{{ID: 11, Tag: "agw-jp-res-a-vless", Protocol: "vless"}, {ID: 12, Tag: "agw-jp-res-a-mixed", Protocol: "mixed"}},
@@ -71,7 +71,7 @@ func TestServiceReturnsOnlyApprovedMaintenanceSummaries(t *testing.T) {
 }
 
 func TestServiceChecksManagedSlotsAndRepairsOnlyManagedResources(t *testing.T) {
-	groups := []domain.ProxyGroup{{ID: "agw-jp-dc", ResourceName: "agw-jp-dc", Status: domain.ProxyGroupReady, AimiliSlot: 7, VLESSInboundID: 11, MixedInboundID: 12}}
+	groups := []domain.ProxyGroup{{ID: "agw-jp-dc", ResourceName: "agw-jp-dc", Status: domain.ProxyGroupReady, AimiliSlot: 7, PublicInboundID: 11, MixedInboundID: 12}}
 	aimiliSource := &fakeAimiliSource{slots: []aimili.Slot{{Number: 7, EgressOK: true}}}
 	groupSource := &fakeGroupSource{groups: groups}
 	service, err := New(Config{MaxOnline: 1}, aimiliSource, &fakeXUISource{}, groupSource, &fakeAccountStatus{})

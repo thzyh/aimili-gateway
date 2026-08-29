@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 const (
 	controlReadTimeout      = 8 * time.Second
 	controlOperationTimeout = 75 * time.Second
+	mainAssignmentTimeout   = 195 * time.Second
 	controlResponseLimit    = 16 << 10
 )
 
@@ -96,6 +98,7 @@ type Slot struct {
 type SlotCheck = Slot
 
 type MainStatus struct {
+	CandidateID string `json:"candidate_id"`
 	Country     string `json:"country"`
 	CountryName string `json:"country_name"`
 	ProxyType   string `json:"proxy_type"`
@@ -103,6 +106,29 @@ type MainStatus struct {
 	Port        int    `json:"port"`
 	EgressOK    bool   `json:"egress_ok"`
 	Active      bool   `json:"active"`
+}
+
+type MainAssignmentRequest struct {
+	CandidateID                string `json:"candidateId"`
+	Country                    string `json:"country"`
+	ProxyType                  string `json:"proxyType"`
+	ExpectedCurrentCandidateID string `json:"expectedCurrentCandidateId"`
+	IdempotencyKey             string `json:"idempotencyKey"`
+}
+
+type MainAssignmentStatus struct {
+	OperationID    string  `json:"operation_id"`
+	State          string  `json:"state"`
+	OldCandidateID string  `json:"old_candidate_id"`
+	NewCandidateID string  `json:"new_candidate_id"`
+	Country        string  `json:"country"`
+	ProxyType      string  `json:"proxy_type"`
+	Port           int     `json:"port"`
+	DNSVerified    bool    `json:"dns_verified"`
+	ExitVerified   bool    `json:"exit_verified"`
+	Available      bool    `json:"available"`
+	ErrorCode      string  `json:"error_code"`
+	ExpiresAt      float64 `json:"expires_at"`
 }
 
 type AdminStatus struct {
@@ -283,6 +309,82 @@ func (c *Client) MainStatus(ctx context.Context) (MainStatus, error) {
 		return MainStatus{}, &AdapterError{Code: "invalid_response"}
 	}
 	return result, nil
+}
+
+var safeMainOperationID = regexp.MustCompile(`^[A-Za-z0-9_-]{8,128}$`)
+
+func (c *Client) MainAssignment(ctx context.Context) (MainAssignmentStatus, error) {
+	var result MainAssignmentStatus
+	if err := c.do(ctx, c.readTimeout, http.MethodGet, "control/v1/main/assignment", nil, &result); err != nil {
+		return MainAssignmentStatus{}, err
+	}
+	if !validMainAssignmentStatus(result) {
+		return MainAssignmentStatus{}, &AdapterError{Code: "invalid_response"}
+	}
+	return result, nil
+}
+
+func (c *Client) StageMainAssignment(ctx context.Context, input MainAssignmentRequest) (MainAssignmentStatus, error) {
+	input.CandidateID = strings.TrimSpace(input.CandidateID)
+	input.Country = strings.ToUpper(strings.TrimSpace(input.Country))
+	input.ProxyType = strings.ToLower(strings.TrimSpace(input.ProxyType))
+	input.ExpectedCurrentCandidateID = strings.TrimSpace(input.ExpectedCurrentCandidateID)
+	input.IdempotencyKey = strings.TrimSpace(input.IdempotencyKey)
+	if input.CandidateID == "" || len(input.CandidateID) > 256 ||
+		len(input.Country) != 2 || input.Country[0] < 'A' || input.Country[0] > 'Z' || input.Country[1] < 'A' || input.Country[1] > 'Z' ||
+		!domainProxyTypeValid(input.ProxyType) || input.ExpectedCurrentCandidateID == "" || len(input.ExpectedCurrentCandidateID) > 256 ||
+		len(input.IdempotencyKey) < 8 || len(input.IdempotencyKey) > 256 || strings.IndexFunc(input.IdempotencyKey, func(character rune) bool { return character < 0x21 || character == 0x7f }) >= 0 {
+		return MainAssignmentStatus{}, &AdapterError{Code: "invalid_request"}
+	}
+	var result MainAssignmentStatus
+	if err := c.do(ctx, mainAssignmentTimeout, http.MethodPost, "control/v1/main/assign", input, &result); err != nil {
+		return MainAssignmentStatus{}, err
+	}
+	if !validMainAssignmentStatus(result) || result.State != "pending_commit" {
+		return MainAssignmentStatus{}, &AdapterError{Code: "invalid_response"}
+	}
+	return result, nil
+}
+
+func (c *Client) CommitMainAssignment(ctx context.Context, operationID string) (MainAssignmentStatus, error) {
+	return c.finishMainAssignment(ctx, operationID, "commit")
+}
+
+func (c *Client) RollbackMainAssignment(ctx context.Context, operationID string) (MainAssignmentStatus, error) {
+	return c.finishMainAssignment(ctx, operationID, "rollback")
+}
+
+func (c *Client) finishMainAssignment(ctx context.Context, operationID, action string) (MainAssignmentStatus, error) {
+	operationID = strings.TrimSpace(operationID)
+	if !safeMainOperationID.MatchString(operationID) || (action != "commit" && action != "rollback") {
+		return MainAssignmentStatus{}, &AdapterError{Code: "invalid_request"}
+	}
+	var result MainAssignmentStatus
+	path := fmt.Sprintf("control/v1/main/assign/%s/%s", operationID, action)
+	if err := c.do(ctx, mainAssignmentTimeout, http.MethodPost, path, struct{}{}, &result); err != nil {
+		return MainAssignmentStatus{}, err
+	}
+	if !validMainAssignmentStatus(result) {
+		return MainAssignmentStatus{}, &AdapterError{Code: "invalid_response"}
+	}
+	return result, nil
+}
+
+func validMainAssignmentStatus(result MainAssignmentStatus) bool {
+	if result.State == "idle" {
+		return result.OperationID == "" && result.OldCandidateID == "" && result.NewCandidateID == ""
+	}
+	switch result.State {
+	case "switching", "pending_commit", "committed", "rolling_back", "rolled_back", "repair_required":
+	default:
+		return false
+	}
+	return safeMainOperationID.MatchString(result.OperationID) &&
+		result.OldCandidateID != "" && len(result.OldCandidateID) <= 256 &&
+		result.NewCandidateID != "" && len(result.NewCandidateID) <= 256 &&
+		len(result.Country) == 2 && result.Country == strings.ToUpper(result.Country) &&
+		domainProxyTypeValid(result.ProxyType) && result.Port == 7928 &&
+		len(result.ErrorCode) <= 64 && result.ExpiresAt >= 0
 }
 
 func domainProxyTypeValid(value string) bool { return value == "residential" || value == "datacenter" }

@@ -23,7 +23,7 @@ func TestEnableCreatesAndValidatesOneStableProxyGroup(t *testing.T) {
 		t.Fatal(err)
 	}
 	if group.Status != domain.ProxyGroupReady || group.AimiliSlot != 0 || group.ExitIP != "203.0.113.7" ||
-		group.VLESSPort != 20000 || group.MixedPort != 30000 || group.VLESSInboundID == 0 || group.MixedInboundID == 0 {
+		group.PublicPort != 20000 || group.MixedPort != 30000 || group.PublicInboundID == 0 || group.MixedInboundID == 0 {
 		t.Fatalf("unexpected ready group: %#v", group)
 	}
 	want := []string{"slot.create", "slot.check", "xui.ensure", "validate.socks", "validate.vless"}
@@ -59,7 +59,7 @@ func TestEnableReservesAFreeAimiliSlotBeforePersistingSecondGroup(t *testing.T) 
 	existing, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter, "jp-existing")
 	existing.Status = domain.ProxyGroupReady
 	existing.AimiliSlot = 0
-	existing.VLESSPort = 20000
+	existing.PublicPort = 20000
 	existing.MixedPort = 30000
 	existing.ExitIP = "203.0.113.7"
 	fixture.store.groups[existing.ID] = existing
@@ -84,7 +84,7 @@ func TestEnableRotatesANewSlotUntilItsExitIsUnique(t *testing.T) {
 	existing, _ := domain.NewProxyGroupIdentity("US", domain.ProxyTypeDatacenter, "existing")
 	existing.Status = domain.ProxyGroupReady
 	existing.ExitIP = "203.0.113.7"
-	existing.VLESSPort = 20000
+	existing.PublicPort = 20000
 	existing.MixedPort = 30000
 	existing.CreatedAt = fixture.now().Add(-time.Hour)
 	fixture.store.groups[existing.ID] = existing
@@ -113,7 +113,7 @@ func TestEnableRollsBackAfterThreeDuplicateExitRotations(t *testing.T) {
 	existing, _ := domain.NewProxyGroupIdentity("US", domain.ProxyTypeDatacenter, "existing")
 	existing.Status = domain.ProxyGroupReady
 	existing.ExitIP = "203.0.113.7"
-	existing.VLESSPort = 20000
+	existing.PublicPort = 20000
 	existing.MixedPort = 30000
 	fixture.store.groups[existing.ID] = existing
 	fixture.aimili.rotatedExitIPs = []string{"203.0.113.7", "203.0.113.7", "203.0.113.7"}
@@ -173,7 +173,7 @@ func TestPoolIncludesHealthyLegacyMainAsFourthEgress(t *testing.T) {
 			break
 		}
 	}
-	if main == nil || main.EgressSource != domain.EgressSourceMain || main.VLESSPort != 8443 || main.ExitIP != "203.0.113.20" {
+	if main == nil || main.EgressSource != domain.EgressSourceMain || main.PublicPort != 8443 || main.ExitIP != "203.0.113.20" {
 		t.Fatalf("main group=%#v pool=%#v", main, pool)
 	}
 }
@@ -228,7 +228,7 @@ func TestCheckNeverRotatesAndRotateKeepsEntryStable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rotated.ExitIP != "203.0.113.8" || rotated.VLESSPort != created.VLESSPort || rotated.MixedPort != created.MixedPort || rotated.ResourceName != created.ResourceName {
+	if rotated.ExitIP != "203.0.113.8" || rotated.PublicPort != created.PublicPort || rotated.MixedPort != created.MixedPort || rotated.ResourceName != created.ResourceName {
 		t.Fatalf("rotate changed stable entry: before=%#v after=%#v", created, rotated)
 	}
 }
@@ -238,7 +238,7 @@ func TestCheckSynchronizesRuntimeCandidateIdentity(t *testing.T) {
 	group, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter, "stale-node")
 	group.Status = domain.ProxyGroupReady
 	group.AimiliSlot = 2
-	group.VLESSPort = 20000
+	group.PublicPort = 20000
 	group.MixedPort = 30000
 	group.ExitIP = "203.0.113.7"
 	group.RealityPublicKey = "pk"

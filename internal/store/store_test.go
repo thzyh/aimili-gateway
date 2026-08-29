@@ -156,12 +156,13 @@ func TestMigrationFivePreservesV1BProxyGroupAndOperation(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = opened.Close() })
 	var candidateID, publicKey string
-	var version, operationCount int
-	if err := opened.db.QueryRowContext(ctx, `SELECT candidate_id, reality_public_key, version FROM proxy_groups WHERE id = 'agw-jp-dc'`).Scan(&candidateID, &publicKey, &version); err != nil {
+	var version, operationCount, publicPort int
+	var publicInboundID int64
+	if err := opened.db.QueryRowContext(ctx, `SELECT candidate_id, reality_public_key, version, public_port, public_inbound_id FROM proxy_groups WHERE id = 'agw-jp-dc'`).Scan(&candidateID, &publicKey, &version, &publicPort, &publicInboundID); err != nil {
 		t.Fatal(err)
 	}
-	if candidateID != "" || publicKey != "public-key" || version != 3 {
-		t.Fatalf("V1-B proxy group changed during migration: candidate=%q publicKey=%q version=%d", candidateID, publicKey, version)
+	if candidateID != "" || publicKey != "public-key" || version != 3 || publicPort != 20000 || publicInboundID != 11 {
+		t.Fatalf("V1-B proxy group changed during migration: candidate=%q publicKey=%q version=%d publicPort=%d publicInboundID=%d", candidateID, publicKey, version, publicPort, publicInboundID)
 	}
 	if err := opened.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM proxy_operations WHERE proxy_group_id = 'agw-jp-dc'`).Scan(&operationCount); err != nil {
 		t.Fatal(err)
@@ -172,7 +173,7 @@ func TestMigrationFivePreservesV1BProxyGroupAndOperation(t *testing.T) {
 	if _, err := opened.db.ExecContext(ctx, `
 		INSERT INTO proxy_groups(
 			id, resource_name, country_code, proxy_type, candidate_id, status,
-			aimili_slot, vless_port, mixed_port, version, created_at, updated_at
+			aimili_slot, public_port, mixed_port, version, created_at, updated_at
 		) VALUES('agw-jp-dc-new', 'agw-jp-dc-new', 'JP', 'datacenter', 'candidate-new',
 			'provisioning', 1, 20001, 30001, 1, 1700000010000, 1700000010000)
 	`); err != nil {

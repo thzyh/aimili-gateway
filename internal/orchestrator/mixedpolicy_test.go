@@ -133,7 +133,7 @@ func TestRepairManagedPersistsRealityMaterialReturnedByXUI(t *testing.T) {
 	}
 	group := fixture.store.groups["agw-jp-dc-a"]
 	if group.RealityPublicKey != "current-public-key" || group.RealityShortID != "current-short-id" || group.RealityServerName != "proxy.example.test" ||
-		group.VLESSInboundID != 51 || group.MixedInboundID != 52 || group.ResourceName != "agw-jp-dc-previous" {
+		group.PublicInboundID != 51 || group.MixedInboundID != 52 || group.ResourceName != "agw-jp-dc-previous" {
 		t.Fatalf("repaired Reality material was not persisted: %#v", group)
 	}
 }
@@ -167,8 +167,8 @@ func mixedPolicyGroup(id string, vlessPort, mixedPort, slot int) domain.ProxyGro
 	now := newFixture().now()
 	return domain.ProxyGroup{
 		ID: id, ResourceName: id, CountryCode: "JP", ProxyType: domain.ProxyTypeDatacenter,
-		Status: domain.ProxyGroupReady, AimiliSlot: slot, VLESSPort: vlessPort, MixedPort: mixedPort,
-		ExitIP: "203.0.113.7", ConfigFingerprint: "old-" + id, VLESSInboundID: int64(slot*2 + 1), MixedInboundID: int64(slot*2 + 2),
+		Status: domain.ProxyGroupReady, AimiliSlot: slot, PublicPort: vlessPort, MixedPort: mixedPort,
+		ExitIP: "203.0.113.7", ConfigFingerprint: "old-" + id, PublicInboundID: int64(slot*2 + 1), MixedInboundID: int64(slot*2 + 2),
 		RealityPublicKey: "pk", RealityShortID: "sid", RealityServerName: "proxy.example.test",
 		Version: 1, CreatedAt: now, UpdatedAt: now,
 	}

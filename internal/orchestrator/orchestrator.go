@@ -302,7 +302,7 @@ func (o *Orchestrator) Enable(ctx context.Context, request EnableRequest) (domai
 	identity.CandidateIP = request.CandidateIP
 	identity.CandidateLatencyMS = request.CandidateLatencyMS
 	identity.LastSeenAt = now
-	identity.VLESSPort = vlessPort
+	identity.PublicPort = vlessPort
 	identity.MixedPort = mixedPort
 	identity.CreatedAt = now
 	identity.UpdatedAt = now
@@ -327,7 +327,7 @@ func (o *Orchestrator) Enable(ctx context.Context, request EnableRequest) (domai
 	}
 	group.ExitIP = checked.ExitIP
 	managed, err := o.xui.EnsureManagedGroup(ctx, xui.DesiredGroup{
-		ResourceName: group.ResourceName, SOCKSPort: checked.Port, VLESSPort: group.VLESSPort, MixedPort: group.MixedPort,
+		ResourceName: group.ResourceName, SOCKSPort: checked.Port, VLESSPort: group.PublicPort, MixedPort: group.MixedPort,
 		VLESSClientID: string(credentials.vlessID), MixedUsername: string(credentials.mixedUsername), MixedPassword: string(credentials.mixedPassword),
 		MixedSourceRestrictionEnabled: policy.Enabled, MixedSourceCIDRs: prefixStrings(policy.CIDRs),
 		RealityTarget: "127.0.0.1:443", RealityServerName: o.config.PublicHost,
@@ -336,7 +336,7 @@ func (o *Orchestrator) Enable(ctx context.Context, request EnableRequest) (domai
 		return domain.ProxyGroup{}, o.rollbackEnable(ctx, &group, xui.ManagedGroup{}, errorCode(err))
 	}
 	group.ConfigFingerprint = managed.Fingerprint
-	group.VLESSInboundID = managed.VLESSInboundID
+	group.PublicInboundID = managed.VLESSInboundID
 	group.MixedInboundID = managed.MixedInboundID
 	group.RealityPublicKey = managed.PublicKey
 	group.RealityShortID = managed.ShortID
@@ -548,7 +548,7 @@ func (o *Orchestrator) Connections(ctx context.Context, id string) (Connections,
 	if err != nil {
 		return Connections{}, err
 	}
-	vless := url.URL{Scheme: "vless", User: url.User(string(credentials.vlessID)), Host: net.JoinHostPort(o.config.PublicHost, fmt.Sprint(group.VLESSPort)), Fragment: group.ResourceName}
+	vless := url.URL{Scheme: "vless", User: url.User(string(credentials.vlessID)), Host: net.JoinHostPort(o.config.PublicHost, fmt.Sprint(group.PublicPort)), Fragment: group.ResourceName}
 	query := vless.Query()
 	query.Set("encryption", "none")
 	query.Set("flow", "xtls-rprx-vision")
@@ -591,7 +591,7 @@ func (o *Orchestrator) mainConnections(ctx context.Context) (Connections, error)
 	if len(country) != 2 {
 		country = "ZZ"
 	}
-	if err := o.store.SaveMainEgress(ctx, store.MainEgress{ResourceName: "agw-main", CountryCode: country, CountryName: status.CountryName, ProxyType: proxyType, ExitIP: status.ExitIP, VLESSInboundID: legacy.VLESSInboundID, MixedInboundID: legacy.MixedInboundID, VLESSPort: legacy.VLESSPort, MixedPort: legacy.MixedPort, Enabled: true, UpdatedAt: o.config.Now().UTC()}); err != nil {
+	if err := o.store.SaveMainEgress(ctx, store.MainEgress{ResourceName: "agw-main", CountryCode: country, CountryName: status.CountryName, ProxyType: proxyType, CandidateID: status.CandidateID, ExitIP: status.ExitIP, PublicInboundID: legacy.VLESSInboundID, MixedInboundID: legacy.MixedInboundID, PublicPort: legacy.VLESSPort, MixedPort: legacy.MixedPort, Enabled: true, UpdatedAt: o.config.Now().UTC()}); err != nil {
 		return Connections{}, &Error{Code: "storage_failed"}
 	}
 	vless := url.URL{Scheme: "vless", User: url.User(legacy.ClientID), Host: net.JoinHostPort(o.config.PublicHost, fmt.Sprint(legacy.VLESSPort)), Fragment: "aimili-main"}
@@ -641,7 +641,7 @@ func (o *Orchestrator) allocatePorts(groups []domain.ProxyGroup) (int, int, bool
 	usedV := map[int]bool{}
 	usedM := map[int]bool{}
 	for _, g := range groups {
-		usedV[g.VLESSPort] = true
+		usedV[g.PublicPort] = true
 		usedM[g.MixedPort] = true
 	}
 	v, m := 0, 0
@@ -663,7 +663,7 @@ func (o *Orchestrator) validateSOCKS(ctx context.Context, g domain.ProxyGroup, c
 	return o.validator.ValidateSOCKS5H(ctx, validator.SOCKSTarget{Address: net.JoinHostPort("127.0.0.1", fmt.Sprint(g.MixedPort)), Username: string(c.mixedUsername), Password: string(c.mixedPassword), ProbeHost: o.config.ProbeHost, ExpectedExitIP: g.ExitIP})
 }
 func (o *Orchestrator) validateVLESS(ctx context.Context, g domain.ProxyGroup, c runtimeCredentials) (validator.Result, error) {
-	return o.validator.ValidateVLESS(ctx, validator.VLESSTarget{XrayPath: o.config.XrayPath, InboundAddress: net.JoinHostPort("127.0.0.1", fmt.Sprint(g.VLESSPort)), ClientID: string(c.vlessID), PublicKey: g.RealityPublicKey, ShortID: g.RealityShortID, ServerName: g.RealityServerName, ProbeHost: o.config.ProbeHost, ExpectedExitIP: g.ExitIP, MLDSA65Verify: g.RealityMLDSA65Verify})
+	return o.validator.ValidateVLESS(ctx, validator.VLESSTarget{XrayPath: o.config.XrayPath, InboundAddress: net.JoinHostPort("127.0.0.1", fmt.Sprint(g.PublicPort)), ClientID: string(c.vlessID), PublicKey: g.RealityPublicKey, ShortID: g.RealityShortID, ServerName: g.RealityServerName, ProbeHost: o.config.ProbeHost, ExpectedExitIP: g.ExitIP, MLDSA65Verify: g.RealityMLDSA65Verify})
 }
 
 func (o *Orchestrator) waitForSlot(ctx context.Context, slot int) (aimili.SlotCheck, error) {
@@ -770,7 +770,7 @@ func (o *Orchestrator) rollbackEnable(ctx context.Context, g *domain.ProxyGroup,
 	return &Error{Code: "repair_required"}
 }
 func managedFromGroup(g domain.ProxyGroup) xui.ManagedGroup {
-	return xui.ManagedGroup{ResourceName: g.ResourceName, VLESSInboundID: g.VLESSInboundID, MixedInboundID: g.MixedInboundID, VLESSInboundTag: g.ResourceName + "-vless", MixedInboundTag: g.ResourceName + "-mixed", OutboundTag: g.ResourceName + "-socks", Fingerprint: g.ConfigFingerprint, PublicKey: g.RealityPublicKey, ShortID: g.RealityShortID, ServerName: g.RealityServerName, MLDSA65Verify: g.RealityMLDSA65Verify}
+	return xui.ManagedGroup{ResourceName: g.ResourceName, VLESSInboundID: g.PublicInboundID, MixedInboundID: g.MixedInboundID, VLESSInboundTag: g.ResourceName + "-vless", MixedInboundTag: g.ResourceName + "-mixed", OutboundTag: g.ResourceName + "-socks", Fingerprint: g.ConfigFingerprint, PublicKey: g.RealityPublicKey, ShortID: g.RealityShortID, ServerName: g.RealityServerName, MLDSA65Verify: g.RealityMLDSA65Verify}
 }
 func prefixStrings(values []netip.Prefix) []string {
 	result := make([]string, len(values))

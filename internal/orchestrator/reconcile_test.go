@@ -56,7 +56,7 @@ func TestReconcileLeavesCandidatesBeyondCapacityOnStandby(t *testing.T) {
 	if len(pool) != 2 || pool[0].Status != domain.ProxyGroupReady || pool[1].Status != domain.ProxyGroupStandby {
 		t.Fatalf("standby candidate was not retained in the visible pool: %#v", pool)
 	}
-	if pool[0].ID == pool[1].ID || pool[1].ExitIP != "" || pool[1].VLESSPort != 0 || pool[1].MixedPort != 0 {
+	if pool[0].ID == pool[1].ID || pool[1].ExitIP != "" || pool[1].PublicPort != 0 || pool[1].MixedPort != 0 {
 		t.Fatalf("standby entry exposed live-only data: %#v", pool[1])
 	}
 }
@@ -107,7 +107,7 @@ func TestReconcileAdoptsV1BLegacyGroupFromItsExistingSlot(t *testing.T) {
 	legacy.CountryName = "日本"
 	legacy.Status = domain.ProxyGroupReady
 	legacy.AimiliSlot = 0
-	legacy.VLESSPort = 20000
+	legacy.PublicPort = 20000
 	legacy.MixedPort = 30000
 	legacy.ExitIP = "203.0.113.10"
 	legacy.CreatedAt = time.Unix(1699999000, 0).UTC()

@@ -53,11 +53,11 @@ type ProxyGroup struct {
 	Status               ProxyGroupStatus
 	EgressSource         EgressSource
 	AimiliSlot           int
-	VLESSPort            int
+	PublicPort           int
 	MixedPort            int
 	ExitIP               string
 	ConfigFingerprint    string
-	VLESSInboundID       int64
+	PublicInboundID      int64
 	MixedInboundID       int64
 	RealityPublicKey     string
 	RealityShortID       string

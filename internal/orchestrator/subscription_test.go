@@ -17,10 +17,10 @@ func TestSubscriptionIncludesMainAndReadyManagedVLESSOnly(t *testing.T) {
 	fixture := newFixture()
 	group, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter, "jp-ready")
 	group.Status = domain.ProxyGroupReady
-	group.VLESSInboundID = 11
+	group.PublicInboundID = 11
 	group.MixedInboundID = 12
 	group.AimiliSlot = 0
-	group.VLESSPort = 20000
+	group.PublicPort = 20000
 	group.MixedPort = 30000
 	fixture.store.groups[group.ID] = group
 	fixture.xui.snapshot = xui.Snapshot{Inbounds: []xui.Inbound{
@@ -44,7 +44,7 @@ func TestCleanupLegacyAggregateRequiresExactOwnedResourceAndSubscriptionCoverage
 	fixture := newFixture()
 	group, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter, "jp-ready")
 	group.Status = domain.ProxyGroupReady
-	group.VLESSInboundID = 11
+	group.PublicInboundID = 11
 	fixture.store.groups[group.ID] = group
 	fixture.store.aggregate = store.AggregateConfig{ResourceName: "agw-aggregate-vless", VLESSInboundID: 9, VLESSPort: 21000, Enabled: true, UpdatedAt: fixture.now()}
 	fixture.xui.snapshot = xui.Snapshot{Inbounds: []xui.Inbound{
@@ -88,7 +88,7 @@ func TestReplaceCandidateAssignsExistingSlotAndKeepsStablePorts(t *testing.T) {
 	group, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter, "old-node")
 	group.Status = domain.ProxyGroupReady
 	group.AimiliSlot = 2
-	group.VLESSPort = 20000
+	group.PublicPort = 20000
 	group.MixedPort = 30000
 	group.ExitIP = "203.0.113.7"
 	group.RealityPublicKey = "pk"
@@ -104,7 +104,7 @@ func TestReplaceCandidateAssignsExistingSlotAndKeepsStablePorts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.CandidateID != "new-node" || updated.AimiliSlot != 2 || updated.VLESSPort != 20000 || updated.MixedPort != 30000 || updated.ExitIP != "203.0.113.8" {
+	if updated.CandidateID != "new-node" || updated.AimiliSlot != 2 || updated.PublicPort != 20000 || updated.MixedPort != 30000 || updated.ExitIP != "203.0.113.8" {
 		t.Fatalf("updated=%#v", updated)
 	}
 }
@@ -115,7 +115,7 @@ func TestReplaceCandidateWaitsForAssignedSlotEgress(t *testing.T) {
 	group.Status = domain.ProxyGroupReady
 	group.AimiliSlot = 2
 	group.CandidateID = "old-node"
-	group.VLESSPort = 20000
+	group.PublicPort = 20000
 	group.MixedPort = 30000
 	group.ExitIP = "203.0.113.7"
 	group.RealityPublicKey = "pk"
@@ -147,7 +147,7 @@ func TestReplaceCandidateMarksRepairWhenRuntimeRollbackFails(t *testing.T) {
 	group.Status = domain.ProxyGroupReady
 	group.AimiliSlot = 2
 	group.CandidateID = "stale-db-node"
-	group.VLESSPort = 20000
+	group.PublicPort = 20000
 	group.MixedPort = 30000
 	group.ExitIP = "203.0.113.7"
 	group.RealityPublicKey = "pk"

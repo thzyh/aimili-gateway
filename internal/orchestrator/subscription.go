@@ -47,8 +47,8 @@ func (o *Orchestrator) Subscription(ctx context.Context) (SubscriptionResult, er
 		}
 	}
 	for _, group := range groups {
-		if group.Status == domain.ProxyGroupReady && group.VLESSInboundID > 0 {
-			ids = append(ids, group.VLESSInboundID)
+		if group.Status == domain.ProxyGroupReady && group.PublicInboundID > 0 {
+			ids = append(ids, group.PublicInboundID)
 		}
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
@@ -266,7 +266,7 @@ func (o *Orchestrator) CheckMain(ctx context.Context) (store.MainEgress, error) 
 	if err != nil {
 		return store.MainEgress{}, operationError(err)
 	}
-	mainGroup := domain.ProxyGroup{VLESSPort: 8443, MixedPort: o.config.MainMixedPort, ExitIP: status.ExitIP, RealityPublicKey: legacy.PublicKey, RealityShortID: legacy.ShortID, RealityServerName: legacy.ServerName, RealityMLDSA65Verify: legacy.MLDSA65Verify}
+	mainGroup := domain.ProxyGroup{PublicPort: 8443, MixedPort: o.config.MainMixedPort, ExitIP: status.ExitIP, RealityPublicKey: legacy.PublicKey, RealityShortID: legacy.ShortID, RealityServerName: legacy.ServerName, RealityMLDSA65Verify: legacy.MLDSA65Verify}
 	socksResult, vlessResult, err := o.waitForMainValidation(ctx, mainGroup, credentials)
 	if err != nil {
 		return store.MainEgress{}, operationError(err)
@@ -280,7 +280,7 @@ func (o *Orchestrator) CheckMain(ctx context.Context) (store.MainEgress, error) 
 		country = "ZZ"
 	}
 	now := o.config.Now().UTC()
-	result := store.MainEgress{ResourceName: "agw-main", CountryCode: country, CountryName: status.CountryName, ProxyType: proxyType, ExitIP: status.ExitIP, VLESSInboundID: legacy.VLESSInboundID, MixedInboundID: legacy.MixedInboundID, VLESSPort: legacy.VLESSPort, MixedPort: legacy.MixedPort, Enabled: true, VLESSLatencyMS: durationMillis(vlessResult.Latency), SOCKSLatencyMS: durationMillis(socksResult.Latency), LastCheckedAt: now, UpdatedAt: now}
+	result := store.MainEgress{ResourceName: "agw-main", CountryCode: country, CountryName: status.CountryName, ProxyType: proxyType, CandidateID: status.CandidateID, ExitIP: status.ExitIP, PublicInboundID: legacy.VLESSInboundID, MixedInboundID: legacy.MixedInboundID, PublicPort: legacy.VLESSPort, MixedPort: legacy.MixedPort, Enabled: true, VLESSLatencyMS: durationMillis(vlessResult.Latency), SOCKSLatencyMS: durationMillis(socksResult.Latency), LastCheckedAt: now, UpdatedAt: now}
 	if err := o.store.SaveMainEgress(ctx, result); err != nil {
 		return store.MainEgress{}, &Error{Code: "storage_failed"}
 	}

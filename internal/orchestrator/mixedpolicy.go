@@ -59,7 +59,7 @@ func (o *Orchestrator) SetMixedPolicy(ctx context.Context, requested store.Mixed
 	sort.Slice(groups, func(i, j int) bool { return groups[i].ID < groups[j].ID })
 	updates := make([]mixedPolicyUpdate, 0, len(groups))
 	for _, group := range groups {
-		if group.VLESSInboundID <= 0 || group.MixedInboundID <= 0 {
+		if group.PublicInboundID <= 0 || group.MixedInboundID <= 0 {
 			continue
 		}
 		slot, checkErr := o.aimili.CheckSlot(ctx, group.AimiliSlot)
@@ -102,7 +102,7 @@ func (o *Orchestrator) SetMixedPolicy(ctx context.Context, requested store.Mixed
 		changed := update.group
 		changed.ResourceName = update.updated.ResourceName
 		changed.ConfigFingerprint = update.updated.Fingerprint
-		changed.VLESSInboundID = update.updated.VLESSInboundID
+		changed.PublicInboundID = update.updated.VLESSInboundID
 		changed.MixedInboundID = update.updated.MixedInboundID
 		changed.RealityPublicKey = update.updated.PublicKey
 		changed.RealityShortID = update.updated.ShortID
@@ -158,7 +158,7 @@ func (o *Orchestrator) failMixedPolicyUpdate(ctx context.Context, oldPolicy, des
 
 func (o *Orchestrator) desiredGroup(group domain.ProxyGroup, socksPort int, credentials runtimeCredentials, policy store.MixedSourcePolicy) xui.DesiredGroup {
 	return xui.DesiredGroup{
-		ResourceName: group.ResourceName, SOCKSPort: socksPort, VLESSPort: group.VLESSPort, MixedPort: group.MixedPort,
+		ResourceName: group.ResourceName, SOCKSPort: socksPort, VLESSPort: group.PublicPort, MixedPort: group.MixedPort,
 		VLESSClientID: string(credentials.vlessID), MixedUsername: string(credentials.mixedUsername), MixedPassword: string(credentials.mixedPassword),
 		MixedSourceRestrictionEnabled: policy.Enabled, MixedSourceCIDRs: prefixStrings(policy.CIDRs),
 		RealityTarget: "127.0.0.1:443", RealityServerName: o.config.PublicHost,

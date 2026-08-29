@@ -78,12 +78,12 @@ func TestProxyGroupCarriesRestartSafeManagedMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	group.VLESSInboundID = 11
+	group.PublicInboundID = 11
 	group.MixedInboundID = 12
 	group.RealityPublicKey = "public-key"
 	group.RealityShortID = "short-id"
 	group.RealityServerName = "www.microsoft.com"
-	if group.VLESSInboundID != 11 || group.MixedInboundID != 12 || group.RealityPublicKey == "" || group.RealityShortID == "" || group.RealityServerName == "" {
+	if group.PublicInboundID != 11 || group.MixedInboundID != 12 || group.RealityPublicKey == "" || group.RealityShortID == "" || group.RealityServerName == "" {
 		t.Fatalf("managed metadata was not retained: %#v", group)
 	}
 }

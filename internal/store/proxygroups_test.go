@@ -21,9 +21,9 @@ func TestProxyGroupRoundTripAndOptimisticVersion(t *testing.T) {
 	}
 	group.CountryName = "日本"
 	group.AimiliSlot = 2
-	group.VLESSPort = 20000
+	group.PublicPort = 20000
 	group.MixedPort = 30000
-	group.VLESSInboundID = 41
+	group.PublicInboundID = 41
 	group.MixedInboundID = 42
 	group.RealityPublicKey = "public-key"
 	group.RealityShortID = "short-id"
@@ -40,7 +40,7 @@ func TestProxyGroupRoundTripAndOptimisticVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	if actual.CountryCode != "JP" || actual.ProxyType != domain.ProxyTypeDatacenter || actual.Version != 1 ||
-		actual.VLESSInboundID != 41 || actual.MixedInboundID != 42 || actual.RealityPublicKey != "public-key" ||
+		actual.PublicInboundID != 41 || actual.MixedInboundID != 42 || actual.RealityPublicKey != "public-key" ||
 		actual.RealityShortID != "short-id" || actual.RealityServerName != "www.microsoft.com" || actual.RealityMLDSA65Verify != "verify-material" {
 		t.Fatalf("unexpected group: %#v", actual)
 	}
@@ -76,7 +76,7 @@ func TestProxyGroupUpdateCanRebindManagedResourceNameWithoutChangingStableID(t *
 		t.Fatal(err)
 	}
 	group.AimiliSlot = 2
-	group.VLESSPort = 20000
+	group.PublicPort = 20000
 	group.MixedPort = 30000
 	group.CreatedAt = now
 	group.UpdatedAt = now
@@ -103,7 +103,7 @@ func TestProxyGroupCountryAndTypeAreUnique(t *testing.T) {
 	ctx := context.Background()
 	group, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeResidential)
 	group.AimiliSlot = 1
-	group.VLESSPort = 20001
+	group.PublicPort = 20001
 	group.MixedPort = 30001
 	group.CreatedAt = time.Now().UTC()
 	group.UpdatedAt = group.CreatedAt
@@ -114,7 +114,7 @@ func TestProxyGroupCountryAndTypeAreUnique(t *testing.T) {
 	duplicate.ID = "agw-jp-res-duplicate"
 	duplicate.ResourceName = duplicate.ID
 	duplicate.AimiliSlot = 2
-	duplicate.VLESSPort = 20002
+	duplicate.PublicPort = 20002
 	duplicate.MixedPort = 30002
 	if err := database.CreateProxyGroup(ctx, duplicate); !errors.Is(err, ErrProxyGroupExists) {
 		t.Fatalf("expected duplicate error, got %v", err)
@@ -129,7 +129,7 @@ func TestProxyGroupsAllowMultipleCandidatesInOneCountryAndType(t *testing.T) {
 	second, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter, "candidate-two")
 	for index, group := range []*domain.ProxyGroup{&first, &second} {
 		group.AimiliSlot = index + 1
-		group.VLESSPort = 20100 + index
+		group.PublicPort = 20100 + index
 		group.MixedPort = 30100 + index
 		group.CandidateIP = "198.51.100.10"
 		group.CandidateLatencyMS = 25 + index
@@ -257,16 +257,16 @@ func TestAggregateConfigRoundTrip(t *testing.T) {
 
 func TestMainEgressMetadataPersistsWithoutUsingASlot(t *testing.T) {
 	database := openTestStore(t)
-	want := MainEgress{ResourceName: "agw-main", CountryCode: "JP", CountryName: "日本", ProxyType: domain.ProxyTypeDatacenter, ExitIP: "203.0.113.20", VLESSInboundID: 1, MixedInboundID: 99, VLESSPort: 8443, MixedPort: 31000, Enabled: true, UpdatedAt: time.Unix(1700000000, 0).UTC()}
+	want := MainEgress{ResourceName: "agw-main", CountryCode: "JP", CountryName: "日本", ProxyType: domain.ProxyTypeDatacenter, CandidateID: "main-candidate", ExitIP: "203.0.113.20", PublicInboundID: 1, MixedInboundID: 99, PublicPort: 8443, MixedPort: 31000, Enabled: true, UpdatedAt: time.Unix(1700000000, 0).UTC()}
 	if err := database.SaveMainEgress(context.Background(), want); err != nil {
 		t.Fatal(err)
 	}
-	var name string
-	var vlessPort, mixedPort, enabled int
-	if err := database.db.QueryRowContext(context.Background(), `SELECT resource_name, vless_port, mixed_port, enabled FROM main_egress WHERE id=1`).Scan(&name, &vlessPort, &mixedPort, &enabled); err != nil {
+	var name, candidateID string
+	var publicPort, mixedPort, enabled int
+	if err := database.db.QueryRowContext(context.Background(), `SELECT resource_name, candidate_id, public_port, mixed_port, enabled FROM main_egress WHERE id=1`).Scan(&name, &candidateID, &publicPort, &mixedPort, &enabled); err != nil {
 		t.Fatal(err)
 	}
-	if name != "agw-main" || vlessPort != 8443 || mixedPort != 31000 || enabled != 1 {
-		t.Fatalf("main metadata=%q %d %d %d", name, vlessPort, mixedPort, enabled)
+	if name != "agw-main" || candidateID != "main-candidate" || publicPort != 8443 || mixedPort != 31000 || enabled != 1 {
+		t.Fatalf("main metadata=%q %q %d %d %d", name, candidateID, publicPort, mixedPort, enabled)
 	}
 }

@@ -245,7 +245,7 @@ func (service *Service) XUI(ctx context.Context) (XUISummary, error) {
 		outbounds[outbound.Tag] = outbound
 	}
 	for _, group := range groups {
-		vless, vlessOK := inbounds[group.VLESSInboundID]
+		vless, vlessOK := inbounds[group.PublicInboundID]
 		if vlessOK && vless.Tag == group.ResourceName+"-vless" && vless.Protocol == "vless" {
 			result.ManagedVLESSCount++
 		} else {
