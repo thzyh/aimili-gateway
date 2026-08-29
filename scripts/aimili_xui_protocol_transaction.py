@@ -916,6 +916,24 @@ class ProtocolTransactionManager:
                 database.rollback()
                 raise TransactionError("database_restore_failed") from error
 
+    def _database_matches_snapshot(self, snapshot: dict[str, Any]) -> bool:
+        row = snapshot["row"]
+        clients = snapshot["clients"]
+        current = self._load_inbound_row(row["id"])
+        if any(current[column] != row[column] for column in MUTATED_INBOUND_COLUMNS):
+            return False
+        with closing(self._connect()) as database:
+            try:
+                for client in clients:
+                    stored = database.execute(
+                        "SELECT auth FROM clients WHERE id=?", (client["id"],)
+                    ).fetchone()
+                    if stored is None or stored[0] != client.get("auth", ""):
+                        return False
+            except sqlite3.Error as error:
+                raise TransactionError("database_read_failed") from error
+        return True
+
     def _verify_applied(self, source: dict[str, Any], template: dict[str, Any]) -> None:
         tags = self.runner.list_inbound_tags()
         if template["tag"] not in tags:
@@ -1033,7 +1051,8 @@ class ProtocolTransactionManager:
                 self.runner.add_inbound(old_path)
             finally:
                 old_path.unlink(missing_ok=True)
-        self._restore_database(snapshot)
+        if not self._database_matches_snapshot(snapshot):
+            self._restore_database(snapshot)
         tags = self.runner.list_inbound_tags()
         if request["inboundTag"] not in tags:
             raise TransactionError("rollback_verification_failed")

@@ -333,6 +333,81 @@ func TestV1CFreshGatewayBootstrapPreservesServiceBoundaries(t *testing.T) {
 	}
 }
 
+func TestMainSwitchProtocolDeploymentHasBoundedStagesAndRollback(t *testing.T) {
+	script := readAsset(t, "../scripts/deploy-main-switch-protocol-modes-remote.sh")
+	for _, required := range []string{
+		"set -euo pipefail",
+		"MemAvailable",
+		"SwapFree",
+		"163840",
+		"524288",
+		"aimili-gateway.db",
+		"x-ui.db",
+		"xray-runtime.json",
+		"aimilivpn-state",
+		"Caddyfile",
+		"ufw-status.txt",
+		"unmanaged-resources.json",
+		"xray.pid",
+		"non-target-probes.json",
+		"rollback_current_stage",
+		"CURRENT_STAGE",
+		"install -d -m 0700 -o aimili-gateway -g aimili-gateway /var/lib/aimili-gateway/protocol-spool/requests",
+		"install -d -m 0750 -o root -g aimili-gateway /var/lib/aimili-gateway/protocol-spool/results",
+		"install -d -m 0700 -o root -g root /var/lib/aimili-xui-protocol-transaction/transactions",
+		"install -d -m 0700 -o root -g root /var/lib/aimili-xui-protocol-transaction/profiles",
+		"/usr/lib/aimili-gateway/aimili_xui_protocol_transaction.py",
+		"/etc/systemd/system/aimili-gateway.service",
+		`config["protocolRequestDir"]`,
+		`config["protocolResultDir"]`,
+		`config["protocolTimeoutSeconds"]`,
+		"8443/udp",
+		"20000/udp",
+		"20001/udp",
+		"20002/udp",
+	} {
+		if !strings.Contains(script, required) {
+			t.Fatalf("main switch deployment missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		"set -x",
+		"ufw allow 443/udp",
+		"20000:20002/udp",
+		"20000-20002/udp",
+		"ufw allow 20000:20002",
+		"systemctl restart x-ui.service", // 在线协议级不得全局重载 Xray。
+		"reset --hard",
+		"rm -rf /opt/aimilivpn",
+	} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("main switch deployment contains unsafe behavior %q", forbidden)
+		}
+	}
+}
+
+func TestMainSwitchLocalVerifierRunsBothRepositoriesAndSafeRemoteChecks(t *testing.T) {
+	script := readAsset(t, "../scripts/verify-main-switch-protocol-modes.ps1")
+	for _, required := range []string{
+		"python -m unittest discover -s tests -v",
+		"go test ./... -count=1",
+		"npm --prefix web test -- --run",
+		"npm --prefix web run build",
+		"python -m unittest discover -s scripts -p \"test_*.py\" -v",
+		"git diff --check",
+		"verify-main-switch-protocol-modes-remote.py",
+	} {
+		if !strings.Contains(script, required) {
+			t.Fatalf("main switch local verifier missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"password", "Cookie", "Authorization: Bearer", "subscriptionUrl"} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("main switch local verifier contains secret-bearing input %q", forbidden)
+		}
+	}
+}
+
 func readAsset(t *testing.T, relativePath string) string {
 	t.Helper()
 	contents, err := os.ReadFile(filepath.FromSlash(relativePath))

@@ -1,6 +1,6 @@
 # 主连接安全切换与每出口独立协议模式实施计划
 
-状态：设计已批准，准备执行
+状态：执行中；Task 1–10 已完成，等待 Task 11 VPS 阶梯部署
 
 > **执行要求：** 使用 `superpowers:executing-plans` 逐任务实施；所有功能与故障修复必须使用 `superpowers:test-driven-development`，先观察新增测试按预期失败，再写最小实现。完成前使用 `superpowers:verification-before-completion`，并按项目规则执行一次 `ponytail-review`。
 
@@ -11,6 +11,8 @@
 **技术栈：** Python 3 标准库与 `unittest`、Go 1.26、SQLite、Vue 3 + TypeScript、Vitest/Vite、Xray HandlerService、systemd path/oneshot、UFW。
 
 **设计依据：** `docs/superpowers/specs/2026-08-29-main-switch-protocol-modes-design.md`
+
+**执行记录（2026-08-29）：** Task 1–9 已按提交边界完成；Task 10 已完成部署契约、SQLite 锁故障注入、远程安全门、运行手册、验收模板、双仓库全量本地验证和 Ponytail 复杂度审查。Task 11–12 尚未执行，不得将本地通过解释为生产完成。
 
 ## 全局硬约束
 
@@ -414,26 +416,26 @@ git commit -m "feat: add per-egress protocol controls"
 - Create: `docs/verification/2026-08-29-main-switch-protocol-modes.md`
 - Modify: `README.md`
 
-- [ ] **Step 1：写部署与回滚脚本契约测试**
+- [x] **Step 1：写部署与回滚脚本契约测试**
 
 先测试脚本必须：受限联合备份、资源门检查、精确 UFW UDP 规则、禁止 `443/udp` 和端口范围、逐级开关、失败自动回滚、非 Gateway 资源前后指纹、Xray PID/非目标探针、敏感输出过滤。
 
-- [ ] **Step 2：运行契约测试确认红灯并实现脚本**
+- [x] **Step 2：运行契约测试确认红灯并实现脚本**
 
 ```powershell
 go test ./deploy -run 'MainSwitch|Protocol|Rollback' -v
 python -m unittest scripts.test_protocol_transaction_integration -v
 ```
 
-- [ ] **Step 3：运行本地 fake-Xray/fake-3x-ui 故障注入**
+- [x] **Step 3：运行本地 fake-Xray/fake-3x-ui 故障注入**
 
 覆盖每个事务阶段崩溃、重复请求、数据库锁、订阅失败、公网验证失败、非目标长连接持续、Gateway/AimiliVPN 重启恢复。集成夹具只使用伪凭据，结束后清理临时文件。
 
-- [ ] **Step 4：更新运维文档和验证记录模板**
+- [x] **Step 4：更新运维文档和验证记录模板**
 
 说明备份、恢复、`repair_required` 处置、证书续期验证、云 UDP 边界诊断；验证记录只写安全状态、计数、端口、PID 是否变化和脱敏错误码。
 
-- [ ] **Step 5：两个仓库全量本地验证**
+- [x] **Step 5：两个仓库全量本地验证**
 
 ```powershell
 python -m unittest discover -s tests -v
@@ -444,7 +446,7 @@ python -m unittest discover -s scripts -p "test_*.py" -v
 git diff --check
 ```
 
-- [ ] **Step 6：执行复杂度审查、修正后再验证并提交**
+- [x] **Step 6：执行复杂度审查、修正后再验证并提交**
 
 使用 `ponytail-review` 只检查可删除的推测性抽象、重复封装和不必要扩展点；逐项核对设计硬约束后再修改，不能为减行删除事务边界、安全检查或回滚。若发生结构调整，重跑本任务全部本地验证。
 

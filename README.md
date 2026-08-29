@@ -4,6 +4,8 @@ Aimili Gateway 是 AimiliVPN 与 3x-ui 的轻量统一控制台项目。统一�
 
 ## 当前阶段
 
+主连接安全切换与每出口独立协议模式的增量设计已经批准，功能分支正在按 TDD 完成本地实现与部署验证。该增量保持四个逻辑出口，每个出口只保留一个公网协议配置；mixed/SOCKS5H 不参与协议切换。正式运行手册见 `docs/runbooks/main-switch-protocol-modes.md`，生产结果只以 `docs/verification/2026-08-29-main-switch-protocol-modes.md` 中实际标记为通过的层级为准。未完成 VPS 阶梯验收前，下面记录的 Test 风格纯 TCP/Vision 生产基线仍是现网事实。
+
 2026-08-29 最新生产基线已经完成：Gateway 使用 3x-ui 原生多入站订阅客户端，将主连接 `8443` 和三个受管 VLESS 入站组成一个订阅；导入兼容客户端后得到四个独立 VLESS 节点，mixed/SOCKS5H 不进入该订阅。旧 `21000` 聚合入站、客户端引用、balancer 和 observatory 已安全清理，原聚合接口固定返回弃用错误，不会重新创建历史入口。
 
 V1-C 低内存按需资源池继续运行在 512 MiB VPS：三个受管出口位分别提供 VLESS 与 mixed/SOCKS5H，AimiliVPN 主连接通过 `8443` 和 `agw-main-mixed` 作为第 4 个出口。页面提供固定出口位、候选替换、按国家刷新、真实延迟检测和“复制 VLESS 订阅”；只有真实协议验证为 `ready` 的记录允许复制或导出。最新生产证据见 `docs/verification/2026-08-29-test-style-subscription.md`。
@@ -21,6 +23,10 @@ Gateway 只管理 `agw-` 命名空间；不接管非受管 3x-ui/Xray 资源，�
 - `docs/superpowers/specs/2026-08-27-advanced-settings-unified-credentials-design.md`：已批准的 V1-D 正式设计，定义高级设置、三账户同步、服务端自动代登录、SOCKS5H 来源开关和状态简化。
 - `docs/superpowers/specs/2026-08-28-xui-upgrade-capacity-country-refresh-design.md`：3x-ui v3.7.0、按国家刷新、出口去重和 512 MiB 容量阶梯的批准设计。
 - `docs/superpowers/specs/2026-08-29-test-style-subscription-design.md`：已实现的 3x-ui 原生多入站 VLESS 订阅、主连接检测和旧聚合迁移设计。
+- `docs/superpowers/specs/2026-08-29-main-switch-protocol-modes-design.md`：已批准的主连接两阶段事务、每出口单协议模式与混合协议订阅增量设计。
+- `docs/superpowers/plans/2026-08-29-main-switch-protocol-modes.md`：本增量的 TDD、本地故障注入和 VPS 阶梯实施计划。
+- `docs/runbooks/main-switch-protocol-modes.md`：本增量的备份、回滚、证书、UDP 边界与 `repair_required` 运维手册。
+- `docs/verification/2026-08-29-main-switch-protocol-modes.md`：本增量的脱敏本地与生产验收记录。
 - `docs/superpowers/plans/2026-08-29-test-style-subscription.md`：Test 风格订阅的实施与生产迁移计划。
 - `docs/verification/2026-08-29-test-style-subscription.md`：四节点订阅、双协议、历史清理和低内存生产验收记录。
 - `docs/superpowers/plans/2026-08-28-xui-upgrade-capacity-country-refresh.md`：本次增量的实施与生产验收计划。

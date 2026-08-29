@@ -569,6 +569,21 @@ class ProtocolTransactionTests(unittest.TestCase):
                 operation_dir = self.snapshot_dir / OPERATION_ID
                 self.assertFalse(operation_dir.exists())
 
+    def test_database_lock_before_commit_restores_runtime_without_false_repair_state(self):
+        original = self._inbound_row(41)
+        runner = FakeRunner()
+        locked = sqlite3.connect(self.database_path, timeout=0.1)
+        try:
+            locked.execute("BEGIN IMMEDIATE")
+            with self.assertRaisesRegex(MODULE.TransactionError, "database_write_failed"):
+                self._manager(runner=runner).apply(self._request())
+        finally:
+            locked.rollback()
+            locked.close()
+        self.assertEqual(original, self._inbound_row(41))
+        self.assertIn("agw-slot-one-vless", runner.runtime_tags)
+        self.assertFalse((self.snapshot_dir / OPERATION_ID).exists())
+
     def _restore_original_fixture(self, row):
         with closing(sqlite3.connect(self.database_path)) as database, database:
             database.execute(
