@@ -96,6 +96,34 @@ ensure_udp_rule() {
     fi
 }
 
+verify_aimili_stage() {
+    local ready=false
+    for _ in $(seq 1 60); do
+        if systemctl is-active --quiet aimilivpn.service \
+            && ss -lntH | grep -qE '127\.0\.0\.1:7928\b' \
+            && ss -lntH | grep -qE '127\.0\.0\.1:8790\b'; then
+            ready=true
+            break
+        fi
+        sleep 2
+    done
+    [[ "$ready" == true ]]
+    python3 - <<'PY'
+import json, pathlib, urllib.request
+token = pathlib.Path('/etc/aimilivpn/control.token').read_text(encoding='utf-8').strip()
+request = urllib.request.Request(
+    'http://127.0.0.1:8790/control/v1/capabilities',
+    headers={'Authorization': 'Bearer ' + token, 'Accept': 'application/json'},
+)
+with urllib.request.urlopen(request, timeout=15) as response:
+    document = json.load(response)
+capabilities = set(document.get('data', {}).get('capabilities', []))
+required = {'main.assign', 'main.assign.commit', 'main.assign.rollback', 'main.assignment.read'}
+if not required.issubset(capabilities):
+    raise SystemExit('main_assignment_capability_missing')
+PY
+}
+
 rollback_current_stage() {
     set +e
     case "$CURRENT_STAGE" in
@@ -141,6 +169,7 @@ case "$CURRENT_STAGE" in
         [[ "$(git -C "$AIMILI_REPOSITORY" rev-parse FETCH_HEAD)" == "$TARGET_AIMILI_COMMIT" ]]
         git -C "$AIMILI_REPOSITORY" merge --ff-only FETCH_HEAD
         systemctl try-restart aimilivpn.service
+        verify_aimili_stage
         ;;
     2)
         install -d -m 0750 -o aimili-gateway -g aimili-gateway /var/lib/aimili-gateway/protocol-spool
