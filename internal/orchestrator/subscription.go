@@ -2,10 +2,12 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/url"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/thzyh/aimili-gateway/internal/adapters/aimili"
 	"github.com/thzyh/aimili-gateway/internal/adapters/xui"
@@ -13,6 +15,13 @@ import (
 	"github.com/thzyh/aimili-gateway/internal/store"
 	"github.com/thzyh/aimili-gateway/internal/validator"
 )
+
+const legacyAggregateVLESSPort = 21000
+
+type LegacyAggregateCleanup struct {
+	Removed   bool      `json:"removed"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
 
 func (o *Orchestrator) Subscription(ctx context.Context) (SubscriptionResult, error) {
 	manager, ok := o.xui.(subscriptionXUIClient)
@@ -74,6 +83,50 @@ func (o *Orchestrator) Subscription(ctx context.Context) (SubscriptionResult, er
 	return SubscriptionResult{URL: "https://" + o.config.PublicHost + reference.EscapedPath(), InboundCount: len(ids), UpdatedAt: updatedAt}, nil
 }
 
+// CleanupLegacyAggregate removes the retired single-entry balancer only after
+// the replacement subscription has been reconciled and its inbound coverage
+// has been checked again. Database backups remain a deployment responsibility.
+func (o *Orchestrator) CleanupLegacyAggregate(ctx context.Context) (LegacyAggregateCleanup, error) {
+	manager, ok := o.xui.(legacyAggregateCleanupXUIClient)
+	if !ok {
+		return LegacyAggregateCleanup{}, &Error{Code: "not_configured"}
+	}
+	unlock := o.locks.lock("all")
+	defer unlock()
+	aggregate, err := o.store.GetAggregateConfig(ctx)
+	if err != nil {
+		return LegacyAggregateCleanup{}, &Error{Code: "storage_failed"}
+	}
+	if !aggregate.Enabled {
+		return LegacyAggregateCleanup{Removed: false, UpdatedAt: aggregate.UpdatedAt}, nil
+	}
+	if aggregate.ResourceName != "agw-aggregate-vless" || aggregate.VLESSInboundID <= 0 || aggregate.VLESSPort != legacyAggregateVLESSPort {
+		return LegacyAggregateCleanup{}, &Error{Code: "ownership_conflict"}
+	}
+	if _, err := o.Subscription(ctx); err != nil {
+		return LegacyAggregateCleanup{}, err
+	}
+	managed := xui.ManagedAggregate{
+		ResourceName:    aggregate.ResourceName,
+		VLESSInboundID:  aggregate.VLESSInboundID,
+		VLESSInboundTag: aggregate.ResourceName + "-vless",
+		VLESSPort:       aggregate.VLESSPort,
+	}
+	if err := manager.DeleteManagedAggregate(ctx, managed); err != nil {
+		var adapterError *xui.AdapterError
+		if errors.As(err, &adapterError) && adapterError.Code == "partial_delete" {
+			return LegacyAggregateCleanup{}, &Error{Code: "repair_required"}
+		}
+		return LegacyAggregateCleanup{}, operationError(err)
+	}
+	aggregate.Enabled = false
+	aggregate.UpdatedAt = o.config.Now().UTC()
+	if err := o.store.SaveAggregateConfig(ctx, aggregate); err != nil {
+		return LegacyAggregateCleanup{}, &Error{Code: "repair_required"}
+	}
+	return LegacyAggregateCleanup{Removed: true, UpdatedAt: aggregate.UpdatedAt}, nil
+}
+
 func (o *Orchestrator) ReplaceCandidate(ctx context.Context, candidateID, targetGroupID string) (domain.ProxyGroup, error) {
 	if targetGroupID == "agw-main" || strings.TrimSpace(candidateID) == "" {
 		return domain.ProxyGroup{}, &Error{Code: "invalid_request"}
@@ -89,6 +142,20 @@ func (o *Orchestrator) ReplaceCandidate(ctx context.Context, candidateID, target
 		return domain.ProxyGroup{}, operationError(err)
 	}
 	if group.Status != domain.ProxyGroupReady || group.AimiliSlot < 0 {
+		return domain.ProxyGroup{}, &Error{Code: "conflict"}
+	}
+	slots, err := o.aimili.ListSlots(ctx)
+	if err != nil {
+		return domain.ProxyGroup{}, operationError(err)
+	}
+	var previousSlot aimili.Slot
+	for _, slot := range slots {
+		if slot.Number == group.AimiliSlot {
+			previousSlot = slot
+			break
+		}
+	}
+	if strings.TrimSpace(previousSlot.NodeID) == "" || len(strings.TrimSpace(previousSlot.Country)) != 2 || !domain.ProxyType(strings.ToLower(strings.TrimSpace(previousSlot.ProxyType))).Valid() {
 		return domain.ProxyGroup{}, &Error{Code: "conflict"}
 	}
 	candidates, err := o.aimili.Candidates(ctx)
@@ -107,14 +174,15 @@ func (o *Orchestrator) ReplaceCandidate(ctx context.Context, candidateID, target
 	if candidate == nil {
 		return domain.ProxyGroup{}, &Error{Code: "not_found"}
 	}
-	previous := group
 	assigned, err := assigner.AssignSlotNode(ctx, group.AimiliSlot, aimili.AssignSlotRequest{CandidateID: candidate.ID, Country: candidate.CountryCode, ProxyType: candidate.ProxyType})
-	if err != nil {
-		return domain.ProxyGroup{}, operationError(err)
+	if err == nil {
+		assigned, err = o.waitForSlot(ctx, group.AimiliSlot)
 	}
-	if !assigned.EgressOK || net.ParseIP(assigned.ExitIP) == nil {
-		_, _ = assigner.AssignSlotNode(ctx, previous.AimiliSlot, aimili.AssignSlotRequest{CandidateID: previous.CandidateID, Country: previous.CountryCode, ProxyType: string(previous.ProxyType)})
-		return domain.ProxyGroup{}, &Error{Code: "egress_unavailable"}
+	if err != nil || !assigned.EgressOK || net.ParseIP(assigned.ExitIP) == nil {
+		if err == nil {
+			err = &Error{Code: "egress_unavailable"}
+		}
+		return o.rollbackCandidateReplacement(ctx, group, previousSlot, assigner, err)
 	}
 	group.CandidateID = candidate.ID
 	group.CandidateIP = candidate.IP
@@ -136,14 +204,7 @@ func (o *Orchestrator) ReplaceCandidate(ctx context.Context, candidateID, target
 		}
 	}
 	if inputErr != nil {
-		if _, rollbackErr := assigner.AssignSlotNode(ctx, previous.AimiliSlot, aimili.AssignSlotRequest{CandidateID: previous.CandidateID, Country: previous.CountryCode, ProxyType: string(previous.ProxyType)}); rollbackErr != nil {
-			group.Status = domain.ProxyGroupRepairRequired
-			group.LastErrorCode = "rollback_failed"
-			group.UpdatedAt = o.config.Now().UTC()
-			_ = o.save(ctx, &group)
-			return domain.ProxyGroup{}, &Error{Code: "repair_required"}
-		}
-		return domain.ProxyGroup{}, operationError(inputErr)
+		return o.rollbackCandidateReplacement(ctx, group, previousSlot, assigner, inputErr)
 	}
 	group.LastCheckedAt = o.config.Now().UTC()
 	group.LastSeenAt = group.LastCheckedAt
@@ -154,6 +215,35 @@ func (o *Orchestrator) ReplaceCandidate(ctx context.Context, candidateID, target
 		return domain.ProxyGroup{}, err
 	}
 	return group, nil
+}
+
+func (o *Orchestrator) rollbackCandidateReplacement(ctx context.Context, group domain.ProxyGroup, previous aimili.Slot, assigner assignAimiliClient, cause error) (domain.ProxyGroup, error) {
+	restored, rollbackErr := assigner.AssignSlotNode(ctx, group.AimiliSlot, aimili.AssignSlotRequest{
+		CandidateID: strings.TrimSpace(previous.NodeID),
+		Country:     strings.ToUpper(strings.TrimSpace(previous.Country)),
+		ProxyType:   strings.ToLower(strings.TrimSpace(previous.ProxyType)),
+	})
+	if rollbackErr == nil {
+		restored, rollbackErr = o.waitForSlot(ctx, group.AimiliSlot)
+	}
+	if rollbackErr != nil || !restored.EgressOK || net.ParseIP(restored.ExitIP) == nil {
+		applySlotSnapshot(&group, restored)
+		group.Status = domain.ProxyGroupRepairRequired
+		group.LastErrorCode = "rollback_failed"
+		group.UpdatedAt = o.config.Now().UTC()
+		_ = o.save(ctx, &group)
+		return domain.ProxyGroup{}, &Error{Code: "repair_required"}
+	}
+	applySlotSnapshot(&group, restored)
+	group.Status = domain.ProxyGroupReady
+	group.LastErrorCode = ""
+	group.LastCheckedAt = o.config.Now().UTC()
+	group.LastSeenAt = group.LastCheckedAt
+	group.UpdatedAt = group.LastCheckedAt
+	if saveErr := o.save(ctx, &group); saveErr != nil {
+		return domain.ProxyGroup{}, saveErr
+	}
+	return domain.ProxyGroup{}, operationError(cause)
 }
 
 func (o *Orchestrator) CheckMain(ctx context.Context) (store.MainEgress, error) {
@@ -177,11 +267,7 @@ func (o *Orchestrator) CheckMain(ctx context.Context) (store.MainEgress, error) 
 		return store.MainEgress{}, operationError(err)
 	}
 	mainGroup := domain.ProxyGroup{VLESSPort: 8443, MixedPort: o.config.MainMixedPort, ExitIP: status.ExitIP, RealityPublicKey: legacy.PublicKey, RealityShortID: legacy.ShortID, RealityServerName: legacy.ServerName, RealityMLDSA65Verify: legacy.MLDSA65Verify}
-	socksResult, err := o.validateSOCKS(ctx, mainGroup, credentials)
-	if err != nil {
-		return store.MainEgress{}, operationError(err)
-	}
-	vlessResult, err := o.validateVLESS(ctx, mainGroup, credentials)
+	socksResult, vlessResult, err := o.waitForMainValidation(ctx, mainGroup, credentials)
 	if err != nil {
 		return store.MainEgress{}, operationError(err)
 	}
@@ -199,4 +285,44 @@ func (o *Orchestrator) CheckMain(ctx context.Context) (store.MainEgress, error) 
 		return store.MainEgress{}, &Error{Code: "storage_failed"}
 	}
 	return result, nil
+}
+
+func (o *Orchestrator) waitForMainValidation(ctx context.Context, group domain.ProxyGroup, credentials runtimeCredentials) (validator.Result, validator.Result, error) {
+	waitCtx, cancel := context.WithTimeout(ctx, o.config.ReadyTimeout)
+	defer cancel()
+	for {
+		socksResult, socksErr := o.validateSOCKS(waitCtx, group, credentials)
+		vlessResult, vlessErr := o.validateVLESS(waitCtx, group, credentials)
+		if socksErr == nil && vlessErr == nil {
+			return socksResult, vlessResult, nil
+		}
+		lastErr := socksErr
+		if lastErr == nil {
+			lastErr = vlessErr
+		}
+		if !retryableMainValidation(socksErr) || !retryableMainValidation(vlessErr) {
+			return validator.Result{}, validator.Result{}, lastErr
+		}
+		timer := time.NewTimer(o.config.PollInterval)
+		select {
+		case <-waitCtx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return validator.Result{}, validator.Result{}, lastErr
+		case <-timer.C:
+		}
+	}
+}
+
+func retryableMainValidation(err error) bool {
+	if err == nil {
+		return true
+	}
+	switch errorCode(err) {
+	case "connection_failed", "dns_failed", "protocol_failed", "timeout":
+		return true
+	default:
+		return false
+	}
 }

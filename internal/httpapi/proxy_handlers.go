@@ -356,23 +356,34 @@ func (s *server) handleAggregateConnections(response http.ResponseWriter, reques
 	if _, ok := s.authenticateOrWrite(response, request); !ok {
 		return
 	}
-	manager, ok := s.proxyManager.(interface {
-		AggregateConnections(context.Context) (orchestrator.Connections, error)
-	})
+	writeAPIError(response, http.StatusGone, "legacy_removed")
+}
+
+func (s *server) handleCleanupLegacyAggregate(response http.ResponseWriter, request *http.Request) {
+	session, ok := s.authorizeMutation(response, request)
 	if !ok {
-		writeAPIError(response, http.StatusServiceUnavailable, "not_configured")
 		return
 	}
-	connections, err := manager.AggregateConnections(request.Context())
+	var input struct{}
+	if decodeJSON(request, &input) != nil {
+		writeAPIError(response, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	key, hit, ok := s.idempotencyKey(response, request, session)
+	if !ok {
+		return
+	}
+	if hit != nil {
+		writeCached(response, *hit)
+		return
+	}
+	result, err := s.proxyManager.CleanupLegacyAggregate(request.Context())
 	if err != nil {
 		writeProxyError(response, err)
 		return
 	}
-	if connections.VLESSURI == "" {
-		writeAPIError(response, http.StatusConflict, "not_ready")
-		return
-	}
-	writeJSON(response, http.StatusOK, connections)
+	s.storeIdempotent(key, http.StatusOK, result)
+	writeJSON(response, http.StatusOK, result)
 }
 
 type mixedPolicyResponse struct {

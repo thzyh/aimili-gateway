@@ -82,6 +82,7 @@ type groupStore interface {
 	GetMixedSourcePolicy(context.Context) (store.MixedSourcePolicy, error)
 	ReplaceMixedSourcePolicy(context.Context, store.MixedSourcePolicy) error
 	SaveMainEgress(context.Context, store.MainEgress) error
+	GetAggregateConfig(context.Context) (store.AggregateConfig, error)
 	SaveAggregateConfig(context.Context, store.AggregateConfig) error
 }
 
@@ -101,14 +102,15 @@ type xuiClient interface {
 	DeleteManagedGroup(context.Context, xui.ManagedGroup) error
 }
 
-type aggregateXUIClient interface {
-	EnsureAggregate(context.Context, xui.AggregateDesired) (xui.ManagedAggregate, error)
-}
-
 type subscriptionXUIClient interface {
 	Snapshot(context.Context) (xui.Snapshot, error)
 	EnsureSubscriptionClient(context.Context, xui.SubscriptionDesired) (xui.Subscription, error)
 	SubscriptionURL(context.Context, xui.Subscription) (string, error)
+}
+
+type legacyAggregateCleanupXUIClient interface {
+	subscriptionXUIClient
+	DeleteManagedAggregate(context.Context, xui.ManagedAggregate) error
 }
 
 type subscriptionStore interface {
@@ -405,7 +407,7 @@ func (o *Orchestrator) Check(ctx context.Context, id string) (domain.ProxyGroup,
 	}
 	checked, err := o.aimili.CheckSlot(ctx, group.AimiliSlot)
 	if err == nil && checked.EgressOK {
-		group.ExitIP = checked.ExitIP
+		applySlotSnapshot(&group, checked)
 		_, err = o.validateSOCKS(ctx, group, credentials)
 		if err == nil {
 			_, err = o.validateVLESS(ctx, group, credentials)
@@ -450,7 +452,7 @@ func (o *Orchestrator) Rotate(ctx context.Context, id string) (domain.ProxyGroup
 		slot, err = o.waitForSlot(ctx, group.AimiliSlot)
 	}
 	if err == nil && slot.EgressOK {
-		group.ExitIP = slot.ExitIP
+		applySlotSnapshot(&group, slot)
 		_, err = o.validateSOCKS(ctx, group, credentials)
 		if err == nil {
 			_, err = o.validateVLESS(ctx, group, credentials)
@@ -473,6 +475,33 @@ func (o *Orchestrator) Rotate(ctx context.Context, id string) (domain.ProxyGroup
 		return group, operationError(err)
 	}
 	return group, nil
+}
+
+func applySlotSnapshot(group *domain.ProxyGroup, slot aimili.Slot) {
+	if group == nil {
+		return
+	}
+	if nodeID := strings.TrimSpace(slot.NodeID); nodeID != "" {
+		group.CandidateID = nodeID
+	}
+	if candidateIP := strings.TrimSpace(slot.CandidateIP); net.ParseIP(candidateIP) != nil {
+		group.CandidateIP = candidateIP
+	}
+	if country := strings.ToUpper(strings.TrimSpace(slot.Country)); len(country) == 2 {
+		group.CountryCode = country
+	}
+	if name := strings.TrimSpace(slot.CountryName); name != "" {
+		group.CountryName = name
+	}
+	if proxyType := domain.ProxyType(strings.ToLower(strings.TrimSpace(slot.ProxyType))); proxyType.Valid() {
+		group.ProxyType = proxyType
+	}
+	if slot.LatencyMS >= 0 {
+		group.CandidateLatencyMS = slot.LatencyMS
+	}
+	if exitIP := strings.TrimSpace(slot.ExitIP); net.ParseIP(exitIP) != nil {
+		group.ExitIP = exitIP
+	}
 }
 
 func (o *Orchestrator) Disable(ctx context.Context, id string) error {
@@ -578,62 +607,6 @@ func (o *Orchestrator) mainConnections(ctx context.Context) (Connections, error)
 	vless.RawQuery = query.Encode()
 	socks := url.URL{Scheme: "socks5h", User: url.UserPassword(string(credentials.mixedUsername), string(credentials.mixedPassword)), Host: net.JoinHostPort(o.config.PublicHost, fmt.Sprint(legacy.MixedPort))}
 	return Connections{VLESSURI: vless.String(), SOCKS5HURI: socks.String()}, nil
-}
-
-// AggregateConnections ensures one Xray VLESS inbound backed by a balancer
-// over every ready Gateway SOCKS egress and returns its single URI.
-func (o *Orchestrator) AggregateConnections(ctx context.Context) (Connections, error) {
-	manager, ok := o.xui.(aggregateXUIClient)
-	if !ok {
-		return Connections{}, &Error{Code: "not_configured"}
-	}
-	groups, err := o.store.ListProxyGroups(ctx)
-	if err != nil {
-		return Connections{}, &Error{Code: "storage_failed"}
-	}
-	selectors := make([]string, 0, len(groups))
-	for _, group := range groups {
-		if group.Status == domain.ProxyGroupReady {
-			selectors = append(selectors, group.ResourceName+"-socks")
-		}
-	}
-	if main, mainErr := o.aimili.MainStatus(ctx); mainErr == nil && main.Active && main.EgressOK && main.Port == 7928 {
-		legacy, legacyOK := o.xui.(legacyMainXUIClient)
-		if legacyOK {
-			policy, credentials, inputErr := o.runtimeInputs(ctx)
-			if inputErr == nil {
-				if _, ensureErr := legacy.EnsureLegacyMain(ctx, xui.LegacyMainDesired{VLESSPort: 8443, MixedPort: o.config.MainMixedPort, SOCKSPort: 7928, MixedUsername: string(credentials.mixedUsername), MixedPassword: string(credentials.mixedPassword), MixedSourceRestrictionEnabled: policy.Enabled, MixedSourceCIDRs: prefixStrings(policy.CIDRs), RealityTarget: "127.0.0.1:443", RealityServerName: o.config.PublicHost}); ensureErr == nil {
-					selectors = append(selectors, "aimili-socks")
-				}
-			}
-		}
-	}
-	if len(selectors) == 0 {
-		return Connections{}, &Error{Code: "not_ready"}
-	}
-	_, credentials, err := o.runtimeInputs(ctx)
-	if err != nil {
-		return Connections{}, err
-	}
-	aggregate, err := manager.EnsureAggregate(ctx, xui.AggregateDesired{ResourceName: "agw-aggregate-vless", VLESSPort: o.config.AggregateVLESSPort, VLESSClientID: string(credentials.vlessID), RealityTarget: "127.0.0.1:443", RealityServerName: o.config.PublicHost, OutboundTags: selectors})
-	if err != nil {
-		return Connections{}, operationError(err)
-	}
-	if err := o.store.SaveAggregateConfig(ctx, store.AggregateConfig{ResourceName: aggregate.ResourceName, VLESSInboundID: aggregate.VLESSInboundID, VLESSPort: aggregate.VLESSPort, Enabled: true, UpdatedAt: o.config.Now().UTC()}); err != nil {
-		return Connections{}, &Error{Code: "storage_failed"}
-	}
-	vless := url.URL{Scheme: "vless", User: url.User(string(credentials.vlessID)), Host: net.JoinHostPort(o.config.PublicHost, fmt.Sprint(aggregate.VLESSPort)), Fragment: "aimili-gateway-aggregate"}
-	query := vless.Query()
-	query.Set("encryption", "none")
-	query.Set("flow", "xtls-rprx-vision")
-	query.Set("security", "reality")
-	query.Set("sni", aggregate.ServerName)
-	query.Set("fp", "chrome")
-	query.Set("pbk", aggregate.PublicKey)
-	query.Set("sid", aggregate.ShortID)
-	query.Set("type", "tcp")
-	vless.RawQuery = query.Encode()
-	return Connections{VLESSURI: vless.String()}, nil
 }
 
 type runtimeCredentials struct{ vlessID, mixedUsername, mixedPassword []byte }

@@ -4,7 +4,7 @@
 
 ## 重要文件
 
-- `2026-08-29-history-residuals-maintenance.md`：本轮第 4 主连接、聚合 VLESS 和历史残留审计基线。
+- `2026-08-29-history-residuals-maintenance.md`：第 4 主连接、Test 风格订阅及旧聚合清理后的历史残留维护基线。
 - `../../scripts/audit-history-remote.sh`：只读审计，输出脱敏结构化清单。
 - `../../scripts/cleanup-history-remote.sh`：默认 dry-run；只有 `--apply` 会备份并删除已失去入站引用的孤儿客户端。
 
@@ -17,7 +17,7 @@ sudo bash scripts/cleanup-history-remote.sh --apply
 sudo bash scripts/audit-history-remote.sh --audit
 ```
 
-执行 `--apply` 前必须保存最新审计输出。执行后必须核对原 `8443`、三个 `agw-*` 双协议组、聚合入口、服务状态、内存和 OOM 记录。脚本不会删除非受管入站、AimiliVPN stash、systemd 单元、旧数据库或生产备份；这些内容需要按照维护记录逐项证明无依赖后才可另行处理。
+执行 `--apply` 前必须保存最新审计输出。执行后必须核对原 `8443`、三个 `agw-*` 双协议组、四入站 VLESS 订阅、服务状态、内存和 OOM 记录。脚本不会删除非受管入站、AimiliVPN stash、systemd 单元、旧数据库或生产备份；这些内容需要按照维护记录逐项证明无依赖后才可另行处理。
 
 ## 限制
 

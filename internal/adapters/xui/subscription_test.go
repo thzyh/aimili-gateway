@@ -16,6 +16,7 @@ type subscriptionFixture struct {
 	added       map[string]any
 	attached    []int64
 	settingPath int
+	settingVerb string
 }
 
 func (f *subscriptionFixture) handler(w http.ResponseWriter, r *http.Request) {
@@ -35,6 +36,12 @@ func (f *subscriptionFixture) handler(w http.ResponseWriter, r *http.Request) {
             {"id":4,"tag":"user-vless","remark":"User VLESS","protocol":"vless","port":40000}
         ]}`)
 	case "/panel/panel/api/setting/all":
+		f.settingVerb = r.Method
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			fmt.Fprint(w, `{"success":false,"msg":"method not allowed"}`)
+			return
+		}
 		f.settingPath++
 		fmt.Fprint(w, `{"success":true,"obj":{"subPath":"/sub-test/"}}`)
 	default:
@@ -110,6 +117,9 @@ func TestEnsureSubscriptionClientCreatesAndAttachesOnlyOwnedVLESS(t *testing.T) 
 	if fixture.added == nil {
 		t.Fatal("subscription client was not created")
 	}
+	if subscription.SubscriptionPath != "/sub-test/" || fixture.settingVerb != http.MethodPost {
+		t.Fatalf("subscription settings path=%q method=%q", subscription.SubscriptionPath, fixture.settingVerb)
+	}
 }
 
 func TestEnsureSubscriptionClientIsIdempotentAndPreservesClientIdentity(t *testing.T) {
@@ -168,12 +178,16 @@ func TestDeleteManagedAggregateRemovesOnlyOwnedResources(t *testing.T) {
 				map[string]any{"tag": "direct", "protocol": "freedom"},
 				map[string]any{"tag": "agw-jp-dc-socks", "protocol": "socks"},
 			},
-			"routing": map[string]any{"rules": []any{
-				map[string]any{"type": "field", "inboundTag": []any{"agw-aggregate-vless-vless"}, "balancerTag": "agw-aggregate"},
-				map[string]any{"type": "field", "domain": []any{"user.example"}, "outboundTag": "direct"},
-			}},
+			"routing": map[string]any{
+				"rules": []any{
+					map[string]any{"type": "field", "inboundTag": []any{"agw-aggregate-vless-vless"}, "balancerTag": "agw-aggregate"},
+					map[string]any{"type": "field", "domain": []any{"user.example"}, "outboundTag": "direct"},
+				},
+				"balancers": []any{map[string]any{"tag": "agw-aggregate", "selector": []any{"agw-jp-dc-socks", "aimili-socks"}, "strategy": map[string]any{"type": "leastPing"}}},
+			},
+			"observatory": map[string]any{"subjectSelector": []any{"agw-jp-dc-socks", "aimili-socks"}, "probeURL": "https://www.google.com/generate_204", "probeInterval": "30s", "enableConcurrency": true},
 		},
-		inbounds: []map[string]any{{"id": float64(9), "tag": "agw-aggregate-vless-vless", "remark": "Aimili Gateway aggregate VLESS", "protocol": "vless", "port": float64(21000)}},
+		inbounds: []map[string]any{{"id": float64(9), "tag": "agw-aggregate-vless-vless", "remark": "Aimili Gateway aggregate VLESS", "protocol": "vless", "port": float64(21000), "settings": `{"clients":[{"id":"opaque","email":"aimili-gateway-aggregate","flow":"xtls-rprx-vision"}]}`}},
 	}
 	client := newXUIFixtureClient(t, fixture)
 	err := client.DeleteManagedAggregate(context.Background(), ManagedAggregate{ResourceName: "agw-aggregate-vless", VLESSInboundID: 9, VLESSInboundTag: "agw-aggregate-vless-vless", VLESSPort: 21000})
@@ -186,5 +200,69 @@ func TestDeleteManagedAggregateRemovesOnlyOwnedResources(t *testing.T) {
 	rules := asObjectSlice(fixture.updatedXray["routing"].(map[string]any)["rules"])
 	if len(rules) != 1 || stringValue(rules[0]["outboundTag"]) != "direct" {
 		t.Fatalf("unmanaged routing changed: %#v", rules)
+	}
+	if len(asObjectSlice(fixture.updatedXray["routing"].(map[string]any)["balancers"])) != 0 {
+		t.Fatalf("legacy balancer remains: %#v", fixture.updatedXray["routing"])
+	}
+	if _, exists := fixture.updatedXray["observatory"]; exists {
+		t.Fatalf("legacy observatory remains: %#v", fixture.updatedXray["observatory"])
+	}
+}
+
+func TestDeleteManagedAggregateTreatsFullyAbsentLegacyResourcesAsAlreadyRemoved(t *testing.T) {
+	fixture := &xuiFixture{
+		initialXray: map[string]any{
+			"outbounds": []any{map[string]any{"tag": "direct", "protocol": "freedom"}},
+			"routing": map[string]any{
+				"rules": []any{map[string]any{"type": "field", "domain": []any{"user.example"}, "outboundTag": "direct"}},
+			},
+		},
+	}
+	client := newXUIFixtureClient(t, fixture)
+	err := client.DeleteManagedAggregate(context.Background(), ManagedAggregate{ResourceName: "agw-aggregate-vless", VLESSInboundID: 9, VLESSInboundTag: "agw-aggregate-vless-vless", VLESSPort: 21000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fixture.deletedClients) != 0 || fixture.updatedXray != nil {
+		t.Fatalf("already-absent cleanup wrote state: clients=%v updated=%#v", fixture.deletedClients, fixture.updatedXray)
+	}
+}
+
+func TestDeleteManagedAggregateRejectsPartialLegacyResidueWithoutInbound(t *testing.T) {
+	fixture := &xuiFixture{
+		initialXray: map[string]any{
+			"routing": map[string]any{
+				"rules":     []any{map[string]any{"type": "field", "inboundTag": []any{"agw-aggregate-vless-vless"}, "balancerTag": "agw-aggregate"}},
+				"balancers": []any{map[string]any{"tag": "agw-aggregate", "selector": []any{"agw-jp-dc-socks"}, "strategy": map[string]any{"type": "leastPing"}}},
+			},
+		},
+	}
+	client := newXUIFixtureClient(t, fixture)
+	err := client.DeleteManagedAggregate(context.Background(), ManagedAggregate{ResourceName: "agw-aggregate-vless", VLESSInboundID: 9, VLESSInboundTag: "agw-aggregate-vless-vless", VLESSPort: 21000})
+	var adapterError *AdapterError
+	if !errors.As(err, &adapterError) || adapterError.Code != "managed_resource_drift" || fixture.updatedXray != nil {
+		t.Fatalf("partial residue was not rejected: err=%v updated=%#v", err, fixture.updatedXray)
+	}
+}
+
+func TestDeleteManagedAggregateRejectsClientSharedWithUnmanagedInbound(t *testing.T) {
+	fixture := &xuiFixture{
+		initialXray: map[string]any{
+			"routing": map[string]any{
+				"rules":     []any{map[string]any{"type": "field", "inboundTag": []any{"agw-aggregate-vless-vless"}, "balancerTag": "agw-aggregate"}},
+				"balancers": []any{map[string]any{"tag": "agw-aggregate", "selector": []any{"agw-jp-dc-socks"}, "strategy": map[string]any{"type": "leastPing"}}},
+			},
+			"observatory": map[string]any{"subjectSelector": []any{"agw-jp-dc-socks"}, "probeURL": "https://www.google.com/generate_204"},
+		},
+		inbounds: []map[string]any{
+			{"id": float64(9), "tag": "agw-aggregate-vless-vless", "remark": "Aimili Gateway aggregate VLESS", "protocol": "vless", "port": float64(21000), "settings": `{"clients":[{"id":"opaque","email":"aimili-gateway-aggregate","flow":"xtls-rprx-vision"}]}`},
+			{"id": float64(10), "tag": "user-vless", "remark": "User VLESS", "protocol": "vless", "port": float64(22000), "settings": `{"clients":[{"id":"opaque","email":"aimili-gateway-aggregate","flow":"xtls-rprx-vision"}]}`},
+		},
+	}
+	client := newXUIFixtureClient(t, fixture)
+	err := client.DeleteManagedAggregate(context.Background(), ManagedAggregate{ResourceName: "agw-aggregate-vless", VLESSInboundID: 9, VLESSInboundTag: "agw-aggregate-vless-vless", VLESSPort: 21000})
+	var adapterError *AdapterError
+	if !errors.As(err, &adapterError) || adapterError.Code != "ownership_conflict" || len(fixture.deletedClients) != 0 || len(fixture.inbounds) != 2 || fixture.updatedXray != nil {
+		t.Fatalf("unsafe shared client cleanup: err=%v clients=%v inbounds=%v updated=%#v", err, fixture.deletedClients, fixture.inbounds, fixture.updatedXray)
 	}
 }

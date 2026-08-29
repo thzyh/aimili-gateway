@@ -71,15 +71,6 @@ type ManagedGroup struct {
 	MLDSA65Verify   string
 }
 
-type AggregateDesired struct {
-	ResourceName      string
-	VLESSPort         int
-	VLESSClientID     string
-	RealityTarget     string
-	RealityServerName string
-	OutboundTags      []string
-}
-
 type ManagedAggregate struct {
 	ResourceName    string
 	VLESSInboundID  int64

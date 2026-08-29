@@ -1,5 +1,7 @@
 # Test 风格 VLESS 订阅 Implementation Plan
 
+状态：已执行；最终证据见 `docs/verification/2026-08-29-test-style-subscription.md`。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 将 Gateway 的“复制单地址聚合入口”改为 3x-ui `test` 风格的多入站 VLESS 订阅，并完成主连接检测、出口位替换和旧聚合资源安全迁移。
@@ -306,4 +308,3 @@ Expected: 全部通过；若失败先修复，不进入部署。
 git -C D:/CodexProject/Github/aimili-gateway add README.md scripts docs/verification/2026-08-29-test-style-subscription.md
 git -C D:/CodexProject/Github/aimili-gateway commit -m "test: verify test-style subscription migration"
 ```
-

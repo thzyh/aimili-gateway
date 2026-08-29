@@ -51,13 +51,14 @@ type xuiAdmin interface {
 }
 
 type Coordinator struct {
-	store        accountStore
-	masterKey    []byte
-	aimili       aimiliAdmin
-	xui          xuiAdmin
-	now          func() time.Time
-	hashPassword func([]byte) (string, error)
-	mu           sync.Mutex
+	store          accountStore
+	masterKey      []byte
+	aimili         aimiliAdmin
+	xui            xuiAdmin
+	now            func() time.Time
+	hashPassword   func([]byte) (string, error)
+	verifyPassword func(string, []byte) (bool, error)
+	mu             sync.Mutex
 }
 
 func New(database accountStore, masterKey []byte, aimiliClient aimiliAdmin, xuiClient xuiAdmin, now func() time.Time) (*Coordinator, error) {
@@ -68,12 +69,13 @@ func New(database accountStore, masterKey []byte, aimiliClient aimiliAdmin, xuiC
 		now = time.Now
 	}
 	return &Coordinator{
-		store:        database,
-		masterKey:    append([]byte(nil), masterKey...),
-		aimili:       aimiliClient,
-		xui:          xuiClient,
-		now:          now,
-		hashPassword: auth.HashPassword,
+		store:          database,
+		masterKey:      append([]byte(nil), masterKey...),
+		aimili:         aimiliClient,
+		xui:            xuiClient,
+		now:            now,
+		hashPassword:   auth.HashPassword,
+		verifyPassword: auth.VerifyPassword,
 	}, nil
 }
 
@@ -90,6 +92,18 @@ func (c *Coordinator) Check(ctx context.Context) error {
 		return err
 	}
 	defer clear(credentials.Password)
+	admin, err := c.store.GetAdmin(ctx)
+	if err != nil || admin.Username != credentials.Username {
+		drift := &Error{Code: "account_drift"}
+		c.recordCheckFailure(ctx, drift)
+		return drift
+	}
+	matches, err := c.verifyPassword(string(admin.PasswordHash), credentials.Password)
+	if err != nil || !matches {
+		drift := &Error{Code: "account_drift"}
+		c.recordCheckFailure(ctx, drift)
+		return drift
+	}
 	now := c.now().UTC()
 	return c.store.SetAccountSyncState(ctx, store.AccountSyncState{
 		Status:              store.AccountSyncSynced,

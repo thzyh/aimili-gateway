@@ -22,6 +22,7 @@ type xuiFixture struct {
 	updatedInboundIDs  []int64
 	deletedClients     []string
 	updatedXray        map[string]any
+	updatedXrayCalls   int
 	inbounds           []map[string]any
 	failProtocol       string
 	initialXray        map[string]any
@@ -62,6 +63,7 @@ func (fixture *xuiFixture) handler(response http.ResponseWriter, request *http.R
 			_, _ = response.Write(body)
 		}
 	case "/panel/panel/api/xray/update":
+		fixture.updatedXrayCalls++
 		if err := request.ParseForm(); err != nil {
 			testingError(response, "invalid form")
 			return
@@ -317,49 +319,6 @@ func TestMergeManagedXrayCanDisableMixedSourceRestriction(t *testing.T) {
 	}
 }
 
-func TestMergeAggregateXrayUsesSingleInboundAndHealthyOutboundSelector(t *testing.T) {
-	desired := AggregateDesired{ResourceName: "agw-aggregate-vless", VLESSPort: 21000, OutboundTags: []string{"agw-jp-dc-socks", "agw-us-res-socks"}}
-	setting, err := mergeAggregateXray(map[string]any{"outbounds": []any{map[string]any{"tag": "direct", "protocol": "freedom"}}, "routing": map[string]any{"rules": []any{}}}, desired)
-	if err != nil {
-		t.Fatal(err)
-	}
-	routing := setting["routing"].(map[string]any)
-	balancers := asObjectSlice(routing["balancers"])
-	if len(balancers) != 1 || stringValue(balancers[0]["tag"]) != "agw-aggregate" {
-		t.Fatalf("balancers=%#v", balancers)
-	}
-	if fmt.Sprint(balancers[0]["selector"]) != "[agw-jp-dc-socks agw-us-res-socks]" {
-		t.Fatalf("selector=%#v", balancers[0]["selector"])
-	}
-	strategy, _ := balancers[0]["strategy"].(map[string]any)
-	if stringValue(strategy["type"]) != "leastPing" {
-		t.Fatalf("balancer strategy=%#v", strategy)
-	}
-	observatory, _ := setting["observatory"].(map[string]any)
-	if fmt.Sprint(observatory["subjectSelector"]) != "[agw-jp-dc-socks agw-us-res-socks]" {
-		t.Fatalf("observatory=%#v", observatory)
-	}
-	rules := asObjectSlice(routing["rules"])
-	if len(rules) != 1 || stringValue(rules[0]["balancerTag"]) != "agw-aggregate" {
-		t.Fatalf("rules=%#v", rules)
-	}
-}
-
-func TestEnsureAggregateCreatesOneOwnedVLESSInbound(t *testing.T) {
-	fixture := &xuiFixture{}
-	client := newXUIFixtureClient(t, fixture)
-	managed, err := client.EnsureAggregate(context.Background(), AggregateDesired{ResourceName: "agw-aggregate-vless", VLESSPort: 21000, VLESSClientID: "client-id", RealityTarget: "127.0.0.1:443", RealityServerName: "proxy.example.test", OutboundTags: []string{"agw-jp-dc-socks"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if managed.VLESSInboundID == 0 || managed.VLESSInboundTag != "agw-aggregate-vless-vless" || managed.PublicKey == "" || managed.ShortID == "" {
-		t.Fatalf("aggregate=%#v", managed)
-	}
-	if len(fixture.addedProtocols) != 1 || fixture.addedProtocols[0] != "vless" {
-		t.Fatalf("added protocols=%#v", fixture.addedProtocols)
-	}
-}
-
 func TestInspectLegacyMainRequiresExact8443To7928Chain(t *testing.T) {
 	setting := map[string]any{
 		"outbounds": []any{map[string]any{
@@ -389,7 +348,10 @@ func TestEnsureLegacyMainPreserves8443AndAddsOnlyMixedInbound(t *testing.T) {
 		},
 		inbounds: []map[string]any{{
 			"id": float64(1), "tag": "aimili-reality", "remark": "Aimili Reality", "protocol": "vless", "port": float64(8443),
-			"settings": mustJSONString(map[string]any{"clients": []any{map[string]any{"id": "legacy-client", "flow": "xtls-rprx-vision"}}}),
+			"settings": mustJSONString(map[string]any{"clients": []any{
+				map[string]any{"id": "legacy-client", "email": "test", "flow": "xtls-rprx-vision"},
+				map[string]any{"id": "subscription-client", "email": "aimili-gateway-subscription", "flow": "xtls-rprx-vision"},
+			}}),
 			"streamSettings": mustJSONString(map[string]any{
 				"network": "tcp", "security": "reality",
 				"realitySettings": map[string]any{
@@ -415,6 +377,16 @@ func TestEnsureLegacyMainPreserves8443AndAddsOnlyMixedInbound(t *testing.T) {
 	}
 	if len(fixture.updatedInboundIDs) != 0 {
 		t.Fatalf("already migrated 8443 was unexpectedly updated: %v", fixture.updatedInboundIDs)
+	}
+	updatesBefore := fixture.updatedXrayCalls
+	if _, err := client.EnsureLegacyMain(context.Background(), LegacyMainDesired{
+		VLESSPort: 8443, MixedPort: 31000, SOCKSPort: 7928, MixedUsername: "user", MixedPassword: "password",
+		RealityTarget: "127.0.0.1:443", RealityServerName: "proxy.example.test",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if fixture.updatedXrayCalls != updatesBefore {
+		t.Fatal("idempotent main inspection unexpectedly rewrote Xray settings")
 	}
 }
 
@@ -523,6 +495,14 @@ func TestUpdateManagedGroupReturnsCurrentRealityMaterialFromObjectResponse(t *te
 		if inbound["protocol"] != "vless" {
 			continue
 		}
+		var settings map[string]any
+		if err := json.Unmarshal([]byte(inbound["settings"].(string)), &settings); err != nil {
+			t.Fatal(err)
+		}
+		settings["clients"] = append(settings["clients"].([]any), map[string]any{
+			"id": "subscription-client", "email": "aimili-gateway-subscription", "flow": "xtls-rprx-vision",
+		})
+		inbound["settings"] = settings
 		var stream map[string]any
 		if err := json.Unmarshal([]byte(inbound["streamSettings"].(string)), &stream); err != nil {
 			t.Fatal(err)

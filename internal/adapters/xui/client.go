@@ -15,6 +15,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -355,7 +356,7 @@ func (c *Client) currentRealityMaterial(ctx context.Context, desired DesiredGrou
 			return "", "", "", "", &AdapterError{Code: "invalid_response"}
 		}
 		clients := asObjectSlice(settings["clients"])
-		if len(clients) != 1 || stringValue(clients[0]["id"]) != desired.VLESSClientID || stringValue(clients[0]["flow"]) != "xtls-rprx-vision" {
+		if _, ok := findVisionClient(clients, desired.VLESSClientID); !ok {
 			return "", "", "", "", &AdapterError{Code: "managed_resource_drift"}
 		}
 		stream, ok := decodeObject(inbound.StreamSettings)
@@ -807,164 +808,6 @@ func mergeManagedXray(setting map[string]any, desired DesiredGroup, vlessTag, mi
 	return setting, nil
 }
 
-func mergeAggregateXray(setting map[string]any, desired AggregateDesired) (map[string]any, error) {
-	if !strings.HasPrefix(desired.ResourceName, "agw-") || desired.VLESSPort < 1 || desired.VLESSPort > 65535 || len(desired.OutboundTags) == 0 {
-		return nil, &AdapterError{Code: "invalid_request"}
-	}
-	seen := map[string]bool{}
-	selectors := make([]any, 0, len(desired.OutboundTags))
-	for _, tag := range desired.OutboundTags {
-		tag = strings.TrimSpace(tag)
-		if tag == "" || seen[tag] {
-			continue
-		}
-		seen[tag] = true
-		selectors = append(selectors, tag)
-	}
-	if len(selectors) == 0 {
-		return nil, &AdapterError{Code: "invalid_request"}
-	}
-	routing, _ := setting["routing"].(map[string]any)
-	if routing == nil {
-		routing = map[string]any{"domainStrategy": "AsIs"}
-		setting["routing"] = routing
-	}
-	balancers := make([]any, 0)
-	for _, item := range asObjectSlice(routing["balancers"]) {
-		if stringValue(item["tag"]) != "agw-aggregate" {
-			balancers = append(balancers, item)
-		}
-	}
-	balancers = append(balancers, map[string]any{"tag": "agw-aggregate", "selector": selectors})
-	balancers[len(balancers)-1].(map[string]any)["strategy"] = map[string]any{"type": "leastPing"}
-	routing["balancers"] = balancers
-	setting["observatory"] = map[string]any{"subjectSelector": selectors, "probeURL": "https://www.google.com/generate_204", "probeInterval": "30s", "enableConcurrency": true}
-	rules := make([]any, 0)
-	aggregateTag := desired.ResourceName + "-vless"
-	for _, rule := range asObjectSlice(routing["rules"]) {
-		if stringValue(rule["balancerTag"]) == "agw-aggregate" || ruleContainsInbound(rule, aggregateTag) {
-			continue
-		}
-		rules = append(rules, rule)
-	}
-	routing["rules"] = append([]any{map[string]any{"type": "field", "inboundTag": []any{aggregateTag}, "balancerTag": "agw-aggregate"}}, rules...)
-	return setting, nil
-}
-
-func aggregateVLESSInbound(desired AggregateDesired, tag, privateKey, publicKey, shortID string) map[string]any {
-	return map[string]any{
-		"up": 0, "down": 0, "total": 0, "remark": "Aimili Gateway aggregate VLESS", "enable": true,
-		"expiryTime": 0, "trafficReset": "never", "trafficResetDay": 1, "listen": "", "port": desired.VLESSPort,
-		"protocol": "vless", "tag": tag,
-		"settings":       mustJSONString(map[string]any{"clients": []any{map[string]any{"id": desired.VLESSClientID, "email": "aimili-gateway-aggregate", "flow": "xtls-rprx-vision", "enable": true}}, "decryption": "none"}),
-		"streamSettings": mustJSONString(map[string]any{"network": "tcp", "security": "reality", "realitySettings": map[string]any{"show": false, "xver": 0, "target": desired.RealityTarget, "serverNames": []any{desired.RealityServerName}, "privateKey": privateKey, "shortIds": []any{shortID}, "mldsa65Seed": "", "settings": map[string]any{"publicKey": publicKey, "fingerprint": "chrome", "spiderX": "/", "mldsa65Verify": ""}}}),
-		"sniffing":       mustJSONString(map[string]any{"enabled": true, "destOverride": []any{"http", "tls", "quic"}, "metadataOnly": false, "routeOnly": false}),
-	}
-}
-
-func validateAggregateDesired(desired AggregateDesired) error {
-	if !strings.HasPrefix(desired.ResourceName, "agw-") || desired.VLESSPort < 1 || desired.VLESSPort > 65535 || strings.TrimSpace(desired.VLESSClientID) == "" || desired.RealityTarget != "127.0.0.1:443" || strings.TrimSpace(desired.RealityServerName) == "" || net.ParseIP(desired.RealityServerName) != nil || strings.ContainsAny(desired.RealityServerName, "/:") {
-		return &AdapterError{Code: "invalid_request"}
-	}
-	return nil
-}
-
-func (c *Client) EnsureAggregate(ctx context.Context, desired AggregateDesired) (ManagedAggregate, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if err := validateAggregateDesired(desired); err != nil {
-		return ManagedAggregate{}, err
-	}
-	if err := c.authenticate(ctx); err != nil {
-		return ManagedAggregate{}, err
-	}
-	snapshot, err := c.snapshot(ctx)
-	if err != nil {
-		return ManagedAggregate{}, err
-	}
-	tag := desired.ResourceName + "-vless"
-	var current *Inbound
-	for i := range snapshot.Inbounds {
-		if snapshot.Inbounds[i].Tag == tag {
-			current = &snapshot.Inbounds[i]
-			break
-		}
-	}
-	publicKey, shortID := "", ""
-	if current != nil {
-		if current.Protocol != "vless" || current.Port != desired.VLESSPort || !strings.HasPrefix(current.Remark, "Aimili Gateway") {
-			return ManagedAggregate{}, &AdapterError{Code: "ownership_conflict"}
-		}
-		details, detailErr := c.inboundDetails(ctx)
-		if detailErr != nil {
-			return ManagedAggregate{}, detailErr
-		}
-		for _, inbound := range details {
-			if inbound.ID != current.ID {
-				continue
-			}
-			stream, ok := decodeObject(inbound.StreamSettings)
-			if !ok {
-				return ManagedAggregate{}, &AdapterError{Code: "invalid_response"}
-			}
-			reality, ok := decodeObject(stream["realitySettings"])
-			if !ok {
-				return ManagedAggregate{}, &AdapterError{Code: "invalid_response"}
-			}
-			names := stringValues(reality["serverNames"])
-			ids := stringValues(reality["shortIds"])
-			settings, ok := decodeObject(reality["settings"])
-			if !ok || len(names) != 1 || len(ids) != 1 || names[0] != desired.RealityServerName {
-				return ManagedAggregate{}, &AdapterError{Code: "managed_resource_drift"}
-			}
-			publicKey, shortID = stringValue(settings["publicKey"]), ids[0]
-		}
-	} else {
-		privateKey, generatedPublicKey, keyErr := c.newX25519(ctx)
-		if keyErr != nil {
-			return ManagedAggregate{}, keyErr
-		}
-		publicKey = generatedPublicKey
-		bytesID := make([]byte, 4)
-		if _, keyErr = rand.Read(bytesID); keyErr != nil {
-			return ManagedAggregate{}, &AdapterError{Code: "random_failed"}
-		}
-		shortID = hex.EncodeToString(bytesID)
-		setting, mergeErr := mergeAggregateXray(cloneObject(snapshot.XraySetting), desired)
-		if mergeErr != nil {
-			return ManagedAggregate{}, mergeErr
-		}
-		if updateErr := c.updateXray(ctx, setting, snapshot.OutboundTestURL); updateErr != nil {
-			return ManagedAggregate{}, updateErr
-		}
-		if addErr := c.addInbound(ctx, aggregateVLESSInbound(desired, tag, privateKey, publicKey, shortID)); addErr != nil {
-			_ = c.updateXray(ctx, snapshot.XraySetting, snapshot.OutboundTestURL)
-			return ManagedAggregate{}, addErr
-		}
-		updated, listErr := c.inbounds(ctx)
-		if listErr != nil {
-			return ManagedAggregate{}, listErr
-		}
-		for _, inbound := range updated {
-			if inbound.Tag == tag {
-				current = &inbound
-				break
-			}
-		}
-	}
-	setting, mergeErr := mergeAggregateXray(cloneObject(snapshot.XraySetting), desired)
-	if mergeErr != nil {
-		return ManagedAggregate{}, mergeErr
-	}
-	if updateErr := c.updateXray(ctx, setting, snapshot.OutboundTestURL); updateErr != nil {
-		return ManagedAggregate{}, updateErr
-	}
-	if current == nil {
-		return ManagedAggregate{}, &AdapterError{Code: "write_verification_failed"}
-	}
-	return ManagedAggregate{ResourceName: desired.ResourceName, VLESSInboundID: current.ID, VLESSInboundTag: tag, VLESSPort: desired.VLESSPort, PublicKey: publicKey, ShortID: shortID, ServerName: desired.RealityServerName}, nil
-}
-
 func mixedSourceRestrictionEnabled(desired DesiredGroup) bool {
 	return desired.MixedSourceRestrictionEnabled || len(desired.MixedSourceCIDRs) > 0
 }
@@ -1058,10 +901,11 @@ func (c *Client) EnsureLegacyMain(ctx context.Context, desired LegacyMainDesired
 			return LegacyMain{}, &AdapterError{Code: "invalid_response"}
 		}
 		clients := asObjectSlice(settings["clients"])
-		if len(clients) != 1 || stringValue(clients[0]["flow"]) != "xtls-rprx-vision" {
+		primaryClient, ok := findVisionClient(clients, "")
+		if !ok {
 			return LegacyMain{}, &AdapterError{Code: "managed_resource_drift"}
 		}
-		result.ClientID = stringValue(clients[0]["id"])
+		result.ClientID = stringValue(primaryClient["id"])
 		stream, ok := decodeObject(inbound.StreamSettings)
 		if !ok || stringValue(stream["network"]) != "tcp" || stringValue(stream["security"]) != "reality" {
 			return LegacyMain{}, &AdapterError{Code: "managed_resource_drift"}
@@ -1163,8 +1007,10 @@ func (c *Client) EnsureLegacyMain(ctx context.Context, desired LegacyMainDesired
 		kept = append([]any{map[string]any{"type": "field", "inboundTag": []any{mixedTag}, "outboundTag": "aimili-socks"}}, kept...)
 	}
 	routing["rules"] = kept
-	if err := c.updateXray(ctx, snapshot.XraySetting, snapshot.OutboundTestURL); err != nil {
-		return LegacyMain{}, err
+	if !reflect.DeepEqual(originalSetting, snapshot.XraySetting) {
+		if err := c.updateXray(ctx, snapshot.XraySetting, snapshot.OutboundTestURL); err != nil {
+			return LegacyMain{}, err
+		}
 	}
 	if result.MixedInboundID == 0 {
 		groupDesired := DesiredGroup{ResourceName: "agw-main", MixedPort: desired.MixedPort, MixedUsername: desired.MixedUsername, MixedPassword: desired.MixedPassword}
@@ -1201,9 +1047,9 @@ func (c *Client) EnsureLegacyMain(ctx context.Context, desired LegacyMainDesired
 				reality, realityOK := decodeObject(stream["realitySettings"])
 				clientSettings, clientSettingsOK := decodeObject(reality["settings"])
 				clients := asObjectSlice(settings["clients"])
+				_, clientOK := findVisionClient(clients, result.ClientID)
 				names, ids := stringValues(reality["serverNames"]), stringValues(reality["shortIds"])
-				verified = settingsOK && streamOK && realityOK && clientSettingsOK && len(clients) == 1 &&
-					stringValue(clients[0]["id"]) == result.ClientID && stringValue(clients[0]["flow"]) == "xtls-rprx-vision" &&
+				verified = settingsOK && streamOK && realityOK && clientSettingsOK && clientOK &&
 					stringValue(reality["target"]) == desired.RealityTarget && len(names) == 1 && names[0] == desired.RealityServerName &&
 					stringValue(reality["privateKey"]) == legacyPrivateKey && len(ids) == 1 && ids[0] == result.ShortID &&
 					stringValue(clientSettings["publicKey"]) == result.PublicKey
@@ -1286,6 +1132,16 @@ func asObjectSlice(value any) []map[string]any {
 func stringValue(value any) string {
 	text, _ := value.(string)
 	return text
+}
+
+func findVisionClient(clients []map[string]any, expectedID string) (map[string]any, bool) {
+	for _, client := range clients {
+		clientID := stringValue(client["id"])
+		if clientID != "" && stringValue(client["flow"]) == "xtls-rprx-vision" && (expectedID == "" || clientID == expectedID) {
+			return client, true
+		}
+	}
+	return nil, false
 }
 
 func ruleContainsInbound(rule map[string]any, tag string) bool {

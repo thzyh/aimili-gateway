@@ -154,53 +154,121 @@ func (c *Client) DeleteManagedAggregate(ctx context.Context, managed ManagedAggr
 	if err != nil {
 		return err
 	}
+	details, err := c.inboundDetails(ctx)
+	if err != nil {
+		return err
+	}
 	found := false
-	for _, inbound := range snapshot.Inbounds {
+	for _, inbound := range details {
+		settings, settingsOK := decodeObject(inbound.Settings)
+		clients := asObjectSlice(settings["clients"])
+		containsAggregateClient := false
+		for _, client := range clients {
+			if stringValue(client["email"]) == "aimili-gateway-aggregate" {
+				containsAggregateClient = true
+			}
+		}
+		if inbound.ID != managed.VLESSInboundID && containsAggregateClient {
+			return &AdapterError{Code: "ownership_conflict"}
+		}
 		if inbound.ID != managed.VLESSInboundID {
 			continue
 		}
 		if inbound.Tag != managed.VLESSInboundTag || inbound.Protocol != "vless" || inbound.Port != managed.VLESSPort || inbound.Remark != "Aimili Gateway aggregate VLESS" {
 			return &AdapterError{Code: "ownership_conflict"}
 		}
+		if !settingsOK || len(clients) != 1 || !containsAggregateClient || stringValue(clients[0]["flow"]) != "xtls-rprx-vision" {
+			return &AdapterError{Code: "ownership_conflict"}
+		}
 		found = true
 	}
 	if !found {
-		return &AdapterError{Code: "managed_resource_missing"}
+		routing, _ := snapshot.XraySetting["routing"].(map[string]any)
+		for _, rule := range asObjectSlice(routing["rules"]) {
+			if ruleContainsInbound(rule, managed.VLESSInboundTag) || stringValue(rule["balancerTag"]) == "agw-aggregate" {
+				return &AdapterError{Code: "managed_resource_drift"}
+			}
+		}
+		for _, balancer := range asObjectSlice(routing["balancers"]) {
+			if stringValue(balancer["tag"]) == "agw-aggregate" {
+				return &AdapterError{Code: "managed_resource_drift"}
+			}
+		}
+		if _, exists := snapshot.XraySetting["observatory"]; exists {
+			return &AdapterError{Code: "managed_resource_drift"}
+		}
+		return nil
 	}
+	setting := cloneObject(snapshot.XraySetting)
+	routing, _ := setting["routing"].(map[string]any)
+	if routing == nil {
+		return &AdapterError{Code: "managed_resource_drift"}
+	}
+	keptRules := make([]any, 0)
+	ownedRules := 0
+	for _, rule := range asObjectSlice(routing["rules"]) {
+		if ruleContainsInbound(rule, managed.VLESSInboundTag) || stringValue(rule["balancerTag"]) == "agw-aggregate" {
+			inboundTags := stringValues(rule["inboundTag"])
+			if len(rule) != 3 || stringValue(rule["type"]) != "field" || stringValue(rule["balancerTag"]) != "agw-aggregate" || len(inboundTags) != 1 || inboundTags[0] != managed.VLESSInboundTag {
+				return &AdapterError{Code: "ownership_conflict"}
+			}
+			ownedRules++
+			continue
+		}
+		keptRules = append(keptRules, rule)
+	}
+	if ownedRules != 1 {
+		return &AdapterError{Code: "managed_resource_drift"}
+	}
+	routing["rules"] = keptRules
+	keptBalancers := make([]any, 0)
+	ownedBalancers := 0
+	var aggregateSelectors []string
+	for _, balancer := range asObjectSlice(routing["balancers"]) {
+		if stringValue(balancer["tag"]) == "agw-aggregate" {
+			selectors := stringValues(balancer["selector"])
+			strategy, strategyOK := decodeObject(balancer["strategy"])
+			if len(selectors) == 0 || !strategyOK || stringValue(strategy["type"]) != "leastPing" {
+				return &AdapterError{Code: "ownership_conflict"}
+			}
+			for _, selector := range selectors {
+				if selector != "aimili-socks" && !(strings.HasPrefix(selector, "agw-") && strings.HasSuffix(selector, "-socks")) {
+					return &AdapterError{Code: "ownership_conflict"}
+				}
+			}
+			ownedBalancers++
+			aggregateSelectors = selectors
+			continue
+		}
+		keptBalancers = append(keptBalancers, balancer)
+	}
+	if ownedBalancers != 1 {
+		return &AdapterError{Code: "managed_resource_drift"}
+	}
+	routing["balancers"] = keptBalancers
+	observatory, ok := setting["observatory"].(map[string]any)
+	if !ok || stringValue(observatory["probeURL"]) != "https://www.google.com/generate_204" {
+		return &AdapterError{Code: "ownership_conflict"}
+	}
+	observatorySelectors := asStringSlice(observatory["subjectSelector"])
+	if len(observatorySelectors) != len(aggregateSelectors) {
+		return &AdapterError{Code: "ownership_conflict"}
+	}
+	selectorSet := make(map[string]bool, len(aggregateSelectors))
+	for _, selector := range aggregateSelectors {
+		selectorSet[selector] = true
+	}
+	for _, selector := range observatorySelectors {
+		if !selectorSet[selector] {
+			return &AdapterError{Code: "ownership_conflict"}
+		}
+	}
+	delete(setting, "observatory")
 	if _, err := c.call(ctx, http.MethodPost, "panel/api/inbounds/del/"+formatInt64(managed.VLESSInboundID), map[string]any{}, false); err != nil {
 		return &AdapterError{Code: "partial_delete"}
 	}
 	if _, err := c.call(ctx, http.MethodPost, "panel/api/clients/del/"+url.PathEscape("aimili-gateway-aggregate"), map[string]any{}, false); err != nil {
 		return &AdapterError{Code: "partial_delete"}
-	}
-	setting := cloneObject(snapshot.XraySetting)
-	routing, _ := setting["routing"].(map[string]any)
-	if routing != nil {
-		kept := make([]any, 0)
-		for _, rule := range asObjectSlice(routing["rules"]) {
-			if ruleContainsInbound(rule, managed.VLESSInboundTag) || stringValue(rule["balancerTag"]) == "agw-aggregate" {
-				continue
-			}
-			kept = append(kept, rule)
-		}
-		routing["rules"] = kept
-		balancers := make([]any, 0)
-		for _, balancer := range asObjectSlice(routing["balancers"]) {
-			if stringValue(balancer["tag"]) != "agw-aggregate" {
-				balancers = append(balancers, balancer)
-			}
-		}
-		routing["balancers"] = balancers
-	}
-	if observatory, ok := setting["observatory"].(map[string]any); ok {
-		selectors := asStringSlice(observatory["subjectSelector"])
-		kept := make([]any, 0, len(selectors))
-		for _, selector := range selectors {
-			if selector != "agw-aggregate" {
-				kept = append(kept, selector)
-			}
-		}
-		observatory["subjectSelector"] = kept
 	}
 	if err := c.updateXray(ctx, setting, snapshot.OutboundTestURL); err != nil {
 		return &AdapterError{Code: "partial_delete"}
@@ -321,7 +389,7 @@ func randomSubscriptionID() (string, error) {
 }
 
 func (c *Client) readSubscriptionPath(ctx context.Context) string {
-	obj, err := c.call(ctx, http.MethodGet, "panel/api/setting/all", nil, false)
+	obj, err := c.call(ctx, http.MethodPost, "panel/api/setting/all", map[string]any{}, false)
 	if err != nil {
 		return "/sub/"
 	}

@@ -62,6 +62,7 @@ type ProxyManager interface {
 	Subscription(context.Context) (orchestrator.SubscriptionResult, error)
 	ReplaceCandidate(context.Context, string, string) (domain.ProxyGroup, error)
 	CheckMain(context.Context) (store.MainEgress, error)
+	CleanupLegacyAggregate(context.Context) (orchestrator.LegacyAggregateCleanup, error)
 	MixedPolicy(context.Context) (store.MixedSourcePolicy, error)
 	SetMixedPolicy(context.Context, store.MixedSourcePolicy) error
 	Reconcile(context.Context) orchestrator.ReconcileResult
@@ -136,6 +137,7 @@ func NewServer(dependencies Dependencies) http.Handler {
 	mux.HandleFunc("DELETE /api/v1/proxy-groups/{id}", server.handleDisableProxyGroup)
 	mux.HandleFunc("GET /api/v1/proxy-groups/{id}/connections", server.handleConnections)
 	mux.HandleFunc("GET /api/v1/proxy-groups/aggregate/connections", server.handleAggregateConnections)
+	mux.HandleFunc("POST /api/v1/proxy-groups/legacy-aggregate/cleanup", server.handleCleanupLegacyAggregate)
 	mux.HandleFunc("GET /api/v1/settings/mixed-source-policy", server.handleGetMixedPolicy)
 	mux.HandleFunc("PUT /api/v1/settings/mixed-source-policy", server.handleSetMixedPolicy)
 	mux.HandleFunc("GET /api/v1/settings/summary", server.handleSettingsSummary)

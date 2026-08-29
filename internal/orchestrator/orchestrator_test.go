@@ -178,26 +178,6 @@ func TestPoolIncludesHealthyLegacyMainAsFourthEgress(t *testing.T) {
 	}
 }
 
-func TestAggregateConnectionsIncludesHealthyMainAndReturnsOneURI(t *testing.T) {
-	fixture := newFixture()
-	ready, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter, "slot-one")
-	ready.Status = domain.ProxyGroupReady
-	ready.ResourceName = "agw-jp-dc-one"
-	ready.ExitIP = "203.0.113.7"
-	fixture.store.groups[ready.ID] = ready
-	fixture.aimili.mainStatus = aimili.MainStatus{Country: "US", ProxyType: "datacenter", ExitIP: "203.0.113.20", Port: 7928, EgressOK: true, Active: true}
-	connections, err := fixture.orchestratorWithMax(t, 3).AggregateConnections(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if connections.VLESSURI == "" || connections.SOCKS5HURI != "" {
-		t.Fatalf("connections=%#v", connections)
-	}
-	if !equalStrings(fixture.xui.aggregateDesired.OutboundTags, []string{"agw-jp-dc-one-socks", "aimili-socks"}) {
-		t.Fatalf("selectors=%#v", fixture.xui.aggregateDesired.OutboundTags)
-	}
-}
-
 func TestEnableCompensatesInReverseOrderWhenVLESSValidationFails(t *testing.T) {
 	fixture := newFixture()
 	fixture.validator.vlessError = &validator.Error{Code: "protocol_failed"}
@@ -253,6 +233,34 @@ func TestCheckNeverRotatesAndRotateKeepsEntryStable(t *testing.T) {
 	}
 }
 
+func TestCheckSynchronizesRuntimeCandidateIdentity(t *testing.T) {
+	fixture := newFixture()
+	group, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter, "stale-node")
+	group.Status = domain.ProxyGroupReady
+	group.AimiliSlot = 2
+	group.VLESSPort = 20000
+	group.MixedPort = 30000
+	group.ExitIP = "203.0.113.7"
+	group.RealityPublicKey = "pk"
+	group.RealityShortID = "sid"
+	group.RealityServerName = "proxy.example.test"
+	group.CreatedAt = fixture.now()
+	group.UpdatedAt = fixture.now()
+	fixture.store.groups[group.ID] = group
+	fixture.aimili.createdSlots = map[int]aimili.Slot{2: {
+		Number: 2, NodeID: "runtime-node", Country: "KR", CountryName: "韩国", ProxyType: "residential",
+		CandidateIP: "198.51.100.8", ExitIP: "203.0.113.8", Port: 17930, Status: "up", EgressOK: true, LatencyMS: 44,
+	}}
+
+	checked, err := fixture.orchestratorWithMax(t, 3).Check(context.Background(), group.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checked.CandidateID != "runtime-node" || checked.CandidateIP != "198.51.100.8" || checked.CountryCode != "KR" || checked.ProxyType != domain.ProxyTypeResidential || checked.ExitIP != "203.0.113.8" {
+		t.Fatalf("runtime slot was not synchronized: %#v", checked)
+	}
+}
+
 type fakeStore struct {
 	mu                 sync.Mutex
 	groups             map[string]domain.ProxyGroup
@@ -262,6 +270,7 @@ type fakeStore struct {
 	enforceUniqueSlots bool
 	mainEgress         store.MainEgress
 	subscription       store.GatewaySubscription
+	aggregate          store.AggregateConfig
 }
 
 func (s *fakeStore) CreateProxyGroup(_ context.Context, group domain.ProxyGroup) error {
@@ -352,7 +361,13 @@ func (s *fakeStore) SaveGatewaySubscription(_ context.Context, value store.Gatew
 	s.subscription = value
 	return nil
 }
-func (s *fakeStore) SaveAggregateConfig(context.Context, store.AggregateConfig) error { return nil }
+func (s *fakeStore) GetAggregateConfig(context.Context) (store.AggregateConfig, error) {
+	return s.aggregate, nil
+}
+func (s *fakeStore) SaveAggregateConfig(_ context.Context, value store.AggregateConfig) error {
+	s.aggregate = value
+	return nil
+}
 
 type fakeAimili struct {
 	calls            *[]string
@@ -366,13 +381,31 @@ type fakeAimili struct {
 	createErrors     map[string]error
 	mainStatus       aimili.MainStatus
 	assignedSlot     aimili.Slot
+	assignedSlots    []aimili.Slot
+	assignErrors     []error
+	assignCalls      int
+	checkResults     []aimili.SlotCheck
 	assignRequests   []aimili.AssignSlotRequest
 }
 
 func (a *fakeAimili) MainStatus(context.Context) (aimili.MainStatus, error) { return a.mainStatus, nil }
-func (a *fakeAimili) AssignSlotNode(_ context.Context, _ int, request aimili.AssignSlotRequest) (aimili.Slot, error) {
+func (a *fakeAimili) AssignSlotNode(_ context.Context, number int, request aimili.AssignSlotRequest) (aimili.Slot, error) {
 	a.assignRequests = append(a.assignRequests, request)
-	return a.assignedSlot, nil
+	index := a.assignCalls
+	a.assignCalls++
+	if index < len(a.assignErrors) && a.assignErrors[index] != nil {
+		return aimili.Slot{}, a.assignErrors[index]
+	}
+	result := a.assignedSlot
+	if index < len(a.assignedSlots) {
+		result = a.assignedSlots[index]
+	}
+	result.Number = number
+	if a.createdSlots == nil {
+		a.createdSlots = make(map[int]aimili.Slot)
+	}
+	a.createdSlots[number] = result
+	return result, nil
 }
 
 func (a *fakeAimili) Candidates(context.Context) ([]aimili.Candidate, error) {
@@ -404,6 +437,13 @@ func (a *fakeAimili) ListSlots(context.Context) ([]aimili.Slot, error) {
 }
 func (a *fakeAimili) CheckSlot(_ context.Context, number int) (aimili.SlotCheck, error) {
 	*a.calls = append(*a.calls, "slot.check")
+	if len(a.checkResults) > 0 {
+		result := a.checkResults[0]
+		a.checkResults = a.checkResults[1:]
+		result.Number = number
+		a.createdSlots[number] = result
+		return result, nil
+	}
 	if a.unreadyChecks > 0 {
 		a.unreadyChecks--
 		slot := a.slot("")
@@ -463,7 +503,8 @@ type fakeXUI struct {
 	returnedVLESSInboundID int64
 	returnedMixedInboundID int64
 	returnedResourceName   string
-	aggregateDesired       xui.AggregateDesired
+	deletedAggregate       xui.ManagedAggregate
+	deleteAggregateError   error
 	snapshot               xui.Snapshot
 	subscriptionDesired    xui.SubscriptionDesired
 }
@@ -477,9 +518,9 @@ func (x *fakeXUI) SubscriptionURL(_ context.Context, subscription xui.Subscripti
 	return subscription.SubscriptionPath + subscription.SubscriptionID, nil
 }
 
-func (x *fakeXUI) EnsureAggregate(_ context.Context, desired xui.AggregateDesired) (xui.ManagedAggregate, error) {
-	x.aggregateDesired = desired
-	return xui.ManagedAggregate{ResourceName: desired.ResourceName, VLESSInboundID: 99, VLESSInboundTag: desired.ResourceName + "-vless", VLESSPort: desired.VLESSPort, PublicKey: "aggregate-public", ShortID: "aggregate-short", ServerName: desired.RealityServerName}, nil
+func (x *fakeXUI) DeleteManagedAggregate(_ context.Context, managed xui.ManagedAggregate) error {
+	x.deletedAggregate = managed
+	return x.deleteAggregateError
 }
 
 func (x *fakeXUI) EnsureLegacyMain(_ context.Context, desired xui.LegacyMainDesired) (xui.LegacyMain, error) {
@@ -529,6 +570,8 @@ func (x *fakeXUI) UpdateManagedGroup(_ context.Context, desired xui.DesiredGroup
 type fakeValidator struct {
 	calls            *[]string
 	vlessError       error
+	vlessErrors      []error
+	vlessCalls       int
 	socksCalls       int
 	socksErrors      []error
 	socksExpectedIPs []string
@@ -547,6 +590,10 @@ func (v *fakeValidator) ValidateSOCKS5H(_ context.Context, target validator.SOCK
 }
 func (v *fakeValidator) ValidateVLESS(_ context.Context, target validator.VLESSTarget) (validator.Result, error) {
 	*v.calls = append(*v.calls, "validate.vless")
+	v.vlessCalls++
+	if v.vlessCalls <= len(v.vlessErrors) && v.vlessErrors[v.vlessCalls-1] != nil {
+		return validator.Result{}, v.vlessErrors[v.vlessCalls-1]
+	}
 	if v.vlessError != nil {
 		return validator.Result{}, v.vlessError
 	}

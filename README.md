@@ -4,9 +4,9 @@ Aimili Gateway 是 AimiliVPN 与 3x-ui 的轻量统一控制台项目。统一�
 
 ## 当前阶段
 
-2026-08-28 增量正在执行：AimiliVPN 和 Gateway 已增加按国家刷新、刷新状态轮询和当前筛选结果批量复制；Gateway 在新建代理组前保证实际出口 IP 唯一。3x-ui 升级目标固定为官方 `v3.7.0`，使用固定 amd64 资产大小与 SHA-256、整体备份和整体回滚。生产结果必须以本次最新验证记录为准，在 VPS 阶梯验收完成前不把本地通过描述为生产完成。
+2026-08-29 最新生产基线已经完成：Gateway 使用 3x-ui 原生多入站订阅客户端，将主连接 `8443` 和三个受管 VLESS 入站组成一个订阅；导入兼容客户端后得到四个独立 VLESS 节点，mixed/SOCKS5H 不进入该订阅。旧 `21000` 聚合入站、客户端引用、balancer 和 observatory 已安全清理，原聚合接口固定返回弃用错误，不会重新创建历史入口。
 
-V1-C 低内存按需资源池已经完成服务器端验收：统一控制台主界面改为“VPN 节点池、SOCKS5H 代理池、高级设置”，移除旧服务状态卡和国家大卡片。Gateway 显示 AimiliVPN 当前有效候选，并在 512 MiB 生产环境中维持一个成对的 VLESS Reality、mixed/SOCKS5H 在线出口；只有双协议真实验证为 `ready` 的记录允许复制或导出。Windows 外部用户客户端应用层最终验收仍未完成。
+V1-C 低内存按需资源池继续运行在 512 MiB VPS：三个受管出口位分别提供 VLESS 与 mixed/SOCKS5H，AimiliVPN 主连接通过 `8443` 和 `agw-main-mixed` 作为第 4 个出口。页面提供固定出口位、候选替换、按国家刷新、真实延迟检测和“复制 VLESS 订阅”；只有真实协议验证为 `ready` 的记录允许复制或导出。最新生产证据见 `docs/verification/2026-08-29-test-style-subscription.md`。
 
 V1-B 单代理组闭环已于 2026-08-26 完成真实 VPS 端到端验收：在 V1-A 个人单管理员、可选 TOTP、服务端会话和独立 3x-ui 专家模式基础上，增加国家候选目录、住宅/机房分类、AimiliVPN 槽位与 `agw-` Xray 资源编排、VLESS Reality、mixed/SOCKS5H、同类型换 IP、反向补偿和真实协议验证器。验收证据见 `docs/verification/2026-08-26-ny-v1b.md`。
 
@@ -20,6 +20,9 @@ Gateway 只管理 `agw-` 命名空间；不接管非受管 3x-ui/Xray 资源，�
 - `docs/superpowers/specs/2026-08-26-online-proxy-pools-design.md`：V1-C 正式设计，定义每候选出口实例、在线双协议资源池、紧凑前端和阶梯容量门槛。
 - `docs/superpowers/specs/2026-08-27-advanced-settings-unified-credentials-design.md`：已批准的 V1-D 正式设计，定义高级设置、三账户同步、服务端自动代登录、SOCKS5H 来源开关和状态简化。
 - `docs/superpowers/specs/2026-08-28-xui-upgrade-capacity-country-refresh-design.md`：3x-ui v3.7.0、按国家刷新、出口去重和 512 MiB 容量阶梯的批准设计。
+- `docs/superpowers/specs/2026-08-29-test-style-subscription-design.md`：已实现的 3x-ui 原生多入站 VLESS 订阅、主连接检测和旧聚合迁移设计。
+- `docs/superpowers/plans/2026-08-29-test-style-subscription.md`：Test 风格订阅的实施与生产迁移计划。
+- `docs/verification/2026-08-29-test-style-subscription.md`：四节点订阅、双协议、历史清理和低内存生产验收记录。
 - `docs/superpowers/plans/2026-08-28-xui-upgrade-capacity-country-refresh.md`：本次增量的实施与生产验收计划。
 - `docs/superpowers/plans/2026-08-27-advanced-settings-unified-credentials-v1d.md`：V1-D 实施、迁移、回退和真实 VPS 验收计划。
 - `docs/superpowers/plans/2026-08-26-online-proxy-pools-v1c.md`：V1-C 实施与真实 VPS 验收计划。
@@ -82,7 +85,9 @@ V1-D 中该命令是三服务统一用户名和密码的唯一受支持修改入
 
 ## 验证
 
-本次 512 MiB 生产验证使用 `scripts/verify-capacity-step-remote.sh`：容量只按 1→2→3 提升，每级默认采样 15 分钟，触发低可用内存、Swap、服务重启、failed unit、OOM 或 SSH 探测门槛就回退；不尝试 4。3x-ui 固定升级使用 `scripts/upgrade-xui-v370-remote.sh`，必须先运行 `--preflight`，再运行 `--apply`，必要时用生成的固定备份目录执行 `--rollback`。
+当前 Test 风格订阅生产验证使用 `scripts/verify-test-style-subscription.py`：核对订阅只包含 `8443`、`20000–20002`，逐条启动临时 Xray 客户端验证公网出口，并复测主 VLESS 与 SOCKS5H。`scripts/deploy-test-style-cleanup-remote.sh` 在迁移前备份 Gateway 二进制、Gateway 数据库、x-ui 数据库和 Xray 运行时配置，失败时整体恢复。
+
+512 MiB 容量阶梯验证使用 `scripts/verify-capacity-step-remote.sh`：容量只按 1→2→3 提升，每级默认采样 15 分钟，触发低可用内存、Swap、服务重启、failed unit、OOM 或 SSH 探测门槛就回退。3x-ui 固定升级使用 `scripts/upgrade-xui-v370-remote.sh`，必须先运行 `--preflight`，再运行 `--apply`，必要时用生成的固定备份目录执行 `--rollback`。
 
 生产容量修改使用 `scripts/set-capacity-safe-remote.py`：只接受 1、2、3，修改前以 0700 目录备份 Gateway 配置和数据库，原子写回并保持原 owner/mode。`scripts/verify-external-client-v1c.py` 会逐个验证 ready 组；来源限制开启时，分别核对公网 mixed 端口、授权回环 SOCKS5H/代理 DNS和公网 VLESS，不会把未授权来源被黑洞规则拒绝误报为代理失效。
 

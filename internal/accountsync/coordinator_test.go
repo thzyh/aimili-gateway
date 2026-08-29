@@ -161,6 +161,7 @@ func newCoordinatorFixture(t *testing.T) coordinatorFixture {
 		t.Fatal(err)
 	}
 	coordinator.hashPassword = func([]byte) (string, error) { return "new-hash", nil }
+	coordinator.verifyPassword = func(string, []byte) (bool, error) { return true, nil }
 	return coordinatorFixture{coordinator: coordinator, store: database, aimili: aimiliAdmin, xui: xuiAdmin, calls: &calls}
 }
 
@@ -170,6 +171,18 @@ func TestPreflightFailurePreservesCommittedFingerprint(t *testing.T) {
 	assertCoordinatorCode(t, fixture.coordinator.Check(t.Context()), "account_drift")
 	if fixture.store.state.UsernameFingerprint != "existing-fingerprint" {
 		t.Fatal("drift failure erased the durable migration boundary")
+	}
+}
+
+func TestCheckDetectsGatewayPasswordHashDriftAfterBackendsVerify(t *testing.T) {
+	fixture := newCoordinatorFixture(t)
+	fixture.coordinator.verifyPassword = func(string, []byte) (bool, error) { return false, nil }
+	assertCoordinatorCode(t, fixture.coordinator.Check(t.Context()), "account_drift")
+	if fixture.store.state.Status != store.AccountSyncRepairRequired || fixture.store.state.ErrorCode != "account_drift" {
+		t.Fatalf("drift state = %#v", fixture.store.state)
+	}
+	if !strings.Contains(strings.Join(*fixture.calls, "|"), "aimili.verify:owner|xui.verify:owner") {
+		t.Fatalf("backend boundary was not verified first: %#v", *fixture.calls)
 	}
 }
 

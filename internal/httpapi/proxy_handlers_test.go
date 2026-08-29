@@ -67,18 +67,29 @@ func TestConnectionsRequireOnlyAnAuthenticatedSession(t *testing.T) {
 	}
 }
 
-func TestAggregateConnectionsReturnExactlyOneVLESSAddress(t *testing.T) {
+func TestLegacyAggregateConnectionsAreGoneAndCannotRecreateResources(t *testing.T) {
 	manager := &fakeProxyManager{}
 	environment := newAuthTestEnvironmentConfigured(t, true, func(dependencies *Dependencies) { dependencies.ProxyManager = manager })
 	assertResponseStatus(t, environment.login(t), http.StatusNoContent)
 	response := environment.request(t, http.MethodGet, "/api/v1/proxy-groups/aggregate/connections", nil, "", "")
-	defer response.Body.Close()
-	var connections orchestrator.Connections
-	if err := json.NewDecoder(response.Body).Decode(&connections); err != nil {
-		t.Fatal(err)
-	}
-	if response.StatusCode != http.StatusOK || connections.VLESSURI != "vless://aggregate-masked-test" || connections.SOCKS5HURI != "" {
-		t.Fatalf("status=%d connections=%#v", response.StatusCode, connections)
+	assertResponseStatus(t, response, http.StatusGone)
+}
+
+func TestLegacyAggregateCleanupRequiresMutationGuardsAndIsIdempotent(t *testing.T) {
+	manager := &fakeProxyManager{}
+	environment := newAuthTestEnvironmentConfigured(t, true, func(dependencies *Dependencies) { dependencies.ProxyManager = manager })
+	path := "/api/v1/proxy-groups/legacy-aggregate/cleanup"
+	assertResponseStatus(t, environment.request(t, http.MethodPost, path, map[string]any{}, "", ""), http.StatusUnauthorized)
+	assertResponseStatus(t, environment.login(t), http.StatusNoContent)
+	csrf := environment.session(t).CSRFToken
+	assertResponseStatus(t, environment.request(t, http.MethodPost, path, map[string]any{}, "", csrf), http.StatusForbidden)
+	assertResponseStatus(t, environment.request(t, http.MethodPost, path, map[string]any{}, environment.origin, csrf), http.StatusPreconditionRequired)
+	first := environment.requestWithHeaders(t, http.MethodPost, path, map[string]any{}, environment.origin, csrf, map[string]string{"Idempotency-Key": "cleanup-legacy"})
+	assertResponseStatus(t, first, http.StatusOK)
+	second := environment.requestWithHeaders(t, http.MethodPost, path, map[string]any{}, environment.origin, csrf, map[string]string{"Idempotency-Key": "cleanup-legacy"})
+	assertResponseStatus(t, second, http.StatusOK)
+	if manager.cleanupCalls != 1 {
+		t.Fatalf("cleanup calls=%d", manager.cleanupCalls)
 	}
 }
 
@@ -260,6 +271,7 @@ type fakeProxyManager struct {
 	replaceCalls      int
 	replacedCandidate string
 	checkMainCalls    int
+	cleanupCalls      int
 }
 
 func (*fakeProxyManager) Subscription(context.Context) (orchestrator.SubscriptionResult, error) {
@@ -306,8 +318,9 @@ func (*fakeProxyManager) Disable(context.Context, string) error { return nil }
 func (*fakeProxyManager) Connections(context.Context, string) (orchestrator.Connections, error) {
 	return orchestrator.Connections{VLESSURI: "vless://masked-test", SOCKS5HURI: "socks5h://masked-test"}, nil
 }
-func (*fakeProxyManager) AggregateConnections(context.Context) (orchestrator.Connections, error) {
-	return orchestrator.Connections{VLESSURI: "vless://aggregate-masked-test"}, nil
+func (m *fakeProxyManager) CleanupLegacyAggregate(context.Context) (orchestrator.LegacyAggregateCleanup, error) {
+	m.cleanupCalls++
+	return orchestrator.LegacyAggregateCleanup{Removed: true, UpdatedAt: time.Unix(1700000000, 0).UTC()}, nil
 }
 func (m *fakeProxyManager) MixedPolicy(context.Context) (store.MixedSourcePolicy, error) {
 	return m.mixedPolicy, nil
