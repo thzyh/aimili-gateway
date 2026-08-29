@@ -104,12 +104,12 @@ func TestReplaceCandidateRequiresMutationGuardsAndIsIdempotent(t *testing.T) {
 	assertResponseStatus(t, environment.login(t), http.StatusNoContent)
 	csrf := environment.session(t).CSRFToken
 	path := "/api/v1/proxy-groups/agw-jp-dc/replace"
-	payload := map[string]string{"candidateId": "candidate-safe"}
+	payload := map[string]string{"targetGroupId": "agw-target"}
 	first := environment.requestWithHeaders(t, http.MethodPost, path, payload, environment.origin, csrf, map[string]string{"Idempotency-Key": "replace-jp"})
 	assertResponseStatus(t, first, http.StatusOK)
 	second := environment.requestWithHeaders(t, http.MethodPost, path, payload, environment.origin, csrf, map[string]string{"Idempotency-Key": "replace-jp"})
 	assertResponseStatus(t, second, http.StatusOK)
-	if manager.replaceCalls != 1 || manager.replacedCandidate != "candidate-safe" {
+	if manager.replaceCalls != 1 || manager.replacedCandidate != "agw-jp-dc" {
 		t.Fatalf("replace calls=%d candidate=%q", manager.replaceCalls, manager.replacedCandidate)
 	}
 }

@@ -36,10 +36,12 @@ export interface CountryPayload { code: string; name: string; residentialCount: 
 export interface ProxyGroupPayload {
   id: string; countryCode: string; countryName: string; proxyType: ProxyType; status: ProxyGroupStatus
   egressSource?: 'slot' | 'main'
+	  slotNumber?: number; fixed?: boolean
   vlessPort: number; mixedPort: number; exitIp: string; candidateLatencyMs: number; vlessLatencyMs: number; socksLatencyMs: number
   lastErrorCode?: string; version: number; lastCheckedAt?: string
 }
 export interface ConnectionsPayload { vlessUri: string; socks5hUri: string }
+export interface SubscriptionPayload { url: string; inboundCount: number; updatedAt: string }
 export type AccountSyncStatus = 'reset_required' | 'synced' | 'checking' | 'repair_required' | 'incompatible'
 export type MixedPolicyApplyStatus = 'pending' | 'applying' | 'applied' | 'failed' | 'repair_required'
 export interface SettingsSummaryPayload { accountSyncStatus: AccountSyncStatus; candidateCount: number; onlineCount: number; maxOnline: number }

@@ -31,6 +31,8 @@ type proxyGroupResponse struct {
 	LastErrorCode      string                  `json:"lastErrorCode,omitempty"`
 	Version            int64                   `json:"version"`
 	LastCheckedAt      *time.Time              `json:"lastCheckedAt,omitempty"`
+	SlotNumber         int                     `json:"slotNumber,omitempty"`
+	Fixed              bool                    `json:"fixed"`
 }
 
 type cachedResponse struct {
@@ -160,9 +162,9 @@ func (s *server) handleReplaceProxyGroup(response http.ResponseWriter, request *
 		return
 	}
 	var input struct {
-		CandidateID string `json:"candidateId"`
+		TargetGroupID string `json:"targetGroupId"`
 	}
-	if decodeJSON(request, &input) != nil || strings.TrimSpace(input.CandidateID) == "" || len(input.CandidateID) > 256 {
+	if decodeJSON(request, &input) != nil || strings.TrimSpace(input.TargetGroupID) == "" || len(input.TargetGroupID) > 256 {
 		writeAPIError(response, http.StatusBadRequest, "invalid_request")
 		return
 	}
@@ -174,7 +176,7 @@ func (s *server) handleReplaceProxyGroup(response http.ResponseWriter, request *
 		writeCached(response, *hit)
 		return
 	}
-	group, err := s.proxyManager.ReplaceCandidate(request.Context(), strings.TrimSpace(input.CandidateID), request.PathValue("id"))
+	group, err := s.proxyManager.ReplaceCandidate(request.Context(), request.PathValue("id"), strings.TrimSpace(input.TargetGroupID))
 	if err != nil {
 		writeProxyError(response, err)
 		return
@@ -497,7 +499,12 @@ func writeCached(response http.ResponseWriter, cached cachedResponse) {
 	_, _ = response.Write(append(cached.body, '\n'))
 }
 func safeProxyGroup(group domain.ProxyGroup) proxyGroupResponse {
-	result := proxyGroupResponse{ID: group.ID, CountryCode: group.CountryCode, CountryName: group.CountryName, ProxyType: group.ProxyType, Status: group.Status, EgressSource: group.EgressSource, VLESSPort: group.VLESSPort, MixedPort: group.MixedPort, ExitIP: group.ExitIP, CandidateLatencyMS: group.CandidateLatencyMS, VLESSLatencyMS: group.VLESSLatencyMS, SOCKSLatencyMS: group.SOCKSLatencyMS, LastErrorCode: group.LastErrorCode, Version: group.Version}
+	slotNumber := 0
+	if group.EgressSource != domain.EgressSourceMain && group.AimiliSlot >= 0 && group.Status != domain.ProxyGroupStandby {
+		slotNumber = group.AimiliSlot + 1
+	}
+	fixed := group.EgressSource == domain.EgressSourceMain || (group.Status != domain.ProxyGroupStandby && group.AimiliSlot >= 0 && group.VLESSPort > 0)
+	result := proxyGroupResponse{ID: group.ID, CountryCode: group.CountryCode, CountryName: group.CountryName, ProxyType: group.ProxyType, Status: group.Status, EgressSource: group.EgressSource, VLESSPort: group.VLESSPort, MixedPort: group.MixedPort, ExitIP: group.ExitIP, CandidateLatencyMS: group.CandidateLatencyMS, VLESSLatencyMS: group.VLESSLatencyMS, SOCKSLatencyMS: group.SOCKSLatencyMS, LastErrorCode: group.LastErrorCode, Version: group.Version, SlotNumber: slotNumber, Fixed: fixed}
 	if !group.LastCheckedAt.IsZero() {
 		checked := group.LastCheckedAt
 		result.LastCheckedAt = &checked

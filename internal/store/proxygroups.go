@@ -96,14 +96,14 @@ func (s *Store) UpdateProxyGroup(ctx context.Context, group domain.ProxyGroup, e
 	}
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE proxy_groups SET
-			resource_name = ?, country_name = ?, candidate_id = ?, candidate_ip = ?, candidate_latency_ms = ?, vless_latency_ms = ?, socks_latency_ms = ?,
+			resource_name = ?, country_code = ?, country_name = ?, proxy_type = ?, candidate_id = ?, candidate_ip = ?, candidate_latency_ms = ?, vless_latency_ms = ?, socks_latency_ms = ?,
 			status = ?, aimili_slot = ?, vless_port = ?, mixed_port = ?,
 			egress_source = ?,
 			exit_ip = ?, config_fingerprint = ?, vless_inbound_id = ?, mixed_inbound_id = ?,
 			reality_public_key = ?, reality_short_id = ?, reality_server_name = ?, last_error_code = ?, recovery_state = ?,
 			version = version + 1, updated_at = ?, last_checked_at = ?, last_rotated_at = ?, last_seen_at = ?
 		WHERE id = ? AND version = ?`,
-		group.ResourceName, group.CountryName, group.CandidateID, group.CandidateIP, group.CandidateLatencyMS, group.VLESSLatencyMS, group.SOCKSLatencyMS,
+		group.ResourceName, group.CountryCode, group.CountryName, group.ProxyType, group.CandidateID, group.CandidateIP, group.CandidateLatencyMS, group.VLESSLatencyMS, group.SOCKSLatencyMS,
 		group.Status, group.AimiliSlot, group.VLESSPort, group.MixedPort, normalizedEgressSource(group.EgressSource),
 		group.ExitIP, group.ConfigFingerprint, group.VLESSInboundID,
 		group.MixedInboundID, group.RealityPublicKey, group.RealityShortID, group.RealityServerName, group.LastErrorCode,

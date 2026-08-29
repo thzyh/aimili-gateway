@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { apiDownloadText, apiFetch, idempotencyHeaders, type CandidateCountryPayload, type ConnectionsPayload, type CountryRefreshPayload, type ProxyGroupPayload, type ProxyType } from '../api/client'
+import { apiDownloadText, apiFetch, idempotencyHeaders, type CandidateCountryPayload, type ConnectionsPayload, type CountryRefreshPayload, type ProxyGroupPayload, type ProxyType, type SubscriptionPayload } from '../api/client'
 import AppShell from '../components/AppShell.vue'
 import PoolFilters from '../components/PoolFilters.vue'
 import PoolTable from '../components/PoolTable.vue'
@@ -17,6 +17,9 @@ const sort = ref('latency')
 const busy = ref('')
 const loading = ref(true)
 const notice = ref('')
+const keepEnabledVisible = ref(true)
+const replacementCandidate = ref<ProxyGroupPayload | null>(null)
+const replacementTarget = ref('')
 let refreshTimer: ReturnType<typeof setTimeout> | undefined
 
 const title = computed(() => props.protocol === 'vless' ? 'VPN 节点池' : 'SOCKS5H 代理池')
@@ -26,13 +29,19 @@ const countries = computed(() => {
   for (const item of candidateCountries.value) merged.set(item.code, { code: item.code, name: item.name })
   return [...merged.values()].sort((a, b) => a.code.localeCompare(b.code))
 })
-const rows = computed(() => groups.value.filter(row => (!country.value || row.countryCode === country.value) && (!proxyType.value || row.proxyType === proxyType.value) && (!status.value || poolStatusGroup(row.status) === status.value)).sort((a, b) => {
+const rows = computed(() => groups.value.filter(row => {
+  if (keepEnabledVisible.value && row.fixed) return true
+  return (!country.value || row.countryCode === country.value) && (!proxyType.value || row.proxyType === proxyType.value) && (!status.value || poolStatusGroup(row.status) === status.value)
+}).sort((a, b) => {
+  if (a.fixed && !b.fixed) return -1
+  if (!a.fixed && b.fixed) return 1
   if (sort.value === 'country') return a.countryCode.localeCompare(b.countryCode)
   if (sort.value === 'updated') return (b.lastCheckedAt ?? '').localeCompare(a.lastCheckedAt ?? '')
   const left = props.protocol === 'vless' ? a.vlessLatencyMs : a.socksLatencyMs
   const right = props.protocol === 'vless' ? b.vlessLatencyMs : b.socksLatencyMs
   return (left || Number.MAX_SAFE_INTEGER) - (right || Number.MAX_SAFE_INTEGER)
 }))
+const replacementTargets = computed(() => groups.value.filter(row => row.status === 'ready' && row.egressSource !== 'main' && (row.slotNumber ?? 0) > 0).sort((a, b) => (a.slotNumber ?? 0) - (b.slotNumber ?? 0)))
 
 onMounted(loadInitial)
 onBeforeUnmount(() => { if (refreshTimer !== undefined) clearTimeout(refreshTimer) })
@@ -131,14 +140,14 @@ async function copyAll(): Promise<void> {
   finally { busy.value = '' }
 }
 
-async function copyAggregate(): Promise<void> {
-  busy.value = 'copy-aggregate'; notice.value = ''
+async function copySubscription(): Promise<void> {
+  busy.value = 'copy-subscription'; notice.value = ''
   try {
-    const value = await apiFetch<ConnectionsPayload>('/api/v1/proxy-groups/aggregate/connections')
-    if (!value.vlessUri) { notice.value = '当前没有可用的聚合入口。'; return }
-    await navigator.clipboard.writeText(value.vlessUri)
-    notice.value = '单个聚合 VLESS 地址已复制；由 Xray 自动选择健康出口。'
-  } catch (error) { notice.value = messageFor(error, '聚合地址复制失败') }
+    const value = await apiFetch<SubscriptionPayload>('/api/v1/proxy-groups/subscription')
+    if (!value.url) { notice.value = '当前没有可用的 VLESS 订阅。'; return }
+    await navigator.clipboard.writeText(value.url)
+    notice.value = `VLESS 订阅已复制，包含 ${value.inboundCount} 个独立节点。`
+  } catch (error) { notice.value = messageFor(error, '订阅复制失败') }
   finally { busy.value = '' }
 }
 
@@ -172,6 +181,39 @@ async function mutate(row: ProxyGroupPayload, action: 'activate' | 'check' | 'ro
   finally { busy.value = '' }
 }
 
+function openReplacement(row: ProxyGroupPayload): void {
+  replacementCandidate.value = row
+  replacementTarget.value = replacementTargets.value[0]?.id ?? ''
+}
+
+function closeReplacement(): void {
+  replacementCandidate.value = null
+  replacementTarget.value = ''
+}
+
+async function confirmReplacement(): Promise<void> {
+  if (!replacementCandidate.value || !replacementTarget.value) return
+  const candidate = replacementCandidate.value
+  busy.value = `replace-${candidate.id}`; notice.value = ''
+  try {
+    await apiFetch(`/api/v1/proxy-groups/${candidate.id}/replace`, { method: 'POST', headers: idempotencyHeaders(), body: JSON.stringify({ targetGroupId: replacementTarget.value }) })
+    closeReplacement()
+    notice.value = '出口位替换成功，端口与入站保持不变。'
+    await loadGroups(false)
+  } catch (error) { notice.value = messageFor(error, '出口位替换失败') }
+  finally { busy.value = '' }
+}
+
+async function checkRow(row: ProxyGroupPayload): Promise<void> {
+  busy.value = `check-${row.id}`; notice.value = ''
+  try {
+    const path = row.egressSource === 'main' ? '/api/v1/proxy-groups/agw-main/check' : `/api/v1/proxy-groups/${row.id}/check`
+    await apiFetch(path, { method: 'POST', ...(row.egressSource === 'main' ? { headers: idempotencyHeaders() } : {}) })
+    await loadGroups(false)
+  } catch (error) { notice.value = messageFor(error, '检测失败') }
+  finally { busy.value = '' }
+}
+
 function refreshStateLabel(): string {
   if (!refreshState.value || refreshState.value.state === 'idle') return ''
   if (refreshState.value.state === 'running') return `${refreshState.value.country} 正在刷新 · 已精验 ${refreshState.value.testedCount} 个`
@@ -188,19 +230,28 @@ function messageFor(error: unknown, fallback: string): string {
   <AppShell>
     <section class="page-heading">
       <div><p class="eyebrow">ONLINE EGRESS POOL</p><h1>{{ title }}</h1><p>{{ description }}</p></div>
-      <div class="heading-actions"><button data-sync-pool class="secondary" :disabled="busy !== ''" @click="refreshPool">{{ busy === 'refresh' ? '正在同步…' : '同步代理状态' }}</button><button data-refresh-country class="secondary" :disabled="busy !== '' || !country" @click="refreshCountry">{{ busy === 'country-refresh' ? '正在刷新…' : '刷新所选国家' }}</button><button v-if="protocol === 'vless'" data-copy-aggregate :disabled="busy !== ''" @click="copyAggregate">复制单地址聚合入口</button><button data-copy-all class="secondary" :disabled="busy !== ''" @click="copyAll">复制节点列表</button><button data-export class="secondary" :disabled="busy !== ''" @click="exportRows">导出</button></div>
+      <div class="heading-actions"><button data-sync-pool class="secondary" :disabled="busy !== ''" @click="refreshPool">{{ busy === 'refresh' ? '正在同步…' : '同步代理状态' }}</button><button data-refresh-country class="secondary" :disabled="busy !== '' || !country" @click="refreshCountry">{{ busy === 'country-refresh' ? '正在刷新…' : '刷新所选国家' }}</button><button v-if="protocol === 'vless'" data-copy-subscription :disabled="busy !== ''" @click="copySubscription">复制 VLESS 订阅</button><button data-copy-all class="secondary" :disabled="busy !== ''" @click="copyAll">复制节点列表</button><button data-export class="secondary" :disabled="busy !== ''" @click="exportRows">导出</button></div>
     </section>
     <p v-if="notice" class="notice" role="status">{{ notice }}</p>
     <p v-if="refreshStateLabel()" class="refresh-state">{{ refreshStateLabel() }}</p>
     <section class="pool-toolbar">
       <PoolFilters :countries="countries" :country="country" :proxy-type="proxyType" :status="status" :sort="sort" @country="country=$event" @proxy-type="proxyType=$event" @status="status=$event" @sort="sort=$event" />
-      <span>{{ rows.length }} 个候选 · {{ rows.filter(row => row.status === 'ready').length }} 个在线</span>
+      <label class="fixed-toggle"><input v-model="keepEnabledVisible" data-fixed-enabled type="checkbox"> 始终显示已启用节点</label><span>{{ rows.length }} 个候选 · {{ groups.filter(row => row.status === 'ready').length }} 个在线</span>
     </section>
     <div v-if="loading" class="loading">正在读取代理池…</div>
-    <PoolTable v-else :rows="rows" :protocol="protocol" :busy="busy" @copy="copyAddress" @activate="mutate($event,'activate')" @check="mutate($event,'check')" @rotate="mutate($event,'rotate')" />
+    <PoolTable v-else :rows="rows" :protocol="protocol" :busy="busy" @copy="copyAddress" @replace="openReplacement" @check="checkRow" />
+    <div v-if="replacementCandidate" class="dialog-backdrop" @click.self="closeReplacement">
+      <section data-replace-dialog class="replace-dialog" role="dialog" aria-modal="true" aria-labelledby="replace-title">
+        <button class="dialog-close" type="button" aria-label="关闭" @click="closeReplacement">×</button>
+        <p class="eyebrow">REPLACE EGRESS SLOT</p><h2 id="replace-title">替换到出口位</h2>
+        <p>将 {{ replacementCandidate.countryName || replacementCandidate.countryCode }} {{ replacementCandidate.proxyType === 'residential' ? '住宅' : '机房' }}候选装载到现有出口位。原端口和 VLESS/SOCKS5H 入站保持不变，失败时自动回滚。</p>
+        <label>目标出口位<select v-model="replacementTarget" data-replace-target><option v-for="target in replacementTargets" :key="target.id" :value="target.id">出口位 {{ target.slotNumber }} · {{ target.countryName || target.countryCode }} · {{ target.exitIp }}</option></select></label>
+        <div class="dialog-actions"><button class="secondary" type="button" @click="closeReplacement">取消</button><button data-confirm-replace type="button" :disabled="!replacementTarget || busy !== ''" @click="confirmReplacement">{{ busy.startsWith('replace-') ? '正在替换…' : '确认替换' }}</button></div>
+      </section>
+    </div>
   </AppShell>
 </template>
 
 <style scoped>
-.page-heading{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin-bottom:20px}.eyebrow{margin:0 0 6px;color:var(--accent);font-size:11px;font-weight:800;letter-spacing:.14em}.page-heading h1{margin:0;font-size:28px;letter-spacing:-.035em}.page-heading p:not(.eyebrow){margin:8px 0 0;color:var(--muted-text);font-size:14px}.heading-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px}.notice,.loading{margin:0 0 14px;padding:10px 13px;border:1px solid var(--border);border-radius:9px;background:var(--panel);color:var(--muted-text);font-size:13px}.refresh-state{margin:-5px 0 14px;color:var(--muted-text);font-size:12px}.pool-toolbar{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:12px}.pool-toolbar>span{flex:none;color:var(--muted-text);font-size:12px}@media(max-width:760px){.page-heading{align-items:flex-start;flex-direction:column}.heading-actions{width:100%;justify-content:flex-start}.heading-actions button{flex:1}.pool-toolbar{align-items:stretch;flex-direction:column}.pool-toolbar>span{align-self:flex-end}}
+.page-heading{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin-bottom:20px}.eyebrow{margin:0 0 6px;color:var(--accent);font-size:11px;font-weight:800;letter-spacing:.14em}.page-heading h1{margin:0;font-size:28px;letter-spacing:-.035em}.page-heading p:not(.eyebrow){margin:8px 0 0;color:var(--muted-text);font-size:14px}.heading-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px}.notice,.loading{margin:0 0 14px;padding:10px 13px;border:1px solid var(--border);border-radius:9px;background:var(--panel);color:var(--muted-text);font-size:13px}.refresh-state{margin:-5px 0 14px;color:var(--muted-text);font-size:12px}.pool-toolbar{display:flex;align-items:center;gap:14px;margin-bottom:12px}.pool-toolbar>span{margin-left:auto;flex:none;color:var(--muted-text);font-size:12px}.fixed-toggle{display:flex;align-items:center;gap:6px;color:var(--muted-text);font-size:12px;white-space:nowrap}.dialog-backdrop{position:fixed;inset:0;z-index:20;display:grid;place-items:center;padding:20px;background:rgba(15,23,42,.52);backdrop-filter:blur(3px)}.replace-dialog{position:relative;width:min(460px,100%);padding:24px;border:1px solid var(--border);border-radius:14px;background:var(--panel);box-shadow:0 24px 70px rgba(15,23,42,.28)}.replace-dialog h2{margin:0 0 10px;font-size:22px}.replace-dialog>p:not(.eyebrow){color:var(--muted-text);font-size:13px;line-height:1.65}.replace-dialog label{display:grid;gap:7px;margin-top:18px;font-size:12px;font-weight:700}.replace-dialog select{height:40px;padding:0 10px;border:1px solid var(--border);border-radius:8px;background:var(--input);color:var(--text)}.dialog-close{position:absolute;top:12px;right:12px;width:32px;height:32px;padding:0;border:0;background:transparent;color:var(--muted-text);font-size:22px}.dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}@media(max-width:760px){.page-heading{align-items:flex-start;flex-direction:column}.heading-actions{width:100%;justify-content:flex-start}.heading-actions button{flex:1}.pool-toolbar{align-items:stretch;flex-direction:column}.pool-toolbar>span{align-self:flex-end;margin-left:0}}
 </style>

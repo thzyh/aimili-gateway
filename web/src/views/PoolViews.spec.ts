@@ -22,7 +22,7 @@ vi.mock('vue-router', () => ({
 import VpnPoolView from './VpnPoolView.vue'
 
 const rows = [
-  { id: 'jp-one', countryCode: 'JP', countryName: '日本', proxyType: 'datacenter', status: 'ready', vlessPort: 20000, mixedPort: 30000, exitIp: '203.0.113.10', candidateLatencyMs: 20, vlessLatencyMs: 81, socksLatencyMs: 70, version: 2, lastCheckedAt: '2026-08-26T00:00:00Z' },
+  { id: 'jp-one', countryCode: 'JP', countryName: '日本', proxyType: 'datacenter', status: 'ready', slotNumber: 1, fixed: true, vlessPort: 20000, mixedPort: 30000, exitIp: '203.0.113.10', candidateLatencyMs: 20, vlessLatencyMs: 81, socksLatencyMs: 70, version: 2, lastCheckedAt: '2026-08-26T00:00:00Z' },
   { id: 'kr-one', countryCode: 'KR', countryName: '韩国', proxyType: 'residential', status: 'degraded', vlessPort: 20001, mixedPort: 30001, exitIp: '203.0.113.11', candidateLatencyMs: 30, vlessLatencyMs: 0, socksLatencyMs: 0, version: 2 },
   { id: 'us-standby', countryCode: 'US', countryName: '美国', proxyType: 'datacenter', status: 'standby', vlessPort: 0, mixedPort: 0, exitIp: '', candidateLatencyMs: 44, vlessLatencyMs: 0, socksLatencyMs: 0, version: 1 },
   { id: 'fr-provisioning', countryCode: 'FR', countryName: '法国', proxyType: 'datacenter', status: 'provisioning', vlessPort: 0, mixedPort: 0, exitIp: '', candidateLatencyMs: 50, vlessLatencyMs: 0, socksLatencyMs: 0, version: 1 },
@@ -80,18 +80,16 @@ it('maps exact backend states into four user-facing status groups without enabli
   expect(wrapper.get('[data-copy="us-standby"]').attributes('disabled')).toBeDefined()
 
   await wrapper.get('[data-status-filter]').setValue('processing')
-  expect(wrapper.findAll('[data-pool-row]')).toHaveLength(3)
+  expect(wrapper.findAll('[data-pool-row]')).toHaveLength(4)
+  expect(wrapper.get('[data-row-status="jp-one"]').text()).toContain('已启用')
 })
 
-it('activates a standby candidate instead of exposing an unusable address', async () => {
+it('offers standby replacement instead of exposing an unusable address', async () => {
   const wrapper = mount(VpnPoolView)
   await flushPromises()
 
   expect(wrapper.get('[data-copy="us-standby"]').attributes('disabled')).toBeDefined()
-  await wrapper.get('[data-activate="us-standby"]').trigger('click')
-  await flushPromises()
-
-  expect(mocks.apiFetch).toHaveBeenCalledWith('/api/v1/proxy-groups/us-standby/activate', { method: 'POST', headers: { 'Idempotency-Key': 'test-key' } })
+  expect(wrapper.get('[data-replace="us-standby"]').text()).toContain('替换到出口位')
 })
 
 it('copies the selected protocol address only for a ready row', async () => {
@@ -106,19 +104,33 @@ it('copies the selected protocol address only for a ready row', async () => {
   expect(wrapper.get('[data-copy="kr-one"]').attributes('disabled')).toBeDefined()
 })
 
-it('copies a single aggregate VLESS address', async () => {
+it('copies a test-style VLESS subscription', async () => {
   mocks.apiFetch.mockImplementation((path: string) => {
     if (path === '/api/v1/proxy-groups') return Promise.resolve(rows)
     if (path === '/api/v1/settings/aimilivpn/countries') return Promise.resolve([])
     if (path === '/api/v1/settings/aimilivpn/refresh') return Promise.resolve({ state: 'idle', country: '', phase: '', testedCount: 0, validCount: 0 })
-    if (path === '/api/v1/proxy-groups/aggregate/connections') return Promise.resolve({ vlessUri: 'vless://aggregate-masked', socks5hUri: '' })
+    if (path === '/api/v1/proxy-groups/subscription') return Promise.resolve({ url: 'https://example.test/sub/masked', inboundCount: 4, updatedAt: '2026-08-29T00:00:00Z' })
     return Promise.resolve(undefined)
   })
   const wrapper = mount(VpnPoolView)
   await flushPromises()
-  await wrapper.get('[data-copy-aggregate]').trigger('click')
+  await wrapper.get('[data-copy-subscription]').trigger('click')
   await flushPromises()
-  expect(mocks.clipboard).toHaveBeenCalledWith('vless://aggregate-masked')
+  expect(mocks.clipboard).toHaveBeenCalledWith('https://example.test/sub/masked')
+  expect(wrapper.text()).toContain('复制 VLESS 订阅')
+})
+
+it('shows fixed ready slots and replaces a standby candidate through a closable dialog', async () => {
+  const wrapper = mount(VpnPoolView)
+  await flushPromises()
+  expect(wrapper.text()).toContain('出口位 1')
+  expect(wrapper.findAll('[data-rotate="jp-one"]')).toHaveLength(0)
+  await wrapper.get('[data-replace="us-standby"]').trigger('click')
+  expect(wrapper.findAll('[data-replace-dialog]')).toHaveLength(1)
+  await wrapper.get('[data-replace-target]').setValue('jp-one')
+  await wrapper.get('[data-confirm-replace]').trigger('click')
+  await flushPromises()
+  expect(mocks.apiFetch).toHaveBeenCalledWith('/api/v1/proxy-groups/us-standby/replace', { method: 'POST', headers: { 'Idempotency-Key': 'test-key' }, body: JSON.stringify({ targetGroupId: 'jp-one' }) })
 })
 
 it('exports the current filters as a text list', async () => {
