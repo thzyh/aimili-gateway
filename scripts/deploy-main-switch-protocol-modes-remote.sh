@@ -12,9 +12,10 @@ readonly BACKUP_ROOT="/var/backups/aimili-gateway/main-switch-protocol-modes/${S
 readonly GATEWAY_DB=/var/lib/aimili-gateway/aimili-gateway.db
 readonly XUI_DB=/etc/x-ui/x-ui.db
 readonly XRAY_RUNTIME=/usr/local/x-ui/bin/config.json
-readonly AIMILI_REPOSITORY=/opt/aimilivpn
+readonly AIMILI_REPOSITORY="$(systemctl show aimilivpn.service --property=WorkingDirectory --value)"
 case "$CURRENT_STAGE" in 1|2|3|4|5|6) ;; *) printf '%s\n' '阶段必须为 1 到 6。' >&2; exit 2 ;; esac
 [[ -x /usr/local/x-ui/bin/xray-linux-amd64 && -s "$VERIFY" ]] || { printf '%s\n' '部署资产不完整。' >&2; exit 1; }
+[[ "$AIMILI_REPOSITORY" == /* && ! -L "$AIMILI_REPOSITORY" && -d "$AIMILI_REPOSITORY/.git" && -f "$AIMILI_REPOSITORY/vpngate_manager.py" ]] || { printf '%s\n' 'AimiliVPN 工作目录无效。' >&2; exit 1; }
 [[ -z "$(git -C "$AIMILI_REPOSITORY" status --porcelain)" ]] || { printf '%s\n' 'AimiliVPN 工作区不干净。' >&2; exit 1; }
 cd "$ASSET_ROOT"
 sha256sum -c "$ASSET_ROOT/SHA256SUMS" >/dev/null

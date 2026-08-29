@@ -339,6 +339,7 @@ func TestMainSwitchProtocolDeploymentHasBoundedStagesAndRollback(t *testing.T) {
 		"set -euo pipefail",
 		`sha256sum -c "$ASSET_ROOT/SHA256SUMS"`,
 		`TARGET_AIMILI_COMMIT="$(<"$ASSET_ROOT/aimili-target-commit")"`,
+		`AIMILI_REPOSITORY="$(systemctl show aimilivpn.service --property=WorkingDirectory --value)"`,
 		`git -C "$AIMILI_REPOSITORY" fetch "$ASSET_ROOT/aimili-vpngate.bundle" refs/heads/feat/main-switch-protocol-modes`,
 		`[[ "$(git -C "$AIMILI_REPOSITORY" rev-parse FETCH_HEAD)" == "$TARGET_AIMILI_COMMIT" ]]`,
 		"MemAvailable",
