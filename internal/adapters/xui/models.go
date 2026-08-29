@@ -113,6 +113,25 @@ type LegacyMain struct {
 	OutboundTag    string
 }
 
+// SubscriptionDesired describes the VLESS inbounds that may be exposed by the
+// Gateway-managed subscription client. Inbound IDs are filtered against the
+// authenticated 3x-ui snapshot before any write is made.
+type SubscriptionDesired struct {
+	ClientEmail string
+	ClientUUID  string
+	InboundIDs  []int64
+}
+
+type Subscription struct {
+	ResourceName     string
+	ClientID         int64
+	ClientEmail      string
+	ClientUUID       string
+	SubscriptionID   string
+	InboundIDs       []int64
+	SubscriptionPath string
+}
+
 type AdapterError struct {
 	Code string
 }
