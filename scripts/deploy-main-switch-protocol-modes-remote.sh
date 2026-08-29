@@ -16,6 +16,10 @@ readonly AIMILI_REPOSITORY=/opt/aimilivpn
 case "$CURRENT_STAGE" in 1|2|3|4|5|6) ;; *) printf '%s\n' '阶段必须为 1 到 6。' >&2; exit 2 ;; esac
 [[ -x /usr/local/x-ui/bin/xray-linux-amd64 && -s "$VERIFY" ]] || { printf '%s\n' '部署资产不完整。' >&2; exit 1; }
 [[ -z "$(git -C "$AIMILI_REPOSITORY" status --porcelain)" ]] || { printf '%s\n' 'AimiliVPN 工作区不干净。' >&2; exit 1; }
+cd "$ASSET_ROOT"
+sha256sum -c "$ASSET_ROOT/SHA256SUMS" >/dev/null
+readonly TARGET_AIMILI_COMMIT="$(<"$ASSET_ROOT/aimili-target-commit")"
+[[ "$TARGET_AIMILI_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { printf '%s\n' 'AimiliVPN 目标提交无效。' >&2; exit 1; }
 
 resource_gate() {
     local memory swap
@@ -132,7 +136,8 @@ create_joint_backup
 case "$CURRENT_STAGE" in
     1)
         git -C "$AIMILI_REPOSITORY" bundle verify "$ASSET_ROOT/aimili-vpngate.bundle" >/dev/null
-        git -C "$AIMILI_REPOSITORY" fetch "$ASSET_ROOT/aimili-vpngate.bundle" feature
+        git -C "$AIMILI_REPOSITORY" fetch "$ASSET_ROOT/aimili-vpngate.bundle" refs/heads/feat/main-switch-protocol-modes
+        [[ "$(git -C "$AIMILI_REPOSITORY" rev-parse FETCH_HEAD)" == "$TARGET_AIMILI_COMMIT" ]]
         git -C "$AIMILI_REPOSITORY" merge --ff-only FETCH_HEAD
         systemctl try-restart aimilivpn.service
         ;;

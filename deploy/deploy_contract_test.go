@@ -337,6 +337,10 @@ func TestMainSwitchProtocolDeploymentHasBoundedStagesAndRollback(t *testing.T) {
 	script := readAsset(t, "../scripts/deploy-main-switch-protocol-modes-remote.sh")
 	for _, required := range []string{
 		"set -euo pipefail",
+		`sha256sum -c "$ASSET_ROOT/SHA256SUMS"`,
+		`TARGET_AIMILI_COMMIT="$(<"$ASSET_ROOT/aimili-target-commit")"`,
+		`git -C "$AIMILI_REPOSITORY" fetch "$ASSET_ROOT/aimili-vpngate.bundle" refs/heads/feat/main-switch-protocol-modes`,
+		`[[ "$(git -C "$AIMILI_REPOSITORY" rev-parse FETCH_HEAD)" == "$TARGET_AIMILI_COMMIT" ]]`,
 		"MemAvailable",
 		"SwapFree",
 		"163840",
