@@ -63,6 +63,25 @@ class ProtocolDeploymentIntegrationTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "udp_rules_invalid"):
                     self.verifier.validate_udp_rules(unsafe)
 
+    def test_ufw_parser_collapses_ipv4_ipv6_twins_without_accepting_ranges(self) -> None:
+        contents = """
+Status: active
+8443/udp                  ALLOW       Anywhere
+20000/udp                 ALLOW       Anywhere
+20001/udp                 ALLOW       Anywhere
+20002/udp                 ALLOW       Anywhere
+8443/udp (v6)             ALLOW       Anywhere (v6)
+20000/udp (v6)            ALLOW       Anywhere (v6)
+20001/udp (v6)            ALLOW       Anywhere (v6)
+20002/udp (v6)            ALLOW       Anywhere (v6)
+"""
+        self.assertEqual(
+            self.verifier.parse_ufw_udp_rules(contents),
+            ["8443/udp", "20000/udp", "20001/udp", "20002/udp"],
+        )
+        with self.assertRaisesRegex(ValueError, "udp_rules_invalid"):
+            self.verifier.parse_ufw_udp_rules("20000:20002/udp ALLOW Anywhere")
+
     def test_unmanaged_fingerprint_detects_any_non_gateway_change(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             database_path = pathlib.Path(temporary) / "x-ui.db"

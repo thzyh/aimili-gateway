@@ -255,16 +255,25 @@ def evaluate_observation(
     }
 
 
+def parse_ufw_udp_rules(contents: str) -> list[str]:
+    rules = set()
+    for line in contents.splitlines():
+        first = line.strip().split(maxsplit=1)[0] if line.strip() else ""
+        if not first.lower().endswith("/udp"):
+            if "/udp" in first.lower():
+                raise ValueError("udp_rules_invalid")
+            continue
+        if not re.fullmatch(r"[0-9]+/udp", first.lower()):
+            raise ValueError("udp_rules_invalid")
+        rules.add(first.lower())
+    return sorted(rules, key=lambda value: int(value.split("/", 1)[0]))
+
+
 def _read_ufw_udp_rules() -> list[str]:
     completed = subprocess.run(
         ["ufw", "status"], capture_output=True, text=True, check=True, timeout=15
     )
-    rules = []
-    for line in completed.stdout.splitlines():
-        first = line.strip().split(maxsplit=1)[0] if line.strip() else ""
-        if first.lower().endswith("/udp"):
-            rules.append(first)
-    return rules
+    return parse_ufw_udp_rules(completed.stdout)
 
 
 def _protocol_config_paths(path: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path, str, pathlib.Path]:

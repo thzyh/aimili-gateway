@@ -167,8 +167,14 @@ rollback_current_stage() {
         2)
             systemctl stop aimili-gateway.service
             cp -a "$BACKUP_ROOT/aimili-gateway" /usr/local/bin/aimili-gateway
+            chown root:root /usr/local/bin/aimili-gateway
+            chmod 0755 /usr/local/bin/aimili-gateway
             cp -a "$BACKUP_ROOT/config.json" /etc/aimili-gateway/config.json
+            chown aimili-gateway:aimili-gateway /etc/aimili-gateway/config.json
+            chmod 0600 /etc/aimili-gateway/config.json
             cp -a "$BACKUP_ROOT/aimili-gateway.db" "$GATEWAY_DB"
+            chown aimili-gateway:aimili-gateway "$GATEWAY_DB"
+            chmod 0600 "$GATEWAY_DB"
             restore_optional_asset /usr/local/bin/aimili-xui-protocol-transaction
             restore_optional_asset /usr/lib/aimili-gateway/aimili_xui_protocol_transaction.py
             restore_optional_asset /etc/aimili-gateway/protocol-transaction.json
