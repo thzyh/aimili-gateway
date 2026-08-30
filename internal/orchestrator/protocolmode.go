@@ -17,6 +17,10 @@ import (
 )
 
 func (o *Orchestrator) SwitchProtocolMode(ctx context.Context, egressID string, target domain.ProtocolMode) (domain.EgressProtocolMode, error) {
+	return o.SwitchProtocolModeExpected(ctx, egressID, target, "")
+}
+
+func (o *Orchestrator) SwitchProtocolModeExpected(ctx context.Context, egressID string, target, expected domain.ProtocolMode) (domain.EgressProtocolMode, error) {
 	if !target.Valid() || !strings.HasPrefix(egressID, "agw-") {
 		return domain.EgressProtocolMode{}, &Error{Code: "invalid_request"}
 	}
@@ -32,6 +36,9 @@ func (o *Orchestrator) SwitchProtocolMode(ctx context.Context, egressID string, 
 	state, err := persistence.GetEgressProtocolMode(ctx, egressID)
 	if err != nil {
 		return domain.EgressProtocolMode{}, operationError(err)
+	}
+	if expected != "" && (!expected.Valid() || state.ActiveMode != expected) {
+		return domain.EgressProtocolMode{}, &Error{Code: "expected_state_mismatch"}
 	}
 	if state.State == domain.ProtocolReady && state.ActiveMode == target {
 		return state, nil
@@ -101,6 +108,85 @@ func (o *Orchestrator) SwitchProtocolMode(ctx context.Context, egressID string, 
 		return state, nil
 	}
 	return o.rollbackProtocolMode(ctx, persistence, state, targetResource, applyErr, applied)
+}
+
+// RecoverProtocolModes converges protocol transactions interrupted by a
+// Gateway restart before ordinary pool reconciliation is allowed to mutate
+// shared runtime state.
+func (o *Orchestrator) RecoverProtocolModes(ctx context.Context) error {
+	persistence, ok := o.store.(protocolModeStore)
+	if !ok {
+		return &Error{Code: "not_configured"}
+	}
+	ctx, mutationUnlock := o.lockMutation(ctx)
+	defer mutationUnlock()
+	states, err := persistence.ListEgressProtocolModes(ctx)
+	if err != nil {
+		return &Error{Code: "storage_failed"}
+	}
+	for _, state := range states {
+		if state.State == domain.ProtocolReady {
+			if state.ActiveMode != state.DesiredMode {
+				_, repairErr := o.markProtocolRepair(ctx, persistence, state)
+				return repairErr
+			}
+			continue
+		}
+		if state.State == domain.ProtocolRepairRequired {
+			return &Error{Code: "repair_required"}
+		}
+		unlock := o.locks.lock(state.EgressID)
+		err := o.recoverProtocolMode(ctx, persistence, state)
+		unlock()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (o *Orchestrator) recoverProtocolMode(ctx context.Context, persistence protocolModeStore, state domain.EgressProtocolMode) error {
+	if o.protocolTransaction == nil {
+		_, err := o.markProtocolRepair(ctx, persistence, state)
+		return err
+	}
+	if state.State == domain.ProtocolSwitching || state.State == domain.ProtocolSubscriptionPending {
+		if err := state.Transition(domain.ProtocolRollingBack); err != nil {
+			_, repairErr := o.markProtocolRepair(ctx, persistence, state)
+			return repairErr
+		}
+		if state.LastErrorCode == "" {
+			state.LastErrorCode = "protocol_switch_interrupted"
+		}
+		if err := o.saveProtocolState(ctx, persistence, &state); err != nil {
+			return &Error{Code: "repair_required"}
+		}
+	}
+	target, err := o.protocolTarget(ctx, state.EgressID)
+	if err != nil {
+		_, repairErr := o.markProtocolRepair(ctx, persistence, state)
+		return repairErr
+	}
+	result, rollbackErr := o.protocolTransaction.Rollback(ctx, state.LastOperationID)
+	rollbackSafe := rollbackErr == nil && result.OperationID == state.LastOperationID && (result.Status == "rolled_back" ||
+		(result.Status == "failed" && result.ErrorCode == "operation_not_applied"))
+	if !rollbackSafe {
+		_, repairErr := o.markProtocolRepair(ctx, persistence, state)
+		return repairErr
+	}
+	subscription, err := o.Subscription(ctx)
+	if err == nil {
+		err = o.verifyProtocolTarget(ctx, target, state.ActiveMode, subscription)
+	}
+	if err != nil {
+		_, repairErr := o.markProtocolRepair(ctx, persistence, state)
+		return repairErr
+	}
+	state.DesiredMode = state.ActiveMode
+	if err := state.Transition(domain.ProtocolReady); err != nil || o.saveProtocolState(ctx, persistence, &state) != nil {
+		return &Error{Code: "repair_required"}
+	}
+	return nil
 }
 
 func (o *Orchestrator) markFinalizedProtocolRepair(ctx context.Context, persistence protocolModeStore, state domain.EgressProtocolMode) (domain.EgressProtocolMode, error) {

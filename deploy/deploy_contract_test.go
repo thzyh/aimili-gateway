@@ -68,6 +68,8 @@ func TestProtocolTransactionOneshotIsRootOnlyAndPathActivated(t *testing.T) {
 		"ProtectSystem=strict",
 		"PrivateTmp=true",
 		"RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",
+		"CapabilityBoundingSet=CAP_DAC_OVERRIDE",
+		"AmbientCapabilities=",
 		"ReadWritePaths=/etc/x-ui/x-ui.db",
 		"ReadWritePaths=/var/lib/aimili-gateway/protocol-spool/results",
 		"ReadWritePaths=/var/lib/aimili-xui-protocol-transaction",
@@ -76,7 +78,7 @@ func TestProtocolTransactionOneshotIsRootOnlyAndPathActivated(t *testing.T) {
 			t.Fatalf("protocol oneshot missing %q", required)
 		}
 	}
-	for _, forbidden := range []string{"Type=simple", "Restart=always", "ListenStream=", "ListenDatagram=", "User=aimili-gateway"} {
+	for _, forbidden := range []string{"Type=simple", "Restart=always", "ListenStream=", "ListenDatagram=", "User=aimili-gateway", "CAP_SYS_ADMIN", "CAP_NET_ADMIN", "CAP_DAC_READ_SEARCH"} {
 		if strings.Contains(service, forbidden) {
 			t.Fatalf("protocol oneshot contains forbidden behavior %q", forbidden)
 		}

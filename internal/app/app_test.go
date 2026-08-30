@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,20 +17,96 @@ import (
 	"github.com/thzyh/aimili-gateway/internal/store"
 )
 
-type recordingReconciler struct{ called chan struct{} }
+type recordingReconciler struct {
+	called        chan struct{}
+	events        chan string
+	recoveryError error
+}
+
+type blockingRecoveryReconciler struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (r blockingRecoveryReconciler) RecoverProtocolModes(context.Context) error {
+	close(r.started)
+	<-r.release
+	return nil
+}
+
+func (blockingRecoveryReconciler) Reconcile(context.Context) orchestrator.ReconcileResult {
+	return orchestrator.ReconcileResult{}
+}
+
+func (r recordingReconciler) RecoverProtocolModes(context.Context) error {
+	if r.events != nil {
+		r.events <- "recover"
+	}
+	return r.recoveryError
+}
 
 func (r recordingReconciler) Reconcile(context.Context) orchestrator.ReconcileResult {
+	if r.events != nil {
+		r.events <- "reconcile"
+	}
 	close(r.called)
 	return orchestrator.ReconcileResult{}
 }
 
 func TestInitialReconcileRunsInBackground(t *testing.T) {
 	called := make(chan struct{})
-	startInitialReconcile(t.Context(), recordingReconciler{called: called})
+	events := make(chan string, 2)
+	startInitialReconcile(t.Context(), recordingReconciler{called: called, events: events})
 	select {
 	case <-called:
 	case <-time.After(time.Second):
 		t.Fatal("initial reconciliation did not start")
+	}
+	if first, second := <-events, <-events; first != "recover" || second != "reconcile" {
+		t.Fatalf("startup order = %q, %q", first, second)
+	}
+}
+
+func TestInitialReconcileStopsWhenProtocolRecoveryFails(t *testing.T) {
+	called := make(chan struct{})
+	events := make(chan string, 2)
+	startInitialReconcile(t.Context(), recordingReconciler{called: called, events: events, recoveryError: errors.New("recovery failed")})
+	if event := <-events; event != "recover" {
+		t.Fatalf("first startup event = %q", event)
+	}
+	select {
+	case <-called:
+		t.Fatal("ordinary reconciliation ran after protocol recovery failed")
+	case <-time.After(20 * time.Millisecond):
+	}
+}
+
+func TestInitialReconcileBlocksStartupUntilProtocolRecoveryFinishes(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	returned := make(chan struct{})
+	go func() {
+		startInitialReconcile(t.Context(), blockingRecoveryReconciler{started: started, release: release})
+		close(returned)
+	}()
+	<-started
+	select {
+	case <-returned:
+		t.Fatal("startup returned while protocol recovery was still blocked")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-returned:
+	case <-time.After(time.Second):
+		t.Fatal("startup did not return after protocol recovery finished")
+	}
+}
+
+func TestInitialReconcileReturnsProtocolRecoveryFailure(t *testing.T) {
+	err := startInitialReconcile(t.Context(), recordingReconciler{called: make(chan struct{}), recoveryError: errors.New("recovery failed")})
+	if err == nil {
+		t.Fatal("protocol recovery failure was discarded")
 	}
 }
 

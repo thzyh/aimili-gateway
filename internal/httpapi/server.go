@@ -63,7 +63,7 @@ type ProxyManager interface {
 	ReplaceCandidate(context.Context, string, string) (domain.ProxyGroup, error)
 	CheckMain(context.Context) (store.MainEgress, error)
 	CleanupLegacyAggregate(context.Context) (orchestrator.LegacyAggregateCleanup, error)
-	SwitchProtocolMode(context.Context, string, domain.ProtocolMode) (domain.EgressProtocolMode, error)
+	SwitchProtocolModeExpected(context.Context, string, domain.ProtocolMode, domain.ProtocolMode) (domain.EgressProtocolMode, error)
 	MixedPolicy(context.Context) (store.MixedSourcePolicy, error)
 	SetMixedPolicy(context.Context, store.MixedSourcePolicy) error
 	Reconcile(context.Context) orchestrator.ReconcileResult

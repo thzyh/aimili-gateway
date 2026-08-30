@@ -73,6 +73,10 @@ func TestProtocolModeStoreUsesOptimisticVersioning(t *testing.T) {
 	if err := store.UpdateEgressProtocolMode(ctx, got, 1); !errors.Is(err, ErrEgressProtocolChanged) {
 		t.Fatalf("stale update = %v", err)
 	}
+	listed, err := store.ListEgressProtocolModes(ctx)
+	if err != nil || len(listed) != 1 || listed[0].EgressID != "agw-main" || listed[0].State != domain.ProtocolSwitching {
+		t.Fatalf("listed protocol modes = %#v, err = %v", listed, err)
+	}
 }
 
 func TestEgressOperationRoundTripContainsOnlySafeMetadata(t *testing.T) {

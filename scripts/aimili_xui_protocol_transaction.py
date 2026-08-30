@@ -715,6 +715,7 @@ class ProtocolTransactionManager:
                     "network": "xhttp",
                     "security": "reality",
                     "xhttpSettings": {"path": source["profile"]["xhttpPath"], "mode": "auto"},
+                    "sockopt": {"trustedXForwardedFor": ["127.0.0.1", "::1"]},
                     "realitySettings": reality,
                 }
         else:
@@ -1032,6 +1033,12 @@ class ProtocolTransactionManager:
 
     def rollback(self, operation_id: str) -> dict[str, str]:
         snapshot_path = self._snapshot_path(operation_id)
+        try:
+            snapshot_path.lstat()
+        except FileNotFoundError as error:
+            raise TransactionError("operation_not_applied") from error
+        except OSError as error:
+            raise TransactionError("unsafe_path") from error
         self._rollback_snapshot(snapshot_path, remove_on_success=True)
         return self._result(operation_id, "rolled_back")
 

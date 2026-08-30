@@ -197,6 +197,22 @@ func TestProtocolModeIdempotencyKeyRejectsDifferentRequestBody(t *testing.T) {
 	}
 }
 
+func TestProtocolModeForwardsOptionalExpectedMode(t *testing.T) {
+	manager := &fakeProxyManager{}
+	environment := newAuthTestEnvironmentConfigured(t, true, func(dependencies *Dependencies) { dependencies.ProxyManager = manager })
+	assertResponseStatus(t, environment.login(t), http.StatusNoContent)
+	csrf := environment.session(t).CSRFToken
+	response := environment.requestWithHeaders(
+		t, http.MethodPut, "/api/v1/proxy-groups/agw-jp-dc/protocol-mode",
+		map[string]string{"protocolMode": "vless_xhttp_reality", "expectedProtocolMode": "vless_tcp_reality_vision"},
+		environment.origin, csrf, map[string]string{"Idempotency-Key": "protocol-cas"},
+	)
+	assertResponseStatus(t, response, http.StatusOK)
+	if manager.protocolExpected != domain.ProtocolVLESSTCPRealityVision {
+		t.Fatalf("expected mode = %q", manager.protocolExpected)
+	}
+}
+
 func TestProtocolModeReplaysCompletedPersistentOperationAfterServerRestart(t *testing.T) {
 	manager := &fakeProxyManager{}
 	environment := newAuthTestEnvironmentConfigured(t, true, func(dependencies *Dependencies) { dependencies.ProxyManager = manager })
@@ -388,11 +404,13 @@ type fakeProxyManager struct {
 	cleanupCalls      int
 	protocolCalls     int
 	protocolTarget    domain.ProtocolMode
+	protocolExpected  domain.ProtocolMode
 }
 
-func (m *fakeProxyManager) SwitchProtocolMode(_ context.Context, egressID string, target domain.ProtocolMode) (domain.EgressProtocolMode, error) {
+func (m *fakeProxyManager) SwitchProtocolModeExpected(_ context.Context, egressID string, target, expected domain.ProtocolMode) (domain.EgressProtocolMode, error) {
 	m.protocolCalls++
 	m.protocolTarget = target
+	m.protocolExpected = expected
 	return domain.EgressProtocolMode{EgressID: egressID, ActiveMode: target, DesiredMode: target, State: domain.ProtocolReady, Version: 2, UpdatedAt: time.Unix(1700000000, 0).UTC()}, nil
 }
 

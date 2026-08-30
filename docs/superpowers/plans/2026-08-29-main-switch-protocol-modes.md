@@ -1,6 +1,6 @@
 # 主连接安全切换与每出口独立协议模式实施计划
 
-状态：执行中；Task 1–10 与 Task 11 Stage 1 已完成，Stage 2 修复资产上传等待明确授权
+状态：执行中；Task 1–10 与 Task 11 Stage 1、2、8 已完成；Stage 3 离线硬门失败后安全止损，Stage 4–7 未进入
 
 > **执行要求：** 使用 `superpowers:executing-plans` 逐任务实施；所有功能与故障修复必须使用 `superpowers:test-driven-development`，先观察新增测试按预期失败，再写最小实现。完成前使用 `superpowers:verification-before-completion`，并按项目规则执行一次 `ponytail-review`。
 
@@ -12,7 +12,7 @@
 
 **设计依据：** `docs/superpowers/specs/2026-08-29-main-switch-protocol-modes-design.md`
 
-**执行记录（2026-08-29）：** Task 1–9 已按提交边界完成；Task 10 已完成部署契约、SQLite 锁故障注入、远程安全门、运行手册、验收模板、双仓库全量本地验证和 Ponytail 复杂度审查。Task 11–12 尚未执行，不得将本地通过解释为生产完成。
+**执行记录（2026-08-30）：** Task 1–10 已完成；Task 11 Stage 1、2、8 已完成。Stage 3 在生产 Xray `26.7.28` 第三次 XHTTP 完整配置离线校验仍返回 `xray_command_failed` 后按专项门禁停止，未安装最后模板修复，Stage 4–7 未进入。Task 12 正在完成本地修复、最终复核与分支交付；不得将本地通过解释为混合协议生产完成。
 
 ## 全局硬约束
 
@@ -461,17 +461,19 @@ git commit -m "docs: add protocol switch deployment runbook"
 
 **前置硬门：** 两仓库工作树干净、全量本地测试通过、联合备份成功、`MemAvailable ≥ 160 MiB`、Swap 空闲 `≥ 512 MiB`、证书有效且 Xray 可读、非 Gateway 资源已记录安全指纹。所有 SSH 输出必须经过脱敏过滤。
 
-- [ ] **Stage 1：只部署 AimiliVPN 主事务**
+- [x] **Stage 1：只部署 AimiliVPN 主事务**
 
 先受控制造新主失败并确认自动恢复旧主，再执行一次真实主切换。验证 `7928`、主 mixed、`8443` 当前协议、代理 DNS、真实出口；三个普通槽位节点/进程/出口不变。任一失败恢复 AimiliVPN 代码与状态并停止。
 
-- [ ] **Stage 2：部署 Gateway 中性模型、助手和精确 UDP 白名单**
+- [x] **Stage 2：部署 Gateway 中性模型、助手和精确 UDP 白名单**
 
 所有出口仍保持 TCP/Vision。验证 Gateway 数据迁移、四公网入站/四 mixed 数量、Xray PID、3x-ui 重启可重建现状、UFW 只有 `8443/udp` 与 `20000–20002/udp` 的四条精确规则，没有 `443/udp` 节点规则。
 
 - [ ] **Stage 3：普通出口 TCP → XHTTP → TCP**
 
 保持另外三个公网节点和四个 mixed 的长连接探针。验证 Xray PID 不变、订阅更新、v2rayN `7.24.4` 识别、代理 DNS和真实出口；切回 TCP 验证反向路径。任一失败只回滚目标出口。
+
+执行偏差：生产 Xray `26.7.28` 对加入仅回环 `trustedXForwardedFor` 后的完整 XHTTP 配置仍返回 `xray_command_failed`。离线硬门未通过，故未安装模板修复、未进入运行时试切；生产收敛并保持四出口 TCP/Vision `ready`。本轮依照止损条件停止，Stage 4–7 不继续。
 
 - [ ] **Stage 4：普通出口 VLESS → Hysteria2**
 
@@ -489,7 +491,7 @@ git commit -m "docs: add protocol switch deployment runbook"
 
 受控重启 x-ui/Xray，确认 SQLite 重建相同混合模式；再重启 Gateway 与 AimiliVPN，确认未提交事务自动回滚、已提交模式不漂移。通过 Gateway UI 实际执行候选替换到“主连接”、独立协议切换与“复制节点订阅”，用 v2rayN `7.24.4` 刷新并逐条验证。只有原用户路径通过后才能声明完成。
 
-- [ ] **Stage 8：更新脱敏验证记录**
+- [x] **Stage 8：更新脱敏验证记录**
 
 在 `docs/verification/2026-08-29-main-switch-protocol-modes.md` 记录提交、服务版本、测试命令结果、状态计数、回滚演练、PID/资源指标和未决外部边界；不得记录连接秘密或完整订阅地址。
 

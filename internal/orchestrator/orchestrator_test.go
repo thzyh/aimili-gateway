@@ -387,6 +387,16 @@ func (s *fakeStore) GetEgressProtocolMode(_ context.Context, egressID string) (d
 	return value, nil
 }
 
+func (s *fakeStore) ListEgressProtocolModes(context.Context) ([]domain.EgressProtocolMode, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := make([]domain.EgressProtocolMode, 0, len(s.protocolModes))
+	for _, value := range s.protocolModes {
+		result = append(result, value)
+	}
+	return result, nil
+}
+
 func (s *fakeStore) UpdateEgressProtocolMode(_ context.Context, value domain.EgressProtocolMode, expectedVersion int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

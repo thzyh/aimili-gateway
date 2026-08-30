@@ -123,6 +123,24 @@ func TestSwitchProtocolModeSameReadyTargetPerformsNoWrites(t *testing.T) {
 	}
 }
 
+func TestSwitchProtocolModeExpectedModeMismatchPerformsNoWrites(t *testing.T) {
+	fixture, group := protocolFixture(t)
+	orchestrator := fixture.orchestrator(t)
+	client := &fakeProtocolTransaction{calls: &fixture.calls}
+	orchestrator.protocolTransaction = client
+
+	_, err := orchestrator.SwitchProtocolModeExpected(
+		context.Background(), group.ID, domain.ProtocolVLESSTCPRealityVision, domain.ProtocolHysteria2QUICTLS,
+	)
+
+	if codeOf(err) != "expected_state_mismatch" {
+		t.Fatalf("error = %v", err)
+	}
+	if len(client.actions) != 0 || fixture.store.protocolUpdates != 0 {
+		t.Fatalf("mismatched CAS performed writes: actions=%#v updates=%d", client.actions, fixture.store.protocolUpdates)
+	}
+}
+
 func TestSwitchMainProtocolChecksMainTunnelAndMixedPath(t *testing.T) {
 	fixture := newFixture()
 	fixture.store.mainEgress = store.MainEgress{
@@ -192,6 +210,70 @@ func TestProtocolSwitchAndSlotRotationShareMutationGate(t *testing.T) {
 	}
 }
 
+func TestRecoverProtocolModesRollsBackInterruptedTransactionBeforeValidatingOldPath(t *testing.T) {
+	fixture, group := protocolFixture(t)
+	fixture.xui.subscriptionProfiles = []xui.PublicProfile{{InboundID: group.PublicInboundID, Mode: domain.ProtocolVLESSXHTTPReality, ClientID: "client-id", PublicKey: "public-key", ShortID: "short-id", ServerName: "proxy.example.test", XHTTPPath: "/old-path"}}
+	state := fixture.store.protocolModes[group.ID]
+	state.State = domain.ProtocolSubscriptionPending
+	state.DesiredMode = domain.ProtocolVLESSTCPRealityVision
+	state.LastOperationID = "protocol-recovery-one"
+	fixture.store.protocolModes[group.ID] = state
+	client := &fakeProtocolTransaction{calls: &fixture.calls}
+	orchestrator := fixture.orchestratorWithMax(t, 3)
+	orchestrator.protocolTransaction = client
+
+	if err := orchestrator.RecoverProtocolModes(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	recovered := fixture.store.protocolModes[group.ID]
+	if recovered.State != domain.ProtocolReady || recovered.ActiveMode != domain.ProtocolVLESSXHTTPReality || recovered.DesiredMode != recovered.ActiveMode {
+		t.Fatalf("recovered state = %#v", recovered)
+	}
+	if !orderedSubset(fixture.calls, []string{"protocol.rollback", "slot.check", "validate.socks", "validate.public"}) {
+		t.Fatalf("recovery calls = %#v", fixture.calls)
+	}
+}
+
+func TestRecoverProtocolModesAcceptsNotAppliedOnlyAfterOldPathValidation(t *testing.T) {
+	fixture, group := protocolFixture(t)
+	fixture.xui.subscriptionProfiles = []xui.PublicProfile{{InboundID: group.PublicInboundID, Mode: domain.ProtocolVLESSXHTTPReality, ClientID: "client-id", PublicKey: "public-key", ShortID: "short-id", ServerName: "proxy.example.test", XHTTPPath: "/old-path"}}
+	state := fixture.store.protocolModes[group.ID]
+	state.State = domain.ProtocolRollingBack
+	state.DesiredMode = domain.ProtocolVLESSTCPRealityVision
+	state.LastOperationID = "protocol-recovery-two"
+	fixture.store.protocolModes[group.ID] = state
+	client := &fakeProtocolTransaction{calls: &fixture.calls, rollbackResult: protocoltxn.Result{OperationID: state.LastOperationID, Status: "failed", ErrorCode: "operation_not_applied"}}
+	orchestrator := fixture.orchestratorWithMax(t, 3)
+	orchestrator.protocolTransaction = client
+
+	if err := orchestrator.RecoverProtocolModes(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if recovered := fixture.store.protocolModes[group.ID]; recovered.State != domain.ProtocolReady || recovered.DesiredMode != recovered.ActiveMode {
+		t.Fatalf("recovered state = %#v", recovered)
+	}
+}
+
+func TestRecoverProtocolModesMarksRepairWhenRollbackCannotProveOldState(t *testing.T) {
+	fixture, group := protocolFixture(t)
+	fixture.xui.subscriptionProfiles = []xui.PublicProfile{{InboundID: group.PublicInboundID, Mode: domain.ProtocolVLESSXHTTPReality, ClientID: "client-id", PublicKey: "public-key", ShortID: "short-id", ServerName: "proxy.example.test", XHTTPPath: "/old-path"}}
+	state := fixture.store.protocolModes[group.ID]
+	state.State = domain.ProtocolRollingBack
+	state.DesiredMode = domain.ProtocolVLESSTCPRealityVision
+	state.LastOperationID = "protocol-recovery-three"
+	fixture.store.protocolModes[group.ID] = state
+	client := &fakeProtocolTransaction{calls: &fixture.calls, rollbackResult: protocoltxn.Result{OperationID: state.LastOperationID, Status: "failed", ErrorCode: "unsafe_path"}}
+	orchestrator := fixture.orchestratorWithMax(t, 3)
+	orchestrator.protocolTransaction = client
+
+	if codeOf(orchestrator.RecoverProtocolModes(context.Background())) != "repair_required" {
+		t.Fatal("unsafe rollback did not require repair")
+	}
+	if recovered := fixture.store.protocolModes[group.ID]; recovered.State != domain.ProtocolRepairRequired || recovered.DesiredMode != recovered.ActiveMode {
+		t.Fatalf("repair state = %#v", recovered)
+	}
+}
+
 func protocolFixture(t *testing.T) (*fixture, domain.ProxyGroup) {
 	t.Helper()
 	fixture := newFixture()
@@ -220,13 +302,14 @@ func protocolFixture(t *testing.T) (*fixture, domain.ProxyGroup) {
 }
 
 type fakeProtocolTransaction struct {
-	calls         *[]string
-	actions       []string
-	applied       protocoltxn.Request
-	applyError    error
-	rollbackError error
-	applyEntered  chan struct{}
-	applyRelease  chan struct{}
+	calls          *[]string
+	actions        []string
+	applied        protocoltxn.Request
+	applyError     error
+	rollbackError  error
+	rollbackResult protocoltxn.Result
+	applyEntered   chan struct{}
+	applyRelease   chan struct{}
 }
 
 func (f *fakeProtocolTransaction) Apply(_ context.Context, request protocoltxn.Request) (protocoltxn.Result, error) {
@@ -247,6 +330,9 @@ func (f *fakeProtocolTransaction) Finalize(_ context.Context, operationID string
 func (f *fakeProtocolTransaction) Rollback(_ context.Context, operationID string) (protocoltxn.Result, error) {
 	*f.calls = append(*f.calls, "protocol.rollback")
 	f.actions = append(f.actions, "rollback")
+	if f.rollbackResult.OperationID != "" {
+		return f.rollbackResult, f.rollbackError
+	}
 	return protocoltxn.Result{OperationID: operationID, Status: "rolled_back"}, f.rollbackError
 }
 

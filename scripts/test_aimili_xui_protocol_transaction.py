@@ -466,6 +466,10 @@ class ProtocolTransactionTests(unittest.TestCase):
         self.assertEqual("reality", xhttp["streamSettings"]["security"])
         self.assertEqual("auto", xhttp["streamSettings"]["xhttpSettings"]["mode"])
         self.assertTrue(xhttp["streamSettings"]["xhttpSettings"]["path"].startswith("/"))
+        self.assertEqual(
+            ["127.0.0.1", "::1"],
+            xhttp["streamSettings"]["sockopt"]["trustedXForwardedFor"],
+        )
         self.assertEqual("none", xhttp["settings"]["decryption"])
         self.assertEqual("", xhttp["settings"]["clients"][0].get("flow", ""))
         self.assertTrue(xhttp["disableFlow"])
@@ -613,6 +617,14 @@ class ProtocolTransactionTests(unittest.TestCase):
         self.assertEqual({"operationId": OPERATION_ID, "status": "rolled_back", "errorCode": ""}, result)
         self.assertEqual(original, self._inbound_row(41))
         self.assertFalse((self.snapshot_dir / OPERATION_ID).exists())
+
+    def test_explicit_rollback_without_snapshot_reports_not_applied(self):
+        manager = self._manager()
+
+        with self.assertRaises(MODULE.TransactionError) as raised:
+            manager.rollback(OPERATION_ID)
+
+        self.assertEqual("operation_not_applied", raised.exception.code)
 
     def test_recover_pending_restores_crashed_transactions(self):
         manager = self._manager()

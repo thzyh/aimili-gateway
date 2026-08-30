@@ -130,6 +130,7 @@ type mainEgressStore interface {
 type protocolModeStore interface {
 	CreateEgressProtocolMode(context.Context, domain.EgressProtocolMode) error
 	GetEgressProtocolMode(context.Context, string) (domain.EgressProtocolMode, error)
+	ListEgressProtocolModes(context.Context) ([]domain.EgressProtocolMode, error)
 	UpdateEgressProtocolMode(context.Context, domain.EgressProtocolMode, int64) error
 }
 

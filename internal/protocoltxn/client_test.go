@@ -191,7 +191,27 @@ func waitForFile(t *testing.T, path string) string {
 func writeResult(t *testing.T, directory, name, body string) {
 	t.Helper()
 	path := filepath.Join(directory, name)
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+	file, err := os.CreateTemp(directory, "."+name+".*.tmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	temporary := file.Name()
+	defer os.Remove(temporary)
+	if runtime.GOOS != "windows" {
+		_ = file.Chmod(0o600)
+	}
+	if _, err := file.WriteString(body); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(temporary, path); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -437,13 +437,18 @@ func (s *server) handleProtocolMode(response http.ResponseWriter, request *http.
 		return
 	}
 	var input struct {
-		ProtocolMode domain.ProtocolMode `json:"protocolMode"`
+		ProtocolMode         domain.ProtocolMode `json:"protocolMode"`
+		ExpectedProtocolMode domain.ProtocolMode `json:"expectedProtocolMode,omitempty"`
 	}
-	if decodeJSON(request, &input) != nil || !input.ProtocolMode.Valid() {
+	if decodeJSON(request, &input) != nil || !input.ProtocolMode.Valid() || (input.ExpectedProtocolMode != "" && !input.ExpectedProtocolMode.Valid()) {
 		writeAPIError(response, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	key, hit, ok := s.idempotencyKey(response, request, session, input.ProtocolMode)
+	idempotencyBody := []any{input.ProtocolMode}
+	if input.ExpectedProtocolMode != "" {
+		idempotencyBody = append(idempotencyBody, input.ExpectedProtocolMode)
+	}
+	key, hit, ok := s.idempotencyKey(response, request, session, idempotencyBody...)
 	if !ok {
 		return
 	}
@@ -453,7 +458,7 @@ func (s *server) handleProtocolMode(response http.ResponseWriter, request *http.
 	}
 	egressID := request.PathValue("id")
 	rawKey := strings.TrimSpace(request.Header.Get("Idempotency-Key"))
-	keyHash, bodyHash := persistentIdempotencyHashes(session.stored.ID, request.Method, request.URL.Path, rawKey, []any{input.ProtocolMode})
+	keyHash, bodyHash := persistentIdempotencyHashes(session.stored.ID, request.Method, request.URL.Path, rawKey, idempotencyBody)
 	operation, operationErr := s.store.GetEgressOperationByRequestHash(request.Context(), egressID, "protocol_switch", keyHash)
 	if operationErr == nil {
 		if operation.TransactionID != bodyHash {
@@ -490,7 +495,7 @@ func (s *server) handleProtocolMode(response http.ResponseWriter, request *http.
 		writeAPIError(response, http.StatusInternalServerError, "storage_failed")
 		return
 	}
-	state, err := s.proxyManager.SwitchProtocolMode(request.Context(), egressID, input.ProtocolMode)
+	state, err := s.proxyManager.SwitchProtocolModeExpected(request.Context(), egressID, input.ProtocolMode, input.ExpectedProtocolMode)
 	if err != nil {
 		writeProxyError(response, err)
 		return

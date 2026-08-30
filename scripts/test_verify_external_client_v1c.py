@@ -1,7 +1,9 @@
 import importlib.util
+import json
 import pathlib
 import subprocess
 import unittest
+import urllib.parse
 
 
 SCRIPT = pathlib.Path(__file__).with_name("verify-external-client-v1c.py")
@@ -34,6 +36,10 @@ class FakeProcess:
 
 
 class VerificationHelperTests(unittest.TestCase):
+    def test_remote_switch_uses_gateway_cas_and_has_no_unconditional_rollback(self):
+        self.assertIn("'expectedProtocolMode':expected_old", MODULE.REMOTE_HELPER)
+        self.assertNotIn("{'protocolMode':switch['oldMode']}", MODULE.REMOTE_HELPER)
+
     def test_select_materials_can_limit_verification_to_one_index(self):
         materials = [{"name": "first"}, {"name": "second"}, {"name": "third"}]
         self.assertEqual([{"name": "second"}], MODULE.select_materials(materials, 1))
@@ -50,7 +56,7 @@ class VerificationHelperTests(unittest.TestCase):
             public_socks=False,
             public_socks_tcp=True,
             authorized_socks=True,
-            vless=True,
+            public_protocol=True,
         ))
 
     def test_unrestricted_policy_requires_public_socks(self):
@@ -59,13 +65,13 @@ class VerificationHelperTests(unittest.TestCase):
             public_socks=False,
             public_socks_tcp=True,
             authorized_socks=True,
-            vless=True,
+            public_protocol=True,
         ))
 
     def test_require_ready_materials_accepts_multiple_groups(self):
         materials = MODULE.require_ready_materials([
-            {"exitIp": "203.0.113.1", "vlessUri": "vless://first", "socks5hUri": "socks5h://first"},
-            {"exitIp": "203.0.113.2", "vlessUri": "vless://second", "socks5hUri": "socks5h://second"},
+            {"exitIp": "203.0.113.1", "protocolMode": "vless_tcp_reality_vision", "publicUri": "vless://first", "socks5hUri": "socks5h://first"},
+            {"exitIp": "203.0.113.2", "protocolMode": "hysteria2_quic_tls", "publicUri": "hysteria2://second", "socks5hUri": "socks5h://second"},
         ])
 
         self.assertEqual(2, len(materials))
@@ -73,6 +79,310 @@ class VerificationHelperTests(unittest.TestCase):
     def test_require_ready_materials_rejects_empty_list(self):
         with self.assertRaisesRegex(RuntimeError, "no ready groups"):
             MODULE.require_ready_materials([])
+
+    def test_require_ready_materials_rejects_protocol_uri_mismatch(self):
+        with self.assertRaisesRegex(RuntimeError, "protocol URI mismatch"):
+            MODULE.require_ready_materials([
+                {"exitIp": "203.0.113.1", "protocolMode": "hysteria2_quic_tls", "publicUri": "vless://wrong", "socks5hUri": "socks5h://first"},
+            ])
+
+    def test_build_public_client_config_uses_tcp_vision(self):
+        uri = (
+            "vless://client@example.test:20000?type=tcp&security=reality&"
+            "flow=xtls-rprx-vision&fp=chrome&sni=front.example&pbk=public&sid=abcd"
+        )
+
+        document = MODULE.build_public_client_config(
+            uri, "vless_tcp_reality_vision", 10808
+        )
+
+        outbound = document["outbounds"][0]
+        self.assertEqual("vless", outbound["protocol"])
+        self.assertEqual("tcp", outbound["streamSettings"]["network"])
+        self.assertEqual(
+            "xtls-rprx-vision",
+            outbound["settings"]["vnext"][0]["users"][0]["flow"],
+        )
+
+    def test_build_public_client_config_uses_xhttp_without_vision(self):
+        uri = (
+            "vless://client@example.test:20000?type=xhttp&security=reality&"
+            "fp=chrome&sni=front.example&pbk=public&sid=abcd&path=%2Fopaque"
+        )
+
+        document = MODULE.build_public_client_config(
+            uri, "vless_xhttp_reality", 10808
+        )
+
+        outbound = document["outbounds"][0]
+        self.assertEqual("xhttp", outbound["streamSettings"]["network"])
+        self.assertEqual(
+            {"path": "/opaque", "mode": "auto"},
+            outbound["streamSettings"]["xhttpSettings"],
+        )
+        self.assertEqual(
+            "", outbound["settings"]["vnext"][0]["users"][0]["flow"]
+        )
+
+    def test_build_public_client_config_uses_hysteria2_auth_and_tls(self):
+        uri = "hysteria2://opaque-auth@example.test:20001/?sni=front.example"
+
+        document = MODULE.build_public_client_config(
+            uri, "hysteria2_quic_tls", 10808
+        )
+
+        outbound = document["outbounds"][0]
+        self.assertEqual("hysteria", outbound["protocol"])
+        self.assertEqual(2, outbound["settings"]["version"])
+        self.assertEqual(
+            "opaque-auth", outbound["settings"]["servers"][0]["auth"]
+        )
+        self.assertEqual(
+            "front.example",
+            outbound["streamSettings"]["tlsSettings"]["serverName"],
+        )
+
+    def test_decode_subscription_accepts_vless_and_hysteria2(self):
+        raw = (
+            "vless://client@example.test:20000?type=xhttp\n"
+            "hysteria2://opaque@example.test:20001/?sni=front.example\n"
+        ).encode()
+
+        entries = MODULE.decode_subscription(raw)
+
+        self.assertEqual(["vless", "hysteria2"], [urllib.parse.urlsplit(item).scheme for item in entries])
+
+    def test_switch_arguments_are_a_closed_set(self):
+        self.assertEqual((1, "vless_xhttp_reality"), MODULE.validate_switch_arguments(1, "vless_xhttp_reality"))
+        with self.assertRaisesRegex(ValueError, "invalid slot"):
+            MODULE.validate_switch_arguments(4, "vless_xhttp_reality")
+        with self.assertRaisesRegex(ValueError, "invalid protocol mode"):
+            MODULE.validate_switch_arguments(1, "vless-over-websocket")
+
+    def test_subscription_coverage_matches_ports_and_protocols(self):
+        materials = [
+            {"exitIp": "203.0.113.1", "protocolMode": "vless_xhttp_reality", "publicUri": "vless://client@example.test:20000?type=xhttp", "socks5hUri": "socks5h://first"},
+            {"exitIp": "203.0.113.2", "protocolMode": "hysteria2_quic_tls", "publicUri": "hysteria2://opaque@example.test:20001/?sni=front.example", "socks5hUri": "socks5h://second"},
+        ]
+        entries = [
+            "vless://client@example.test:20000?type=xhttp",
+            "hysteria2://opaque@example.test:20001/?sni=front.example",
+        ]
+
+        result = MODULE.validate_subscription_coverage(materials, entries)
+
+        self.assertEqual({"entryCount": 2, "hysteria2": 1, "vless": 1}, result)
+
+    def test_subscription_coverage_rejects_wrong_protocol_on_stable_port(self):
+        materials = [
+            {"exitIp": "203.0.113.2", "protocolMode": "hysteria2_quic_tls", "publicUri": "hysteria2://opaque@example.test:20001/?sni=front.example", "socks5hUri": "socks5h://second"},
+        ]
+        with self.assertRaisesRegex(RuntimeError, "subscription coverage mismatch"):
+            MODULE.validate_subscription_coverage(
+                materials, ["vless://client@example.test:20001?type=tcp"]
+            )
+
+    def test_subscription_coverage_rejects_stale_tcp_parameters_for_xhttp(self):
+        materials = [{
+            "exitIp": "203.0.113.1",
+            "protocolMode": "vless_xhttp_reality",
+            "publicUri": (
+                "vless://client@example.test:20000?type=xhttp&security=reality&"
+                "fp=chrome&sni=front.example&pbk=public&sid=abcd&path=%2Fopaque#slot-one"
+            ),
+            "socks5hUri": "socks5h://first",
+        }]
+
+        with self.assertRaisesRegex(RuntimeError, "subscription coverage mismatch"):
+            MODULE.validate_subscription_coverage(materials, [
+                "vless://client@example.test:20000?type=tcp&security=reality&"
+                "flow=xtls-rprx-vision&fp=chrome&sni=front.example&pbk=public&sid=abcd#slot-one"
+            ])
+
+    def test_subscription_coverage_rejects_wrong_logical_name(self):
+        materials = [{
+            "exitIp": "203.0.113.1",
+            "protocolMode": "vless_xhttp_reality",
+            "publicUri": "vless://client@example.test:20000?type=xhttp&path=%2Fopaque#slot-one",
+            "socks5hUri": "socks5h://first",
+        }]
+
+        with self.assertRaisesRegex(RuntimeError, "subscription coverage mismatch"):
+            MODULE.validate_subscription_coverage(materials, [
+                "vless://client@example.test:20000?type=xhttp&path=%2Fopaque#wrong-name"
+            ])
+
+    def test_bound_materials_use_subscription_entries_for_public_validation(self):
+        api_uri = "vless://client@example.test:20000?type=xhttp&path=%2Fopaque#slot-one"
+        subscription_uri = "vless://client@example.test:20000?path=%2Fopaque&type=xhttp#slot-one"
+        materials = [{
+            "exitIp": "203.0.113.1",
+            "protocolMode": "vless_xhttp_reality",
+            "publicUri": api_uri,
+            "socks5hUri": "socks5h://first",
+        }]
+
+        bound = MODULE.bind_subscription_entries(materials, [subscription_uri])
+
+        self.assertEqual(subscription_uri, bound[0]["publicUri"])
+        self.assertEqual(api_uri, materials[0]["publicUri"])
+
+    def test_failed_switch_verification_rolls_back_and_verifies_old_mode(self):
+        calls = []
+
+        inspected = iter(["vless_tcp_reality_vision", "vless_xhttp_reality"])
+
+        def inspect_mode(slot):
+            calls.append(("inspect", slot))
+            return next(inspected)
+
+        def collect(slot, mode, expected_old):
+            calls.append(("collect", slot, mode, expected_old))
+            if mode == "vless_xhttp_reality":
+                return {"switch": {"slot": 1, "oldMode": "vless_tcp_reality_vision", "newMode": "vless_xhttp_reality"}}
+            return {"switch": {"slot": 1, "oldMode": "vless_xhttp_reality", "newMode": "vless_tcp_reality_vision"}}
+
+        def evaluate(remote):
+            calls.append(("evaluate", remote["switch"]["newMode"]))
+            return ({"status": "failed"}, False) if remote["switch"]["newMode"] == "vless_xhttp_reality" else ({"status": "pass"}, True)
+
+        result, passed = MODULE.run_with_switch_rollback(
+            1, "vless_xhttp_reality", inspect_mode, collect, evaluate
+        )
+
+        self.assertFalse(passed)
+        self.assertEqual("pass", result["rollback"]["status"])
+        self.assertEqual([
+            ("inspect", 1),
+            ("collect", 1, "vless_xhttp_reality", "vless_tcp_reality_vision"),
+            ("evaluate", "vless_xhttp_reality"),
+            ("inspect", 1),
+            ("collect", 1, "vless_tcp_reality_vision", "vless_xhttp_reality"),
+            ("evaluate", "vless_tcp_reality_vision"),
+        ], calls)
+
+    def test_switch_verification_exception_still_rolls_back_before_reraising(self):
+        calls = []
+
+        inspected = iter(["vless_tcp_reality_vision", "hysteria2_quic_tls"])
+
+        def inspect_mode(slot):
+            calls.append(("inspect", slot))
+            return next(inspected)
+
+        def collect(slot, mode, expected_old):
+            calls.append(("collect", slot, mode, expected_old))
+            old_mode = "vless_tcp_reality_vision" if mode == "hysteria2_quic_tls" else "hysteria2_quic_tls"
+            return {"switch": {"slot": 2, "oldMode": old_mode, "newMode": mode}}
+
+        def evaluate(remote):
+            calls.append(("evaluate", remote["switch"]["newMode"]))
+            if remote["switch"]["newMode"] == "hysteria2_quic_tls":
+                raise RuntimeError("external verification failed")
+            return {"status": "pass"}, True
+
+        with self.assertRaisesRegex(RuntimeError, "external verification failed"):
+            MODULE.run_with_switch_rollback(
+                2, "hysteria2_quic_tls", inspect_mode, collect, evaluate
+            )
+
+        self.assertEqual([
+            ("inspect", 2),
+            ("collect", 2, "hysteria2_quic_tls", "vless_tcp_reality_vision"),
+            ("evaluate", "hysteria2_quic_tls"),
+            ("inspect", 2),
+            ("collect", 2, "vless_tcp_reality_vision", "hysteria2_quic_tls"),
+            ("evaluate", "vless_tcp_reality_vision"),
+        ], calls)
+
+    def test_switch_response_timeout_uses_preflight_mode_for_rollback(self):
+        calls = []
+
+        inspected = iter(["vless_tcp_reality_vision", "vless_tcp_reality_vision"])
+
+        def inspect_mode(slot):
+            calls.append(("inspect", slot))
+            return next(inspected)
+
+        def collect(slot, mode, expected_old):
+            calls.append(("collect", slot, mode, expected_old))
+            if mode == "vless_xhttp_reality":
+                raise subprocess.TimeoutExpired("ssh", 240)
+            return {"switch": None}
+
+        def evaluate(remote):
+            calls.append(("evaluate", remote.get("switch")))
+            return {"status": "pass"}, True
+
+        with self.assertRaises(subprocess.TimeoutExpired):
+            MODULE.run_with_switch_rollback(
+                1, "vless_xhttp_reality", inspect_mode, collect, evaluate
+            )
+
+        self.assertEqual([
+            ("inspect", 1),
+            ("collect", 1, "vless_xhttp_reality", "vless_tcp_reality_vision"),
+            ("inspect", 1),
+            ("collect", 1, "vless_tcp_reality_vision", "vless_tcp_reality_vision"),
+            ("evaluate", None),
+        ], calls)
+
+    def test_invalid_switch_response_rolls_back_using_preflight_mode(self):
+        calls = []
+
+        inspected = iter(["vless_tcp_reality_vision", "vless_xhttp_reality"])
+
+        def inspect_mode(slot):
+            calls.append(("inspect", slot))
+            return next(inspected)
+
+        def collect(slot, mode, expected_old):
+            calls.append(("collect", slot, mode, expected_old))
+            return {"switch": None}
+
+        def evaluate(remote):
+            calls.append(("evaluate", remote.get("switch")))
+            return {"status": "pass"}, True
+
+        with self.assertRaisesRegex(RuntimeError, "invalid switch result"):
+            MODULE.run_with_switch_rollback(
+                1, "vless_xhttp_reality", inspect_mode, collect, evaluate
+            )
+
+        self.assertEqual([
+            ("inspect", 1),
+            ("collect", 1, "vless_xhttp_reality", "vless_tcp_reality_vision"),
+            ("inspect", 1),
+            ("collect", 1, "vless_tcp_reality_vision", "vless_xhttp_reality"),
+            ("evaluate", None),
+        ], calls)
+
+    def test_concurrent_third_mode_is_not_overwritten_by_rollback(self):
+        calls = []
+        inspected = iter(["vless_tcp_reality_vision", "hysteria2_quic_tls"])
+
+        def inspect_mode(slot):
+            calls.append(("inspect", slot))
+            return next(inspected)
+
+        def collect(slot, mode, expected_old):
+            calls.append(("collect", slot, mode, expected_old))
+            raise RuntimeError("expected mode mismatch")
+
+        def evaluate(remote):
+            calls.append(("evaluate", remote))
+            return {"status": "pass"}, True
+
+        with self.assertRaisesRegex(RuntimeError, "rollback conflict"):
+            MODULE.run_with_switch_rollback(
+                1, "vless_xhttp_reality", inspect_mode, collect, evaluate
+            )
+
+        self.assertEqual([
+            ("inspect", 1),
+            ("collect", 1, "vless_xhttp_reality", "vless_tcp_reality_vision"),
+            ("inspect", 1),
+        ], calls)
 
     def test_stop_process_kills_after_graceful_wait_timeout(self):
         process = FakeProcess([

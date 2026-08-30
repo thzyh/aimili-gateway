@@ -40,6 +40,7 @@ type App struct {
 }
 
 type initialReconciler interface {
+	RecoverProtocolModes(context.Context) error
 	Reconcile(context.Context) orchestrator.ReconcileResult
 }
 
@@ -109,6 +110,13 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		_ = database.Close()
 		return nil, err
 	}
+	if runtime.proxy != nil {
+		if err := startInitialReconcile(appContext, runtime.proxy); err != nil {
+			cancel()
+			_ = database.Close()
+			return nil, err
+		}
+	}
 	dependencies.ProxyManager = runtime.proxy
 	dependencies.Maintenance = runtime.maintenance
 	dependencies.BackendLogin = runtime.backendLogin
@@ -125,19 +133,20 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	mux.Handle("/api/v1/", apiHandler)
 	mux.Handle("/", webassets.Handler())
 	var driftDone <-chan struct{}
-	if runtime.proxy != nil {
-		startInitialReconcile(appContext, runtime.proxy)
-	}
 	if runtime.accounts != nil {
 		driftDone = startAccountDriftChecks(appContext, runtime.accounts, accountCheckInitialDelay(), 6*time.Hour)
 	}
 	return &App{handler: mux, store: database, cancel: cancel, driftDone: driftDone}, nil
 }
 
-func startInitialReconcile(ctx context.Context, reconciler initialReconciler) {
+func startInitialReconcile(ctx context.Context, reconciler initialReconciler) error {
+	if err := reconciler.RecoverProtocolModes(ctx); err != nil {
+		return err
+	}
 	go func() {
 		_ = reconciler.Reconcile(ctx)
 	}()
+	return nil
 }
 
 func newMaintenanceConfig(ctx context.Context, maxOnline int, reconciler initialReconciler) maintenance.Config {

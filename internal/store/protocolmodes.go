@@ -55,6 +55,35 @@ func (s *Store) GetEgressProtocolMode(ctx context.Context, egressID string) (dom
 	return value, nil
 }
 
+func (s *Store) ListEgressProtocolModes(ctx context.Context) ([]domain.EgressProtocolMode, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT egress_id, active_mode, desired_mode, state, last_operation_id,
+			last_request_hash, last_error_code, version, updated_at
+		FROM egress_protocol_modes ORDER BY egress_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]domain.EgressProtocolMode, 0)
+	for rows.Next() {
+		var value domain.EgressProtocolMode
+		var updatedAt int64
+		if err := rows.Scan(
+			&value.EgressID, &value.ActiveMode, &value.DesiredMode, &value.State,
+			&value.LastOperationID, &value.LastRequestHash, &value.LastErrorCode,
+			&value.Version, &updatedAt,
+		); err != nil {
+			return nil, err
+		}
+		value.UpdatedAt = time.UnixMilli(updatedAt).UTC()
+		result = append(result, value)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 func (s *Store) UpdateEgressProtocolMode(ctx context.Context, value domain.EgressProtocolMode, expectedVersion int64) error {
 	if err := validateEgressProtocolMode(value); err != nil || expectedVersion < 1 {
 		return errors.New("invalid egress protocol update")
