@@ -11,6 +11,7 @@ import base64
 import ipaddress
 import json
 import os
+import re
 import socket
 import subprocess
 import tempfile
@@ -24,13 +25,61 @@ PROTOCOL_MODES = {
     "hysteria2_quic_tls",
 }
 
+SAFE_RUNTIME_ERRORS = {
+    "no ready groups": "no_ready_groups",
+    "incomplete ready group material": "incomplete_ready_group_material",
+    "invalid protocol mode": "invalid_protocol_mode",
+    "protocol URI mismatch": "protocol_uri_mismatch",
+    "empty subscription": "empty_subscription",
+    "subscription is not a v2rayN document": "subscription_document_invalid",
+    "subscription contains an unsupported entry": "subscription_entry_unsupported",
+    "subscription coverage mismatch": "subscription_coverage_mismatch",
+    "invalid public connection document": "public_connection_invalid",
+    "invalid VLESS connection document": "vless_connection_invalid",
+    "invalid XHTTP connection document": "xhttp_connection_invalid",
+    "invalid Hysteria2 connection document": "hysteria2_connection_invalid",
+    "invalid remote payload": "remote_payload_invalid",
+    "invalid switch inspection": "switch_inspection_invalid",
+    "rollback verification failed": "rollback_verification_failed",
+    "invalid switch result": "switch_result_invalid",
+}
+
+
+def safe_error_category(error: BaseException) -> str:
+    if isinstance(error, subprocess.CalledProcessError):
+        slot_match = re.search(
+            r"\bremote_connections_slot_([0-3])_http_([45][0-9]{2})(?:_([a-z0-9_]{1,64}))?\b",
+            error.stderr or "",
+        )
+        if slot_match is not None:
+            category = "remote_connections_slot_" + slot_match.group(1) + "_http_" + slot_match.group(2)
+            if slot_match.group(3):
+                category += "_" + slot_match.group(3)
+            return category
+        phase_match = re.search(
+            r"\bremote_(auth_login|auth_session|groups|mixed_policy|connections|subscription|protocol_switch)_http_([45][0-9]{2})(?:_([a-z0-9_]{1,64}))?\b",
+            error.stderr or "",
+        )
+        if phase_match is not None:
+            category = "remote_" + phase_match.group(1) + "_http_" + phase_match.group(2)
+            if phase_match.group(3):
+                category += "_" + phase_match.group(3)
+            return category
+        match = re.search(r"HTTP Error ([45][0-9]{2})\b", error.stderr or "")
+        if match is not None:
+            return "remote_http_" + match.group(1)
+        return "remote_action_failed"
+    if isinstance(error, RuntimeError):
+        return SAFE_RUNTIME_ERRORS.get(str(error), "runtime_error")
+    return type(error).__name__
+
 
 class RollbackConflict(RuntimeError):
     pass
 
 
 REMOTE_HELPER = r'''
-import base64, http.cookiejar, json, pathlib, socket, sqlite3, subprocess, sys, urllib.parse, urllib.request, uuid
+import base64, http.cookiejar, json, pathlib, re, socket, sqlite3, subprocess, sys, urllib.error, urllib.parse, urllib.request, uuid
 base=json.load(open('/etc/aimili-gateway/config.json',encoding='utf-8'))['publicOrigin']
 account=json.load(open('/opt/aimilivpn/vpngate_data/ui_auth.json',encoding='utf-8'))
 jar=http.cookiejar.CookieJar(); op=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
@@ -40,8 +89,26 @@ def call(method,path,payload=None,csrf='',idempotent=False):
  if method!='GET': headers['Origin']=base; headers.update({'X-CSRF-Token':csrf} if csrf else {})
  if idempotent: headers['Idempotency-Key']=str(uuid.uuid4())
  req=urllib.request.Request(base+path,data=data,headers=headers,method=method)
- with op.open(req,timeout=180) as r:
-  raw=r.read(); return json.loads(raw) if raw else None
+ try:
+  with op.open(req,timeout=180) as r:
+   raw=r.read(); return json.loads(raw) if raw else None
+ except urllib.error.HTTPError as error:
+  safe_code=''
+  try:
+   error_document=json.loads(error.read(4096))
+   candidate=error_document.get('error','')
+   if isinstance(candidate,dict): candidate=candidate.get('code','')
+   if isinstance(candidate,str) and re.fullmatch(r'[a-z0-9_]{1,64}',candidate): safe_code='_'+candidate
+  except BaseException: pass
+  if path=='/api/v1/auth/login': phase='auth_login'
+  elif path=='/api/v1/auth/session': phase='auth_session'
+  elif path=='/api/v1/proxy-groups': phase='groups'
+  elif path=='/api/v1/settings/mixed-source-policy': phase='mixed_policy'
+  elif path.endswith('/connections'): phase='connections'
+  elif path=='/api/v1/proxy-groups/subscription': phase='subscription'
+  elif path.endswith('/protocol-mode'): phase='protocol_switch'
+  else: phase='unknown'
+  raise RuntimeError('remote_'+phase+'_http_'+str(error.code)+safe_code) from None
 def recv_exact(sock,size):
  chunks=[]
  while size:
@@ -91,7 +158,15 @@ try:
  policy=call('GET','/api/v1/settings/mixed-source-policy')
  materials=[]
  for group in ready:
-  connections=call('GET','/api/v1/proxy-groups/'+urllib.parse.quote(group['id'],safe='')+'/connections')
+  try:
+   connections=call('GET','/api/v1/proxy-groups/'+urllib.parse.quote(group['id'],safe='')+'/connections')
+  except RuntimeError as error:
+   marker=str(error)
+   match=re.fullmatch(r'remote_connections_http_([45][0-9]{2})(?:_([a-z0-9_]{1,64}))?',marker)
+   if match:
+    suffix='_'+match.group(2) if match.group(2) else ''
+    raise RuntimeError('remote_connections_slot_'+str(int(group.get('slotNumber') or 0))+'_http_'+match.group(1)+suffix) from None
+   raise
   materials.append({'exitIp':group['exitIp'],'protocolMode':group['protocolMode'],'publicUri':connections['publicUri'],'socks5hUri':connections['socks5hUri'],'slotNumber':int(group.get('slotNumber') or 0),'publicPort':int(group.get('publicPort') or group.get('vlessPort') or 0),'mixedPort':int(group.get('mixedPort') or 0),'authorizedSocks5h':authorized_socks(connections['socks5hUri'],group['exitIp'])})
  subscription=call('GET','/api/v1/proxy-groups/subscription')
  request=urllib.request.Request(subscription['url'],headers={'Accept':'text/plain','User-Agent':'v2rayN/7.24.4'})
@@ -214,7 +289,18 @@ def validate_subscription_coverage(
         if not parsed.hostname or not parsed.port:
             raise RuntimeError("subscription coverage mismatch")
         scheme = "hysteria2" if parsed.scheme in {"hysteria2", "hy2"} else parsed.scheme
-        query = tuple(sorted(urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)))
+        query_values = dict(urllib.parse.parse_qsl(parsed.query, keep_blank_values=True))
+        if scheme == "vless":
+            query_values.setdefault("encryption", "none")
+            query_values.pop("spx", None)
+        query = tuple(sorted(query_values.items()))
+        fragment = urllib.parse.unquote(parsed.fragment)
+        if fragment.startswith("Aimili Reality"):
+            fragment = "agw-main"
+        else:
+            match = re.fullmatch(r"Aimili Gateway (agw-[A-Za-z0-9_-]+) VLESS", fragment)
+            if match is not None:
+                fragment = match.group(1)
         return (
             scheme,
             urllib.parse.unquote(parsed.username or ""),
@@ -223,7 +309,7 @@ def validate_subscription_coverage(
             parsed.port,
             urllib.parse.unquote(parsed.path),
             query,
-            urllib.parse.unquote(parsed.fragment),
+            fragment,
         )
 
     expected = {urllib.parse.urlsplit(str(material["publicUri"])).port: str(material["publicUri"]) for material in materials}
@@ -474,6 +560,7 @@ def evaluate_remote(
     verified = [verify_group(material, xray, public_socks_probe) for material in materials]
     results = []
     for material, result in zip(materials, verified):
+        result["slot_number"] = int(material.get("slotNumber") or 0)
         result["authorized_socks5h"] = bool(material.get("authorizedSocks5h"))
         results.append(result)
     exit_ips = [str(ipaddress.ip_address(material["exitIp"])) for material in all_materials]
@@ -596,6 +683,6 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main(arguments.index, arguments.slot, arguments.set_mode, arguments.xray))
     except Exception as error:
-        category = "remote_action_failed" if isinstance(error, subprocess.CalledProcessError) else type(error).__name__
+        category = safe_error_category(error)
         print(json.dumps({"status": "failed", "error_category": category}, sort_keys=True))
         raise SystemExit(2)

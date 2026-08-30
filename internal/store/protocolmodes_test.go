@@ -101,6 +101,33 @@ func TestEgressOperationRoundTripContainsOnlySafeMetadata(t *testing.T) {
 	}
 }
 
+func TestFailEgressOperationMovesStartedOperationToTerminalFailure(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	now := time.Unix(1_700_000_000, 0).UTC()
+	operation := EgressOperation{
+		OperationID: "protocol-failed-safe",
+		EgressID: "agw-jp-dc",
+		Kind: "protocol_switch",
+		Phase: "started",
+		RequestHash: strings.Repeat("c", 64),
+		StartedAt: now,
+	}
+	if err := store.CreateEgressOperation(ctx, operation); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FailEgressOperation(ctx, operation.OperationID, "xray_offline_test_failed", now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.GetEgressOperationByRequestHash(ctx, operation.EgressID, operation.Kind, operation.RequestHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Phase != "failed" || got.ErrorCode != "xray_offline_test_failed" || got.CompletedAt.IsZero() {
+		t.Fatalf("failed operation = %#v", got)
+	}
+}
+
 func tableColumns(t *testing.T, database *sql.DB, table string) map[string]bool {
 	t.Helper()
 	rows, err := database.Query(`SELECT name FROM pragma_table_info(?)`, table)

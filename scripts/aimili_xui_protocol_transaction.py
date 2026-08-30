@@ -357,7 +357,7 @@ class SubprocessRunner:
     def __init__(self, config: ProtocolTransactionConfig):
         self.config = config
 
-    def _run(self, arguments: list[str]) -> str:
+    def _run(self, arguments: list[str], error_code: str) -> str:
         try:
             result = subprocess.run(
                 arguments,
@@ -369,23 +369,33 @@ class SubprocessRunner:
                 check=False,
             )
         except (OSError, subprocess.SubprocessError) as error:
-            raise TransactionError("xray_command_failed") from error
+            raise TransactionError(error_code) from error
         if result.returncode != 0:
-            raise TransactionError("xray_command_failed")
+            raise TransactionError(error_code)
         return result.stdout
 
     def offline_test(self, config_path: pathlib.Path) -> None:
-        self._run([str(self.config.xray_binary), "run", "-test", "-config", str(config_path)])
+        self._run(
+            [str(self.config.xray_binary), "run", "-test", "-config", str(config_path)],
+            "xray_offline_test_failed",
+        )
 
     def remove_inbound(self, tag: str) -> None:
-        self._run([str(self.config.xray_binary), "api", "rmi", "--server=" + self.config.api_server, tag])
+        self._run(
+            [str(self.config.xray_binary), "api", "rmi", "--server=" + self.config.api_server, tag],
+            "xray_remove_inbound_failed",
+        )
 
     def add_inbound(self, inbound_path: pathlib.Path) -> None:
-        self._run([str(self.config.xray_binary), "api", "adi", "--server=" + self.config.api_server, str(inbound_path)])
+        self._run(
+            [str(self.config.xray_binary), "api", "adi", "--server=" + self.config.api_server, str(inbound_path)],
+            "xray_add_inbound_failed",
+        )
 
     def list_inbound_tags(self) -> set[str]:
         output = self._run(
-            [str(self.config.xray_binary), "api", "lsi", "--server=" + self.config.api_server, "--isOnlyTags=true"]
+            [str(self.config.xray_binary), "api", "lsi", "--server=" + self.config.api_server, "--isOnlyTags=true"],
+            "xray_list_inbounds_failed",
         )
         tags: set[str] = set()
         try:
@@ -770,8 +780,7 @@ class ProtocolTransactionManager:
             settings = stream.get(key)
             if isinstance(settings, dict):
                 settings.pop("settings", None)
-        return {
-            "listen": template["listen"],
+        inbound = {
             "port": template["port"],
             "protocol": template["protocol"],
             "settings": copy.deepcopy(template["settings"]),
@@ -779,6 +788,9 @@ class ProtocolTransactionManager:
             "tag": template["tag"],
             "sniffing": copy.deepcopy(template["sniffing"]),
         }
+        if template["listen"]:
+            inbound["listen"] = template["listen"]
+        return inbound
 
     def _runtime_from_source(self, source: dict[str, Any]) -> dict[str, Any]:
         mode = self._mode_for_row(source["row"])

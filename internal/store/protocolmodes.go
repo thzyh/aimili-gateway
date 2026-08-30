@@ -16,7 +16,10 @@ var (
 	ErrEgressProtocolChanged  = errors.New("egress protocol mode changed concurrently")
 )
 
-var safeOperationID = regexp.MustCompile(`^[A-Za-z0-9_-]{8,128}$`)
+var (
+	safeOperationID = regexp.MustCompile(`^[A-Za-z0-9_-]{8,128}$`)
+	safeErrorCode   = regexp.MustCompile(`^[a-z0-9_]{1,64}$`)
+)
 
 func (s *Store) CreateEgressProtocolMode(ctx context.Context, value domain.EgressProtocolMode) error {
 	if err := validateEgressProtocolMode(value); err != nil {
@@ -188,6 +191,29 @@ func (s *Store) CompleteEgressOperation(ctx context.Context, operationID string,
 	}
 	if changed != 1 {
 		return errors.New("egress operation completion conflict")
+	}
+	return nil
+}
+
+func (s *Store) FailEgressOperation(ctx context.Context, operationID, errorCode string, completedAt time.Time) error {
+	if !safeOperationID.MatchString(operationID) || !safeErrorCode.MatchString(errorCode) || completedAt.IsZero() {
+		return errors.New("invalid egress operation failure")
+	}
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE egress_operations
+		SET phase = 'failed', error_code = ?, completed_at = ?
+		WHERE operation_id = ? AND phase = 'started'`,
+		errorCode, completedAt.UTC().UnixMilli(), operationID,
+	)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed != 1 {
+		return errors.New("egress operation failure conflict")
 	}
 	return nil
 }

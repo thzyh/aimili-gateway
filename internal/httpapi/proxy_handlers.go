@@ -471,6 +471,10 @@ func (s *server) handleProtocolMode(response http.ResponseWriter, request *http.
 			writeJSON(response, http.StatusOK, result)
 			return
 		}
+		if operation.Phase == "failed" && operation.ErrorCode != "" {
+			writeProxyError(response, &orchestrator.Error{Code: operation.ErrorCode})
+			return
+		}
 		current, currentErr := s.store.GetEgressProtocolMode(request.Context(), egressID)
 		if operation.Phase != "started" || currentErr != nil || current.State != domain.ProtocolReady || current.ActiveMode != input.ProtocolMode {
 			writeAPIError(response, http.StatusConflict, "operation_busy")
@@ -497,6 +501,15 @@ func (s *server) handleProtocolMode(response http.ResponseWriter, request *http.
 	}
 	state, err := s.proxyManager.SwitchProtocolModeExpected(request.Context(), egressID, input.ProtocolMode, input.ExpectedProtocolMode)
 	if err != nil {
+		code := "internal_error"
+		var operationError *orchestrator.Error
+		if errors.As(err, &operationError) {
+			code = operationError.Code
+		}
+		if failErr := s.store.FailEgressOperation(request.Context(), operationID, code, s.now().UTC()); failErr != nil {
+			writeAPIError(response, http.StatusInternalServerError, "storage_failed")
+			return
+		}
 		writeProxyError(response, err)
 		return
 	}
@@ -741,7 +754,7 @@ func writeProxyError(response http.ResponseWriter, err error) {
 		status = http.StatusNotFound
 	case "not_configured", "credentials_not_configured":
 		status = http.StatusServiceUnavailable
-	case "operation_failed", "storage_failed":
+	case "operation_failed", "storage_failed", "internal_error":
 		status = http.StatusInternalServerError
 	}
 	writeAPIError(response, status, operationError.Code)

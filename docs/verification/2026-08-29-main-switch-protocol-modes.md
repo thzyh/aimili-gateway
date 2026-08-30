@@ -2,7 +2,7 @@
 
 日期：2026-08-29
 
-状态：本地实现已验证；VPS Stage 1、Stage 2 通过；Stage 3 因生产 Xray `26.7.28` XHTTP 离线配置仍返回 `xray_command_failed` 而按门禁停止，生产保持四出口 TCP/Vision
+状态：本地实现已验证；VPS Stage 1、Stage 2 通过；Stage 3 的 XHTTP 空 `listen` 离线配置根因已修复，但生产运行时往返尚未通过；Stage 4–7 未进入
 
 本记录只保存提交、版本、计数、端口、布尔结果、资源指标和脱敏错误码。不得写入连接材料、私钥、后台路径或完整订阅地址。
 
@@ -74,16 +74,18 @@ Stage 2 第三次使用修复归档部署通过。独立 post-check 显示 Gatew
 
 | 检查 | 结果 |
 | --- | --- |
-| TCP → XHTTP | 未执行；完整离线配置检查返回 `xray_command_failed` |
-| v2rayN 识别与真实连接 | 未执行，离线硬门未通过 |
-| 代理 DNS/真实出口一致 | 未执行，离线硬门未通过 |
-| TCP/Vision 反向恢复 | 无需运行时回滚；生产始终保持 TCP/Vision |
+| TCP → XHTTP | 未完成；空 `listen` 修复后离线配置通过，运行时请求尚未形成成功往返 |
+| v2rayN 识别与真实连接 | TCP 基线曾通过；XHTTP 尚未通过 |
+| 代理 DNS/真实出口一致 | TCP 基线曾通过；XHTTP 尚未通过 |
+| TCP/Vision 反向恢复 | 最近只读状态仍为四出口 TCP/ready；未完成 XHTTP 运行时应用 |
 | 非目标长连接持续 | 运行中配置未修改；收尾检查四公网与四 mixed 均在 |
 | Xray PID不变 | 是；仍为单进程 PID `353075` |
 
 Stage 3 首次将出口位 1 请求切到 XHTTP 时，helper 未应用新入站。根因链先定位到 helper 缺少读取受限路径所需的最小 capability；唯一孤立 apply 请求经闭集校验后移入 `0700 root:root` 备份隔离，正式 unit 调整为仅保留 `CapabilityBoundingSet=CAP_DAC_OVERRIDE`、`AmbientCapabilities=`。Gateway 启动恢复随后验证通过，旧订阅、mixed、Aimili 槽位和公网链路均收敛到 TCP/Vision `ready`。
 
-第二次试切已进入 helper，但完整 XHTTP 配置的生产 Xray 离线校验返回 `xray_command_failed`，helper 自动恢复，运行中配置和 Xray PID 未改变。本地 Xray `26.6.1` 最小配置显示 `sockopt.trustedXForwardedFor` 应显式只信任回环来源，因此按 TDD 在 XHTTP 模板中增加 `127.0.0.1` 与 `::1`。经用户在获知前两次失败风险后专项批准，第三次只运行生产 Xray `26.7.28 run -test`；结果仍为 `xray_command_failed`。依照“失败即停止并保持 TCP/Vision”的门禁，未安装该 helper 模板修复，也未再执行协议试切。
+第二次试切已进入 helper，但完整 XHTTP 配置的生产 Xray 离线校验返回 `xray_command_failed`，helper 自动恢复，运行中配置和 Xray PID 未改变。本地 Xray `26.6.1` 最小配置曾提示 `sockopt.trustedXForwardedFor`，但生产复测否定了它是唯一根因。随后直接读取生产 Xray `26.7.28` panic 栈，定位到 helper 把 3x-ui 数据库空监听序列化为 `"listen":""`；3x-ui 正常运行配置会省略该字段。按 TDD 改为仅在监听非空时写入 `listen` 后，生产同版本完整配置离线校验返回 `Configuration OK`，最小 helper 修复已备份并安装。
+
+继续运行时试切时，外部验证器先收到 Gateway HTTP 400，且 helper 请求、结果和事务目录均未新增。版本核对确认 `expectedProtocolMode` 只在提交 `18c6852` 引入，而生产 Gateway 二进制不含该字段；严格 JSON 解码因此在写 spool 前拒绝请求。生产旧二进制已备份，Gateway 已更新到 `18c6852` 并通过服务启动检查。更新后的首次 TCP 基线在主连接 `connections` 返回闭集错误 `not_ready`；此时三个普通出口绑定仍逐项一致，四条协议状态仍为 TCP/ready，helper 事务与请求目录均为空。由于宿主自动审批服务达到用量上限，尚未完成 Gateway 主快照与 AimiliVPN 主状态的只读布尔对比，因此未再发起 XHTTP 或 Hysteria2 变更。
 
 最终只读核验：四条 `egress_protocol_modes` 均为 `active_mode=desired_mode=vless_tcp_reality_vision` 且 `state=ready`；请求目录为空；四个公网入站均为 VLESS/TCP，mixed 数为 4，非 Gateway 入站数为 0；Gateway、x-ui、AimiliVPN、helper path/timer 均 active；无 `repair_required`。
 
@@ -137,6 +139,7 @@ Stage 3 首次将出口位 1 请求切到 XHTTP 时，helper 未应用新入站�
 
 ## 10. 未决项
 
-- Stage 3 的当前 XHTTP 模板仍不满足生产 Xray `26.7.28` 的完整配置契约；仅回环 `trustedXForwardedFor` 假设已被生产离线校验否定。
-- 本轮不再做第四次配置尝试。若恢复该功能，必须先在隔离环境取得生产 Xray 的完整脱敏错误证据，重新评审 XHTTP 模板契约，再形成新的 TDD 修复和一次新的部署门禁。
+- XHTTP 空 `listen` 离线配置根因已经修复并通过生产 Xray `26.7.28 run -test`；尚未完成运行时热替换、外部连接与反向切回。
+- 当前第一阻塞是 Gateway 更新后主连接 `connections=not_ready`。恢复 SSH 只读检查后必须先比较 Gateway 主快照与 AimiliVPN 主状态，并恢复四出口 TCP 基线；不得直接重试 XHTTP。
+- Gateway SQLite 中保留两条早期失败请求的 `started` 操作记录，但当前协议状态、helper 请求队列和事务目录均已收敛；需要在后续代码修复中让失败幂等操作进入终态，避免长期悬挂。
 - Stage 4–7 未执行，不能宣称混合协议最终状态、五分钟资源观察或 UI/v2rayN 四协议原路径已验收。

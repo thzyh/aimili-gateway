@@ -1,6 +1,6 @@
 # 主连接安全切换与每出口独立协议模式实施计划
 
-状态：执行中；Task 1–10 与 Task 11 Stage 1、2、8 已完成；Stage 3 离线硬门失败后安全止损，Stage 4–7 未进入
+状态：执行中；Task 1–10 与 Task 11 Stage 1、2、8 已完成；Stage 3 已修复 XHTTP 空 `listen` 离线配置问题，生产运行时往返仍未通过；Stage 4–7 未进入
 
 > **执行要求：** 使用 `superpowers:executing-plans` 逐任务实施；所有功能与故障修复必须使用 `superpowers:test-driven-development`，先观察新增测试按预期失败，再写最小实现。完成前使用 `superpowers:verification-before-completion`，并按项目规则执行一次 `ponytail-review`。
 
@@ -12,7 +12,7 @@
 
 **设计依据：** `docs/superpowers/specs/2026-08-29-main-switch-protocol-modes-design.md`
 
-**执行记录（2026-08-30）：** Task 1–10 已完成；Task 11 Stage 1、2、8 已完成。Stage 3 在生产 Xray `26.7.28` 第三次 XHTTP 完整配置离线校验仍返回 `xray_command_failed` 后按专项门禁停止，未安装最后模板修复，Stage 4–7 未进入。Task 12 正在完成本地修复、最终复核与分支交付；不得将本地通过解释为混合协议生产完成。
+**执行记录（2026-08-30）：** Task 1–10 已完成；Task 11 Stage 1、2、8 已完成。后续证据把 Stage 3 的生产 Xray `26.7.28` panic 根因定位为 helper 将数据库空监听序列化成 `"listen":""`；按 TDD 改为省略空 `listen` 后，同版本完整配置离线校验返回 `Configuration OK`，修复已安装。运行时重试又发现本地验证器使用提交 `18c6852` 新增的 `expectedProtocolMode`，而生产 Gateway 仍是旧二进制；生产 Gateway 已备份并更新到 `18c6852`。更新后的 TCP 基线当前被主连接 `connections` 的闭集错误 `not_ready` 阻塞，尚未取得主状态对比证据；Stage 3 未完成，Stage 4–7 不得进入。Task 12 正在完成本地修复、最终复核与分支交付；不得将本地通过解释为混合协议生产完成。
 
 ## 全局硬约束
 

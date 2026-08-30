@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/netip"
 	"testing"
@@ -213,6 +214,53 @@ func TestProtocolModeForwardsOptionalExpectedMode(t *testing.T) {
 	}
 }
 
+func TestProtocolModeFailureIsPersistedAndReplayedWithoutRunningAgain(t *testing.T) {
+	manager := &fakeProxyManager{protocolError: &orchestrator.Error{Code: "xray_offline_test_failed"}}
+	environment := newAuthTestEnvironmentConfigured(t, true, func(dependencies *Dependencies) { dependencies.ProxyManager = manager })
+	assertResponseStatus(t, environment.login(t), http.StatusNoContent)
+	csrf := environment.session(t).CSRFToken
+	path := "/api/v1/proxy-groups/agw-jp-dc/protocol-mode"
+	payload := map[string]string{"protocolMode": "vless_xhttp_reality", "expectedProtocolMode": "vless_tcp_reality_vision"}
+	headers := map[string]string{"Idempotency-Key": "protocol-failed-terminal"}
+
+	first := environment.requestWithHeaders(t, http.MethodPut, path, payload, environment.origin, csrf, headers)
+	assertResponseStatus(t, first, http.StatusConflict)
+	second := environment.requestWithHeaders(t, http.MethodPut, path, payload, environment.origin, csrf, headers)
+	assertResponseStatus(t, second, http.StatusConflict)
+	if manager.protocolCalls != 1 {
+		t.Fatalf("failed protocol operation ran %d times", manager.protocolCalls)
+	}
+
+	storedSession, err := environment.database.GetSession(context.Background(), environment.sessionTokenHash(t), environment.clock.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyHash, _ := persistentIdempotencyHashes(storedSession.ID, http.MethodPut, path, headers["Idempotency-Key"], []any{domain.ProtocolVLESSXHTTPReality, domain.ProtocolVLESSTCPRealityVision})
+	operation, err := environment.database.GetEgressOperationByRequestHash(context.Background(), "agw-jp-dc", "protocol_switch", keyHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if operation.Phase != "failed" || operation.ErrorCode != "xray_offline_test_failed" || operation.CompletedAt.IsZero() {
+		t.Fatalf("failed operation = %#v", operation)
+	}
+}
+
+func TestProtocolModeInternalFailureReplaysTheSameHTTPStatus(t *testing.T) {
+	manager := &fakeProxyManager{protocolError: errors.New("masked internal failure")}
+	environment := newAuthTestEnvironmentConfigured(t, true, func(dependencies *Dependencies) { dependencies.ProxyManager = manager })
+	assertResponseStatus(t, environment.login(t), http.StatusNoContent)
+	csrf := environment.session(t).CSRFToken
+	path := "/api/v1/proxy-groups/agw-jp-dc/protocol-mode"
+	payload := map[string]string{"protocolMode": "vless_xhttp_reality"}
+	headers := map[string]string{"Idempotency-Key": "protocol-internal-terminal"}
+
+	assertResponseStatus(t, environment.requestWithHeaders(t, http.MethodPut, path, payload, environment.origin, csrf, headers), http.StatusInternalServerError)
+	assertResponseStatus(t, environment.requestWithHeaders(t, http.MethodPut, path, payload, environment.origin, csrf, headers), http.StatusInternalServerError)
+	if manager.protocolCalls != 1 {
+		t.Fatalf("internal protocol operation ran %d times", manager.protocolCalls)
+	}
+}
+
 func TestProtocolModeReplaysCompletedPersistentOperationAfterServerRestart(t *testing.T) {
 	manager := &fakeProxyManager{}
 	environment := newAuthTestEnvironmentConfigured(t, true, func(dependencies *Dependencies) { dependencies.ProxyManager = manager })
@@ -405,12 +453,16 @@ type fakeProxyManager struct {
 	protocolCalls     int
 	protocolTarget    domain.ProtocolMode
 	protocolExpected  domain.ProtocolMode
+	protocolError     error
 }
 
 func (m *fakeProxyManager) SwitchProtocolModeExpected(_ context.Context, egressID string, target, expected domain.ProtocolMode) (domain.EgressProtocolMode, error) {
 	m.protocolCalls++
 	m.protocolTarget = target
 	m.protocolExpected = expected
+	if m.protocolError != nil {
+		return domain.EgressProtocolMode{}, m.protocolError
+	}
 	return domain.EgressProtocolMode{EgressID: egressID, ActiveMode: target, DesiredMode: target, State: domain.ProtocolReady, Version: 2, UpdatedAt: time.Unix(1700000000, 0).UTC()}, nil
 }
 

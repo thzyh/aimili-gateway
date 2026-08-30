@@ -10,6 +10,7 @@ import tempfile
 import time
 import unittest
 from contextlib import closing
+from unittest import mock
 
 
 SCRIPT = pathlib.Path(__file__).with_name("aimili_xui_protocol_transaction.py")
@@ -402,6 +403,24 @@ class ProtocolTransactionTests(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.TransactionError, "unsafe_path"):
             MODULE.ProtocolTransactionManager(config, FakeRunner()).validate_request(self._request())
 
+    def test_subprocess_runner_reports_the_failing_xray_boundary_without_output(self):
+        runner = MODULE.SubprocessRunner(self.config)
+        inbound = self.root / "candidate-inbound.json"
+        inbound.write_text("{}", encoding="utf-8")
+        boundaries = (
+            (lambda: runner.offline_test(self.runtime_config_path), "xray_offline_test_failed"),
+            (lambda: runner.remove_inbound("agw-slot-one-vless"), "xray_remove_inbound_failed"),
+            (lambda: runner.add_inbound(inbound), "xray_add_inbound_failed"),
+            (runner.list_inbound_tags, "xray_list_inbounds_failed"),
+        )
+        failed = mock.Mock(returncode=2, stdout="credential-shaped-output", stderr="private-path-output")
+        for action, expected_code in boundaries:
+            with self.subTest(boundary=expected_code), mock.patch.object(MODULE.subprocess, "run", return_value=failed):
+                with self.assertRaisesRegex(MODULE.TransactionError, "^" + expected_code + "$") as captured:
+                    action()
+                self.assertNotIn("credential-shaped-output", str(captured.exception))
+                self.assertNotIn("private-path-output", str(captured.exception))
+
     def test_rejects_mixed_unknown_non_gateway_and_non_whitelisted_targets(self):
         manager = self._manager()
         requests = [
@@ -480,6 +499,18 @@ class ProtocolTransactionTests(unittest.TestCase):
         self.assertEqual("tcp", tcp["streamSettings"]["network"])
         self.assertEqual("xtls-rprx-vision", tcp["settings"]["clients"][0]["flow"])
         self.assertFalse(tcp["disableFlow"])
+
+    def test_runtime_inbound_omits_empty_listen_but_preserves_explicit_address(self):
+        manager = self._manager()
+        source = manager.load_target(self._request())
+        template = manager.build_template(source, XHTTP)
+
+        runtime = manager._runtime_inbound(template)
+        self.assertNotIn("listen", runtime)
+
+        template["listen"] = "127.0.0.1"
+        runtime = manager._runtime_inbound(template)
+        self.assertEqual("127.0.0.1", runtime["listen"])
 
     def test_hysteria_template_uses_tls_files_and_independent_existing_auth(self):
         manager = self._manager(token_factory=lambda: "new-auth-must-not-replace-existing")

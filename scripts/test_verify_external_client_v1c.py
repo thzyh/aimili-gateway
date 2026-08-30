@@ -212,6 +212,30 @@ class VerificationHelperTests(unittest.TestCase):
                 "vless://client@example.test:20000?type=xhttp&path=%2Fopaque#wrong-name"
             ])
 
+    def test_subscription_coverage_accepts_3xui_stable_remarks_and_default_parameters(self):
+        materials = [
+            {
+                "exitIp": "203.0.113.1",
+                "protocolMode": "vless_tcp_reality_vision",
+                "publicUri": "vless://client@example.test:8443?encryption=none&flow=xtls-rprx-vision&fp=chrome&pbk=public&security=reality&sid=short&sni=example.test&type=tcp#agw-main",
+                "socks5hUri": "socks5h://first",
+            },
+            {
+                "exitIp": "203.0.113.2",
+                "protocolMode": "vless_tcp_reality_vision",
+                "publicUri": "vless://client@example.test:20000?encryption=none&flow=xtls-rprx-vision&fp=chrome&pbk=public&security=reality&sid=short&sni=example.test&type=tcp#agw-slot-one",
+                "socks5hUri": "socks5h://second",
+            },
+        ]
+        entries = [
+            "vless://client@example.test:8443?encryption=none&flow=xtls-rprx-vision&fp=chrome&pbk=public&security=reality&sid=short&sni=example.test&spx=%2Fstable-spider&type=tcp#Aimili%20Reality-aimili-gateway-subscription",
+            "vless://client@example.test:20000?flow=xtls-rprx-vision&fp=chrome&pbk=public&security=reality&sid=short&sni=example.test&spx=%2Fstable-spider&type=tcp#Aimili%20Gateway%20agw-slot-one%20VLESS",
+        ]
+
+        result = MODULE.validate_subscription_coverage(materials, entries)
+
+        self.assertEqual({"entryCount": 2, "hysteria2": 0, "vless": 2}, result)
+
     def test_bound_materials_use_subscription_entries_for_public_validation(self):
         api_uri = "vless://client@example.test:20000?type=xhttp&path=%2Fopaque#slot-one"
         subscription_uri = "vless://client@example.test:20000?path=%2Fopaque&type=xhttp#slot-one"
@@ -394,6 +418,34 @@ class VerificationHelperTests(unittest.TestCase):
 
         self.assertEqual(1, process.terminate_calls)
         self.assertEqual(1, process.kill_calls)
+
+    def test_safe_error_category_exposes_only_closed_diagnostic_codes(self):
+        self.assertEqual(
+            "subscription_coverage_mismatch",
+            MODULE.safe_error_category(RuntimeError("subscription coverage mismatch")),
+        )
+        self.assertEqual(
+            "runtime_error",
+            MODULE.safe_error_category(RuntimeError("credential-shaped-secret-must-not-escape")),
+        )
+        remote = subprocess.CalledProcessError(
+            1,
+            ["ssh", "ny"],
+            stderr="RuntimeError: remote_connections_http_500 secret-url",
+        )
+        self.assertEqual("remote_connections_http_500", MODULE.safe_error_category(remote))
+        remote.stderr = "RuntimeError: remote_connections_slot_1_http_409 secret-url"
+        self.assertEqual("remote_connections_slot_1_http_409", MODULE.safe_error_category(remote))
+        remote.stderr = "RuntimeError: remote_connections_slot_0_http_409_egress_unavailable secret-url"
+        self.assertEqual(
+            "remote_connections_slot_0_http_409_egress_unavailable",
+            MODULE.safe_error_category(remote),
+        )
+        remote.stderr = "RuntimeError: remote_protocol_switch_http_400_invalid_request secret-url"
+        self.assertEqual(
+            "remote_protocol_switch_http_400_invalid_request",
+            MODULE.safe_error_category(remote),
+        )
 
 
 if __name__ == "__main__":
