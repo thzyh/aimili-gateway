@@ -18,7 +18,6 @@ const sort = ref('latency')
 const busy = ref('')
 const loading = ref(true)
 const notice = ref('')
-const keepEnabledVisible = ref(true)
 const replacementCandidate = ref<ProxyGroupPayload | null>(null)
 const replacementTarget = ref('')
 let refreshTimer: ReturnType<typeof setTimeout> | undefined
@@ -265,7 +264,7 @@ function messageFor(error: unknown, fallback: string): string {
     <p v-if="refreshStateLabel()" class="refresh-state">{{ refreshStateLabel() }}</p>
     <section class="pool-toolbar">
       <PoolFilters :countries="countries" :official-countries="officialCountries" :country="country" :supplement-country="supplementCountry" :proxy-type="proxyType" :status="status" :sort="sort" @country="country=$event" @supplement-country="supplementCountry=$event" @proxy-type="proxyType=$event" @status="status=$event" @sort="sort=$event" />
-      <label class="fixed-toggle"><input v-model="keepEnabledVisible" data-fixed-enabled type="checkbox"> 始终显示运行节点</label><span data-pool-stats>官方 {{ poolStats?.officialCandidateTotal ?? candidateCountries.reduce((sum,item) => sum + item.candidateCount, 0) }} · 当前有效 {{ poolStats?.validNodeCount ?? groups.length }} · {{ poolStats?.validCountryCount ?? countries.length }} 国</span>
+      <span data-pool-stats>官方 {{ poolStats?.officialCandidateTotal ?? candidateCountries.reduce((sum,item) => sum + item.candidateCount, 0) }} · 当前有效 {{ poolStats?.validNodeCount ?? groups.length }} · {{ poolStats?.validCountryCount ?? countries.length }} 国</span>
     </section>
     <div v-if="loading" class="loading">正在读取代理池…</div>
     <PoolTable v-else :rows="rows" :protocol="protocol" :busy="busy" @copy="copyAddress" @replace="openReplacement" @check="checkRow" @protocol="switchProtocol" />
