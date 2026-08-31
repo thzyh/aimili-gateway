@@ -293,4 +293,3 @@ Gateway 的 `SubscriptionDesired` 增加 `Aliases map[int64]string`。适配器�
 6. v2rayN 刷新后四个别名与逻辑出口和国家一致，替换国家后名称随之变化。
 7. 四个公网节点、四个 mixed、代理端 DNS、真实出口、重启和 300 秒观察均通过。
 8. 非 Gateway 3x-ui/Xray 资源脱敏指纹不变；没有增加运行出口、长期入站、凭据或订阅入口。
-
