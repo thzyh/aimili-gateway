@@ -4,6 +4,8 @@ Aimili Gateway 是 AimiliVPN 与 3x-ui 的轻量统一控制台项目。统一�
 
 ## 当前阶段
 
+2026-08-31 增量已完成本地 TDD：四个运行节点固定为主连接、出口1、出口2、出口3并显示公网/mixed 端口；AimiliVPN 增加代理容量隔离、OpenVPN 失败回收和固定 30 条两层节点池；Gateway 在公网协议事务前验证真实槽位与 mixed。最新本地与生产分层证据见 `docs/verification/2026-08-31-stable-runtime-order-and-country-cache.md`。
+
 主连接安全切换与每出口独立协议模式的增量设计已经批准，功能分支正在按 TDD 完成本地实现与部署验证。该增量保持四个逻辑出口，每个出口只保留一个公网协议配置；mixed/SOCKS5H 不参与协议切换。正式运行手册见 `docs/runbooks/main-switch-protocol-modes.md`，生产结果只以 `docs/verification/2026-08-29-main-switch-protocol-modes.md` 中实际标记为通过的层级为准。未完成 VPS 阶梯验收前，下面记录的 Test 风格纯 TCP/Vision 生产基线仍是现网事实。
 
 2026-08-29 最新生产基线已经完成：Gateway 使用 3x-ui 原生多入站订阅客户端，将主连接 `8443` 和三个受管 VLESS 入站组成一个订阅；导入兼容客户端后得到四个独立 VLESS 节点，mixed/SOCKS5H 不进入该订阅。旧 `21000` 聚合入站、客户端引用、balancer 和 observatory 已安全清理，原聚合接口固定返回弃用错误，不会重新创建历史入口。
