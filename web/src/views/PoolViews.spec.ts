@@ -24,10 +24,10 @@ import VpnPoolView from './VpnPoolView.vue'
 const rows = [
   { id: 'agw-main', countryCode: 'SG', countryName: '新加坡', proxyType: 'datacenter', status: 'ready', egressSource: 'main', fixed: true, publicPort: 8443, vlessPort: 8443, mixedPort: 31000, exitIp: '203.0.113.9', candidateLatencyMs: 18, vlessLatencyMs: 76, socksLatencyMs: 66, protocolMode: 'vless_tcp_reality_vision', desiredProtocolMode: 'vless_tcp_reality_vision', protocolState: 'ready', subscriptionState: 'ready', availableProtocolModes: ['vless_tcp_reality_vision', 'vless_xhttp_reality', 'hysteria2_quic_tls'], version: 2 },
   { id: 'jp-one', countryCode: 'JP', countryName: '日本', proxyType: 'datacenter', status: 'ready', slotNumber: 1, fixed: true, publicPort: 20000, vlessPort: 20000, mixedPort: 30000, exitIp: '203.0.113.10', candidateLatencyMs: 20, vlessLatencyMs: 81, socksLatencyMs: 70, protocolMode: 'vless_xhttp_reality', desiredProtocolMode: 'vless_xhttp_reality', protocolState: 'ready', subscriptionState: 'ready', availableProtocolModes: ['vless_tcp_reality_vision', 'vless_xhttp_reality', 'hysteria2_quic_tls'], version: 2, lastCheckedAt: '2026-08-26T00:00:00Z' },
-  { id: 'kr-one', countryCode: 'KR', countryName: '韩国', proxyType: 'residential', status: 'degraded', vlessPort: 20001, mixedPort: 30001, exitIp: '203.0.113.11', candidateLatencyMs: 30, vlessLatencyMs: 0, socksLatencyMs: 0, version: 2 },
+  { id: 'kr-one', countryCode: 'KR', countryName: '韩国', proxyType: 'residential', status: 'degraded', slotNumber: 2, fixed: true, publicPort: 20001, vlessPort: 20001, mixedPort: 30001, exitIp: '203.0.113.11', candidateLatencyMs: 30, vlessLatencyMs: 0, socksLatencyMs: 0, version: 2 },
   { id: 'us-standby', countryCode: 'US', countryName: '美国', proxyType: 'datacenter', status: 'standby', vlessPort: 0, mixedPort: 0, exitIp: '', candidateLatencyMs: 44, vlessLatencyMs: 0, socksLatencyMs: 0, version: 1 },
   { id: 'fr-provisioning', countryCode: 'FR', countryName: '法国', proxyType: 'datacenter', status: 'provisioning', vlessPort: 0, mixedPort: 0, exitIp: '', candidateLatencyMs: 50, vlessLatencyMs: 0, socksLatencyMs: 0, version: 1 },
-  { id: 'de-rotating', countryCode: 'DE', countryName: '德国', proxyType: 'residential', status: 'rotating', vlessPort: 20002, mixedPort: 30002, exitIp: '', candidateLatencyMs: 51, vlessLatencyMs: 0, socksLatencyMs: 0, version: 2 },
+  { id: 'de-rotating', countryCode: 'DE', countryName: '德国', proxyType: 'residential', status: 'rotating', slotNumber: 3, fixed: true, publicPort: 20002, vlessPort: 20002, mixedPort: 30002, exitIp: '', candidateLatencyMs: 51, vlessLatencyMs: 0, socksLatencyMs: 0, version: 2 },
   { id: 'gb-disabling', countryCode: 'GB', countryName: '英国', proxyType: 'datacenter', status: 'disabling', vlessPort: 20003, mixedPort: 30003, exitIp: '', candidateLatencyMs: 52, vlessLatencyMs: 0, socksLatencyMs: 0, version: 2 },
   { id: 'ca-repair', countryCode: 'CA', countryName: '加拿大', proxyType: 'datacenter', status: 'repair_required', vlessPort: 20004, mixedPort: 30004, exitIp: '', candidateLatencyMs: 53, vlessLatencyMs: 0, socksLatencyMs: 0, lastErrorCode: 'compensation_failed', version: 2 },
 ]
@@ -41,8 +41,8 @@ beforeEach(() => {
   mocks.apiFetch.mockImplementation((path: string) => {
     if (path === '/api/v1/proxy-groups') return Promise.resolve(rows)
     if (path === '/api/v1/settings/aimilivpn/countries') return Promise.resolve([
-      { code: 'JP', name: '日本', candidateCount: 8, observedAt: 1_700_000_000 },
-      { code: 'SG', name: '新加坡', candidateCount: 6, observedAt: 1_700_000_000 },
+      { code: 'JP', name: '日本', candidateCount: 8, observedAt: 1_700_000_000, officialCandidateTotal: 100, validNodeCount: 25, validCountryCount: 5 },
+      { code: 'SG', name: '新加坡', candidateCount: 6, observedAt: 1_700_000_000, officialCandidateTotal: 100, validNodeCount: 25, validCountryCount: 5 },
     ])
     if (path === '/api/v1/settings/aimilivpn/refresh') return Promise.resolve({ state: 'idle', country: '', phase: '', testedCount: 0, validCount: 0 })
     if (path === '/api/v1/proxy-groups/jp-one/connections') return Promise.resolve({ protocolMode: 'vless_xhttp_reality', publicUri: 'vless://masked-public', vlessUri: 'vless://masked-public', socks5hUri: 'socks5h://masked-test' })
@@ -61,7 +61,7 @@ it('renders a compact pool without service status cards and filters by country',
   expect(wrapper.text()).not.toContain('3x-ui 正常')
   expect(wrapper.findAll('[data-pool-row]')).toHaveLength(8)
   await wrapper.get('[data-country-filter]').setValue('JP')
-  expect(wrapper.findAll('[data-pool-row]')).toHaveLength(2)
+  expect(wrapper.findAll('[data-pool-row]')).toHaveLength(4)
   expect(wrapper.text()).toContain('81 ms')
 })
 
@@ -81,7 +81,7 @@ it('maps exact backend states into four user-facing status groups without enabli
   expect(wrapper.get('[data-copy="us-standby"]').attributes('disabled')).toBeDefined()
 
   await wrapper.get('[data-status-filter]').setValue('processing')
-  expect(wrapper.findAll('[data-pool-row]')).toHaveLength(5)
+  expect(wrapper.findAll('[data-pool-row]')).toHaveLength(6)
   expect(wrapper.get('[data-row-status="jp-one"]').text()).toContain('已启用')
 })
 
@@ -119,6 +119,21 @@ it('copies a test-style VLESS subscription', async () => {
   await flushPromises()
   expect(mocks.clipboard).toHaveBeenCalledWith('https://example.test/sub/masked')
   expect(wrapper.text()).toContain('复制节点订阅')
+})
+
+it('keeps four runtime rows in logical order and shows both ports regardless of API order', async () => {
+  mocks.apiFetch.mockImplementation((path: string) => {
+    if (path === '/api/v1/proxy-groups') return Promise.resolve([rows[5], rows[2], rows[1], rows[0], ...rows.slice(3, 5), ...rows.slice(6)])
+    if (path === '/api/v1/settings/aimilivpn/countries') return Promise.resolve([])
+    if (path === '/api/v1/settings/aimilivpn/refresh') return Promise.resolve({ state: 'idle', country: '', phase: '', testedCount: 0, validCount: 0 })
+    return Promise.resolve(undefined)
+  })
+  const wrapper = mount(VpnPoolView)
+  await flushPromises()
+
+  expect(wrapper.findAll('[data-pool-row]').slice(0, 4).map(row => row.attributes('data-row-id'))).toEqual(['agw-main', 'jp-one', 'kr-one', 'de-rotating'])
+  expect(wrapper.get('[data-row-ports="agw-main"]').text()).toContain('公网 8443')
+  expect(wrapper.get('[data-row-ports="agw-main"]').text()).toContain('mixed 31000')
 })
 
 it('shows fixed ready slots and replaces a standby candidate through a closable dialog', async () => {
@@ -191,13 +206,13 @@ it('exports the current filters as a text list', async () => {
   expect(mocks.apiDownloadText).toHaveBeenCalledWith(expect.stringContaining('country=JP'))
 })
 
-it('uses the official country catalog and refreshes only the selected country', async () => {
+it('separates cached-country filtering from official-country supplementation', async () => {
 	const wrapper = mount(VpnPoolView)
 	await flushPromises()
 
 	expect(wrapper.get('[data-country-filter]').text()).toContain('新加坡')
 	expect(wrapper.get('[data-refresh-country]').attributes('disabled')).toBeDefined()
-	await wrapper.get('[data-country-filter]').setValue('JP')
+	await wrapper.get('[data-country-supplement]').setValue('JP')
 	await wrapper.get('[data-refresh-country]').trigger('click')
 	await flushPromises()
 
@@ -207,6 +222,8 @@ it('uses the official country catalog and refreshes only the selected country', 
 		body: JSON.stringify({ country: 'JP' }),
 	})
 	expect(wrapper.get('[data-sync-pool]').text()).toContain('同步代理状态')
+	expect(wrapper.get('[data-pool-stats]').text()).toContain('官方 100')
+	expect(wrapper.get('[data-pool-stats]').text()).toContain('当前有效 25')
 })
 
 it('polls a running country refresh and reloads the pool after completion', async () => {
@@ -225,6 +242,7 @@ it('polls a running country refresh and reloads the pool after completion', asyn
 	const wrapper = mount(VpnPoolView)
 	await flushPromises()
 	await wrapper.get('[data-country-filter]').setValue('JP')
+	await wrapper.get('[data-country-supplement]').setValue('JP')
 	await wrapper.get('[data-refresh-country]').trigger('click')
 	await flushPromises()
 	await vi.advanceTimersByTimeAsync(4_000)

@@ -57,12 +57,13 @@ export type MixedPolicyApplyStatus = 'pending' | 'applying' | 'applied' | 'faile
 export interface SettingsSummaryPayload { accountSyncStatus: AccountSyncStatus; candidateCount: number; onlineCount: number; maxOnline: number }
 export interface MixedSourcePolicyPayload { enabled: boolean; cidrs: string[]; applyStatus: MixedPolicyApplyStatus }
 export interface AimiliSettingsPayload { candidateCount: number; residentialCount: number; datacenterCount: number; managedSlotCount: number; lastRefreshedAt?: string }
-export interface CandidateCountryPayload { code: string; name: string; candidateCount: number; observedAt: number }
+export interface CandidateCountryPayload { code: string; name: string; candidateCount: number; observedAt: number; officialCandidateTotal?: number; validNodeCount?: number; validCountryCount?: number }
 export type CountryRefreshState = 'idle' | 'running' | 'completed' | 'failed'
 export interface CountryRefreshPayload {
   state: CountryRefreshState; country: string; phase: string
   catalogCount?: number; countryCandidateCount?: number; testedCount: number; validCount: number; preservedCount?: number
   startedAt?: number; finishedAt?: number; errorCode?: string
+  stopReason?: string; cacheTotal?: number; countryValidCount?: number
 }
 export interface XUISettingsPayload { managedVlessCount: number; managedMixedCount: number; managedOutboundCount: number; ownershipMatches: boolean; lastCheckedAt?: string }
 

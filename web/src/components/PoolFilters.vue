@@ -2,15 +2,19 @@
 import type { ProxyType } from '../api/client'
 import type { PoolStatusGroup } from './poolStatus'
 
-defineProps<{ countries: { code: string; name: string }[]; country: string; proxyType: '' | ProxyType; status: '' | PoolStatusGroup; sort: string }>()
-const emit = defineEmits<{ country: [value: string]; proxyType: [value: '' | ProxyType]; status: [value: '' | PoolStatusGroup]; sort: [value: string] }>()
+defineProps<{ countries: { code: string; name: string }[]; officialCountries: { code: string; name: string }[]; country: string; supplementCountry: string; proxyType: '' | ProxyType; status: '' | PoolStatusGroup; sort: string }>()
+const emit = defineEmits<{ country: [value: string]; supplementCountry: [value: string]; proxyType: [value: '' | ProxyType]; status: [value: '' | PoolStatusGroup]; sort: [value: string] }>()
 </script>
 
 <template>
   <div class="filters" aria-label="节点筛选">
-    <select data-country-filter :value="country" aria-label="国家" @change="emit('country', ($event.target as HTMLSelectElement).value)">
-      <option value="">全部国家</option>
+    <select data-country-filter :value="country" aria-label="只看现有国家" @change="emit('country', ($event.target as HTMLSelectElement).value)">
+      <option value="">只看现有国家：全部</option>
       <option v-for="item in countries" :key="item.code" :value="item.code">{{ item.name || item.code }}</option>
+    </select>
+    <select data-country-supplement :value="supplementCountry" aria-label="手动补充国家" @change="emit('supplementCountry', ($event.target as HTMLSelectElement).value)">
+      <option value="">手动补充国家</option>
+      <option v-for="item in officialCountries" :key="item.code" :value="item.code">{{ item.name || item.code }}</option>
     </select>
     <select :value="proxyType" aria-label="IP 类型" @change="emit('proxyType', ($event.target as HTMLSelectElement).value as '' | ProxyType)">
       <option value="">全部类型</option><option value="residential">住宅</option><option value="datacenter">机房</option>

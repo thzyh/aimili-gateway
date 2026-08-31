@@ -11,6 +11,7 @@ const groups = ref<ProxyGroupPayload[]>([])
 const candidateCountries = ref<CandidateCountryPayload[]>([])
 const refreshState = ref<CountryRefreshPayload | null>(null)
 const country = ref('')
+const supplementCountry = ref('')
 const proxyType = ref<'' | ProxyType>('')
 const status = ref<'' | PoolStatusGroup>('')
 const sort = ref('latency')
@@ -26,15 +27,22 @@ const title = computed(() => props.protocol === 'vless' ? 'VPN 节点池' : 'SOC
 const description = computed(() => props.protocol === 'vless' ? '每个逻辑出口可独立使用 TCP/Vision、XHTTP/REALITY 或 Hysteria2；mixed/SOCKS5H 始终保持不变。' : '每个在线出口对应一个支持代理 DNS 的 SOCKS5H 地址。')
 const countries = computed(() => {
   const merged = new Map(groups.value.map(row => [row.countryCode, { code: row.countryCode, name: row.countryName }]))
-  for (const item of candidateCountries.value) merged.set(item.code, { code: item.code, name: item.name })
   return [...merged.values()].sort((a, b) => a.code.localeCompare(b.code))
 })
+const officialCountries = computed(() => candidateCountries.value.map(item => ({ code: item.code, name: item.name })).sort((a, b) => a.code.localeCompare(b.code)))
+const poolStats = computed(() => candidateCountries.value[0])
+function runtimeRank(row: ProxyGroupPayload): number | null {
+  if (row.egressSource === 'main' || row.id === 'agw-main') return 0
+  const slot = row.slotNumber ?? 0
+  return slot >= 1 && slot <= 3 ? slot : null
+}
 const rows = computed(() => groups.value.filter(row => {
-  if (keepEnabledVisible.value && row.fixed) return true
+  if (runtimeRank(row) !== null) return true
   return (!country.value || row.countryCode === country.value) && (!proxyType.value || row.proxyType === proxyType.value) && (!status.value || poolStatusGroup(row.status) === status.value)
 }).sort((a, b) => {
-  if (a.fixed && !b.fixed) return -1
-  if (!a.fixed && b.fixed) return 1
+  const leftRank = runtimeRank(a)
+  const rightRank = runtimeRank(b)
+  if (leftRank !== null || rightRank !== null) return (leftRank ?? 100) - (rightRank ?? 100)
   if (sort.value === 'country') return a.countryCode.localeCompare(b.countryCode)
   if (sort.value === 'updated') return (b.lastCheckedAt ?? '').localeCompare(a.lastCheckedAt ?? '')
   const left = props.protocol === 'vless' ? a.vlessLatencyMs : a.socksLatencyMs
@@ -106,16 +114,16 @@ async function refreshPool(): Promise<void> {
 }
 
 async function refreshCountry(): Promise<void> {
-  if (!country.value) {
+  if (!supplementCountry.value) {
     notice.value = '请先选择要刷新的国家。'
     return
   }
   busy.value = 'country-refresh'; notice.value = ''
   try {
     refreshState.value = await apiFetch<CountryRefreshPayload>('/api/v1/settings/aimilivpn/refresh', {
-      method: 'POST', headers: idempotencyHeaders(), body: JSON.stringify({ country: country.value }),
+      method: 'POST', headers: idempotencyHeaders(), body: JSON.stringify({ country: supplementCountry.value }),
     })
-    notice.value = `${country.value} 节点刷新已开始；当前在线代理不会中断。`
+    notice.value = `${supplementCountry.value} 节点刷新已开始；当前在线代理不会中断。`
     if (refreshState.value.state === 'running') scheduleRefreshPoll()
   } catch (error) { notice.value = messageFor(error, '国家刷新失败') }
   finally { busy.value = '' }
@@ -251,13 +259,13 @@ function messageFor(error: unknown, fallback: string): string {
   <AppShell>
     <section class="page-heading">
       <div><p class="eyebrow">ONLINE EGRESS POOL</p><h1>{{ title }}</h1><p>{{ description }}</p></div>
-      <div class="heading-actions"><button data-sync-pool class="secondary" :disabled="busy !== ''" @click="refreshPool">{{ busy === 'refresh' ? '正在同步…' : '同步代理状态' }}</button><button data-refresh-country class="secondary" :disabled="busy !== '' || !country" @click="refreshCountry">{{ busy === 'country-refresh' ? '正在刷新…' : '刷新所选国家' }}</button><button v-if="protocol === 'vless'" data-copy-subscription :disabled="busy !== '' || !subscriptionReady" @click="copySubscription">复制节点订阅</button><button data-copy-all class="secondary" :disabled="busy !== ''" @click="copyAll">复制节点列表</button><button data-export class="secondary" :disabled="busy !== ''" @click="exportRows">导出</button></div>
+      <div class="heading-actions"><button data-sync-pool class="secondary" :disabled="busy !== ''" @click="refreshPool">{{ busy === 'refresh' ? '正在同步…' : '同步代理状态' }}</button><button data-refresh-country class="secondary" :disabled="busy !== '' || !supplementCountry" @click="refreshCountry">{{ busy === 'country-refresh' ? '正在刷新…' : '补充所选国家' }}</button><button v-if="protocol === 'vless'" data-copy-subscription :disabled="busy !== '' || !subscriptionReady" @click="copySubscription">复制节点订阅</button><button data-copy-all class="secondary" :disabled="busy !== ''" @click="copyAll">复制节点列表</button><button data-export class="secondary" :disabled="busy !== ''" @click="exportRows">导出</button></div>
     </section>
     <p v-if="notice" class="notice" role="status">{{ notice }}</p>
     <p v-if="refreshStateLabel()" class="refresh-state">{{ refreshStateLabel() }}</p>
     <section class="pool-toolbar">
-      <PoolFilters :countries="countries" :country="country" :proxy-type="proxyType" :status="status" :sort="sort" @country="country=$event" @proxy-type="proxyType=$event" @status="status=$event" @sort="sort=$event" />
-      <label class="fixed-toggle"><input v-model="keepEnabledVisible" data-fixed-enabled type="checkbox"> 始终显示已启用节点</label><span>{{ rows.length }} 个候选 · {{ groups.filter(row => row.status === 'ready').length }} 个在线</span>
+      <PoolFilters :countries="countries" :official-countries="officialCountries" :country="country" :supplement-country="supplementCountry" :proxy-type="proxyType" :status="status" :sort="sort" @country="country=$event" @supplement-country="supplementCountry=$event" @proxy-type="proxyType=$event" @status="status=$event" @sort="sort=$event" />
+      <label class="fixed-toggle"><input v-model="keepEnabledVisible" data-fixed-enabled type="checkbox"> 始终显示运行节点</label><span data-pool-stats>官方 {{ poolStats?.officialCandidateTotal ?? candidateCountries.reduce((sum,item) => sum + item.candidateCount, 0) }} · 当前有效 {{ poolStats?.validNodeCount ?? groups.length }} · {{ poolStats?.validCountryCount ?? countries.length }} 国</span>
     </section>
     <div v-if="loading" class="loading">正在读取代理池…</div>
     <PoolTable v-else :rows="rows" :protocol="protocol" :busy="busy" @copy="copyAddress" @replace="openReplacement" @check="checkRow" @protocol="switchProtocol" />
