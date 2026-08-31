@@ -47,10 +47,13 @@ type Candidate struct {
 }
 
 type CandidateCountry struct {
-	Code           string  `json:"code"`
-	Name           string  `json:"name"`
-	CandidateCount int     `json:"candidateCount"`
-	ObservedAt     float64 `json:"observedAt"`
+	Code                   string  `json:"code"`
+	Name                   string  `json:"name"`
+	CandidateCount         int     `json:"candidateCount"`
+	ObservedAt             float64 `json:"observedAt"`
+	OfficialCandidateTotal int     `json:"officialCandidateTotal"`
+	ValidNodeCount         int     `json:"validNodeCount"`
+	ValidCountryCount      int     `json:"validCountryCount"`
 }
 
 type CountryRefresh struct {
@@ -65,6 +68,9 @@ type CountryRefresh struct {
 	StartedAt             float64 `json:"startedAt"`
 	FinishedAt            float64 `json:"finishedAt"`
 	ErrorCode             string  `json:"errorCode"`
+	StopReason            string  `json:"stopReason"`
+	CacheTotal            int     `json:"cacheTotal"`
+	CountryValidCount     int     `json:"countryValidCount"`
 }
 
 type CreateSlotRequest struct {
@@ -246,7 +252,7 @@ func (c *Client) CandidateCountries(ctx context.Context) ([]CandidateCountry, er
 		return nil, err
 	}
 	for _, country := range result {
-		if len(country.Code) != 2 || country.Code != strings.ToUpper(country.Code) || country.CandidateCount < 0 || country.ObservedAt < 0 {
+		if len(country.Code) != 2 || country.Code != strings.ToUpper(country.Code) || country.CandidateCount < 0 || country.ObservedAt < 0 || country.OfficialCandidateTotal < 0 || country.ValidNodeCount < 0 || country.ValidCountryCount < 0 {
 			return nil, &AdapterError{Code: "invalid_response"}
 		}
 	}
@@ -292,7 +298,8 @@ func validCountryRefresh(refresh CountryRefresh) bool {
 		return false
 	}
 	return refresh.CatalogCount >= 0 && refresh.CountryCandidateCount >= 0 && refresh.TestedCount >= 0 &&
-		refresh.ValidCount >= 0 && refresh.PreservedCount >= 0 && refresh.StartedAt >= 0 && refresh.FinishedAt >= 0
+		refresh.ValidCount >= 0 && refresh.PreservedCount >= 0 && refresh.StartedAt >= 0 && refresh.FinishedAt >= 0 &&
+		refresh.CacheTotal >= 0 && refresh.CountryValidCount >= 0
 }
 
 func (c *Client) CreateSlot(ctx context.Context, input CreateSlotRequest) (Slot, error) {

@@ -42,6 +42,38 @@ func TestSwitchProtocolModeAppliesVerifiesFinalizesAndPreservesOtherState(t *tes
 	}
 }
 
+func TestSwitchProtocolModeRejectsPendingSlotBeforeRuntimeWrites(t *testing.T) {
+	fixture, group := protocolFixture(t)
+	slot := fixture.aimili.createdSlots[group.AimiliSlot]
+	slot.Status = "pending"
+	slot.EgressOK = false
+	fixture.aimili.createdSlots[group.AimiliSlot] = slot
+	client := &fakeProtocolTransaction{calls: &fixture.calls}
+	orchestrator := fixture.orchestratorWithMax(t, 3)
+	orchestrator.protocolTransaction = client
+
+	_, err := orchestrator.SwitchProtocolMode(context.Background(), group.ID, domain.ProtocolVLESSTCPRealityVision)
+
+	if codeOf(err) != "egress_unavailable" || len(client.actions) != 0 {
+		t.Fatalf("error=%v actions=%#v calls=%#v", err, client.actions, fixture.calls)
+	}
+}
+
+func TestSwitchProtocolModeRejectsBrokenMixedBeforeRuntimeWrites(t *testing.T) {
+	fixture, group := protocolFixture(t)
+	fixture.validator.socksErrors = []error{&validator.Error{Code: "protocol_failed"}}
+	client := &fakeProtocolTransaction{calls: &fixture.calls}
+	orchestrator := fixture.orchestratorWithMax(t, 3)
+	orchestrator.protocolTransaction = client
+
+	_, err := orchestrator.SwitchProtocolMode(context.Background(), group.ID, domain.ProtocolVLESSTCPRealityVision)
+
+	var validationError *validator.Error
+	if !errors.As(err, &validationError) || validationError.Code != "protocol_failed" || len(client.actions) != 0 {
+		t.Fatalf("error=%v actions=%#v calls=%#v", err, client.actions, fixture.calls)
+	}
+}
+
 func TestSwitchProtocolModeRollsBackAndRevalidatesOldPath(t *testing.T) {
 	fixture, group := protocolFixture(t)
 	fixture.validator.publicErrors = []error{&validator.Error{Code: "protocol_failed"}, nil}
@@ -227,7 +259,7 @@ func TestSwitchMainProtocolChecksMainTunnelAndMixedPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.State != domain.ProtocolReady || fixture.validator.socksCalls != 1 || len(fixture.validator.publicTargets) != 1 {
+	if result.State != domain.ProtocolReady || fixture.validator.socksCalls != 2 || len(fixture.validator.publicTargets) != 1 {
 		t.Fatalf("main path was not fully checked: result=%#v calls=%#v", result, fixture.calls)
 	}
 	if client.applied.InboundTag != "aimili-reality" || client.applied.Port != 8443 {
@@ -704,7 +736,7 @@ func protocolFixture(t *testing.T) (*fixture, domain.ProxyGroup) {
 	group.UpdatedAt = fixture.now()
 	fixture.store.groups[group.ID] = group
 	fixture.store.protocolModes[group.ID] = domain.EgressProtocolMode{EgressID: group.ID, ActiveMode: domain.ProtocolVLESSXHTTPReality, DesiredMode: domain.ProtocolVLESSXHTTPReality, State: domain.ProtocolReady, Version: 1, UpdatedAt: fixture.now()}
-	fixture.aimili.createdSlots = map[int]aimili.Slot{1: {Number: 1, NodeID: "slot-one", Country: "JP", ProxyType: "datacenter", ExitIP: group.ExitIP, EgressOK: true}}
+	fixture.aimili.createdSlots = map[int]aimili.Slot{1: {Number: 1, NodeID: "slot-one", Country: "JP", ProxyType: "datacenter", Port: 17929, Status: "up", ExitIP: group.ExitIP, EgressOK: true}}
 	return fixture, group
 }
 

@@ -98,6 +98,9 @@ func (o *Orchestrator) SwitchProtocolModeExpected(ctx context.Context, egressID 
 			mutationLease.cancelOperation()
 		}()
 	}
+	if err := o.verifyEgressReady(operationCtx, &targetResource); err != nil {
+		return domain.EgressProtocolMode{}, err
+	}
 	request := protocoltxn.Request{
 		OperationID: operationID, EgressID: egressID,
 		InboundID: targetResource.inboundID, InboundTag: targetResource.inboundTag, Port: targetResource.port,
@@ -545,23 +548,7 @@ func (o *Orchestrator) protocolTarget(ctx context.Context, egressID string) (pro
 }
 
 func (o *Orchestrator) verifyProtocolTarget(ctx context.Context, target protocolTarget, mode domain.ProtocolMode, subscription SubscriptionResult) error {
-	_, credentials, err := o.runtimeInputs(ctx)
-	if err != nil {
-		return err
-	}
-	if target.main {
-		status, err := o.aimili.MainStatus(ctx)
-		if err != nil || !mainStatusMatchesGroup(status, target.group) {
-			return &Error{Code: "egress_unavailable"}
-		}
-		target.group.ExitIP = status.ExitIP
-	} else {
-		checked, err := o.aimili.CheckSlot(ctx, target.group.AimiliSlot)
-		if err != nil || !checked.EgressOK || net.ParseIP(checked.ExitIP) == nil || checked.ExitIP != target.group.ExitIP {
-			return &Error{Code: "egress_unavailable"}
-		}
-	}
-	if _, err := o.validateSOCKS(ctx, target.group, credentials); err != nil {
+	if err := o.verifyEgressReady(ctx, &target); err != nil {
 		return err
 	}
 	var profile *xui.PublicProfile
@@ -575,13 +562,37 @@ func (o *Orchestrator) verifyProtocolTarget(ctx context.Context, target protocol
 	if profile == nil {
 		return &Error{Code: "subscription_incomplete"}
 	}
-	_, err = o.validator.ValidatePublic(ctx, validator.PublicTarget{
+	_, err := o.validator.ValidatePublic(ctx, validator.PublicTarget{
 		Mode: mode, XrayPath: o.config.XrayPath, InboundAddress: net.JoinHostPort("127.0.0.1", fmt.Sprint(target.port)),
 		ClientID: profile.ClientID, Auth: profile.Auth, PublicKey: profile.PublicKey, ShortID: profile.ShortID,
 		ServerName: profile.ServerName, MLDSA65Verify: profile.MLDSA65Verify, XHTTPPath: profile.XHTTPPath,
 		TLSServerName: o.config.PublicHost, ProbeHost: o.config.ProbeHost, ExpectedExitIP: target.group.ExitIP,
 	})
 	return err
+}
+
+func (o *Orchestrator) verifyEgressReady(ctx context.Context, target *protocolTarget) error {
+	_, credentials, err := o.runtimeInputs(ctx)
+	if err != nil {
+		return err
+	}
+	if target.main {
+		status, err := o.aimili.MainStatus(ctx)
+		if err != nil || !mainStatusMatchesGroup(status, target.group) {
+			return &Error{Code: "egress_unavailable"}
+		}
+		target.group.ExitIP = status.ExitIP
+	} else {
+		checked, err := o.aimili.CheckSlot(ctx, target.group.AimiliSlot)
+		if err != nil || checked.Status != "up" || !checked.EgressOK || checked.NodeID != target.group.CandidateID ||
+			net.ParseIP(checked.ExitIP) == nil || checked.ExitIP != target.group.ExitIP {
+			return &Error{Code: "egress_unavailable"}
+		}
+	}
+	if _, err := o.validateSOCKS(ctx, target.group, credentials); err != nil {
+		return err
+	}
+	return nil
 }
 
 func mainStatusUsable(status aimili.MainStatus) bool {

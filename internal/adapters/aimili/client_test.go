@@ -414,7 +414,7 @@ func TestClientCountryRefreshUsesVersionedClosedRequests(t *testing.T) {
 			if request.Method != http.MethodGet || request.URL.Path != "/control/v1/candidates/countries" {
 				t.Fatalf("unexpected countries request %s %s", request.Method, request.URL.Path)
 			}
-			fmt.Fprint(response, `{"data":[{"code":"JP","name":"日本","candidateCount":8,"observedAt":1700000000,"futureField":"ignored"}]}`)
+			fmt.Fprint(response, `{"data":[{"code":"JP","name":"日本","candidateCount":8,"observedAt":1700000000,"officialCandidateTotal":100,"validNodeCount":25,"validCountryCount":5,"futureField":"ignored"}]}`)
 		case 2:
 			if request.Method != http.MethodPost || request.URL.Path != "/control/v1/candidates/refresh" {
 				t.Fatalf("unexpected refresh request %s %s", request.Method, request.URL.Path)
@@ -443,7 +443,7 @@ func TestClientCountryRefreshUsesVersionedClosedRequests(t *testing.T) {
 		t.Fatal(err)
 	}
 	countries, err := client.CandidateCountries(context.Background())
-	if err != nil || len(countries) != 1 || countries[0].Code != "JP" || countries[0].CandidateCount != 8 {
+	if err != nil || len(countries) != 1 || countries[0].Code != "JP" || countries[0].CandidateCount != 8 || countries[0].OfficialCandidateTotal != 100 || countries[0].ValidNodeCount != 25 || countries[0].ValidCountryCount != 5 {
 		t.Fatalf("countries = %#v, err = %v", countries, err)
 	}
 	started, err := client.StartCountryRefresh(context.Background(), "jp")
