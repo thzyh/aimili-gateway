@@ -2,7 +2,7 @@
 
 日期：2026-08-29
 
-状态：VPS Stage 1–6、8 已通过，主协议往返与最终混合状态已有真实连接证据；Stage 7 的已提交模式重启恢复和四出口外部验证通过。最新主身份闭集恢复修复已部署并通过无切换四出口验收。未提交主事务自动回滚、两阶段 repair 生产事务演练、Gateway UI 与 v2rayN GUI 最终点击仍待完成
+状态：VPS Stage 1–6、8 已通过，主协议往返与最终混合状态已有真实连接证据；Stage 7 的已提交模式、AimiliVPN 历史状态迁移、四出口重启恢复和外部验证通过。未提交主事务自动回滚、两阶段 repair 生产事务演练、Gateway UI 与 v2rayN GUI 最终点击仍待完成
 
 本记录只保存提交、版本、计数、端口、布尔结果、资源指标和脱敏错误码。不得写入连接材料、私钥、后台路径或完整订阅地址。
 
@@ -130,7 +130,26 @@ AimiliVPN 单独重启演练先后暴露启动阶段 `is_connecting` 占位、�
 
 生产恢复后，三个普通槽位通过既有 Gateway `rotate` 原路径恢复，主与三个普通出口再经 `check` 完成 mixed 与对应公网协议复验和出口同步。最新外部验收得到四组 ready、四公网协议、四个授权 mixed、单 Xray、订阅四条和四个唯一出口全部通过；最终协议仍为主 TCP、出口位 1 XHTTP、出口位 2 Hysteria2、出口位 3 TCP。
 
-## 9. 最终不变量
+## 9. 2026-08-31 AimiliVPN 历史终态兼容收尾
+
+| 检查 | 结果 |
+| --- | --- |
+| AimiliVPN 修复提交 | `2cada1f`，已非强制推送至私有功能分支 |
+| 兼容边界 | 仅 `active=None`、全部 history 为终态、`committed` 携带两个旧 resolution 且无 repair hash 时 canonicalize；其他非法形态继续 fail-closed |
+| 本地测试 | AimiliVPN 119/119；`git diff --check` 通过；增量敏感扫描为 0 |
+| scoped 复审 | Critical 0、Important 0、Minor 0 |
+| 生产部署 | 私有 GitHub 精确 fetch；仅原子安装 `control_api.py`、`main_assignment.py`、`vpngate_manager.py`；生产仓库 HEAD 保持 `c359ba5` |
+| 备份与恢复边界 | 三文件与 `vpngate_data` 已备份到新建的 `/var/backups/aimili-final-stack-*`；未 reset/clean，未删除 `.codex-backups` |
+| canonical migration | 7 条历史均为 `committed/rolled_back`，`active=None`，旧 resolution 已移除，`mutation_lease=None` |
+| mutation lease | acquire → renew → release 通过；未输出 lease ID |
+| 重启恢复 | AimiliVPN 与 Gateway 重启；x-ui/Xray/Caddy 未重启且保持 active |
+| 身份同步 | 主与三个普通槽位均经 Gateway 正式 `check` 原路径验证并同步；没有直接修改生产数据库 |
+| 最终外部验收 | `status=pass`：4 ready、4 公网、4 mixed、单 Xray、4 条订阅、4 个唯一出口、4 个授权 mixed 和四公网真实协议全部通过 |
+| 新资源观察 | 300 秒、61 个样本；Xray RSS 峰值 25 MiB，`MemAvailable` 最低 173 MiB，Swap 增量 0 MiB，OOM 否，四服务与单 Xray PID 全程稳定 |
+
+部署后的第一次 lease acquire 返回 `409 operation_busy`。状态文件已完成 canonical migration，且错误不再是 `state_corrupt`；后续脱敏诊断确认候选刷新 idle、没有测试隧道，失败发生在 AimiliVPN 重启后的槽位恢复与延迟节点池维护共用 mutation lock 的连续繁忙窗口。互斥空闲后相同闭集烟测立即完成 acquire/renew/release，未修改锁语义或放宽 fail-closed 边界。
+
+## 10. 最终不变量
 
 | 不变量 | 结果 |
 | --- | --- |
@@ -143,7 +162,7 @@ AimiliVPN 单独重启演练先后暴露启动阶段 `is_connecting` 占位、�
 | `21000` 与 balancer 未恢复 | 是 |
 | 无未决 `repair_required` | 是 |
 
-## 10. 未决项
+## 11. 未决项
 
 - Gateway UI 与 v2rayN GUI 的最终点击验收尚未完成：Codex 的浏览器/Windows 应用控制宿主在初始化时发生本机运行时资源路径错误。不得用后端/API 证据冒充该 GUI 验收。
 - 未提交主事务的重启自动回滚尚缺一次“旧主在 180 秒后仍可拨”条件下的成功证据。最新失败是外部 VPNGate 节点离线；历史 repair 恢复不得冒充自动 rollback 或 Gateway 三路径验证通过。

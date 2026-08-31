@@ -1,6 +1,6 @@
 # 主连接安全切换与每出口独立协议模式实施计划
 
-状态：执行中；Task 1–10 与 Task 11 Stage 1–6、8 已完成；Stage 7 的已提交协议模式重启恢复和最终混合状态通过，未提交主事务自动回滚、两阶段主 repair 生产演练、Gateway UI 与 v2rayN GUI 的最后验收仍待完成
+状态：核心开发与最终混合状态已完成；Task 1–10 与 Task 11 Stage 1–6、8 已完成；Stage 7 的已提交协议模式、AimiliVPN 状态迁移、四出口重启恢复和最终外部验收通过，未提交主事务自动回滚、两阶段主 repair 生产演练、Gateway UI 与 v2rayN GUI 的最后验收仍待完成
 
 > **执行要求：** 使用 `superpowers:executing-plans` 逐任务实施；所有功能与故障修复必须使用 `superpowers:test-driven-development`，先观察新增测试按预期失败，再写最小实现。完成前使用 `superpowers:verification-before-completion`，并按项目规则执行一次 `ponytail-review`。
 
@@ -13,6 +13,8 @@
 **设计依据：** `docs/superpowers/specs/2026-08-29-main-switch-protocol-modes-design.md`
 
 **执行记录（2026-08-31）：** Task 1–10 与 Task 11 Stage 1–6、8 已完成。出口位 1 完成 `TCP → XHTTP → TCP` 并最终保持 XHTTP；出口位 2 完成 Hysteria2 外部 QUIC/TLS 与真实出口验证；主连接完成 `TCP → XHTTP → TCP`，每一方向均通过四出口公网、四个授权 mixed、统一订阅、单 Xray 和唯一出口联合验收。首次主切回期间 AimiliVPN 自动漂移到另一可用主节点，helper 已回滚但 Gateway 因旧身份不匹配正确进入 `repair_required`；新增恢复逻辑只在 helper 已证明回滚、当前主两次身份绑定一致且 `7928 + mixed + 当前公网协议` 全部通过后同步主身份并恢复 ready。最终运行状态为主 TCP、出口位 1 XHTTP、出口位 2 Hysteria2、出口位 3 TCP。历史 `repair-replace` 只验证了 AimiliVPN `7928`，不能作为 Gateway 主 mixed/公网验证证据；两阶段 repair 代码已部署，但用户专门要求的生产事务写入演练仍被审批系统拒绝。未提交事务自动回滚和 GUI 最终点击仍待完成。
+
+**收尾记录（2026-08-31）：** AimiliVPN 严格状态 schema 部署后发现生产历史终态仍保留两个旧 repair resolution 且没有后来新增的 repair hash。第 4 轮 TDD 只在 `active=None`、全部历史均为终态、记录为 `committed`、resolution 精确属于两个旧闭集且无 repair hash 时执行 canonical migration；其他活动态、未知 resolution、坏 hash 和 `rolled_back + 旧 resolution` 继续 fail-closed。修复提交 `2cada1f` 通过 119/119 全量测试和 scoped 复审后，从私有 GitHub 精确 fetch，仅安装三份 AimiliVPN 源文件并保留生产仓库 HEAD、既有未提交修复、`.codex-backups` 与 `/var/backups/aimili-final-stack-*`。迁移后 7 条历史均为终态、mutation lease acquire/renew/release 通过；AimiliVPN 重启造成的主与三个普通槽位身份漂移分别经 Gateway 正式 `check` 原路径三路径复验后同步。最终无切换外部验收与新 300 秒资源观察均通过，协议组合和四出口不变量未改变。
 
 ## 全局硬约束
 
@@ -493,7 +495,7 @@ git commit -m "docs: add protocol switch deployment runbook"
 
 受控重启 x-ui/Xray，确认 SQLite 重建相同混合模式；再重启 Gateway 与 AimiliVPN，确认未提交事务自动回滚、已提交模式不漂移。通过 Gateway UI 实际执行候选替换到“主连接”、独立协议切换与“复制节点订阅”，用 v2rayN `7.24.4` 刷新并逐条验证。只有原用户路径通过后才能声明完成。
 
-执行进度：x-ui/Xray、Gateway 的已提交协议模式重启恢复与重启后的四出口全量外部验证通过。AimiliVPN 未提交事务重启演练在旧/新公共节点均离线时正确 fail-closed；历史 repair 仅恢复 `7928`，不能证明 Gateway 主 mixed/公网路径。本轮两阶段 repair 修复尚未生产复测，且仍缺旧主在线条件下的自动 rollback 成功证据。Gateway UI 与 v2rayN GUI 的最终点击待人工完成；不得以 API/核心验证替代。
+执行进度：x-ui/Xray、Gateway 的已提交协议模式重启恢复与重启后的四出口全量外部验证通过。AimiliVPN 第 4 轮历史终态 canonical migration 已生产部署，AimiliVPN/Gateway 重启后主与三个普通槽位经正式 `check` 原路径同步，最终四出口外部验收和 300 秒观察再次通过。AimiliVPN 未提交事务重启演练在旧/新公共节点均离线时正确 fail-closed；历史 repair 仅恢复 `7928`，不能证明 Gateway 主 mixed/公网路径。本轮两阶段 repair 修复尚未生产事务写入演练，且仍缺旧主在线条件下的自动 rollback 成功证据。Gateway UI 与 v2rayN GUI 的最终点击待人工完成；不得以 API/核心验证替代。
 
 - [x] **Stage 8：更新脱敏验证记录**
 
