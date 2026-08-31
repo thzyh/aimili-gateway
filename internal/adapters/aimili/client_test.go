@@ -62,6 +62,59 @@ func TestClientMainStatusReadsSafeMainEgress(t *testing.T) {
 	}
 }
 
+func TestClientMutationLeaseUsesClosedAcquireRenewReleaseContract(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		requests++
+		response.Header().Set("Content-Type", "application/json")
+		switch requests {
+		case 1:
+			if request.Method != http.MethodPost || request.URL.Path != "/control/v1/mutation-leases" {
+				t.Fatalf("acquire request = %s %s", request.Method, request.URL.Path)
+			}
+			var body map[string]string
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil || len(body) != 1 || body["idempotencyKey"] != "protocol-operation-safe-1" {
+				t.Fatalf("acquire body = %#v, err = %v", body, err)
+			}
+			response.WriteHeader(http.StatusCreated)
+			fmt.Fprint(response, `{"data":{"state":"active","lease_id":"opaque+lease=safe","expires_at":1700000060}}`)
+		case 2:
+			if request.Method != http.MethodPost || request.URL.Path != "/control/v1/mutation-leases/opaque+lease=safe/renew" {
+				t.Fatalf("renew request = %s %s", request.Method, request.URL.Path)
+			}
+			var body map[string]any
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil || len(body) != 0 {
+				t.Fatalf("renew body = %#v, err = %v", body, err)
+			}
+			fmt.Fprint(response, `{"data":{"state":"active","lease_id":"opaque+lease=safe","expires_at":1700000120}}`)
+		case 3:
+			if request.Method != http.MethodDelete || request.URL.Path != "/control/v1/mutation-leases/opaque+lease=safe" || request.Body != nil && request.ContentLength != 0 {
+				t.Fatalf("release request = %s %s length=%d", request.Method, request.URL.Path, request.ContentLength)
+			}
+			fmt.Fprint(response, `{"data":{"state":"released"}}`)
+		default:
+			t.Fatalf("unexpected request %d", requests)
+		}
+	}))
+	t.Cleanup(server.Close)
+	client, err := NewClient(server.URL+"/", []byte("test-token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	lease, err := client.AcquireMutationLease(context.Background(), "protocol-operation-safe-1")
+	if err != nil || lease.LeaseID != "opaque+lease=safe" || lease.ExpiresAt != 1700000060 {
+		t.Fatalf("acquire = %#v, err = %v", lease, err)
+	}
+	lease, err = client.RenewMutationLease(context.Background(), lease.LeaseID)
+	if err != nil || lease.ExpiresAt != 1700000120 {
+		t.Fatalf("renew = %#v, err = %v", lease, err)
+	}
+	if err := client.ReleaseMutationLease(context.Background(), lease.LeaseID); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestClientCreateSlotUsesClosedRequestAndResponseTypes(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodPost || request.URL.Path != "/control/v1/slots" {

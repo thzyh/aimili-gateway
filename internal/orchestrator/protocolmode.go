@@ -6,10 +6,15 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
 	"net"
 	"strings"
+	"sync"
+	"time"
 
+	"github.com/thzyh/aimili-gateway/internal/adapters/aimili"
 	"github.com/thzyh/aimili-gateway/internal/adapters/xui"
 	"github.com/thzyh/aimili-gateway/internal/domain"
 	"github.com/thzyh/aimili-gateway/internal/protocoltxn"
@@ -18,6 +23,31 @@ import (
 
 func (o *Orchestrator) SwitchProtocolMode(ctx context.Context, egressID string, target domain.ProtocolMode) (domain.EgressProtocolMode, error) {
 	return o.SwitchProtocolModeExpected(ctx, egressID, target, "")
+}
+
+func (o *Orchestrator) CanResumeInterruptedProtocolMode(ctx context.Context, egressID string, original, target domain.ProtocolMode) bool {
+	if !original.Valid() || !target.Valid() || original == target {
+		return false
+	}
+	persistence, ok := o.store.(protocolModeStore)
+	if !ok {
+		return false
+	}
+	state, err := persistence.GetEgressProtocolMode(ctx, egressID)
+	if err != nil || state.State != domain.ProtocolReady || state.ActiveMode != original ||
+		state.LastOperationID == "" || state.LastRequestHash == "" {
+		return false
+	}
+	resource, err := o.protocolTarget(ctx, egressID)
+	if err != nil {
+		return false
+	}
+	request := protocoltxn.Request{
+		OperationID: state.LastOperationID, EgressID: egressID,
+		InboundID: resource.inboundID, InboundTag: resource.inboundTag, Port: resource.port,
+		OldMode: string(original), NewMode: string(target),
+	}
+	return protocolRequestFingerprint(request) == state.LastRequestHash
 }
 
 func (o *Orchestrator) SwitchProtocolModeExpected(ctx context.Context, egressID string, target, expected domain.ProtocolMode) (domain.EgressProtocolMode, error) {
@@ -54,6 +84,20 @@ func (o *Orchestrator) SwitchProtocolModeExpected(ctx context.Context, egressID 
 	if err != nil {
 		return domain.EgressProtocolMode{}, &Error{Code: "operation_failed"}
 	}
+	operationCtx := ctx
+	var mutationLease *mainMutationLeaseGuard
+	if targetResource.main {
+		mutationLease, err = o.acquireMainMutationLease(ctx, operationID)
+		if err != nil {
+			return domain.EgressProtocolMode{}, err
+		}
+		operationCtx = mutationLease.operationCtx
+		defer func() {
+			mutationLease.stopAndWait()
+			_ = o.aimili.ReleaseMutationLease(context.WithoutCancel(ctx), mutationLease.leaseID)
+			mutationLease.cancelOperation()
+		}()
+	}
 	request := protocoltxn.Request{
 		OperationID: operationID, EgressID: egressID,
 		InboundID: targetResource.inboundID, InboundTag: targetResource.inboundTag, Port: targetResource.port,
@@ -69,11 +113,59 @@ func (o *Orchestrator) SwitchProtocolModeExpected(ctx context.Context, egressID 
 	}
 
 	applied := false
-	result, applyErr := o.protocolTransaction.Apply(ctx, request)
+	validationCtx := operationCtx
+	stopHelperRenew := func() {}
+	waitHelperRenew := func() error { return nil }
+	result, applyErr := o.protocolTransaction.Apply(operationCtx, request)
 	if applyErr == nil && result.Status == "applied" && result.OperationID == operationID {
 		applied = true
 	} else if applyErr == nil {
 		applyErr = &Error{Code: codeOrResult(result.ErrorCode, "protocol_apply_failed")}
+	}
+	if applyErr == nil {
+		renewed, renewErr := o.protocolTransaction.Renew(operationCtx, operationID)
+		if renewErr != nil || renewed.Status != "renewed" || renewed.OperationID != operationID {
+			applyErr = &Error{Code: "protocol_renew_failed"}
+		} else {
+			var cancelValidation context.CancelFunc
+			validationCtx, cancelValidation = context.WithCancel(operationCtx)
+			renewCtx, cancelRenew := context.WithCancel(operationCtx)
+			renewDone := make(chan struct{})
+			renewFailed := make(chan error, 1)
+			go func() {
+				defer close(renewDone)
+				ticker := time.NewTicker(60 * time.Second)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-renewCtx.Done():
+						return
+					case <-ticker.C:
+						result, err := o.protocolTransaction.Renew(renewCtx, operationID)
+						if err != nil || result.Status != "renewed" || result.OperationID != operationID {
+							select {
+							case renewFailed <- &Error{Code: "protocol_renew_failed"}:
+							default:
+							}
+							cancelValidation()
+							return
+						}
+					}
+				}
+			}()
+			stopHelperRenew = cancelRenew
+			waitHelperRenew = func() error {
+				cancelRenew()
+				<-renewDone
+				cancelValidation()
+				select {
+				case err := <-renewFailed:
+					return err
+				default:
+					return nil
+				}
+			}
+		}
 	}
 	if applyErr == nil {
 		if transitionErr := state.Transition(domain.ProtocolSubscriptionPending); transitionErr != nil || o.saveProtocolState(ctx, persistence, &state) != nil {
@@ -82,17 +174,34 @@ func (o *Orchestrator) SwitchProtocolModeExpected(ctx context.Context, egressID 
 	}
 	if applyErr == nil {
 		var subscription SubscriptionResult
-		subscription, applyErr = o.Subscription(ctx)
+		subscription, applyErr = o.Subscription(validationCtx)
 		if applyErr == nil {
-			applyErr = o.verifyProtocolTarget(ctx, targetResource, target, subscription)
+			applyErr = o.verifyProtocolTarget(validationCtx, targetResource, target, subscription)
+		}
+	}
+	stopHelperRenew()
+	if renewErr := waitHelperRenew(); renewErr != nil {
+		applyErr = renewErr
+	}
+	if mutationLease != nil {
+		if leaseErr := mutationLease.failure(); leaseErr != nil {
+			applyErr = leaseErr
+		}
+		if applyErr == nil {
+			_, applyErr = mutationLease.renewNow(operationCtx)
 		}
 	}
 	if applyErr == nil {
-		finalized, finalizeErr := o.protocolTransaction.Finalize(ctx, operationID)
+		finalized, finalizeErr := o.protocolTransaction.Finalize(operationCtx, operationID)
 		if finalizeErr != nil {
 			applyErr = finalizeErr
 		} else if finalized.Status != "finalized" || finalized.OperationID != operationID {
 			applyErr = &Error{Code: codeOrResult(finalized.ErrorCode, "protocol_finalize_failed")}
+		}
+		if mutationLease != nil {
+			if leaseErr := mutationLease.failure(); leaseErr != nil {
+				applyErr = leaseErr
+			}
 		}
 	}
 	if applyErr == nil {
@@ -105,9 +214,134 @@ func (o *Orchestrator) SwitchProtocolModeExpected(ctx context.Context, egressID 
 		if err := o.saveProtocolState(ctx, persistence, &state); err != nil {
 			return o.markFinalizedProtocolRepair(ctx, persistence, state)
 		}
+		if mutationLease != nil {
+			mutationLease.stopAndWait()
+			if leaseErr := mutationLease.failure(); leaseErr != nil {
+				return o.markMutationLeaseRepair(ctx, persistence, state)
+			}
+		}
 		return state, nil
 	}
-	return o.rollbackProtocolMode(ctx, persistence, state, targetResource, applyErr, applied)
+	if errorCode(applyErr) == "mutation_lease_lost" {
+		return o.markProtocolRepair(ctx, persistence, state)
+	}
+	return o.rollbackProtocolMode(operationCtx, ctx, persistence, state, targetResource, applyErr, applied, mutationLease)
+}
+
+type mainMutationLeaseGuard struct {
+	leaseID            string
+	operationCtx       context.Context
+	cancelOperation    context.CancelFunc
+	stopRenew          context.CancelFunc
+	done               chan struct{}
+	renewMutationLease func(context.Context, string) (aimili.MutationLease, error)
+	renewMu            sync.Mutex
+	failureMu          sync.Mutex
+	failureErr         error
+}
+
+func (o *Orchestrator) acquireMainMutationLease(ctx context.Context, idempotencyKey string) (*mainMutationLeaseGuard, error) {
+	lease, err := o.aimili.AcquireMutationLease(ctx, idempotencyKey)
+	if err != nil {
+		var adapterError *aimili.AdapterError
+		if errors.As(err, &adapterError) && (adapterError.Code == "lease_busy" || adapterError.Code == "operation_busy") {
+			return nil, &Error{Code: adapterError.Code}
+		}
+		return nil, &Error{Code: "mutation_lease_acquire_failed"}
+	}
+	if lease.State != "active" || lease.LeaseID == "" || lease.ExpiresAt <= 0 {
+		return nil, &Error{Code: "mutation_lease_acquire_failed"}
+	}
+	if mutationLeaseRenewDelay(lease.ExpiresAt) <= 0 {
+		leaseID := lease.LeaseID
+		lease, err = o.aimili.RenewMutationLease(ctx, leaseID)
+		if err != nil || lease.State != "active" || lease.LeaseID != leaseID {
+			_ = o.aimili.ReleaseMutationLease(context.WithoutCancel(ctx), leaseID)
+			return nil, &Error{Code: "mutation_lease_lost"}
+		}
+	}
+	operationCtx, cancelOperation := context.WithCancel(ctx)
+	renewCtx, stopRenew := context.WithCancel(ctx)
+	guard := &mainMutationLeaseGuard{
+		leaseID: lease.LeaseID, operationCtx: operationCtx, cancelOperation: cancelOperation, stopRenew: stopRenew,
+		done: make(chan struct{}), renewMutationLease: o.aimili.RenewMutationLease,
+	}
+	waitForRenewal := o.mutationLeaseRenewWait
+	if waitForRenewal == nil {
+		waitForRenewal = waitForMutationLeaseRenewal
+	}
+	go func(expiresAt float64) {
+		defer close(guard.done)
+		for {
+			if !waitForRenewal(renewCtx, mutationLeaseRenewDelay(expiresAt)) {
+				return
+			}
+			var renewErr error
+			expiresAt, renewErr = guard.renewNow(renewCtx)
+			if renewErr != nil {
+				return
+			}
+		}
+	}(lease.ExpiresAt)
+	return guard, nil
+}
+
+func (g *mainMutationLeaseGuard) renewNow(ctx context.Context) (float64, error) {
+	g.renewMu.Lock()
+	defer g.renewMu.Unlock()
+	if err := g.failure(); err != nil {
+		return 0, err
+	}
+	if ctx.Err() != nil {
+		return 0, ctx.Err()
+	}
+	renewed, err := g.renewMutationLease(ctx, g.leaseID)
+	if err != nil || renewed.State != "active" || renewed.LeaseID != g.leaseID || renewed.ExpiresAt <= 0 {
+		return 0, g.fail()
+	}
+	return renewed.ExpiresAt, nil
+}
+
+func (g *mainMutationLeaseGuard) fail() error {
+	g.failureMu.Lock()
+	defer g.failureMu.Unlock()
+	if g.failureErr == nil {
+		g.failureErr = &Error{Code: "mutation_lease_lost"}
+		g.cancelOperation()
+	}
+	return g.failureErr
+}
+
+func waitForMutationLeaseRenewal(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func (g *mainMutationLeaseGuard) stopAndWait() {
+	g.stopRenew()
+	<-g.done
+}
+
+func (g *mainMutationLeaseGuard) failure() error {
+	g.failureMu.Lock()
+	defer g.failureMu.Unlock()
+	return g.failureErr
+}
+
+func mutationLeaseRenewDelay(expiresAt float64) time.Duration {
+	seconds, fraction := math.Modf(expiresAt)
+	expires := time.Unix(int64(seconds), int64(fraction*float64(time.Second)))
+	delay := time.Until(expires.Add(-20 * time.Second))
+	if delay < 0 {
+		return 0
+	}
+	return delay
 }
 
 // RecoverProtocolModes converges protocol transactions interrupted by a
@@ -130,10 +364,16 @@ func (o *Orchestrator) RecoverProtocolModes(ctx context.Context) error {
 				_, repairErr := o.markProtocolRepair(ctx, persistence, state)
 				return repairErr
 			}
+			if state.LastErrorCode != "" {
+				unlock := o.locks.lock(state.EgressID)
+				state.LastErrorCode = ""
+				err := o.saveProtocolState(ctx, persistence, &state)
+				unlock()
+				if err != nil {
+					return &Error{Code: "storage_failed"}
+				}
+			}
 			continue
-		}
-		if state.State == domain.ProtocolRepairRequired {
-			return &Error{Code: "repair_required"}
 		}
 		unlock := o.locks.lock(state.EgressID)
 		err := o.recoverProtocolMode(ctx, persistence, state)
@@ -167,24 +407,92 @@ func (o *Orchestrator) recoverProtocolMode(ctx context.Context, persistence prot
 		_, repairErr := o.markProtocolRepair(ctx, persistence, state)
 		return repairErr
 	}
-	result, rollbackErr := o.protocolTransaction.Rollback(ctx, state.LastOperationID)
+	operationCtx := ctx
+	var mutationLease *mainMutationLeaseGuard
+	if target.main {
+		mutationLease, err = o.acquireMainMutationLease(ctx, state.LastOperationID)
+		if err != nil {
+			_, repairErr := o.markProtocolRepair(ctx, persistence, state)
+			return repairErr
+		}
+		operationCtx = mutationLease.operationCtx
+		defer func() {
+			mutationLease.stopAndWait()
+			_ = o.aimili.ReleaseMutationLease(context.WithoutCancel(ctx), mutationLease.leaseID)
+			mutationLease.cancelOperation()
+		}()
+	}
+	result, rollbackErr := o.protocolTransaction.Rollback(operationCtx, state.LastOperationID)
 	rollbackSafe := rollbackErr == nil && result.OperationID == state.LastOperationID && (result.Status == "rolled_back" ||
 		(result.Status == "failed" && result.ErrorCode == "operation_not_applied"))
+	if mutationLease != nil && mutationLease.failure() != nil {
+		_, repairErr := o.markMutationLeaseRepair(ctx, persistence, state)
+		return repairErr
+	}
 	if !rollbackSafe {
 		_, repairErr := o.markProtocolRepair(ctx, persistence, state)
 		return repairErr
 	}
-	subscription, err := o.Subscription(ctx)
+	if target.main {
+		status, statusErr := o.aimili.MainStatus(operationCtx)
+		if statusErr != nil || !mainStatusUsable(status) {
+			_, repairErr := o.markProtocolRepair(ctx, persistence, state)
+			return repairErr
+		}
+		target.group.CandidateID = status.CandidateID
+		target.group.CountryCode = normalizedMainCountry(status.Country)
+		target.group.CountryName = status.CountryName
+		target.group.ProxyType = normalizedMainProxyType(status.ProxyType)
+		target.group.ExitIP = status.ExitIP
+	}
+	subscription, err := o.Subscription(operationCtx)
 	if err == nil {
-		err = o.verifyProtocolTarget(ctx, target, state.ActiveMode, subscription)
+		err = o.verifyProtocolTarget(operationCtx, target, state.ActiveMode, subscription)
 	}
 	if err != nil {
 		_, repairErr := o.markProtocolRepair(ctx, persistence, state)
 		return repairErr
 	}
+	if target.main {
+		if _, renewErr := mutationLease.renewNow(operationCtx); renewErr != nil {
+			_, repairErr := o.markProtocolRepair(ctx, persistence, state)
+			return repairErr
+		}
+		status, statusErr := o.aimili.MainStatus(operationCtx)
+		mainStore, storeOK := o.store.(mainEgressStore)
+		if statusErr != nil || !storeOK || !mainStatusMatchesGroup(status, target.group) {
+			_, repairErr := o.markProtocolRepair(ctx, persistence, state)
+			return repairErr
+		}
+		main, mainErr := mainStore.GetMainEgress(ctx)
+		if mainErr != nil {
+			_, repairErr := o.markProtocolRepair(ctx, persistence, state)
+			return repairErr
+		}
+		main.CandidateID = status.CandidateID
+		main.CountryCode = normalizedMainCountry(status.Country)
+		main.CountryName = status.CountryName
+		main.ProxyType = normalizedMainProxyType(status.ProxyType)
+		main.ExitIP = status.ExitIP
+		main.LastErrorCode = ""
+		main.LastCheckedAt = o.config.Now().UTC()
+		main.UpdatedAt = main.LastCheckedAt
+		if o.store.SaveMainEgress(ctx, main) != nil {
+			_, repairErr := o.markProtocolRepair(ctx, persistence, state)
+			return repairErr
+		}
+	}
 	state.DesiredMode = state.ActiveMode
+	state.LastErrorCode = ""
 	if err := state.Transition(domain.ProtocolReady); err != nil || o.saveProtocolState(ctx, persistence, &state) != nil {
 		return &Error{Code: "repair_required"}
+	}
+	if mutationLease != nil {
+		mutationLease.stopAndWait()
+		if mutationLease.failure() != nil {
+			_, repairErr := o.markMutationLeaseRepair(ctx, persistence, state)
+			return repairErr
+		}
 	}
 	return nil
 }
@@ -193,6 +501,14 @@ func (o *Orchestrator) markFinalizedProtocolRepair(ctx context.Context, persiste
 	state.State = domain.ProtocolRepairRequired
 	state.DesiredMode = state.ActiveMode
 	state.LastErrorCode = "final_state_persist_failed"
+	_ = o.saveProtocolState(ctx, persistence, &state)
+	return domain.EgressProtocolMode{}, &Error{Code: "repair_required"}
+}
+
+func (o *Orchestrator) markMutationLeaseRepair(ctx context.Context, persistence protocolModeStore, state domain.EgressProtocolMode) (domain.EgressProtocolMode, error) {
+	state.State = domain.ProtocolRepairRequired
+	state.DesiredMode = state.ActiveMode
+	state.LastErrorCode = "mutation_lease_lost"
 	_ = o.saveProtocolState(ctx, persistence, &state)
 	return domain.EgressProtocolMode{}, &Error{Code: "repair_required"}
 }
@@ -235,7 +551,7 @@ func (o *Orchestrator) verifyProtocolTarget(ctx context.Context, target protocol
 	}
 	if target.main {
 		status, err := o.aimili.MainStatus(ctx)
-		if err != nil || !status.Active || !status.EgressOK || status.Port != 7928 || net.ParseIP(status.ExitIP) == nil || status.ExitIP != target.group.ExitIP {
+		if err != nil || !mainStatusMatchesGroup(status, target.group) {
 			return &Error{Code: "egress_unavailable"}
 		}
 		target.group.ExitIP = status.ExitIP
@@ -268,7 +584,19 @@ func (o *Orchestrator) verifyProtocolTarget(ctx context.Context, target protocol
 	return err
 }
 
-func (o *Orchestrator) rollbackProtocolMode(ctx context.Context, persistence protocolModeStore, state domain.EgressProtocolMode, target protocolTarget, cause error, applied bool) (domain.EgressProtocolMode, error) {
+func mainStatusUsable(status aimili.MainStatus) bool {
+	proxyType := domain.ProxyType(strings.ToLower(strings.TrimSpace(status.ProxyType)))
+	return status.Active && status.EgressOK && status.Port == 7928 && status.CandidateID != "" &&
+		net.ParseIP(status.ExitIP) != nil && normalizedMainCountry(status.Country) != "ZZ" &&
+		proxyType.Valid()
+}
+
+func mainStatusMatchesGroup(status aimili.MainStatus, group domain.ProxyGroup) bool {
+	return mainStatusUsable(status) && status.CandidateID == group.CandidateID && status.ExitIP == group.ExitIP &&
+		normalizedMainCountry(status.Country) == group.CountryCode && normalizedMainProxyType(status.ProxyType) == group.ProxyType
+}
+
+func (o *Orchestrator) rollbackProtocolMode(runtimeCtx, persistenceCtx context.Context, persistence protocolModeStore, state domain.EgressProtocolMode, target protocolTarget, cause error, applied bool, mutationLease *mainMutationLeaseGuard) (domain.EgressProtocolMode, error) {
 	causeCode := errorCode(cause)
 	if causeCode == "operation_failed" {
 		causeCode = "protocol_switch_failed"
@@ -276,26 +604,49 @@ func (o *Orchestrator) rollbackProtocolMode(ctx context.Context, persistence pro
 	if state.State == domain.ProtocolSwitching || state.State == domain.ProtocolSubscriptionPending {
 		_ = state.Transition(domain.ProtocolRollingBack)
 		state.LastErrorCode = causeCode
-		if err := o.saveProtocolState(ctx, persistence, &state); err != nil {
+		if err := o.saveProtocolState(persistenceCtx, persistence, &state); err != nil {
 			return domain.EgressProtocolMode{}, &Error{Code: "repair_required"}
 		}
 	}
 	if applied {
-		rolled, err := o.protocolTransaction.Rollback(ctx, state.LastOperationID)
+		rolled, err := o.protocolTransaction.Rollback(runtimeCtx, state.LastOperationID)
 		if err != nil || rolled.Status != "rolled_back" || rolled.OperationID != state.LastOperationID {
-			return o.markProtocolRepair(ctx, persistence, state)
+			if mutationLease != nil && mutationLease.failure() != nil {
+				return o.markMutationLeaseRepair(persistenceCtx, persistence, state)
+			}
+			return o.markProtocolRepair(persistenceCtx, persistence, state)
 		}
 	}
-	subscription, err := o.Subscription(ctx)
-	if err != nil {
-		return o.markProtocolRepair(ctx, persistence, state)
+	if mutationLease != nil && mutationLease.failure() != nil {
+		return o.markMutationLeaseRepair(persistenceCtx, persistence, state)
 	}
-	if err := o.verifyProtocolTarget(ctx, target, state.ActiveMode, subscription); err != nil {
-		return o.markProtocolRepair(ctx, persistence, state)
+	subscription, err := o.Subscription(runtimeCtx)
+	if err != nil {
+		if mutationLease != nil && mutationLease.failure() != nil {
+			return o.markMutationLeaseRepair(persistenceCtx, persistence, state)
+		}
+		return o.markProtocolRepair(persistenceCtx, persistence, state)
+	}
+	if err := o.verifyProtocolTarget(runtimeCtx, target, state.ActiveMode, subscription); err != nil {
+		if mutationLease != nil && mutationLease.failure() != nil {
+			return o.markMutationLeaseRepair(persistenceCtx, persistence, state)
+		}
+		return o.markProtocolRepair(persistenceCtx, persistence, state)
+	}
+	if mutationLease != nil {
+		if _, err := mutationLease.renewNow(runtimeCtx); err != nil {
+			return o.markMutationLeaseRepair(persistenceCtx, persistence, state)
+		}
 	}
 	state.DesiredMode = state.ActiveMode
-	if err := state.Transition(domain.ProtocolReady); err != nil || o.saveProtocolState(ctx, persistence, &state) != nil {
+	if err := state.Transition(domain.ProtocolReady); err != nil || o.saveProtocolState(persistenceCtx, persistence, &state) != nil {
 		return domain.EgressProtocolMode{}, &Error{Code: "repair_required"}
+	}
+	if mutationLease != nil {
+		mutationLease.stopAndWait()
+		if mutationLease.failure() != nil {
+			return o.markMutationLeaseRepair(persistenceCtx, persistence, state)
+		}
 	}
 	return domain.EgressProtocolMode{}, &Error{Code: causeCode}
 }

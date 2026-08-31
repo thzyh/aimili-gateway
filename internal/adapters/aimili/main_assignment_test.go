@@ -101,3 +101,48 @@ func TestClientRejectsInvalidMainAssignmentInputAndResponse(t *testing.T) {
 		t.Fatal("unknown assignment response field was accepted")
 	}
 }
+
+func TestClientMainRepairUsesClosedPendingGatewayValidationContract(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		requests++
+		response.Header().Set("Content-Type", "application/json")
+		switch requests {
+		case 1:
+			if request.Method != http.MethodPost || request.URL.Path != "/control/v1/main/assign/operation-safe-1/repair-commit" {
+				t.Fatalf("repair commit request = %s %s", request.Method, request.URL.Path)
+			}
+			fmt.Fprint(response, `{"data":{"operation_id":"operation-safe-1","state":"pending_gateway_validation","old_candidate_id":"candidate-old","new_candidate_id":"candidate-new","country":"JP","proxy_type":"datacenter","port":7928,"dns_verified":true,"exit_verified":true,"available":true,"error_code":"","resolution":"repair_commit","expires_at":1700000180}}`)
+		case 2:
+			if request.Method != http.MethodPost || request.URL.Path != "/control/v1/main/assign/operation-safe-1/repair-replace" {
+				t.Fatalf("repair replace request = %s %s", request.Method, request.URL.Path)
+			}
+			var body map[string]string
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if len(body) != 3 || body["candidateId"] != "candidate-third" || body["country"] != "KR" || body["proxyType"] != "residential" {
+				t.Fatalf("repair replace body = %#v", body)
+			}
+			fmt.Fprint(response, `{"data":{"operation_id":"operation-safe-1","state":"pending_gateway_validation","old_candidate_id":"candidate-old","new_candidate_id":"candidate-third","country":"KR","proxy_type":"residential","port":7928,"dns_verified":true,"exit_verified":true,"available":true,"error_code":"","resolution":"repair_replace","expires_at":1700000180}}`)
+		default:
+			t.Fatalf("unexpected request %d", requests)
+		}
+	}))
+	t.Cleanup(server.Close)
+	client, err := NewClient(server.URL+"/", []byte("test-token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	committed, err := client.RepairCommitMainAssignment(context.Background(), "operation-safe-1")
+	if err != nil || committed.State != "pending_gateway_validation" {
+		t.Fatalf("repair commit = %#v, err = %v", committed, err)
+	}
+	replaced, err := client.RepairReplaceMainAssignment(context.Background(), "operation-safe-1", MainRepairRequest{
+		CandidateID: "candidate-third", Country: "kr", ProxyType: "residential",
+	})
+	if err != nil || replaced.State != "pending_gateway_validation" || replaced.NewCandidateID != "candidate-third" {
+		t.Fatalf("repair replace = %#v, err = %v", replaced, err)
+	}
+}

@@ -440,7 +440,7 @@ func (c *Client) publicProfiles(ctx context.Context, allowed []int64, client sub
 }
 
 func publicProfile(detail inboundDetail, client subscriptionClient) (PublicProfile, error) {
-	profile := PublicProfile{InboundID: detail.ID, ClientID: client.uuid}
+	profile := PublicProfile{InboundID: detail.ID}
 	settings, settingsOK := decodeObject(detail.Settings)
 	stream, streamOK := decodeObject(detail.StreamSettings)
 	if !settingsOK || !streamOK {
@@ -465,6 +465,7 @@ func publicProfile(detail inboundDetail, client subscriptionClient) (PublicProfi
 	if detail.Protocol != "vless" || stringValue(stream["security"]) != "reality" {
 		return PublicProfile{}, &AdapterError{Code: "managed_resource_drift"}
 	}
+	profile.ClientID = client.uuid
 	reality, ok := decodeObject(stream["realitySettings"])
 	clientSettings, clientSettingsOK := decodeObject(reality["settings"])
 	serverNames := stringValues(reality["serverNames"])

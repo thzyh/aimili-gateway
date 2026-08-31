@@ -195,38 +195,33 @@ func (s *server) handleReplaceProxyGroup(response http.ResponseWriter, request *
 				writeAPIError(response, http.StatusConflict, "idempotency_conflict")
 				return
 			}
-			main, mainErr := s.store.GetMainEgress(request.Context())
-			if mainErr != nil || !main.Enabled {
-				writeAPIError(response, http.StatusConflict, "operation_busy")
-				return
-			}
 			if operation.Phase == "started" {
-				identity, identityErr := domain.NewProxyGroupIdentity(main.CountryCode, main.ProxyType, main.CandidateID)
-				if identityErr != nil || (identity.ID != request.PathValue("id") && main.CandidateID != request.PathValue("id")) {
-					writeAPIError(response, http.StatusConflict, "operation_busy")
-					return
-				}
-				if err := s.store.CompleteEgressOperation(request.Context(), operation.OperationID, s.now().UTC()); err != nil {
-					writeAPIError(response, http.StatusInternalServerError, "storage_failed")
-					return
-				}
+				persistentOperationID = operation.OperationID
 			} else if operation.Phase != "completed" {
 				writeAPIError(response, http.StatusConflict, "operation_busy")
 				return
+			} else {
+				main, mainErr := s.store.GetMainEgress(request.Context())
+				if mainErr != nil || !main.Enabled {
+					writeAPIError(response, http.StatusConflict, "operation_busy")
+					return
+				}
+				result := safeMainGroup(main)
+				s.storeIdempotent(key, http.StatusOK, result)
+				writeJSON(response, http.StatusOK, result)
+				return
 			}
-			result := safeMainGroup(main)
-			s.storeIdempotent(key, http.StatusOK, result)
-			writeJSON(response, http.StatusOK, result)
-			return
 		}
-		if !errors.Is(operationErr, sql.ErrNoRows) {
-			writeAPIError(response, http.StatusInternalServerError, "storage_failed")
-			return
-		}
-		persistentOperationID = "http-main-" + keyHash[:27]
-		if err := s.store.CreateEgressOperation(request.Context(), store.EgressOperation{OperationID: persistentOperationID, EgressID: "agw-main", Kind: "main_assign", Phase: "started", RequestHash: keyHash, TransactionID: bodyHash, StartedAt: s.now().UTC()}); err != nil {
-			writeAPIError(response, http.StatusInternalServerError, "storage_failed")
-			return
+		if operationErr != nil {
+			if !errors.Is(operationErr, sql.ErrNoRows) {
+				writeAPIError(response, http.StatusInternalServerError, "storage_failed")
+				return
+			}
+			persistentOperationID = "http-main-" + keyHash[:27]
+			if err := s.store.CreateEgressOperation(request.Context(), store.EgressOperation{OperationID: persistentOperationID, EgressID: "agw-main", Kind: "main_assign", Phase: "started", RequestHash: keyHash, TransactionID: bodyHash, StartedAt: s.now().UTC()}); err != nil {
+				writeAPIError(response, http.StatusInternalServerError, "storage_failed")
+				return
+			}
 		}
 	}
 	group, err := s.proxyManager.ReplaceCandidate(request.Context(), request.PathValue("id"), strings.TrimSpace(input.TargetGroupID))
@@ -431,6 +426,10 @@ type protocolModeResponse struct {
 	UpdatedAt              time.Time             `json:"updatedAt"`
 }
 
+type interruptedProtocolResumeVerifier interface {
+	CanResumeInterruptedProtocolMode(context.Context, string, domain.ProtocolMode, domain.ProtocolMode) bool
+}
+
 func (s *server) handleProtocolMode(response http.ResponseWriter, request *http.Request) {
 	session, ok := s.authorizeMutation(response, request)
 	if !ok {
@@ -460,6 +459,7 @@ func (s *server) handleProtocolMode(response http.ResponseWriter, request *http.
 	rawKey := strings.TrimSpace(request.Header.Get("Idempotency-Key"))
 	keyHash, bodyHash := persistentIdempotencyHashes(session.stored.ID, request.Method, request.URL.Path, rawKey, idempotencyBody)
 	operation, operationErr := s.store.GetEgressOperationByRequestHash(request.Context(), egressID, "protocol_switch", keyHash)
+	operationID := ""
 	if operationErr == nil {
 		if operation.TransactionID != bodyHash {
 			writeAPIError(response, http.StatusConflict, "idempotency_conflict")
@@ -476,28 +476,54 @@ func (s *server) handleProtocolMode(response http.ResponseWriter, request *http.
 			return
 		}
 		current, currentErr := s.store.GetEgressProtocolMode(request.Context(), egressID)
-		if operation.Phase != "started" || currentErr != nil || current.State != domain.ProtocolReady || current.ActiveMode != input.ProtocolMode {
+		if operation.Phase != "started" || currentErr != nil || current.State != domain.ProtocolReady {
 			writeAPIError(response, http.StatusConflict, "operation_busy")
 			return
 		}
-		completedAt := s.now().UTC()
-		if err := s.store.CompleteEgressOperation(request.Context(), operation.OperationID, completedAt); err != nil {
+		if current.ActiveMode == input.ProtocolMode {
+			completedAt := s.now().UTC()
+			if err := s.store.CompleteEgressOperation(request.Context(), operation.OperationID, completedAt); err != nil {
+				writeAPIError(response, http.StatusInternalServerError, "storage_failed")
+				return
+			}
+			result := safeProtocolMode(domain.EgressProtocolMode{EgressID: egressID, ActiveMode: input.ProtocolMode, DesiredMode: input.ProtocolMode, State: domain.ProtocolReady, UpdatedAt: completedAt})
+			s.storeIdempotent(key, http.StatusOK, result)
+			writeJSON(response, http.StatusOK, result)
+			return
+		}
+		if input.ExpectedProtocolMode != "" && input.ExpectedProtocolMode != current.ActiveMode {
+			writeAPIError(response, http.StatusConflict, "operation_busy")
+			return
+		}
+		intervening, interveningErr := s.store.HasOtherEgressOperationAtOrAfter(request.Context(), operation)
+		if interveningErr != nil {
 			writeAPIError(response, http.StatusInternalServerError, "storage_failed")
 			return
 		}
-		result := safeProtocolMode(domain.EgressProtocolMode{EgressID: egressID, ActiveMode: input.ProtocolMode, DesiredMode: input.ProtocolMode, State: domain.ProtocolReady, UpdatedAt: completedAt})
-		s.storeIdempotent(key, http.StatusOK, result)
-		writeJSON(response, http.StatusOK, result)
-		return
+		if intervening {
+			writeAPIError(response, http.StatusConflict, "operation_busy")
+			return
+		}
+		resumeVerifier, ok := s.proxyManager.(interruptedProtocolResumeVerifier)
+		if !ok || !resumeVerifier.CanResumeInterruptedProtocolMode(request.Context(), egressID, current.ActiveMode, input.ProtocolMode) {
+			writeAPIError(response, http.StatusConflict, "operation_busy")
+			return
+		}
+		input.ExpectedProtocolMode = current.ActiveMode
+		operationID = operation.OperationID
 	}
 	if !errors.Is(operationErr, sql.ErrNoRows) {
-		writeAPIError(response, http.StatusInternalServerError, "storage_failed")
-		return
+		if operationErr != nil {
+			writeAPIError(response, http.StatusInternalServerError, "storage_failed")
+			return
+		}
 	}
-	operationID := "http-" + keyHash[:32]
-	if err := s.store.CreateEgressOperation(request.Context(), store.EgressOperation{OperationID: operationID, EgressID: egressID, Kind: "protocol_switch", Phase: "started", RequestHash: keyHash, TransactionID: bodyHash, StartedAt: s.now().UTC()}); err != nil {
-		writeAPIError(response, http.StatusInternalServerError, "storage_failed")
-		return
+	if errors.Is(operationErr, sql.ErrNoRows) {
+		operationID = "http-" + keyHash[:32]
+		if err := s.store.CreateEgressOperation(request.Context(), store.EgressOperation{OperationID: operationID, EgressID: egressID, Kind: "protocol_switch", Phase: "started", RequestHash: keyHash, TransactionID: bodyHash, StartedAt: s.now().UTC()}); err != nil {
+			writeAPIError(response, http.StatusInternalServerError, "storage_failed")
+			return
+		}
 	}
 	state, err := s.proxyManager.SwitchProtocolModeExpected(request.Context(), egressID, input.ProtocolMode, input.ExpectedProtocolMode)
 	if err != nil {

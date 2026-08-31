@@ -1,9 +1,11 @@
 import importlib.util
+import inspect
 import json
 import pathlib
 import subprocess
 import unittest
 import urllib.parse
+from unittest import mock
 
 
 SCRIPT = pathlib.Path(__file__).with_name("verify-external-client-v1c.py")
@@ -36,6 +38,80 @@ class FakeProcess:
 
 
 class VerificationHelperTests(unittest.TestCase):
+    def _verify_public_probe(self, curl_results, mode="vless_tcp_reality_vision"):
+        attempts = []
+
+        def run_curl(*args, **kwargs):
+            attempts.append((args, kwargs))
+            return curl_results[len(attempts) - 1]
+
+        process = FakeProcess([0])
+        public_uri = (
+            "vless://client@example.test:20000?type=tcp&security=reality&"
+            "flow=xtls-rprx-vision&fp=chrome&sni=front.example&pbk=public&sid=abcd"
+        )
+        if mode == "hysteria2_quic_tls":
+            public_uri = (
+                "hysteria2://opaque@example.test:20001/?"
+                "sni=front.example&insecure=0#slot-two"
+            )
+        payload = {
+            "exitIp": "203.0.113.1",
+            "protocolMode": mode,
+            "publicUri": public_uri,
+            "socks5hUri": "socks5h://127.0.0.1:1080",
+        }
+        with (
+            mock.patch.object(MODULE, "tcp_reachable", return_value=True),
+            mock.patch.object(MODULE, "free_port", return_value=10808),
+            mock.patch.object(MODULE.subprocess, "run", side_effect=run_curl),
+            mock.patch.object(MODULE.subprocess, "Popen", return_value=process),
+            mock.patch.object(MODULE.socket, "create_connection", return_value=mock.MagicMock()),
+        ):
+            result = MODULE.verify_group(payload, "xray.exe", probe_public_socks=False)
+        return result, attempts
+
+    def test_public_probe_retries_one_transient_transport_failure(self):
+        result, attempts = self._verify_public_probe([
+            subprocess.CompletedProcess([], 28, "", "timeout"),
+            subprocess.CompletedProcess([], 0, "203.0.113.1", ""),
+        ])
+
+        self.assertTrue(result["external_public_protocol"])
+        self.assertEqual(0, result["public_curl_exit"])
+        self.assertEqual(2, len(attempts))
+
+    def test_hysteria2_public_probe_retries_one_transient_transport_failure(self):
+        result, attempts = self._verify_public_probe(
+            [
+                subprocess.CompletedProcess([], 35, "", "tls failure"),
+                subprocess.CompletedProcess([], 0, "203.0.113.1", ""),
+            ],
+            mode="hysteria2_quic_tls",
+        )
+
+        self.assertTrue(result["external_public_protocol"])
+        self.assertEqual(0, result["public_curl_exit"])
+        self.assertEqual(2, len(attempts))
+
+    def test_public_probe_does_not_retry_a_wrong_exit_ip(self):
+        result, attempts = self._verify_public_probe([
+            subprocess.CompletedProcess([], 0, "203.0.113.99", ""),
+            subprocess.CompletedProcess([], 0, "203.0.113.1", ""),
+        ])
+
+        self.assertFalse(result["external_public_protocol"])
+        self.assertEqual(1, len(attempts))
+
+    def test_public_probe_does_not_retry_an_unlisted_curl_failure(self):
+        result, attempts = self._verify_public_probe([
+            subprocess.CompletedProcess([], 7, "", "connection failed"),
+            subprocess.CompletedProcess([], 0, "203.0.113.1", ""),
+        ])
+
+        self.assertFalse(result["external_public_protocol"])
+        self.assertEqual(1, len(attempts))
+
     def test_remote_switch_uses_gateway_cas_and_has_no_unconditional_rollback(self):
         self.assertIn("'expectedProtocolMode':expected_old", MODULE.REMOTE_HELPER)
         self.assertNotIn("{'protocolMode':switch['oldMode']}", MODULE.REMOTE_HELPER)
@@ -133,9 +209,13 @@ class VerificationHelperTests(unittest.TestCase):
 
         outbound = document["outbounds"][0]
         self.assertEqual("hysteria", outbound["protocol"])
-        self.assertEqual(2, outbound["settings"]["version"])
         self.assertEqual(
-            "opaque-auth", outbound["settings"]["servers"][0]["auth"]
+            {"version": 2, "address": "example.test", "port": 20001},
+            outbound["settings"],
+        )
+        self.assertEqual(
+            {"version": 2, "auth": "opaque-auth"},
+            outbound["streamSettings"]["hysteriaSettings"],
         )
         self.assertEqual(
             "front.example",
@@ -153,11 +233,18 @@ class VerificationHelperTests(unittest.TestCase):
         self.assertEqual(["vless", "hysteria2"], [urllib.parse.urlsplit(item).scheme for item in entries])
 
     def test_switch_arguments_are_a_closed_set(self):
+        self.assertEqual((0, "vless_xhttp_reality"), MODULE.validate_switch_arguments(0, "vless_xhttp_reality"))
         self.assertEqual((1, "vless_xhttp_reality"), MODULE.validate_switch_arguments(1, "vless_xhttp_reality"))
         with self.assertRaisesRegex(ValueError, "invalid slot"):
             MODULE.validate_switch_arguments(4, "vless_xhttp_reality")
         with self.assertRaisesRegex(ValueError, "invalid protocol mode"):
             MODULE.validate_switch_arguments(1, "vless-over-websocket")
+
+    def test_remote_switch_contract_uses_slot_zero_for_main_and_minus_one_for_no_switch(self):
+        self.assertIn("str(-1 if slot is None else slot)", inspect.getsource(MODULE.run_remote))
+        self.assertIn("if slot >= 0:", MODULE.REMOTE_HELPER)
+        self.assertIn("if slot == 0:", MODULE.REMOTE_HELPER)
+        self.assertIn("g.get('egressSource')=='main'", MODULE.REMOTE_HELPER)
 
     def test_subscription_coverage_matches_ports_and_protocols(self):
         materials = [
@@ -182,6 +269,72 @@ class VerificationHelperTests(unittest.TestCase):
                 materials, ["vless://client@example.test:20001?type=tcp"]
             )
 
+    def test_subscription_coverage_accepts_secure_hysteria2_defaults(self):
+        materials = [{
+            "exitIp": "203.0.113.2",
+            "protocolMode": "hysteria2_quic_tls",
+            "publicUri": "hysteria2://opaque@example.test:20001/?sni=front.example&insecure=0#slot-two",
+            "socks5hUri": "socks5h://second",
+        }]
+
+        result = MODULE.validate_subscription_coverage(materials, [
+            "hysteria2://opaque@example.test:20001?sni=front.example&alpn=h3&security=tls#slot-two"
+        ])
+
+        self.assertEqual({"entryCount": 1, "hysteria2": 1, "vless": 0}, result)
+
+    def test_subscription_coverage_rejects_insecure_or_nondefault_hysteria2(self):
+        materials = [{
+            "exitIp": "203.0.113.2",
+            "protocolMode": "hysteria2_quic_tls",
+            "publicUri": "hysteria2://opaque@example.test:20001/?sni=front.example&insecure=0#slot-two",
+            "socks5hUri": "socks5h://second",
+        }]
+        for path, suffix in (
+            ("/", "insecure=1"),
+            ("/", "alpn=h2"),
+            ("/", "security=none"),
+            ("/not-root", "insecure=0"),
+        ):
+            with self.subTest(path=path, suffix=suffix), self.assertRaisesRegex(
+                RuntimeError, "subscription coverage mismatch"
+            ):
+                MODULE.validate_subscription_coverage(materials, [
+                    "hysteria2://opaque@example.test:20001"
+                    + path
+                    + "?sni=front.example&"
+                    + suffix
+                    + "#slot-two"
+                ])
+
+    def test_subscription_coverage_rejects_duplicate_query_parameters(self):
+        cases = (
+            (
+                [{
+                    "exitIp": "203.0.113.2",
+                    "protocolMode": "hysteria2_quic_tls",
+                    "publicUri": "hysteria2://opaque@example.test:20001/?sni=front.example&insecure=0#slot-two",
+                    "socks5hUri": "socks5h://second",
+                }],
+                "hysteria2://opaque@example.test:20001/?sni=front.example&insecure=1&insecure=0#slot-two",
+            ),
+            (
+                [{
+                    "exitIp": "203.0.113.1",
+                    "protocolMode": "vless_xhttp_reality",
+                    "publicUri": "vless://client@example.test:20000?type=xhttp&path=%2Fopaque#slot-one",
+                    "socks5hUri": "socks5h://first",
+                }],
+                "vless://client@example.test:20000?type=xhttp&path=%2Fopaque&host=override.example&host=#slot-one",
+            ),
+        )
+
+        for materials, entry in cases:
+            with self.subTest(entry=entry), self.assertRaisesRegex(
+                RuntimeError, "subscription coverage mismatch"
+            ):
+                MODULE.validate_subscription_coverage(materials, [entry])
+
     def test_subscription_coverage_rejects_stale_tcp_parameters_for_xhttp(self):
         materials = [{
             "exitIp": "203.0.113.1",
@@ -198,6 +351,45 @@ class VerificationHelperTests(unittest.TestCase):
                 "vless://client@example.test:20000?type=tcp&security=reality&"
                 "flow=xtls-rprx-vision&fp=chrome&sni=front.example&pbk=public&sid=abcd#slot-one"
             ])
+
+    def test_subscription_coverage_accepts_3xui_default_xhttp_parameters(self):
+        materials = [{
+            "exitIp": "203.0.113.1",
+            "protocolMode": "vless_xhttp_reality",
+            "publicUri": "vless://client@example.test:20000?type=xhttp&path=%2Fopaque#slot-one",
+            "socks5hUri": "socks5h://first",
+        }]
+
+        try:
+            result = MODULE.validate_subscription_coverage(materials, [
+                "vless://client@example.test:20000?type=xhttp&path=%2Fopaque&host=&"
+                "extra=%7B%22mode%22%3A%22auto%22%7D#slot-one"
+            ])
+        except RuntimeError as error:
+            self.fail(f"3x-ui default XHTTP parameters were rejected: {error}")
+
+        self.assertEqual({"entryCount": 1, "hysteria2": 0, "vless": 1}, result)
+
+    def test_subscription_coverage_rejects_nondefault_xhttp_parameters(self):
+        materials = [{
+            "exitIp": "203.0.113.1",
+            "protocolMode": "vless_xhttp_reality",
+            "publicUri": "vless://client@example.test:20000?type=xhttp&path=%2Fopaque#slot-one",
+            "socks5hUri": "socks5h://first",
+        }]
+
+        for query in (
+            "host=override.example",
+            "extra=%7B%22mode%22%3A%22packet-up%22%7D",
+        ):
+            with self.subTest(query=query), self.assertRaisesRegex(
+                RuntimeError, "subscription coverage mismatch"
+            ):
+                MODULE.validate_subscription_coverage(materials, [
+                    "vless://client@example.test:20000?type=xhttp&path=%2Fopaque&"
+                    + query
+                    + "#slot-one"
+                ])
 
     def test_subscription_coverage_rejects_wrong_logical_name(self):
         materials = [{
@@ -235,6 +427,19 @@ class VerificationHelperTests(unittest.TestCase):
         result = MODULE.validate_subscription_coverage(materials, entries)
 
         self.assertEqual({"entryCount": 2, "hysteria2": 0, "vless": 2}, result)
+
+    def test_subscription_coverage_rejects_a_similar_main_remark_prefix(self):
+        materials = [{
+            "exitIp": "203.0.113.1",
+            "protocolMode": "vless_tcp_reality_vision",
+            "publicUri": "vless://client@example.test:8443?encryption=none&flow=xtls-rprx-vision&fp=chrome&pbk=public&security=reality&sid=short&sni=example.test&type=tcp#agw-main",
+            "socks5hUri": "socks5h://first",
+        }]
+
+        with self.assertRaisesRegex(RuntimeError, "subscription coverage mismatch"):
+            MODULE.validate_subscription_coverage(materials, [
+                "vless://client@example.test:8443?encryption=none&flow=xtls-rprx-vision&fp=chrome&pbk=public&security=reality&sid=short&sni=example.test&type=tcp#Aimili%20Reality-impostor"
+            ])
 
     def test_bound_materials_use_subscription_entries_for_public_validation(self):
         api_uri = "vless://client@example.test:20000?type=xhttp&path=%2Fopaque#slot-one"

@@ -150,7 +150,7 @@ Stage 2 不重启 x-ui/Xray。失败只恢复 Gateway 本级资产、数据库�
 | 出口位 2 | Hysteria2/QUIC/TLS |
 | 出口位 3 | TCP/Vision |
 
-最后执行受控 x-ui/Xray 重启恢复验证，再分别重启 Gateway 与 AimiliVPN，确认已提交状态不漂移、未提交事务自动恢复。只有 Gateway UI 和 v2rayN 原用户路径都通过后才能声明完成。
+最后执行受控 x-ui/Xray 重启恢复验证，再分别重启 Gateway 与 AimiliVPN，确认已提交状态不漂移、未提交事务自动恢复。AimiliVPN 使用自动路由时，单独重启可能重新选择主节点并改变出口 IP；Gateway 此时应按设计拒绝发放与旧出口绑定的连接材料。待 AimiliVPN 主状态恢复后，必须从 Gateway 执行一次“主连接检查”，由其重新验证 `7928`、主 mixed 与主公网协议并安全同步当前出口，之后再跑四出口外部验证。只有 Gateway UI 和 v2rayN 原用户路径都通过后才能声明完成。
 
 ## 7. `repair_required` 处置
 

@@ -55,7 +55,8 @@ class FakeRunner:
         self.runtime_tags.discard(tag)
 
     def add_inbound(self, inbound_path):
-        inbound = json.loads(pathlib.Path(inbound_path).read_text(encoding="utf-8"))
+        document = json.loads(pathlib.Path(inbound_path).read_text(encoding="utf-8"))
+        inbound = document["inbounds"][0]
         self._record("adi", inbound)
         self.runtime_tags.add(inbound["tag"])
 
@@ -75,6 +76,10 @@ class FakeSpoolManager:
     def finalize(self, operation_id):
         self.calls.append(("finalize", operation_id))
         return {"operationId": operation_id, "status": "finalized", "errorCode": ""}
+
+    def renew(self, operation_id):
+        self.calls.append(("renew", operation_id))
+        return {"operationId": operation_id, "status": "renewed", "errorCode": ""}
 
     def rollback(self, operation_id):
         self.calls.append(("rollback", operation_id))
@@ -145,6 +150,59 @@ class SpoolWorkerTests(unittest.TestCase):
         self.assertEqual(self.manager.calls, [])
         result = json.loads((self.results / name).read_text(encoding="utf-8"))
         self.assertEqual(result, {"operationId": "operation-safe-1", "status": "failed", "errorCode": "invalid_request"})
+
+    def test_processes_renew_action(self):
+        operation = "operation-safe-4"
+        heartbeat_id = "a" * 32
+        (self.requests / f"{operation}.renew.json").write_text(
+            json.dumps({"action": "renew", "operationId": operation, "heartbeatId": heartbeat_id}),
+            encoding="utf-8",
+        )
+
+        processed = MODULE.process_spool(self.manager, self.requests, self.results)
+
+        self.assertEqual(
+            [{"operationId": operation, "heartbeatId": heartbeat_id, "status": "renewed", "errorCode": ""}],
+            processed,
+        )
+        self.assertEqual([("renew", operation)], self.manager.calls)
+
+    def test_spool_cycle_processes_requests_before_recovering_expired_transactions(self):
+        events = []
+
+        class OrderedManager(FakeSpoolManager):
+            def renew(self, operation_id):
+                events.append("renew")
+                return super().renew(operation_id)
+
+            def recover_pending(self, min_age_seconds=0):
+                events.append("recover")
+                return []
+
+        operation = "operation-safe-5"
+        (self.requests / f"{operation}.renew.json").write_text(
+            json.dumps({"action": "renew", "operationId": operation, "heartbeatId": "b" * 32}),
+            encoding="utf-8",
+        )
+
+        MODULE.process_spool_cycle(OrderedManager(), self.requests, self.results)
+
+        self.assertEqual(["renew", "recover"], events)
+
+    def test_rejects_renew_without_closed_heartbeat_id(self):
+        operation = "operation-safe-6"
+        (self.requests / f"{operation}.renew.json").write_text(
+            json.dumps({"action": "renew", "operationId": operation}),
+            encoding="utf-8",
+        )
+
+        processed = MODULE.process_spool(self.manager, self.requests, self.results)
+
+        self.assertEqual(
+            [{"operationId": operation, "status": "failed", "errorCode": "invalid_request"}],
+            processed,
+        )
+        self.assertEqual([], self.manager.calls)
 
     def test_crash_keeps_request_for_recovery_and_retrigger(self):
         operation = "operation-safe-1"
@@ -552,7 +610,27 @@ class ProtocolTransactionTests(unittest.TestCase):
             self.assertEqual(0o700, stat.S_IMODE(operation_dir.stat().st_mode))
             self.assertEqual(0o600, stat.S_IMODE(snapshot.stat().st_mode))
         manager.finalize(OPERATION_ID)
-        self.assertFalse(operation_dir.exists())
+        self.assertTrue(snapshot.is_file())
+
+    def test_finalize_replay_uses_secret_free_completion_tombstone(self):
+        manager = self._manager()
+        manager.apply(self._request())
+
+        first = manager.finalize(OPERATION_ID)
+        second = manager.finalize(OPERATION_ID)
+        tombstone = json.loads(
+            (self.snapshot_dir / OPERATION_ID / "snapshot.json").read_text(
+                encoding="utf-8"
+            )
+        )
+
+        expected = {"operationId": OPERATION_ID, "status": "finalized", "errorCode": ""}
+        self.assertEqual(expected, first)
+        self.assertEqual(expected, second)
+        self.assertEqual(
+            {"version": 1, "operationId": OPERATION_ID, "phase": "finalized"},
+            tombstone,
+        )
 
     def test_apply_order_is_snapshot_offline_rmi_adi_database_and_verify(self):
         events = []
@@ -573,6 +651,22 @@ class ProtocolTransactionTests(unittest.TestCase):
         forbidden = json.dumps(runner.calls, default=str)
         self.assertNotIn("panel/api/inbounds", forbidden)
         self.assertNotIn("restart", forbidden.lower())
+
+    def test_apply_wraps_hot_add_inbound_in_xray_config_document(self):
+        class ConfigDocumentRunner(FakeRunner):
+            def add_inbound(self, inbound_path):
+                document = json.loads(pathlib.Path(inbound_path).read_text(encoding="utf-8"))
+                if set(document) != {"inbounds"} or not isinstance(document["inbounds"], list) or len(document["inbounds"]) != 1:
+                    raise MODULE.TransactionError("no_valid_inbound")
+                inbound = document["inbounds"][0]
+                self._record("adi", inbound)
+                self.runtime_tags.add(inbound["tag"])
+
+        runner = ConfigDocumentRunner()
+        result = self._manager(runner=runner).apply(self._request())
+
+        self.assertEqual("applied", result["status"])
+        self.assertIn("agw-slot-one-vless", runner.runtime_tags)
 
     def test_non_target_database_rows_and_runtime_config_remain_byte_identical(self):
         unmanaged_before = self._inbound_row(43)
@@ -647,7 +741,62 @@ class ProtocolTransactionTests(unittest.TestCase):
         result = manager.rollback(OPERATION_ID)
         self.assertEqual({"operationId": OPERATION_ID, "status": "rolled_back", "errorCode": ""}, result)
         self.assertEqual(original, self._inbound_row(41))
-        self.assertFalse((self.snapshot_dir / OPERATION_ID).exists())
+        self.assertTrue((self.snapshot_dir / OPERATION_ID / "snapshot.json").is_file())
+
+    def test_explicit_rollback_replay_uses_secret_free_completion_tombstone(self):
+        manager = self._manager()
+        manager.apply(self._request())
+
+        first = manager.rollback(OPERATION_ID)
+        second = manager.rollback(OPERATION_ID)
+        tombstone = json.loads(
+            (self.snapshot_dir / OPERATION_ID / "snapshot.json").read_text(
+                encoding="utf-8"
+            )
+        )
+
+        expected = {"operationId": OPERATION_ID, "status": "rolled_back", "errorCode": ""}
+        self.assertEqual(expected, first)
+        self.assertEqual(expected, second)
+        self.assertEqual(
+            {"version": 1, "operationId": OPERATION_ID, "phase": "rolled_back"},
+            tombstone,
+        )
+
+    def test_recover_pending_ignores_rolled_back_completion_tombstone(self):
+        manager = self._manager()
+        manager.apply(self._request())
+        manager.rollback(OPERATION_ID)
+
+        recovered = manager.recover_pending()
+        tombstone = json.loads(
+            (self.snapshot_dir / OPERATION_ID / "snapshot.json").read_text(
+                encoding="utf-8"
+            )
+        )
+
+        self.assertEqual([], recovered)
+        self.assertEqual("rolled_back", tombstone["phase"])
+
+    def test_explicit_rollback_restores_old_inbound_when_target_tag_is_already_missing(self):
+        class StrictRunner(FakeRunner):
+            def remove_inbound(self, tag):
+                if tag not in self.runtime_tags:
+                    raise MODULE.TransactionError("xray_remove_inbound_failed")
+                super().remove_inbound(tag)
+
+        original = self._inbound_row(41)
+        runner = StrictRunner()
+        manager = self._manager(runner=runner)
+        manager.apply(self._request())
+        runner.runtime_tags.discard("agw-slot-one-vless")
+
+        result = manager.rollback(OPERATION_ID)
+
+        self.assertEqual({"operationId": OPERATION_ID, "status": "rolled_back", "errorCode": ""}, result)
+        self.assertEqual(original, self._inbound_row(41))
+        self.assertIn("agw-slot-one-vless", runner.runtime_tags)
+        self.assertTrue((self.snapshot_dir / OPERATION_ID / "snapshot.json").is_file())
 
     def test_explicit_rollback_without_snapshot_reports_not_applied(self):
         manager = self._manager()
@@ -690,10 +839,40 @@ class ProtocolTransactionTests(unittest.TestCase):
 
         snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
         snapshot["createdAt"] = int(time.time()) - 181
+        snapshot["leaseUpdatedAt"] = int(time.time()) - 181
         snapshot_path.write_text(json.dumps(snapshot), encoding="utf-8")
         recovered = manager.recover_pending(min_age_seconds=180)
         self.assertEqual([{"operationId": OPERATION_ID, "status": "rolled_back", "errorCode": ""}], recovered)
         self.assertFalse(snapshot_path.exists())
+
+    def test_renew_extends_applied_lease_until_heartbeats_stop(self):
+        original = self._inbound_row(41)
+        manager = self._manager()
+        manager.apply(self._request())
+        snapshot_path = self.snapshot_dir / OPERATION_ID / "snapshot.json"
+        snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        snapshot["createdAt"] = int(time.time()) - 181
+        snapshot_path.write_text(json.dumps(snapshot), encoding="utf-8")
+
+        renewed = manager.renew(OPERATION_ID)
+
+        self.assertEqual(
+            {"operationId": OPERATION_ID, "status": "renewed", "errorCode": ""},
+            renewed,
+        )
+        self.assertEqual([], manager.recover_pending(min_age_seconds=180))
+        self.assertNotEqual(original, self._inbound_row(41))
+
+        snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        snapshot["leaseUpdatedAt"] = int(time.time()) - 181
+        snapshot_path.write_text(json.dumps(snapshot), encoding="utf-8")
+        recovered = manager.recover_pending(min_age_seconds=180)
+
+        self.assertEqual(
+            [{"operationId": OPERATION_ID, "status": "rolled_back", "errorCode": ""}],
+            recovered,
+        )
+        self.assertEqual(original, self._inbound_row(41))
 
     def test_request_fingerprint_is_canonical_and_excludes_no_secret_material(self):
         left = {"operationId": OPERATION_ID, "egressId": "agw-slot-one", "inboundId": 41, "inboundTag": "agw-slot-one-vless", "port": 20000, "oldMode": TCP, "newMode": XHTTP}

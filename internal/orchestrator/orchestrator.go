@@ -100,6 +100,9 @@ type aimiliClient interface {
 	RotateSlot(context.Context, int) (aimili.Slot, error)
 	DeleteSlot(context.Context, int) error
 	MainStatus(context.Context) (aimili.MainStatus, error)
+	AcquireMutationLease(context.Context, string) (aimili.MutationLease, error)
+	RenewMutationLease(context.Context, string) (aimili.MutationLease, error)
+	ReleaseMutationLease(context.Context, string) error
 }
 
 type xuiClient interface {
@@ -136,6 +139,7 @@ type protocolModeStore interface {
 
 type protocolTransactionClient interface {
 	Apply(context.Context, protocoltxn.Request) (protocoltxn.Result, error)
+	Renew(context.Context, string) (protocoltxn.Result, error)
 	Finalize(context.Context, string) (protocoltxn.Result, error)
 	Rollback(context.Context, string) (protocoltxn.Result, error)
 }
@@ -145,9 +149,12 @@ type assignAimiliClient interface {
 }
 
 type mainAssignmentAimiliClient interface {
+	MainAssignment(context.Context) (aimili.MainAssignmentStatus, error)
 	StageMainAssignment(context.Context, aimili.MainAssignmentRequest) (aimili.MainAssignmentStatus, error)
 	CommitMainAssignment(context.Context, string) (aimili.MainAssignmentStatus, error)
 	RollbackMainAssignment(context.Context, string) (aimili.MainAssignmentStatus, error)
+	RepairCommitMainAssignment(context.Context, string) (aimili.MainAssignmentStatus, error)
+	RepairReplaceMainAssignment(context.Context, string, aimili.MainRepairRequest) (aimili.MainAssignmentStatus, error)
 }
 
 type legacyMainXUIClient interface {
@@ -161,14 +168,15 @@ type proxyValidator interface {
 }
 
 type Orchestrator struct {
-	config              Config
-	store               groupStore
-	aimili              aimiliClient
-	xui                 xuiClient
-	validator           proxyValidator
-	masterKey           []byte
-	locks               operationLocks
-	protocolTransaction protocolTransactionClient
+	config                 Config
+	store                  groupStore
+	aimili                 aimiliClient
+	xui                    xuiClient
+	validator              proxyValidator
+	masterKey              []byte
+	locks                  operationLocks
+	protocolTransaction    protocolTransactionClient
+	mutationLeaseRenewWait func(context.Context, time.Duration) bool
 }
 
 func New(config Config, database groupStore, aimiliAdapter aimiliClient, xuiAdapter xuiClient, validation proxyValidator, masterKey []byte) (*Orchestrator, error) {

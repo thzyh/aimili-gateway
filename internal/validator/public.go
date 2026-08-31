@@ -144,9 +144,9 @@ func buildPublicClientConfig(target PublicTarget, localPort int, username, passw
 			return nil, validationFailure("invalid_configuration")
 		}
 		outbound["protocol"] = "hysteria"
-		outbound["settings"] = map[string]any{"version": 2, "servers": []any{map[string]any{"address": host, "port": serverPort, "auth": target.Auth}}}
+		outbound["settings"] = map[string]any{"version": 2, "address": host, "port": serverPort}
 		outbound["streamSettings"] = map[string]any{
-			"network": "hysteria", "security": "tls", "hysteriaSettings": map[string]any{"version": 2},
+			"network": "hysteria", "security": "tls", "hysteriaSettings": map[string]any{"version": 2, "auth": target.Auth},
 			"tlsSettings": map[string]any{"serverName": target.TLSServerName, "allowInsecure": false, "fingerprint": "chrome"},
 		}
 	}

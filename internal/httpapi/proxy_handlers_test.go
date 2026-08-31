@@ -154,6 +154,31 @@ func TestMainReplacementReplaysCompletedPersistentOperation(t *testing.T) {
 	}
 }
 
+func TestMainReplacementResumesStartedPersistentOperation(t *testing.T) {
+	manager := &fakeProxyManager{}
+	environment := newAuthTestEnvironmentConfigured(t, true, func(dependencies *Dependencies) { dependencies.ProxyManager = manager })
+	assertResponseStatus(t, environment.login(t), http.StatusNoContent)
+	sessionPayload := environment.session(t)
+	storedSession, err := environment.database.GetSession(context.Background(), environment.sessionTokenHash(t), environment.clock.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/v1/proxy-groups/candidate-one/replace"
+	key := "started-main-replacement"
+	keyHash, bodyHash := persistentIdempotencyHashes(storedSession.ID, http.MethodPost, path, key, []any{"agw-main"})
+	now := time.Unix(1_700_000_000, 0).UTC()
+	if err := environment.database.CreateEgressOperation(context.Background(), store.EgressOperation{OperationID: "http-started-main", EgressID: "agw-main", Kind: "main_assign", Phase: "started", RequestHash: keyHash, TransactionID: bodyHash, StartedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+
+	response := environment.requestWithHeaders(t, http.MethodPost, path, map[string]string{"targetGroupId": "agw-main"}, environment.origin, sessionPayload.CSRFToken, map[string]string{"Idempotency-Key": key})
+
+	assertResponseStatus(t, response, http.StatusOK)
+	if manager.replaceCalls != 1 {
+		t.Fatalf("started main assignment was not resumed: %d", manager.replaceCalls)
+	}
+}
+
 func TestProtocolModeUpdateRequiresMutationGuardsAndIsIdempotent(t *testing.T) {
 	manager := &fakeProxyManager{}
 	environment := newAuthTestEnvironmentConfigured(t, true, func(dependencies *Dependencies) { dependencies.ProxyManager = manager })
@@ -211,6 +236,107 @@ func TestProtocolModeForwardsOptionalExpectedMode(t *testing.T) {
 	assertResponseStatus(t, response, http.StatusOK)
 	if manager.protocolExpected != domain.ProtocolVLESSTCPRealityVision {
 		t.Fatalf("expected mode = %q", manager.protocolExpected)
+	}
+}
+
+func TestProtocolModeResumesStartedOperationAfterRecoveryToOldMode(t *testing.T) {
+	manager := &fakeProxyManager{protocolResumeAllowed: true}
+	environment := newAuthTestEnvironmentConfigured(t, true, func(dependencies *Dependencies) { dependencies.ProxyManager = manager })
+	assertResponseStatus(t, environment.login(t), http.StatusNoContent)
+	csrf := environment.session(t).CSRFToken
+	storedSession, err := environment.database.GetSession(context.Background(), environment.sessionTokenHash(t), environment.clock.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/v1/proxy-groups/agw-jp-dc/protocol-mode"
+	key := "resume-started-protocol"
+	target := domain.ProtocolVLESSXHTTPReality
+	keyHash, bodyHash := persistentIdempotencyHashes(storedSession.ID, http.MethodPut, path, key, []any{target})
+	now := time.Unix(1_700_000_000, 0).UTC()
+	if err := environment.database.CreateEgressProtocolMode(context.Background(), domain.EgressProtocolMode{
+		EgressID: "agw-jp-dc", ActiveMode: domain.ProtocolVLESSTCPRealityVision,
+		DesiredMode: domain.ProtocolVLESSTCPRealityVision, State: domain.ProtocolReady,
+		Version: 2, UpdatedAt: now.Add(time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := environment.database.CreateEgressOperation(context.Background(), store.EgressOperation{
+		OperationID: "http-started-protocol", EgressID: "agw-jp-dc", Kind: "protocol_switch",
+		Phase: "started", RequestHash: keyHash, TransactionID: bodyHash, StartedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	response := environment.requestWithHeaders(t, http.MethodPut, path, map[string]string{"protocolMode": string(target)}, environment.origin, csrf, map[string]string{"Idempotency-Key": key})
+	assertResponseStatus(t, response, http.StatusOK)
+	if manager.protocolCalls != 1 || manager.protocolTarget != target || manager.protocolExpected != domain.ProtocolVLESSTCPRealityVision {
+		t.Fatalf("started operation was not safely resumed: calls=%d target=%q expected=%q", manager.protocolCalls, manager.protocolTarget, manager.protocolExpected)
+	}
+	operation, err := environment.database.GetEgressOperationByRequestHash(context.Background(), "agw-jp-dc", "protocol_switch", keyHash)
+	if err != nil || operation.Phase != "completed" {
+		t.Fatalf("resumed operation = %#v, err = %v", operation, err)
+	}
+}
+
+func TestProtocolModeStartedOperationStillRejectsDifferentBody(t *testing.T) {
+	manager := &fakeProxyManager{}
+	environment := newAuthTestEnvironmentConfigured(t, true, func(dependencies *Dependencies) { dependencies.ProxyManager = manager })
+	assertResponseStatus(t, environment.login(t), http.StatusNoContent)
+	csrf := environment.session(t).CSRFToken
+	storedSession, err := environment.database.GetSession(context.Background(), environment.sessionTokenHash(t), environment.clock.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/v1/proxy-groups/agw-jp-dc/protocol-mode"
+	key := "started-body-conflict"
+	keyHash, bodyHash := persistentIdempotencyHashes(storedSession.ID, http.MethodPut, path, key, []any{domain.ProtocolVLESSXHTTPReality})
+	now := time.Unix(1_700_000_000, 0).UTC()
+	if err := environment.database.CreateEgressOperation(context.Background(), store.EgressOperation{
+		OperationID: "http-started-conflict", EgressID: "agw-jp-dc", Kind: "protocol_switch",
+		Phase: "started", RequestHash: keyHash, TransactionID: bodyHash, StartedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	response := environment.requestWithHeaders(t, http.MethodPut, path, map[string]string{"protocolMode": "hysteria2_quic_tls"}, environment.origin, csrf, map[string]string{"Idempotency-Key": key})
+	assertResponseStatus(t, response, http.StatusConflict)
+	if manager.protocolCalls != 0 {
+		t.Fatalf("conflicting started request reached manager: %d", manager.protocolCalls)
+	}
+}
+
+func TestProtocolModeStartedOperationCannotOverwriteCurrentThirdMode(t *testing.T) {
+	manager := &fakeProxyManager{}
+	environment := newAuthTestEnvironmentConfigured(t, true, func(dependencies *Dependencies) { dependencies.ProxyManager = manager })
+	assertResponseStatus(t, environment.login(t), http.StatusNoContent)
+	csrf := environment.session(t).CSRFToken
+	storedSession, err := environment.database.GetSession(context.Background(), environment.sessionTokenHash(t), environment.clock.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/v1/proxy-groups/agw-jp-dc/protocol-mode"
+	key := "started-before-third-mode"
+	target := domain.ProtocolVLESSXHTTPReality
+	keyHash, bodyHash := persistentIdempotencyHashes(storedSession.ID, http.MethodPut, path, key, []any{target})
+	now := time.Unix(1_700_000_000, 0).UTC()
+	if err := environment.database.CreateEgressProtocolMode(context.Background(), domain.EgressProtocolMode{
+		EgressID: "agw-jp-dc", ActiveMode: domain.ProtocolHysteria2QUICTLS,
+		DesiredMode: domain.ProtocolHysteria2QUICTLS, State: domain.ProtocolReady,
+		Version: 3, UpdatedAt: now.Add(2 * time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := environment.database.CreateEgressOperation(context.Background(), store.EgressOperation{
+		OperationID: "http-started-before-third", EgressID: "agw-jp-dc", Kind: "protocol_switch",
+		Phase: "started", RequestHash: keyHash, TransactionID: bodyHash, StartedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	response := environment.requestWithHeaders(t, http.MethodPut, path, map[string]string{"protocolMode": string(target)}, environment.origin, csrf, map[string]string{"Idempotency-Key": key})
+	assertResponseStatus(t, response, http.StatusConflict)
+	if manager.protocolCalls != 0 {
+		t.Fatalf("old started request overwrote third mode: %d", manager.protocolCalls)
 	}
 }
 
@@ -441,19 +567,20 @@ func (e *authTestEnvironment) requestWithHeaders(t *testing.T, method, path stri
 }
 
 type fakeProxyManager struct {
-	enableCalls       int
-	activateCalls     int
-	activatedID       string
-	groups            []domain.ProxyGroup
-	mixedPolicy       store.MixedSourcePolicy
-	replaceCalls      int
-	replacedCandidate string
-	checkMainCalls    int
-	cleanupCalls      int
-	protocolCalls     int
-	protocolTarget    domain.ProtocolMode
-	protocolExpected  domain.ProtocolMode
-	protocolError     error
+	enableCalls           int
+	activateCalls         int
+	activatedID           string
+	groups                []domain.ProxyGroup
+	mixedPolicy           store.MixedSourcePolicy
+	replaceCalls          int
+	replacedCandidate     string
+	checkMainCalls        int
+	cleanupCalls          int
+	protocolCalls         int
+	protocolTarget        domain.ProtocolMode
+	protocolExpected      domain.ProtocolMode
+	protocolError         error
+	protocolResumeAllowed bool
 }
 
 func (m *fakeProxyManager) SwitchProtocolModeExpected(_ context.Context, egressID string, target, expected domain.ProtocolMode) (domain.EgressProtocolMode, error) {
@@ -464,6 +591,10 @@ func (m *fakeProxyManager) SwitchProtocolModeExpected(_ context.Context, egressI
 		return domain.EgressProtocolMode{}, m.protocolError
 	}
 	return domain.EgressProtocolMode{EgressID: egressID, ActiveMode: target, DesiredMode: target, State: domain.ProtocolReady, Version: 2, UpdatedAt: time.Unix(1700000000, 0).UTC()}, nil
+}
+
+func (m *fakeProxyManager) CanResumeInterruptedProtocolMode(context.Context, string, domain.ProtocolMode, domain.ProtocolMode) bool {
+	return m.protocolResumeAllowed
 }
 
 func (*fakeProxyManager) Subscription(context.Context) (orchestrator.SubscriptionResult, error) {

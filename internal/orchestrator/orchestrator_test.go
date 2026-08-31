@@ -519,25 +519,44 @@ func (s *fakeStore) SaveAggregateConfig(_ context.Context, value store.Aggregate
 }
 
 type fakeAimili struct {
-	calls             *[]string
-	rotatedExitIP     string
-	rotatedExitIPs    []string
-	rotateCalls       int
-	unreadyChecks     int
-	candidates        []aimili.Candidate
-	slotsByCandidate  map[string]aimili.Slot
-	createdSlots      map[int]aimili.Slot
-	createErrors      map[string]error
-	mainStatus        aimili.MainStatus
-	assignedSlot      aimili.Slot
-	assignedSlots     []aimili.Slot
-	assignErrors      []error
-	assignCalls       int
-	checkResults      []aimili.SlotCheck
-	assignRequests    []aimili.AssignSlotRequest
-	stagedMainStatus  aimili.MainStatus
-	mainRollbackError error
-	rotateEntered     chan struct{}
+	calls                     *[]string
+	rotatedExitIP             string
+	rotatedExitIPs            []string
+	rotateCalls               int
+	unreadyChecks             int
+	candidates                []aimili.Candidate
+	slotsByCandidate          map[string]aimili.Slot
+	createdSlots              map[int]aimili.Slot
+	createErrors              map[string]error
+	mainStatus                aimili.MainStatus
+	assignedSlot              aimili.Slot
+	assignedSlots             []aimili.Slot
+	assignErrors              []error
+	assignCalls               int
+	checkResults              []aimili.SlotCheck
+	assignRequests            []aimili.AssignSlotRequest
+	stagedMainStatus          aimili.MainStatus
+	mainAssignment            aimili.MainAssignmentStatus
+	mainRollbackError         error
+	mainCommitErrors          []error
+	mainCommitCalls           int
+	repairCommitCalls         int
+	repairReplaceRequests     []aimili.MainRepairRequest
+	repairCommitErrors        []error
+	repairReplaceErrors       []error
+	rotateEntered             chan struct{}
+	mutationLeaseExpires      float64
+	mutationLeaseAcquireError error
+	mutationLeaseRenewError   error
+	mutationLeaseRenewed      chan struct{}
+	mutationLeaseRenewErrors  chan error
+}
+
+func (a *fakeAimili) MainAssignment(context.Context) (aimili.MainAssignmentStatus, error) {
+	if a.mainAssignment.State == "" {
+		return aimili.MainAssignmentStatus{State: "idle"}, nil
+	}
+	return a.mainAssignment, nil
 }
 
 func (a *fakeAimili) StageMainAssignment(_ context.Context, request aimili.MainAssignmentRequest) (aimili.MainAssignmentStatus, error) {
@@ -547,6 +566,12 @@ func (a *fakeAimili) StageMainAssignment(_ context.Context, request aimili.MainA
 }
 func (a *fakeAimili) CommitMainAssignment(context.Context, string) (aimili.MainAssignmentStatus, error) {
 	*a.calls = append(*a.calls, "main.commit")
+	index := a.mainCommitCalls
+	a.mainCommitCalls++
+	a.mainAssignment.State = "committed"
+	if index < len(a.mainCommitErrors) && a.mainCommitErrors[index] != nil {
+		return aimili.MainAssignmentStatus{}, a.mainCommitErrors[index]
+	}
 	return aimili.MainAssignmentStatus{OperationID: "operation-safe-1", State: "committed"}, nil
 }
 func (a *fakeAimili) RollbackMainAssignment(context.Context, string) (aimili.MainAssignmentStatus, error) {
@@ -558,7 +583,76 @@ func (a *fakeAimili) RollbackMainAssignment(context.Context, string) (aimili.Mai
 	return aimili.MainAssignmentStatus{OperationID: "operation-safe-1", State: "rolled_back"}, nil
 }
 
+func (a *fakeAimili) RepairCommitMainAssignment(context.Context, string) (aimili.MainAssignmentStatus, error) {
+	*a.calls = append(*a.calls, "main.repair-commit")
+	index := a.repairCommitCalls
+	a.repairCommitCalls++
+	a.mainStatus = a.stagedMainStatus
+	a.mainAssignment.State = "pending_gateway_validation"
+	a.mainAssignment.DNSVerified = true
+	a.mainAssignment.ExitVerified = true
+	a.mainAssignment.Available = true
+	if index < len(a.repairCommitErrors) && a.repairCommitErrors[index] != nil {
+		return aimili.MainAssignmentStatus{}, a.repairCommitErrors[index]
+	}
+	return a.mainAssignment, nil
+}
+
+func (a *fakeAimili) RepairReplaceMainAssignment(_ context.Context, _ string, request aimili.MainRepairRequest) (aimili.MainAssignmentStatus, error) {
+	*a.calls = append(*a.calls, "main.repair-replace")
+	a.repairReplaceRequests = append(a.repairReplaceRequests, request)
+	a.mainStatus = a.stagedMainStatus
+	a.mainAssignment.State = "pending_gateway_validation"
+	a.mainAssignment.NewCandidateID = request.CandidateID
+	a.mainAssignment.Country = request.Country
+	a.mainAssignment.ProxyType = request.ProxyType
+	a.mainAssignment.DNSVerified = true
+	a.mainAssignment.ExitVerified = true
+	a.mainAssignment.Available = true
+	index := len(a.repairReplaceRequests) - 1
+	if index < len(a.repairReplaceErrors) && a.repairReplaceErrors[index] != nil {
+		return aimili.MainAssignmentStatus{}, a.repairReplaceErrors[index]
+	}
+	return a.mainAssignment, nil
+}
+
 func (a *fakeAimili) MainStatus(context.Context) (aimili.MainStatus, error) { return a.mainStatus, nil }
+func (a *fakeAimili) AcquireMutationLease(_ context.Context, _ string) (aimili.MutationLease, error) {
+	*a.calls = append(*a.calls, "main.lease.acquire")
+	if a.mutationLeaseAcquireError != nil {
+		return aimili.MutationLease{}, a.mutationLeaseAcquireError
+	}
+	expires := a.mutationLeaseExpires
+	if expires == 0 {
+		expires = float64(time.Now().Add(time.Minute).Unix())
+	}
+	return aimili.MutationLease{State: "active", LeaseID: "opaque-lease-safe-1", ExpiresAt: expires}, nil
+}
+func (a *fakeAimili) RenewMutationLease(_ context.Context, leaseID string) (aimili.MutationLease, error) {
+	if a.mutationLeaseRenewed != nil {
+		select {
+		case a.mutationLeaseRenewed <- struct{}{}:
+		default:
+		}
+	}
+	if a.mutationLeaseRenewError != nil {
+		return aimili.MutationLease{}, a.mutationLeaseRenewError
+	}
+	if a.mutationLeaseRenewErrors != nil {
+		select {
+		case err := <-a.mutationLeaseRenewErrors:
+			if err != nil {
+				return aimili.MutationLease{}, err
+			}
+		default:
+		}
+	}
+	return aimili.MutationLease{State: "active", LeaseID: leaseID, ExpiresAt: float64(time.Now().Add(time.Minute).Unix())}, nil
+}
+func (a *fakeAimili) ReleaseMutationLease(context.Context, string) error {
+	*a.calls = append(*a.calls, "main.lease.release")
+	return nil
+}
 func (a *fakeAimili) AssignSlotNode(_ context.Context, number int, request aimili.AssignSlotRequest) (aimili.Slot, error) {
 	a.assignRequests = append(a.assignRequests, request)
 	index := a.assignCalls

@@ -3,6 +3,8 @@ package protocoltxn
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,6 +26,7 @@ var (
 
 var (
 	safeOperationID = regexp.MustCompile(`^[A-Za-z0-9_-]{8,128}$`)
+	safeHeartbeatID = regexp.MustCompile(`^[0-9a-f]{32}$`)
 	safeEgressID    = regexp.MustCompile(`^agw-[a-z0-9][a-z0-9_-]{0,95}$`)
 	safeHash        = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	safeErrorCode   = regexp.MustCompile(`^[a-z0-9_]{0,64}$`)
@@ -33,6 +36,7 @@ type Action string
 
 const (
 	ActionApply    Action = "apply"
+	ActionRenew    Action = "renew"
 	ActionFinalize Action = "finalize"
 	ActionRollback Action = "rollback"
 )
@@ -58,11 +62,13 @@ type Request struct {
 type Envelope struct {
 	Action      Action   `json:"action"`
 	OperationID string   `json:"operationId"`
+	HeartbeatID string   `json:"heartbeatId,omitempty"`
 	Request     *Request `json:"request,omitempty"`
 }
 
 type Result struct {
 	OperationID string `json:"operationId"`
+	HeartbeatID string `json:"heartbeatId,omitempty"`
 	Status      string `json:"status"`
 	ErrorCode   string `json:"errorCode"`
 }
@@ -101,6 +107,21 @@ func (c *Client) Apply(ctx context.Context, request Request) (Result, error) {
 
 func (c *Client) Finalize(ctx context.Context, operationID string) (Result, error) {
 	return c.simple(ctx, ActionFinalize, operationID)
+}
+
+func (c *Client) Renew(ctx context.Context, operationID string) (Result, error) {
+	if !safeOperationID.MatchString(operationID) {
+		return Result{}, ErrInvalidRequest
+	}
+	heartbeatBytes := make([]byte, 16)
+	if _, err := rand.Read(heartbeatBytes); err != nil {
+		return Result{}, fmt.Errorf("generate protocol transaction heartbeat: %w", err)
+	}
+	return c.execute(ctx, Envelope{
+		Action:      ActionRenew,
+		OperationID: operationID,
+		HeartbeatID: hex.EncodeToString(heartbeatBytes),
+	})
 }
 
 func (c *Client) Rollback(ctx context.Context, operationID string) (Result, error) {
@@ -253,6 +274,16 @@ func readResult(path string, envelope Envelope) (Result, bool, error) {
 	if result.OperationID != envelope.OperationID || !safeErrorCode.MatchString(result.ErrorCode) || !validStatus(envelope.Action, result.Status) {
 		return Result{}, false, ErrUnsafeResult
 	}
+	if envelope.Action == ActionRenew {
+		if !safeHeartbeatID.MatchString(envelope.HeartbeatID) {
+			return Result{}, false, ErrUnsafeResult
+		}
+		if result.HeartbeatID != envelope.HeartbeatID {
+			return Result{}, false, nil
+		}
+	} else if envelope.HeartbeatID != "" || result.HeartbeatID != "" {
+		return Result{}, false, ErrUnsafeResult
+	}
 	return result, true, nil
 }
 
@@ -260,6 +291,8 @@ func validStatus(action Action, status string) bool {
 	switch action {
 	case ActionApply:
 		return status == "applied" || status == "failed" || status == "repair_required"
+	case ActionRenew:
+		return status == "renewed" || status == "failed" || status == "repair_required"
 	case ActionFinalize:
 		return status == "finalized" || status == "failed" || status == "repair_required"
 	case ActionRollback:

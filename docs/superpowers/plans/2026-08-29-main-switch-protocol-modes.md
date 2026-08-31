@@ -1,6 +1,6 @@
 # 主连接安全切换与每出口独立协议模式实施计划
 
-状态：执行中；Task 1–10 与 Task 11 Stage 1、2、8 已完成；Stage 3 已修复 XHTTP 空 `listen` 离线配置问题，生产运行时往返仍未通过；Stage 4–7 未进入
+状态：执行中；Task 1–10 与 Task 11 Stage 1–6、8 已完成；Stage 7 的已提交协议模式重启恢复和最终混合状态通过，未提交主事务自动回滚、两阶段主 repair 生产演练、Gateway UI 与 v2rayN GUI 的最后验收仍待完成
 
 > **执行要求：** 使用 `superpowers:executing-plans` 逐任务实施；所有功能与故障修复必须使用 `superpowers:test-driven-development`，先观察新增测试按预期失败，再写最小实现。完成前使用 `superpowers:verification-before-completion`，并按项目规则执行一次 `ponytail-review`。
 
@@ -12,7 +12,7 @@
 
 **设计依据：** `docs/superpowers/specs/2026-08-29-main-switch-protocol-modes-design.md`
 
-**执行记录（2026-08-30）：** Task 1–10 已完成；Task 11 Stage 1、2、8 已完成。后续证据把 Stage 3 的生产 Xray `26.7.28` panic 根因定位为 helper 将数据库空监听序列化成 `"listen":""`；按 TDD 改为省略空 `listen` 后，同版本完整配置离线校验返回 `Configuration OK`，修复已安装。运行时重试又发现本地验证器使用提交 `18c6852` 新增的 `expectedProtocolMode`，而生产 Gateway 仍是旧二进制；生产 Gateway 已备份并更新到 `18c6852`。更新后的 TCP 基线当前被主连接 `connections` 的闭集错误 `not_ready` 阻塞，尚未取得主状态对比证据；Stage 3 未完成，Stage 4–7 不得进入。Task 12 正在完成本地修复、最终复核与分支交付；不得将本地通过解释为混合协议生产完成。
+**执行记录（2026-08-31）：** Task 1–10 与 Task 11 Stage 1–6、8 已完成。出口位 1 完成 `TCP → XHTTP → TCP` 并最终保持 XHTTP；出口位 2 完成 Hysteria2 外部 QUIC/TLS 与真实出口验证；主连接完成 `TCP → XHTTP → TCP`，每一方向均通过四出口公网、四个授权 mixed、统一订阅、单 Xray 和唯一出口联合验收。首次主切回期间 AimiliVPN 自动漂移到另一可用主节点，helper 已回滚但 Gateway 因旧身份不匹配正确进入 `repair_required`；新增恢复逻辑只在 helper 已证明回滚、当前主两次身份绑定一致且 `7928 + mixed + 当前公网协议` 全部通过后同步主身份并恢复 ready。最终运行状态为主 TCP、出口位 1 XHTTP、出口位 2 Hysteria2、出口位 3 TCP。历史 `repair-replace` 只验证了 AimiliVPN `7928`，不能作为 Gateway 主 mixed/公网验证证据；两阶段 repair 代码已部署，但用户专门要求的生产事务写入演练仍被审批系统拒绝。未提交事务自动回滚和 GUI 最终点击仍待完成。
 
 ## 全局硬约束
 
@@ -469,27 +469,31 @@ git commit -m "docs: add protocol switch deployment runbook"
 
 所有出口仍保持 TCP/Vision。验证 Gateway 数据迁移、四公网入站/四 mixed 数量、Xray PID、3x-ui 重启可重建现状、UFW 只有 `8443/udp` 与 `20000–20002/udp` 的四条精确规则，没有 `443/udp` 节点规则。
 
-- [ ] **Stage 3：普通出口 TCP → XHTTP → TCP**
+- [x] **Stage 3：普通出口 TCP → XHTTP → TCP**
 
 保持另外三个公网节点和四个 mixed 的长连接探针。验证 Xray PID 不变、订阅更新、v2rayN `7.24.4` 识别、代理 DNS和真实出口；切回 TCP 验证反向路径。任一失败只回滚目标出口。
 
-执行偏差：生产 Xray `26.7.28` 对加入仅回环 `trustedXForwardedFor` 后的完整 XHTTP 配置仍返回 `xray_command_failed`。离线硬门未通过，故未安装模板修复、未进入运行时试切；生产收敛并保持四出口 TCP/Vision `ready`。本轮依照止损条件停止，Stage 4–7 不继续。
+执行结果：先后修复空 `listen`、systemd SQLite sidecar 权限和生产 Gateway/helper 版本差异后，生产 Xray `26.7.28 run -test`、运行时热切、外部代理 DNS与真实出口均通过；出口位 1 完成 `TCP → XHTTP → TCP`，最终再次切为 XHTTP。切换期间 Xray PID 与非目标探针持续。
 
-- [ ] **Stage 4：普通出口 VLESS → Hysteria2**
+- [x] **Stage 4：普通出口 VLESS → Hysteria2**
 
 完成外部 QUIC/TLS、证书、代理 DNS、真实出口、UFW 计数和资源观察。若包未到主机则判定上游云防火墙阻断，立即回 TCP 并停止扩大，不重建服务器。
 
-- [ ] **Stage 5：观察资源硬门**
+- [x] **Stage 5：观察资源硬门**
 
 单出口切换后观察至少 5 分钟：无 OOM；Xray RSS 峰值 ≤ 96 MiB；`MemAvailable` 不连续 30 秒低于 96 MiB；Swap 增量 ≤ 128 MiB。越界立即回滚。
 
-- [ ] **Stage 6：主出口协议试切与最终混合模式**
+- [x] **Stage 6：主出口协议试切与最终混合模式**
 
 普通出口稳定后才允许主协议试切，并同时验证 `7928` 与主 mixed。最终状态：主 TCP/Vision、出口位 1 XHTTP、出口位 2 Hysteria2、出口位 3 TCP/Vision；出口总数四、公网入站总数四、mixed 总数四。
+
+执行结果：主连接通过 Gateway 正式 protocol-mode API 完成 `TCP/Vision → XHTTP/REALITY → TCP/Vision`。首次切回期间 AimiliVPN 自动切换主节点，Gateway 因候选与出口身份不一致进入 `repair_required`，未错误提交。TDD 增加封闭恢复：helper rollback 必须先成功，当前 Aimili 主身份在三路径验证前后必须一致，随后才同步 Gateway 主身份并恢复 ready；失败继续 fail-closed。修复部署后主 `XHTTP → TCP` 及最终无切换验收均通过：4 ready、4 公网、4 mixed、单 Xray、4 条订阅、4 个唯一出口；主与三个普通出口公网真实连接及四个授权 mixed 均通过，最终协议组合符合计划。
 
 - [ ] **Stage 7：重启恢复和原用户路径验收**
 
 受控重启 x-ui/Xray，确认 SQLite 重建相同混合模式；再重启 Gateway 与 AimiliVPN，确认未提交事务自动回滚、已提交模式不漂移。通过 Gateway UI 实际执行候选替换到“主连接”、独立协议切换与“复制节点订阅”，用 v2rayN `7.24.4` 刷新并逐条验证。只有原用户路径通过后才能声明完成。
+
+执行进度：x-ui/Xray、Gateway 的已提交协议模式重启恢复与重启后的四出口全量外部验证通过。AimiliVPN 未提交事务重启演练在旧/新公共节点均离线时正确 fail-closed；历史 repair 仅恢复 `7928`，不能证明 Gateway 主 mixed/公网路径。本轮两阶段 repair 修复尚未生产复测，且仍缺旧主在线条件下的自动 rollback 成功证据。Gateway UI 与 v2rayN GUI 的最终点击待人工完成；不得以 API/核心验证替代。
 
 - [x] **Stage 8：更新脱敏验证记录**
 

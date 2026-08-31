@@ -113,6 +113,9 @@ func TestEnsureSubscriptionClientReadsMixedPublicProfilesWithoutReattaching(t *t
 	if subscription.PublicProfiles[1].XHTTPPath != "/safe-xhttp-path" || subscription.PublicProfiles[2].Auth != "stable-auth" {
 		t.Fatal("protocol-specific transient material was not resolved")
 	}
+	if subscription.PublicProfiles[0].ClientID != "stable-client" || subscription.PublicProfiles[1].ClientID != "stable-client" || subscription.PublicProfiles[2].ClientID != "" {
+		t.Fatal("protocol profile identities were not isolated by protocol")
+	}
 }
 
 func newSubscriptionFixtureClient(t *testing.T, fixture *subscriptionFixture) *Client {

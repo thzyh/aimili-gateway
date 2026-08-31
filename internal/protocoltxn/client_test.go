@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -87,6 +88,119 @@ func TestTimeoutAndCancellationDoNotExposeRequestContents(t *testing.T) {
 	cancel()
 	if _, err := client.Finalize(ctx, "operation-safe-2"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancel error = %v", err)
+	}
+}
+
+func TestRenewWritesClosedEnvelopeAndAcceptsOnlyRenewedStatus(t *testing.T) {
+	client, requests, results := newTestClient(t, time.Second)
+	operationID := "operation-safe-4"
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		path := waitForFile(t, filepath.Join(requests, operationID+".renew.json"))
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		var envelope map[string]any
+		if err := json.Unmarshal(contents, &envelope); err != nil {
+			t.Error(err)
+			return
+		}
+		heartbeatID, _ := envelope["heartbeatId"].(string)
+		if len(envelope) != 3 || envelope["action"] != "renew" || envelope["operationId"] != operationID || len(heartbeatID) != 32 {
+			t.Errorf("unsafe renew envelope: %#v", envelope)
+			return
+		}
+		writeResult(t, results, operationID+".renew.json", fmt.Sprintf(`{"operationId":"operation-safe-4","heartbeatId":%q,"status":"renewed","errorCode":""}`, heartbeatID))
+	}()
+
+	result, err := client.Renew(context.Background(), operationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-done
+	if result.Status != "renewed" || result.OperationID != operationID {
+		t.Fatalf("unexpected renew result: %#v", result)
+	}
+}
+
+func TestConsecutiveRenewCorrelatesSecondHelperFailure(t *testing.T) {
+	client, requests, results := newTestClient(t, time.Second)
+	operationID := "operation-safe-5"
+	serve := func(status, errorCode string) <-chan string {
+		heartbeat := make(chan string, 1)
+		go func() {
+			path := waitForFile(t, filepath.Join(requests, operationID+".renew.json"))
+			var envelope map[string]any
+			contents, err := os.ReadFile(path)
+			if err != nil || json.Unmarshal(contents, &envelope) != nil {
+				t.Errorf("read renew envelope: %v", err)
+				return
+			}
+			heartbeatID, _ := envelope["heartbeatId"].(string)
+			if !safeHeartbeatID.MatchString(heartbeatID) {
+				t.Errorf("invalid renew heartbeat id: %q", heartbeatID)
+				return
+			}
+			if err := os.Remove(path); err != nil {
+				t.Errorf("remove renew request: %v", err)
+				return
+			}
+			writeResult(t, results, operationID+".renew.json", fmt.Sprintf(
+				`{"operationId":%q,"heartbeatId":%q,"status":%q,"errorCode":%q}`,
+				operationID, heartbeatID, status, errorCode,
+			))
+			heartbeat <- heartbeatID
+		}()
+		return heartbeat
+	}
+
+	firstHeartbeat := serve("renewed", "")
+	first, err := client.Renew(context.Background(), operationID)
+	if err != nil || first.Status != "renewed" {
+		t.Fatalf("first renew = %#v, err = %v", first, err)
+	}
+	firstID := <-firstHeartbeat
+	if err := os.Remove(filepath.Join(results, operationID+".renew.json")); err != nil {
+		t.Fatal(err)
+	}
+	secondHeartbeat := serve("failed", "operation_not_applied")
+	second, err := client.Renew(context.Background(), operationID)
+	if err != nil || second.Status != "failed" || second.ErrorCode != "operation_not_applied" {
+		t.Fatalf("second renew = %#v, err = %v", second, err)
+	}
+	secondID := <-secondHeartbeat
+	if firstID == "" || secondID == "" || firstID == secondID {
+		t.Fatalf("renew heartbeat ids = %q, %q", firstID, secondID)
+	}
+}
+
+func TestRenewAfterRestartIgnoresLegacySuccessResult(t *testing.T) {
+	client, _, results := newTestClient(t, 20*time.Millisecond)
+	operationID := "operation-safe-6"
+	writeResult(t, results, operationID+".renew.json", `{"operationId":"operation-safe-6","status":"renewed","errorCode":""}`)
+
+	result, err := client.Renew(context.Background(), operationID)
+
+	if !errors.Is(err, ErrTimeout) || result != (Result{}) {
+		t.Fatalf("legacy result was reused: result=%#v err=%v", result, err)
+	}
+}
+
+func TestReadResultWaitsForMatchingRenewHeartbeat(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "operation-safe-7.renew.json")
+	if err := os.WriteFile(path, []byte(`{"operationId":"operation-safe-7","heartbeatId":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","status":"renewed","errorCode":""}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, ready, err := readResult(path, Envelope{
+		Action: ActionRenew, OperationID: "operation-safe-7", HeartbeatID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	})
+
+	if err != nil || ready || result != (Result{}) {
+		t.Fatalf("mismatched heartbeat result=%#v ready=%t err=%v", result, ready, err)
 	}
 }
 

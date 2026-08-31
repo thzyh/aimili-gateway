@@ -24,6 +24,10 @@ PROTOCOL_MODES = {
     "vless_xhttp_reality",
     "hysteria2_quic_tls",
 }
+MAIN_SUBSCRIPTION_REMARKS = {
+    "Aimili Reality",
+    "Aimili Reality-aimili-gateway-subscription",
+}
 
 SAFE_RUNTIME_ERRORS = {
     "no ready groups": "no_ready_groups",
@@ -141,11 +145,16 @@ session=call('GET','/api/v1/auth/session'); csrf=session['csrfToken']
 slot=int(sys.argv[1]); requested=sys.argv[2]; expected_old=sys.argv[3]
 allowed={'vless_tcp_reality_vision','vless_xhttp_reality','hysteria2_quic_tls'}
 switch=None
-if slot:
- if slot not in {1,2,3}: raise RuntimeError('invalid_switch_request')
+if slot >= 0:
+ if slot not in {0,1,2,3}: raise RuntimeError('invalid_switch_request')
  groups=call('GET','/api/v1/proxy-groups')
- target=next(g for g in groups if int(g.get('slotNumber') or 0)==slot and g.get('egressSource')!='main' and g.get('status')=='ready')
- old=target['protocolMode']; target_path='/api/v1/proxy-groups/'+urllib.parse.quote(target['id'],safe='')+'/protocol-mode'
+ if slot == 0:
+  target=next(g for g in groups if g.get('egressSource')=='main' and g.get('status')=='ready')
+  target_id='agw-main'
+ else:
+  target=next(g for g in groups if int(g.get('slotNumber') or 0)==slot and g.get('egressSource')!='main' and g.get('status')=='ready')
+  target_id=target['id']
+ old=target['protocolMode']; target_path='/api/v1/proxy-groups/'+urllib.parse.quote(target_id,safe='')+'/protocol-mode'
  if requested=='inspect':
   print(json.dumps({'inspection':{'slot':slot,'mode':old}},separators=(',',':'))); raise SystemExit(0)
  if requested not in allowed or (expected_old!='any' and old!=expected_old): raise RuntimeError('invalid_switch_request')
@@ -289,13 +298,32 @@ def validate_subscription_coverage(
         if not parsed.hostname or not parsed.port:
             raise RuntimeError("subscription coverage mismatch")
         scheme = "hysteria2" if parsed.scheme in {"hysteria2", "hy2"} else parsed.scheme
-        query_values = dict(urllib.parse.parse_qsl(parsed.query, keep_blank_values=True))
+        query_pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+        if len({key for key, _ in query_pairs}) != len(query_pairs):
+            raise RuntimeError("subscription coverage mismatch")
+        query_values = dict(query_pairs)
         if scheme == "vless":
             query_values.setdefault("encryption", "none")
             query_values.pop("spx", None)
+            if query_values.get("type") == "xhttp":
+                if query_values.get("host") == "":
+                    query_values.pop("host", None)
+                try:
+                    default_extra = json.loads(query_values.get("extra", ""))
+                except (TypeError, json.JSONDecodeError):
+                    default_extra = None
+                if default_extra == {"mode": "auto"}:
+                    query_values.pop("extra", None)
+        path = urllib.parse.unquote(parsed.path)
+        if scheme == "hysteria2":
+            query_values.setdefault("alpn", "h3")
+            query_values.setdefault("insecure", "0")
+            query_values.setdefault("security", "tls")
+            if path in {"", "/"}:
+                path = ""
         query = tuple(sorted(query_values.items()))
         fragment = urllib.parse.unquote(parsed.fragment)
-        if fragment.startswith("Aimili Reality"):
+        if fragment in MAIN_SUBSCRIPTION_REMARKS:
             fragment = "agw-main"
         else:
             match = re.fullmatch(r"Aimili Gateway (agw-[A-Za-z0-9_-]+) VLESS", fragment)
@@ -307,7 +335,7 @@ def validate_subscription_coverage(
             urllib.parse.unquote(parsed.password or ""),
             parsed.hostname.lower(),
             parsed.port,
-            urllib.parse.unquote(parsed.path),
+            path,
             query,
             fragment,
         )
@@ -336,7 +364,7 @@ def bind_subscription_entries(
 
 
 def validate_switch_arguments(slot: int, mode: str) -> tuple[int, str]:
-    if slot not in {1, 2, 3}:
+    if slot not in {0, 1, 2, 3}:
         raise ValueError("invalid slot")
     if mode not in PROTOCOL_MODES:
         raise ValueError("invalid protocol mode")
@@ -382,11 +410,11 @@ def build_public_client_config(uri: str, mode: str, local_port: int) -> dict[str
             raise RuntimeError("invalid Hysteria2 connection document")
         outbound.update({
             "protocol": "hysteria",
-            "settings": {"version": 2, "servers": [{"address": parsed.hostname, "port": parsed.port, "auth": urllib.parse.unquote(parsed.username)}]},
+            "settings": {"version": 2, "address": parsed.hostname, "port": parsed.port},
             "streamSettings": {
                 "network": "hysteria",
                 "security": "tls",
-                "hysteriaSettings": {"version": 2},
+                "hysteriaSettings": {"version": 2, "auth": urllib.parse.unquote(parsed.username)},
                 "tlsSettings": {"serverName": query["sni"], "allowInsecure": False, "fingerprint": "chrome"},
             },
         })
@@ -488,6 +516,21 @@ def verify_group(
                 capture_output=True, text=True,
             )
             try:
+                first_response_is_ip = bool(ipaddress.ip_address(result.stdout.strip()))
+            except ValueError:
+                first_response_is_ip = False
+            if (
+                (public_protocol_tcp or payload["protocolMode"] == "hysteria2_quic_tls")
+                and process.poll() is None
+                and result.returncode in {28, 35, 56}
+                and not first_response_is_ip
+            ):
+                result = subprocess.run(
+                    ["curl.exe", "-4", "-fsS", "--socks5-hostname", f"127.0.0.1:{local_port}",
+                     "--max-time", "25", "https://api.ipify.org"],
+                    capture_output=True, text=True,
+                )
+            try:
                 public_response_is_ip = bool(ipaddress.ip_address(result.stdout.strip()))
             except ValueError:
                 public_response_is_ip = False
@@ -526,7 +569,7 @@ def verify_group(
 
 def run_remote(slot: int | None, mode: str, expected_old: str | None = None) -> dict[str, object]:
     completed = subprocess.run(
-        ["ssh", "ny", "sudo", "python3", "-", str(slot or 0), mode, expected_old or "any"], input=REMOTE_HELPER, text=True,
+        ["ssh", "ny", "sudo", "python3", "-", str(-1 if slot is None else slot), mode, expected_old or "any"], input=REMOTE_HELPER, text=True,
         capture_output=True, timeout=240, check=True,
     )
     remote = json.loads(completed.stdout)

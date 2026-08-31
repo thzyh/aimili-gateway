@@ -275,7 +275,7 @@ def _spool_atomic_result(path: pathlib.Path, document: dict[str, str]) -> None:
         raise TransactionError("result_write_failed") from error
 
 
-SPOOL_NAME = re.compile(r"^(?P<operation>[A-Za-z0-9_-]{8,128})\.(?P<action>apply|finalize|rollback)\.json$")
+SPOOL_NAME = re.compile(r"^(?P<operation>[A-Za-z0-9_-]{8,128})\.(?P<action>apply|renew|finalize|rollback)\.json$")
 
 
 def process_spool(manager: Any, request_dir: pathlib.Path, result_dir: pathlib.Path) -> list[dict[str, str]]:
@@ -294,18 +294,29 @@ def process_spool(manager: Any, request_dir: pathlib.Path, result_dir: pathlib.P
         action = match.group("action")
         result_path = result_dir / request_path.name
         result = {"operationId": operation_id, "status": "failed", "errorCode": "invalid_request"}
+        heartbeat_id = None
         try:
             _require_regular_file(request_path)
             if request_path.stat().st_size <= 0 or request_path.stat().st_size > 16 * 1024:
                 raise TransactionError("invalid_request")
             envelope = json.loads(request_path.read_text(encoding="utf-8"))
-            expected_fields = {"action", "operationId", "request"} if action == "apply" else {"action", "operationId"}
+            if action == "apply":
+                expected_fields = {"action", "operationId", "request"}
+            elif action == "renew":
+                expected_fields = {"action", "operationId", "heartbeatId"}
+            else:
+                expected_fields = {"action", "operationId"}
             if not isinstance(envelope, dict) or set(envelope) != expected_fields or envelope.get("action") != action or envelope.get("operationId") != operation_id:
                 raise TransactionError("invalid_request")
             if action == "apply":
                 if not isinstance(envelope.get("request"), dict) or envelope["request"].get("operationId") != operation_id:
                     raise TransactionError("invalid_request")
                 candidate = manager.apply(envelope["request"])
+            elif action == "renew":
+                if not isinstance(envelope.get("heartbeatId"), str) or re.fullmatch(r"[0-9a-f]{32}", envelope["heartbeatId"]) is None:
+                    raise TransactionError("invalid_request")
+                heartbeat_id = envelope["heartbeatId"]
+                candidate = manager.renew(operation_id)
             elif action == "finalize":
                 candidate = manager.finalize(operation_id)
             else:
@@ -318,6 +329,7 @@ def process_spool(manager: Any, request_dir: pathlib.Path, result_dir: pathlib.P
                 raise TransactionError("transaction_failed")
             allowed_status = {
                 "apply": {"applied", "failed", "repair_required"},
+                "renew": {"renewed", "failed", "repair_required"},
                 "finalize": {"finalized", "failed", "repair_required"},
                 "rollback": {"rolled_back", "failed", "repair_required"},
             }
@@ -330,6 +342,8 @@ def process_spool(manager: Any, request_dir: pathlib.Path, result_dir: pathlib.P
             result = {"operationId": operation_id, "status": "failed", "errorCode": "invalid_request"}
         except Exception:
             result = {"operationId": operation_id, "status": "failed", "errorCode": "transaction_failed"}
+        if heartbeat_id is not None:
+            result["heartbeatId"] = heartbeat_id
         _spool_atomic_result(result_path, result)
         try:
             request_path.unlink()
@@ -337,6 +351,14 @@ def process_spool(manager: Any, request_dir: pathlib.Path, result_dir: pathlib.P
             raise TransactionError("request_cleanup_failed") from error
         processed.append(result)
     return processed
+
+
+def process_spool_cycle(
+    manager: Any, request_dir: pathlib.Path, result_dir: pathlib.Path
+) -> dict[str, list[dict[str, str]]]:
+    operations = process_spool(manager, request_dir, result_dir)
+    recovered = manager.recover_pending(min_age_seconds=180)
+    return {"recovered": recovered, "operations": operations}
 
 
 def _read_private_json(path: pathlib.Path) -> dict[str, Any]:
@@ -837,10 +859,12 @@ class ProtocolTransactionManager:
         return self.config.snapshot_dir / operation_id / "snapshot.json"
 
     def _new_snapshot(self, source: dict[str, Any], template: dict[str, Any]) -> dict[str, Any]:
+        now = int(time.time())
         return {
             "version": 1,
             "phase": "snapshot",
-            "createdAt": int(time.time()),
+            "createdAt": now,
+            "leaseUpdatedAt": now,
             "request": source["request"],
             "row": source["row"],
             "clients": source["clients"],
@@ -1001,7 +1025,11 @@ class ProtocolTransactionManager:
                 self.runner.offline_test(test_path)
             finally:
                 test_path.unlink(missing_ok=True)
-            inbound_path = self._write_temporary_json(operation_dir, "desired-inbound.json", self._runtime_inbound(template))
+            inbound_path = self._write_temporary_json(
+                operation_dir,
+                "desired-inbound.json",
+                {"inbounds": [self._runtime_inbound(template)]},
+            )
             try:
                 self._save_snapshot(snapshot_path, snapshot, "runtime_remove_pending")
                 self._fault("runtime_remove")
@@ -1038,10 +1066,28 @@ class ProtocolTransactionManager:
     def finalize(self, operation_id: str) -> dict[str, str]:
         snapshot_path = self._snapshot_path(operation_id)
         snapshot = _read_private_json(snapshot_path)
+        if snapshot == {
+            "version": 1,
+            "operationId": operation_id,
+            "phase": "finalized",
+        }:
+            return self._result(operation_id, "finalized")
         if snapshot.get("phase") != "applied":
             raise TransactionError("operation_not_applied")
-        self._remove_operation_dir(snapshot_path.parent)
+        _private_atomic_json(
+            snapshot_path,
+            {"version": 1, "operationId": operation_id, "phase": "finalized"},
+        )
         return self._result(operation_id, "finalized")
+
+    def renew(self, operation_id: str) -> dict[str, str]:
+        snapshot_path = self._snapshot_path(operation_id)
+        snapshot = _read_private_json(snapshot_path)
+        if snapshot.get("phase") != "applied":
+            raise TransactionError("operation_not_applied")
+        snapshot["leaseUpdatedAt"] = int(time.time())
+        _private_atomic_json(snapshot_path, snapshot)
+        return self._result(operation_id, "renewed")
 
     def rollback(self, operation_id: str) -> dict[str, str]:
         snapshot_path = self._snapshot_path(operation_id)
@@ -1051,7 +1097,18 @@ class ProtocolTransactionManager:
             raise TransactionError("operation_not_applied") from error
         except OSError as error:
             raise TransactionError("unsafe_path") from error
-        self._rollback_snapshot(snapshot_path, remove_on_success=True)
+        snapshot = _read_private_json(snapshot_path)
+        if snapshot == {
+            "version": 1,
+            "operationId": operation_id,
+            "phase": "rolled_back",
+        }:
+            return self._result(operation_id, "rolled_back")
+        self._rollback_snapshot(snapshot_path, remove_on_success=False)
+        _private_atomic_json(
+            snapshot_path,
+            {"version": 1, "operationId": operation_id, "phase": "rolled_back"},
+        )
         return self._result(operation_id, "rolled_back")
 
     def _rollback_snapshot(self, snapshot_path: pathlib.Path, *, remove_on_success: bool) -> None:
@@ -1064,9 +1121,14 @@ class ProtocolTransactionManager:
         runtime_may_have_changed = phase not in {"snapshot"}
         if runtime_may_have_changed:
             operation_dir = snapshot_path.parent
-            old_path = self._write_temporary_json(operation_dir, "rollback-inbound.json", old_runtime)
+            old_path = self._write_temporary_json(
+                operation_dir,
+                "rollback-inbound.json",
+                {"inbounds": [old_runtime]},
+            )
             try:
-                self.runner.remove_inbound(request["inboundTag"])
+                if request["inboundTag"] in self.runner.list_inbound_tags():
+                    self.runner.remove_inbound(request["inboundTag"])
                 self.runner.add_inbound(old_path)
             finally:
                 old_path.unlink(missing_ok=True)
@@ -1094,10 +1156,14 @@ class ProtocolTransactionManager:
             if not snapshot_path.is_file() or snapshot_path.is_symlink():
                 continue
             snapshot = _read_private_json(snapshot_path)
-            if snapshot.get("phase") == "repair_required":
+            if snapshot.get("phase") in {"finalized", "repair_required", "rolled_back"}:
                 continue
-            created_at = snapshot.get("createdAt")
-            if min_age_seconds and isinstance(created_at, int) and not isinstance(created_at, bool) and int(time.time()) - created_at < min_age_seconds:
+            lease_times = [
+                value
+                for value in (snapshot.get("createdAt"), snapshot.get("leaseUpdatedAt"))
+                if isinstance(value, int) and not isinstance(value, bool)
+            ]
+            if min_age_seconds and lease_times and int(time.time()) - max(lease_times) < min_age_seconds:
                 continue
             try:
                 self._rollback_snapshot(snapshot_path, remove_on_success=True)
@@ -1150,7 +1216,7 @@ def main(argv: list[str] | None = None) -> int:
     subparsers = parser.add_subparsers(dest="action", required=True)
     apply_parser = subparsers.add_parser("apply")
     apply_parser.add_argument("request")
-    for action in ("finalize", "rollback"):
+    for action in ("renew", "finalize", "rollback"):
         action_parser = subparsers.add_parser(action)
         action_parser.add_argument("operation_id")
     subparsers.add_parser("recover")
@@ -1163,6 +1229,8 @@ def main(argv: list[str] | None = None) -> int:
             result = manager.apply(_read_request(pathlib.Path(args.request)))
         elif args.action == "finalize":
             result = manager.finalize(args.operation_id)
+        elif args.action == "renew":
+            result = manager.renew(args.operation_id)
         elif args.action == "rollback":
             result = manager.rollback(args.operation_id)
         elif args.action == "recover":
@@ -1170,8 +1238,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             if config.spool_request_dir is None or config.spool_result_dir is None:
                 raise TransactionError("invalid_config")
-            recovered = manager.recover_pending(min_age_seconds=180)
-            result = {"recovered": recovered, "operations": process_spool(manager, config.spool_request_dir, config.spool_result_dir)}
+            result = process_spool_cycle(manager, config.spool_request_dir, config.spool_result_dir)
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))
         return 0
     except TransactionError as error:

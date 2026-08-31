@@ -243,8 +243,28 @@ func (o *Orchestrator) replaceMainCandidate(ctx context.Context, candidateID str
 	if !ok {
 		return domain.ProxyGroup{}, &Error{Code: "not_configured"}
 	}
+	assignment, err := manager.MainAssignment(ctx)
+	if err != nil {
+		return domain.ProxyGroup{}, operationError(err)
+	}
+	if assignment.State == "repair_required" || assignment.State == "pending_gateway_validation" {
+		return o.repairMainCandidate(ctx, manager, assignment, candidateID)
+	}
 	current, err := o.aimili.MainStatus(ctx)
-	if err != nil || !current.Active || !current.EgressOK || current.CandidateID == "" {
+	if err != nil {
+		return domain.ProxyGroup{}, operationError(err)
+	}
+	if current.Active && current.EgressOK && current.CandidateID != "" && mainCandidateMatches(candidateID, current.CandidateID, current.Country, current.ProxyType) {
+		checked, checkErr := o.checkMain(ctx, false)
+		if checkErr != nil {
+			return domain.ProxyGroup{}, checkErr
+		}
+		if saveErr := o.store.SaveMainEgress(ctx, checked); saveErr != nil {
+			return domain.ProxyGroup{}, &Error{Code: "storage_failed"}
+		}
+		return mainEgressGroup(checked), nil
+	}
+	if !current.Active || !current.EgressOK || current.CandidateID == "" {
 		return domain.ProxyGroup{}, &Error{Code: "not_ready"}
 	}
 	candidates, err := o.aimili.Candidates(ctx)
@@ -281,7 +301,7 @@ func (o *Orchestrator) replaceMainCandidate(ctx context.Context, candidateID str
 	if err != nil {
 		return o.rollbackMainCandidate(ctx, manager, staged.OperationID, err)
 	}
-	committed, err := manager.CommitMainAssignment(ctx, staged.OperationID)
+	committed, err := commitMainAssignmentIdempotently(ctx, manager, staged.OperationID)
 	if err != nil || committed.State != "committed" {
 		if err == nil {
 			err = &Error{Code: "commit_failed"}
@@ -292,6 +312,107 @@ func (o *Orchestrator) replaceMainCandidate(ctx context.Context, candidateID str
 		return domain.ProxyGroup{}, &Error{Code: "storage_failed"}
 	}
 	return mainEgressGroup(checked), nil
+}
+
+func (o *Orchestrator) repairMainCandidate(ctx context.Context, manager mainAssignmentAimiliClient, assignment aimili.MainAssignmentStatus, candidateID string) (domain.ProxyGroup, error) {
+	operationID := assignment.OperationID
+	if operationID == "" {
+		return domain.ProxyGroup{}, &Error{Code: "conflict"}
+	}
+	targetMatches := mainCandidateMatches(candidateID, assignment.NewCandidateID, assignment.Country, assignment.ProxyType)
+	pending := assignment
+	if assignment.State == "pending_gateway_validation" {
+		if !targetMatches {
+			return domain.ProxyGroup{}, &Error{Code: "conflict"}
+		}
+	} else if targetMatches {
+		var repairErr error
+		for attempt := 0; attempt < 2; attempt++ {
+			pending, repairErr = manager.RepairCommitMainAssignment(ctx, operationID)
+			if repairErr == nil {
+				break
+			}
+		}
+		if repairErr != nil {
+			return domain.ProxyGroup{}, operationError(repairErr)
+		}
+	} else {
+		candidates, err := o.aimili.Candidates(ctx)
+		if err != nil {
+			return domain.ProxyGroup{}, operationError(err)
+		}
+		var candidate *aimili.Candidate
+		for index := range candidates {
+			item := &candidates[index]
+			if item.ProbeStatus == "available" && domain.ProxyType(item.ProxyType).Valid() && mainCandidateMatches(candidateID, item.ID, item.CountryCode, item.ProxyType) {
+				candidate = item
+				break
+			}
+		}
+		if candidate == nil {
+			return domain.ProxyGroup{}, &Error{Code: "not_found"}
+		}
+		request := aimili.MainRepairRequest{CandidateID: candidate.ID, Country: candidate.CountryCode, ProxyType: candidate.ProxyType}
+		var repairErr error
+		for attempt := 0; attempt < 2; attempt++ {
+			pending, repairErr = manager.RepairReplaceMainAssignment(ctx, operationID, request)
+			if repairErr == nil {
+				break
+			}
+		}
+		if repairErr != nil {
+			return domain.ProxyGroup{}, operationError(repairErr)
+		}
+	}
+	if pending.State != "pending_gateway_validation" && pending.State != "committed" {
+		return domain.ProxyGroup{}, &Error{Code: "egress_unavailable"}
+	}
+	if pending.State == "pending_gateway_validation" && (!pending.DNSVerified || !pending.ExitVerified || !pending.Available) {
+		return domain.ProxyGroup{}, &Error{Code: "egress_unavailable"}
+	}
+	checked, err := o.checkMain(ctx, false)
+	if err != nil {
+		return domain.ProxyGroup{}, operationError(err)
+	}
+	if strings.TrimSpace(checked.CandidateID) != strings.TrimSpace(pending.NewCandidateID) ||
+		checked.CountryCode != normalizedMainCountry(pending.Country) ||
+		checked.ProxyType != normalizedMainProxyType(pending.ProxyType) {
+		return domain.ProxyGroup{}, &Error{Code: "conflict"}
+	}
+	if pending.State != "committed" {
+		committed, commitErr := commitMainAssignmentIdempotently(ctx, manager, operationID)
+		if commitErr != nil || committed.State != "committed" {
+			if commitErr == nil {
+				commitErr = &Error{Code: "commit_failed"}
+			}
+			return domain.ProxyGroup{}, operationError(commitErr)
+		}
+	}
+	if err := o.store.SaveMainEgress(ctx, checked); err != nil {
+		return domain.ProxyGroup{}, &Error{Code: "storage_failed"}
+	}
+	return mainEgressGroup(checked), nil
+}
+
+func commitMainAssignmentIdempotently(ctx context.Context, manager mainAssignmentAimiliClient, operationID string) (aimili.MainAssignmentStatus, error) {
+	var result aimili.MainAssignmentStatus
+	var err error
+	for attempt := 0; attempt < 2; attempt++ {
+		result, err = manager.CommitMainAssignment(ctx, operationID)
+		if err == nil {
+			return result, nil
+		}
+	}
+	return aimili.MainAssignmentStatus{}, err
+}
+
+func mainCandidateMatches(requested, rawID, country, proxyType string) bool {
+	requested = strings.TrimSpace(requested)
+	if requested == strings.TrimSpace(rawID) {
+		return true
+	}
+	identity, err := domain.NewProxyGroupIdentity(country, domain.ProxyType(strings.ToLower(strings.TrimSpace(proxyType))), rawID)
+	return err == nil && requested == identity.ID
 }
 
 func (o *Orchestrator) rollbackMainCandidate(ctx context.Context, manager mainAssignmentAimiliClient, operationID string, cause error) (domain.ProxyGroup, error) {

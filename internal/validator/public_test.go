@@ -57,15 +57,19 @@ func TestBuildPublicClientConfigUsesHysteria2AuthAndTLSServerName(t *testing.T) 
 		t.Fatal(err)
 	}
 	outbound := document["outbounds"].([]any)[0].(map[string]any)
-	server := outbound["settings"].(map[string]any)["servers"].([]any)[0].(map[string]any)
+	settings := outbound["settings"].(map[string]any)
 	stream := outbound["streamSettings"].(map[string]any)
-	if outbound["protocol"] != "hysteria" || server["auth"] != "test-independent-auth" || server["port"] != float64(20001) {
+	hysteria := stream["hysteriaSettings"].(map[string]any)
+	if outbound["protocol"] != "hysteria" || settings["version"] != float64(2) || settings["address"] != "127.0.0.1" || settings["port"] != float64(20001) || hysteria["auth"] != "test-independent-auth" {
 		t.Fatal("Hysteria2 server contract is incomplete")
 	}
 	if stream["network"] != "hysteria" || stream["security"] != "tls" || stream["tlsSettings"].(map[string]any)["serverName"] != "proxy.example.test" {
 		t.Fatal("Hysteria2 TLS contract is incomplete")
 	}
-	if _, exists := server["id"]; exists {
+	if _, exists := settings["servers"]; exists {
+		t.Fatal("Hysteria2 used an incompatible multi-server wrapper")
+	}
+	if _, exists := settings["id"]; exists {
 		t.Fatal("Hysteria2 reused a VLESS UUID")
 	}
 }

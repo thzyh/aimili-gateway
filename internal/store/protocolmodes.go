@@ -174,6 +174,20 @@ func (s *Store) GetEgressOperationByRequestHash(ctx context.Context, egressID, k
 	return value, nil
 }
 
+func (s *Store) HasOtherEgressOperationAtOrAfter(ctx context.Context, value EgressOperation) (bool, error) {
+	if !safeOperationID.MatchString(value.OperationID) || !strings.HasPrefix(value.EgressID, "agw-") ||
+		(value.Kind != "main_assign" && value.Kind != "protocol_switch") || value.StartedAt.IsZero() {
+		return false, errors.New("invalid egress operation boundary")
+	}
+	var exists bool
+	err := s.db.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM egress_operations
+			WHERE egress_id = ? AND kind = ? AND operation_id != ? AND started_at >= ?
+		)`, value.EgressID, value.Kind, value.OperationID, value.StartedAt.UTC().UnixMilli()).Scan(&exists)
+	return exists, err
+}
+
 func (s *Store) CompleteEgressOperation(ctx context.Context, operationID string, completedAt time.Time) error {
 	if !safeOperationID.MatchString(operationID) || completedAt.IsZero() {
 		return errors.New("invalid egress operation completion")

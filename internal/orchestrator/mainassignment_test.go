@@ -100,3 +100,222 @@ func TestReplaceCandidateMarksMainRepairRequiredWhenRollbackFails(t *testing.T) 
 		t.Fatalf("error = %v", err)
 	}
 }
+
+func TestRepairCommitRequiresGatewayMixedAndPublicValidationBeforeFinalize(t *testing.T) {
+	fixture := newFixture()
+	fixture.aimili.mainAssignment = repairAssignment("new-main", "JP", "datacenter")
+	fixture.aimili.mainStatus = aimili.MainStatus{CandidateID: "", Port: 7928}
+	fixture.aimili.stagedMainStatus = aimili.MainStatus{
+		CandidateID: "new-main", Country: "JP", CountryName: "Japan", ProxyType: "datacenter",
+		ExitIP: "203.0.113.20", Port: 7928, EgressOK: true, Active: true,
+	}
+
+	group, err := fixture.orchestrator(t).ReplaceCandidate(context.Background(), "new-main", "agw-main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if group.CandidateID != "new-main" || fixture.aimili.mainAssignment.State != "committed" {
+		t.Fatalf("group=%#v assignment=%#v", group, fixture.aimili.mainAssignment)
+	}
+	want := []string{"main.repair-commit", "validate.socks", "validate.vless", "main.commit"}
+	if !equalStrings(fixture.calls, want) {
+		t.Fatalf("calls = %#v, want %#v", fixture.calls, want)
+	}
+}
+
+func TestRepairCommitRejectsCheckedCandidateMismatchBeforeFinalize(t *testing.T) {
+	fixture := newFixture()
+	fixture.aimili.mainAssignment = repairAssignment("new-main", "JP", "datacenter")
+	fixture.aimili.stagedMainStatus = aimili.MainStatus{
+		CandidateID: "different-main", Country: "JP", CountryName: "Japan", ProxyType: "datacenter",
+		ExitIP: "203.0.113.20", Port: 7928, EgressOK: true, Active: true,
+	}
+
+	_, err := fixture.orchestrator(t).ReplaceCandidate(context.Background(), "new-main", "agw-main")
+
+	if codeOf(err) != "conflict" {
+		t.Fatalf("error = %v", err)
+	}
+	if fixture.aimili.mainAssignment.State != "pending_gateway_validation" || contains(fixture.calls, "main.commit") || contains(fixture.calls, "main.rollback") {
+		t.Fatalf("assignment=%#v calls=%#v", fixture.aimili.mainAssignment, fixture.calls)
+	}
+}
+
+func TestRepairReplaceUsesOnlyTheExplicitCandidateThenWaitsForGatewayValidation(t *testing.T) {
+	fixture := newFixture()
+	fixture.aimili.mainAssignment = repairAssignment("failed-new", "JP", "datacenter")
+	fixture.aimili.candidates = []aimili.Candidate{{
+		ID: "third-main", CountryCode: "KR", CountryName: "Korea", ProxyType: "residential", ProbeStatus: "available",
+	}}
+	fixture.aimili.stagedMainStatus = aimili.MainStatus{
+		CandidateID: "third-main", Country: "KR", CountryName: "Korea", ProxyType: "residential",
+		ExitIP: "203.0.113.30", Port: 7928, EgressOK: true, Active: true,
+	}
+
+	group, err := fixture.orchestrator(t).ReplaceCandidate(context.Background(), "third-main", "agw-main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if group.CandidateID != "third-main" || fixture.aimili.repairReplaceRequests[0].CandidateID != "third-main" {
+		t.Fatalf("group=%#v requests=%#v", group, fixture.aimili.repairReplaceRequests)
+	}
+	want := []string{"main.repair-replace", "validate.socks", "validate.vless", "main.commit"}
+	if !equalStrings(fixture.calls, want) {
+		t.Fatalf("calls = %#v, want %#v", fixture.calls, want)
+	}
+}
+
+func TestRepairReplaceRejectsCheckedNormalizedClassificationMismatchBeforeFinalize(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		country   string
+		proxyType string
+	}{
+		{name: "country", country: "jp", proxyType: "residential"},
+		{name: "proxy type", country: "kr", proxyType: "datacenter"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newFixture()
+			fixture.aimili.mainAssignment = repairAssignment("failed-new", "JP", "datacenter")
+			fixture.aimili.candidates = []aimili.Candidate{{
+				ID: "third-main", CountryCode: "KR", CountryName: "Korea", ProxyType: "residential", ProbeStatus: "available",
+			}}
+			fixture.aimili.stagedMainStatus = aimili.MainStatus{
+				CandidateID: "third-main", Country: test.country, CountryName: "Checked", ProxyType: test.proxyType,
+				ExitIP: "203.0.113.30", Port: 7928, EgressOK: true, Active: true,
+			}
+
+			_, err := fixture.orchestrator(t).ReplaceCandidate(context.Background(), "third-main", "agw-main")
+
+			if codeOf(err) != "conflict" {
+				t.Fatalf("error = %v", err)
+			}
+			if fixture.aimili.mainAssignment.State != "pending_gateway_validation" || contains(fixture.calls, "main.commit") || contains(fixture.calls, "main.rollback") {
+				t.Fatalf("assignment=%#v calls=%#v", fixture.aimili.mainAssignment, fixture.calls)
+			}
+		})
+	}
+}
+
+func TestRepairGatewayValidationFailureKeepsTransactionProtectedAndCanResume(t *testing.T) {
+	fixture := newFixture()
+	fixture.aimili.mainAssignment = repairAssignment("new-main", "JP", "datacenter")
+	fixture.aimili.stagedMainStatus = aimili.MainStatus{
+		CandidateID: "new-main", Country: "JP", CountryName: "Japan", ProxyType: "datacenter",
+		ExitIP: "203.0.113.20", Port: 7928, EgressOK: true, Active: true,
+	}
+	fixture.validator.vlessErrors = []error{&validator.Error{Code: "config_invalid"}, nil}
+	orchestrator := fixture.orchestrator(t)
+
+	_, firstErr := orchestrator.ReplaceCandidate(context.Background(), "new-main", "agw-main")
+	group, secondErr := orchestrator.ReplaceCandidate(context.Background(), "new-main", "agw-main")
+
+	if codeOf(firstErr) != "config_invalid" || secondErr != nil {
+		t.Fatalf("first=%v second=%v", firstErr, secondErr)
+	}
+	if group.CandidateID != "new-main" || fixture.aimili.repairCommitCalls != 1 || fixture.aimili.mainCommitCalls != 1 {
+		t.Fatalf("group=%#v repair=%d commits=%d", group, fixture.aimili.repairCommitCalls, fixture.aimili.mainCommitCalls)
+	}
+	if contains(fixture.calls, "main.rollback") {
+		t.Fatalf("repair validation failure released protection: %#v", fixture.calls)
+	}
+}
+
+func TestRepairReplaceGatewayValidationFailureKeepsTheSameExplicitCandidate(t *testing.T) {
+	fixture := newFixture()
+	fixture.aimili.mainAssignment = repairAssignment("failed-new", "JP", "datacenter")
+	fixture.aimili.candidates = []aimili.Candidate{{
+		ID: "third-main", CountryCode: "KR", CountryName: "Korea", ProxyType: "residential", ProbeStatus: "available",
+	}}
+	fixture.aimili.stagedMainStatus = aimili.MainStatus{
+		CandidateID: "third-main", Country: "KR", CountryName: "Korea", ProxyType: "residential",
+		ExitIP: "203.0.113.30", Port: 7928, EgressOK: true, Active: true,
+	}
+	fixture.validator.vlessErrors = []error{&validator.Error{Code: "config_invalid"}, nil}
+	orchestrator := fixture.orchestrator(t)
+
+	_, firstErr := orchestrator.ReplaceCandidate(context.Background(), "third-main", "agw-main")
+	group, secondErr := orchestrator.ReplaceCandidate(context.Background(), "third-main", "agw-main")
+
+	if codeOf(firstErr) != "config_invalid" || secondErr != nil || group.CandidateID != "third-main" {
+		t.Fatalf("first=%v second=%v group=%#v", firstErr, secondErr, group)
+	}
+	if len(fixture.aimili.repairReplaceRequests) != 1 || fixture.aimili.repairReplaceRequests[0].CandidateID != "third-main" || contains(fixture.calls, "main.rollback") {
+		t.Fatalf("repair replace was replayed or changed candidate: calls=%#v requests=%#v", fixture.calls, fixture.aimili.repairReplaceRequests)
+	}
+}
+
+func TestRepairActionsRetryAfterStagingResponseLoss(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		candidate string
+		replace   bool
+	}{
+		{name: "repair commit", candidate: "new-main"},
+		{name: "repair replace", candidate: "third-main", replace: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newFixture()
+			fixture.aimili.mainAssignment = repairAssignment("new-main", "JP", "datacenter")
+			fixture.aimili.stagedMainStatus = aimili.MainStatus{
+				CandidateID: test.candidate, Country: "JP", CountryName: "Target", ProxyType: "datacenter",
+				ExitIP: "203.0.113.20", Port: 7928, EgressOK: true, Active: true,
+			}
+			if test.replace {
+				fixture.aimili.candidates = []aimili.Candidate{{ID: test.candidate, CountryCode: "JP", CountryName: "Target", ProxyType: "datacenter", ProbeStatus: "available"}}
+				fixture.aimili.repairReplaceErrors = []error{errors.New("response lost"), nil}
+			} else {
+				fixture.aimili.repairCommitErrors = []error{errors.New("response lost"), nil}
+			}
+
+			group, err := fixture.orchestrator(t).ReplaceCandidate(context.Background(), test.candidate, "agw-main")
+
+			if err != nil || group.CandidateID != test.candidate {
+				t.Fatalf("group=%#v err=%v", group, err)
+			}
+			if test.replace && len(fixture.aimili.repairReplaceRequests) != 2 {
+				t.Fatalf("repair replace attempts = %d", len(fixture.aimili.repairReplaceRequests))
+			}
+			if !test.replace && fixture.aimili.repairCommitCalls != 2 {
+				t.Fatalf("repair commit attempts = %d", fixture.aimili.repairCommitCalls)
+			}
+		})
+	}
+}
+
+func TestRepairFinalizeRetriesAfterResponseLoss(t *testing.T) {
+	fixture := newFixture()
+	fixture.aimili.mainAssignment = repairAssignment("new-main", "JP", "datacenter")
+	fixture.aimili.stagedMainStatus = aimili.MainStatus{
+		CandidateID: "new-main", Country: "JP", CountryName: "Japan", ProxyType: "datacenter",
+		ExitIP: "203.0.113.20", Port: 7928, EgressOK: true, Active: true,
+	}
+	fixture.aimili.mainCommitErrors = []error{errors.New("response lost"), nil}
+
+	group, err := fixture.orchestrator(t).ReplaceCandidate(context.Background(), "new-main", "agw-main")
+
+	if err != nil || group.CandidateID != "new-main" || fixture.aimili.mainCommitCalls != 2 {
+		t.Fatalf("group=%#v err=%v commits=%d", group, err, fixture.aimili.mainCommitCalls)
+	}
+}
+
+func TestMainReplacementRecoversWhenFinalizeSucceededBeforeGatewayStore(t *testing.T) {
+	fixture := newFixture()
+	fixture.aimili.mainStatus = aimili.MainStatus{
+		CandidateID: "new-main", Country: "JP", CountryName: "Japan", ProxyType: "datacenter",
+		ExitIP: "203.0.113.20", Port: 7928, EgressOK: true, Active: true,
+	}
+
+	group, err := fixture.orchestrator(t).ReplaceCandidate(context.Background(), "new-main", "agw-main")
+
+	if err != nil || group.CandidateID != "new-main" || contains(fixture.calls, "main.stage") {
+		t.Fatalf("group=%#v err=%v calls=%#v", group, err, fixture.calls)
+	}
+}
+
+func repairAssignment(candidateID, country, proxyType string) aimili.MainAssignmentStatus {
+	return aimili.MainAssignmentStatus{
+		OperationID: "operation-safe-1", State: "repair_required", OldCandidateID: "old-main",
+		NewCandidateID: candidateID, Country: country, ProxyType: proxyType, Port: 7928,
+	}
+}

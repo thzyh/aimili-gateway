@@ -108,12 +108,24 @@ type MainStatus struct {
 	Active      bool   `json:"active"`
 }
 
+type MutationLease struct {
+	State     string  `json:"state"`
+	LeaseID   string  `json:"lease_id"`
+	ExpiresAt float64 `json:"expires_at"`
+}
+
 type MainAssignmentRequest struct {
 	CandidateID                string `json:"candidateId"`
 	Country                    string `json:"country"`
 	ProxyType                  string `json:"proxyType"`
 	ExpectedCurrentCandidateID string `json:"expectedCurrentCandidateId"`
 	IdempotencyKey             string `json:"idempotencyKey"`
+}
+
+type MainRepairRequest struct {
+	CandidateID string `json:"candidateId"`
+	Country     string `json:"country"`
+	ProxyType   string `json:"proxyType"`
 }
 
 type MainAssignmentStatus struct {
@@ -128,6 +140,7 @@ type MainAssignmentStatus struct {
 	ExitVerified   bool    `json:"exit_verified"`
 	Available      bool    `json:"available"`
 	ErrorCode      string  `json:"error_code"`
+	Resolution     string  `json:"resolution"`
 	ExpiresAt      float64 `json:"expires_at"`
 }
 
@@ -313,6 +326,78 @@ func (c *Client) MainStatus(ctx context.Context) (MainStatus, error) {
 
 var safeMainOperationID = regexp.MustCompile(`^[A-Za-z0-9_-]{8,128}$`)
 
+func (c *Client) AcquireMutationLease(ctx context.Context, idempotencyKey string) (MutationLease, error) {
+	if !visibleNonWhitespaceASCII(idempotencyKey, 8, 256) {
+		return MutationLease{}, &AdapterError{Code: "invalid_request"}
+	}
+	input := struct {
+		IdempotencyKey string `json:"idempotencyKey"`
+	}{IdempotencyKey: idempotencyKey}
+	var result MutationLease
+	if err := c.do(ctx, c.operationTimeout, http.MethodPost, "control/v1/mutation-leases", input, &result); err != nil {
+		return MutationLease{}, err
+	}
+	if !validMutationLease(result) {
+		return MutationLease{}, &AdapterError{Code: "invalid_response"}
+	}
+	return result, nil
+}
+
+func (c *Client) RenewMutationLease(ctx context.Context, leaseID string) (MutationLease, error) {
+	if !safeMutationLeaseID(leaseID) {
+		return MutationLease{}, &AdapterError{Code: "invalid_request"}
+	}
+	var result MutationLease
+	path := fmt.Sprintf("control/v1/mutation-leases/%s/renew", leaseID)
+	if err := c.do(ctx, c.operationTimeout, http.MethodPost, path, struct{}{}, &result); err != nil {
+		return MutationLease{}, err
+	}
+	if !validMutationLease(result) || result.LeaseID != leaseID {
+		return MutationLease{}, &AdapterError{Code: "invalid_response"}
+	}
+	return result, nil
+}
+
+func (c *Client) ReleaseMutationLease(ctx context.Context, leaseID string) error {
+	if !safeMutationLeaseID(leaseID) {
+		return &AdapterError{Code: "invalid_request"}
+	}
+	var result struct {
+		State string `json:"state"`
+	}
+	path := fmt.Sprintf("control/v1/mutation-leases/%s", leaseID)
+	if err := c.do(ctx, c.operationTimeout, http.MethodDelete, path, nil, &result); err != nil {
+		return err
+	}
+	if result.State != "released" {
+		return &AdapterError{Code: "invalid_response"}
+	}
+	return nil
+}
+
+func validMutationLease(value MutationLease) bool {
+	return value.State == "active" && safeMutationLeaseID(value.LeaseID) && value.ExpiresAt > 0
+}
+
+func safeMutationLeaseID(value string) bool {
+	if len(value) < 1 || len(value) > 1024 || value == "." || value == ".." || strings.ContainsAny(value, "/\\?#%") {
+		return false
+	}
+	return visibleNonWhitespaceASCII(value, 1, 1024)
+}
+
+func visibleNonWhitespaceASCII(value string, minLength, maxLength int) bool {
+	if len(value) < minLength || len(value) > maxLength {
+		return false
+	}
+	for _, character := range value {
+		if character <= 0x20 || character > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
 func (c *Client) MainAssignment(ctx context.Context) (MainAssignmentStatus, error) {
 	var result MainAssignmentStatus
 	if err := c.do(ctx, c.readTimeout, http.MethodGet, "control/v1/main/assignment", nil, &result); err != nil {
@@ -354,9 +439,34 @@ func (c *Client) RollbackMainAssignment(ctx context.Context, operationID string)
 	return c.finishMainAssignment(ctx, operationID, "rollback")
 }
 
+func (c *Client) RepairCommitMainAssignment(ctx context.Context, operationID string) (MainAssignmentStatus, error) {
+	return c.finishMainAssignment(ctx, operationID, "repair-commit")
+}
+
+func (c *Client) RepairReplaceMainAssignment(ctx context.Context, operationID string, input MainRepairRequest) (MainAssignmentStatus, error) {
+	operationID = strings.TrimSpace(operationID)
+	input.CandidateID = strings.TrimSpace(input.CandidateID)
+	input.Country = strings.ToUpper(strings.TrimSpace(input.Country))
+	input.ProxyType = strings.ToLower(strings.TrimSpace(input.ProxyType))
+	if !safeMainOperationID.MatchString(operationID) || input.CandidateID == "" || len(input.CandidateID) > 256 ||
+		len(input.Country) != 2 || input.Country[0] < 'A' || input.Country[0] > 'Z' || input.Country[1] < 'A' || input.Country[1] > 'Z' ||
+		!domainProxyTypeValid(input.ProxyType) {
+		return MainAssignmentStatus{}, &AdapterError{Code: "invalid_request"}
+	}
+	var result MainAssignmentStatus
+	path := fmt.Sprintf("control/v1/main/assign/%s/repair-replace", operationID)
+	if err := c.do(ctx, mainAssignmentTimeout, http.MethodPost, path, input, &result); err != nil {
+		return MainAssignmentStatus{}, err
+	}
+	if !validMainAssignmentStatus(result) {
+		return MainAssignmentStatus{}, &AdapterError{Code: "invalid_response"}
+	}
+	return result, nil
+}
+
 func (c *Client) finishMainAssignment(ctx context.Context, operationID, action string) (MainAssignmentStatus, error) {
 	operationID = strings.TrimSpace(operationID)
-	if !safeMainOperationID.MatchString(operationID) || (action != "commit" && action != "rollback") {
+	if !safeMainOperationID.MatchString(operationID) || (action != "commit" && action != "rollback" && action != "repair-commit") {
 		return MainAssignmentStatus{}, &AdapterError{Code: "invalid_request"}
 	}
 	var result MainAssignmentStatus
@@ -375,9 +485,15 @@ func validMainAssignmentStatus(result MainAssignmentStatus) bool {
 		return result.OperationID == "" && result.OldCandidateID == "" && result.NewCandidateID == ""
 	}
 	switch result.State {
-	case "switching", "pending_commit", "committed", "rolling_back", "rolled_back", "repair_required":
+	case "switching", "pending_commit", "repairing", "pending_gateway_validation", "committed", "rolling_back", "rolled_back", "repair_required":
 	default:
 		return false
+	}
+	if result.Resolution != "" {
+		if (result.Resolution != "repair_commit" && result.Resolution != "repair_replace") ||
+			(result.State != "pending_gateway_validation" && result.State != "committed") {
+			return false
+		}
 	}
 	return safeMainOperationID.MatchString(result.OperationID) &&
 		result.OldCandidateID != "" && len(result.OldCandidateID) <= 256 &&
