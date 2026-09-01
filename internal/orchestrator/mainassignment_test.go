@@ -125,9 +125,22 @@ func TestReplaceMainAliasWriteFailureRestoresOldMainAndAliases(t *testing.T) {
 			fixture.xui.ensureSubscriptionAliasDrifts = test.drifts
 
 			_, err := fixture.orchestratorWithMax(t, 3).ReplaceCandidate(context.Background(), "new-main", "agw-main")
+			oldRuntime := aimili.MainStatus{CandidateID: "old-main", Country: "US", CountryName: "United States", ProxyType: "datacenter", ExitIP: "203.0.113.10", Port: 7928, EgressOK: true, Active: true}
+			if fixture.aimili.mainStatus != oldRuntime {
+				t.Fatalf("AimiliVPN main runtime not restored: %#v", fixture.aimili.mainStatus)
+			}
+			if len(fixture.xui.updated) != 0 || len(fixture.xui.updateNames) != 0 {
+				t.Fatalf("non-target Gateway groups were touched: updated=%#v names=%#v", fixture.xui.updated, fixture.xui.updateNames)
+			}
 			if test.repair {
 				if codeOf(err) != "repair_required" || !contains(fixture.calls, "main.rollback") {
 					t.Fatalf("error=%v calls=%#v", err, fixture.calls)
+				}
+				if fixture.store.mainEgress.CandidateID != "old-main" || fixture.store.mainEgress.ExitIP != "203.0.113.10" {
+					t.Fatalf("repair state did not retain restored main: %#v", fixture.store.mainEgress)
+				}
+				if fixture.aimili.createdSlots[0].NodeID != "old-node" || fixture.aimili.createdSlots[1].NodeID != "us-node" || fixture.aimili.createdSlots[2].NodeID != "kr-node" {
+					t.Fatalf("non-target exits changed: %#v", fixture.aimili.createdSlots)
 				}
 				return
 			}
