@@ -118,6 +118,18 @@ try {
                 -FilePath 'npm' `
                 -Arguments @('run', 'build') `
                 -WorkingDirectory (Join-Path $patchedXUI 'frontend')
+            Write-Host 'VERIFY 3x-ui fixed-patch full Go suite'
+            $xuiFullLog = Join-Path $tmpRoot 'xui-full-go-test.log'
+            & python (Join-Path $PSScriptRoot 'run_bounded_command.py') `
+                --timeout-seconds 900 `
+                --output $xuiFullLog `
+                --working-directory $patchedXUI `
+                -- go test -p 1 ./... -count=1
+            $xuiFullExit = $LASTEXITCODE
+            Invoke-Checked -Label '3x-ui Windows baseline classification' `
+                -FilePath 'python' `
+                -Arguments @((Join-Path $PSScriptRoot 'verify_xui_windows_baseline.py'), '--output', $xuiFullLog, '--exit-code', [string]$xuiFullExit, '--platform', $(if ($env:OS -eq 'Windows_NT') { 'windows' } else { 'other' })) `
+                -WorkingDirectory $gatewayRepository
             Invoke-Checked -Label '3x-ui fixed-patch build' `
                 -FilePath 'go' `
                 -Arguments @('build', './...') `
@@ -158,9 +170,16 @@ try {
         Invoke-Checked -Label '3x-ui deploy diff check' -FilePath 'git' -Arguments @('-c', "safe.directory=$xuiDeployRepository", '-C', $xuiDeployRepository, 'diff', '--check') -WorkingDirectory $workspaceRoot
     }
 
-    Write-Host 'TRANSACTION old-main -> protocol-switch: role=main country=Japan public-port=8443 result=ready'
-    Write-Host 'TRANSACTION candidate-country-replace: role=slot-1 Japan -> Korea public-port=20000 alias=出口位 1_韩国 result=ready'
-    Write-Host 'TRANSACTION failed-replace: role=slot-1 country=Korea error-code=candidate_dial_failed candidate=excluded transaction=rolled-back'
+    Write-Host 'VERIFY temporary AimiliVPN, 3x-ui, and Gateway HTTP processes'
+    $fixtureOutput = @(& python (Join-Path $PSScriptRoot 'egress_ux_alias_process_fixture.py'))
+    if ($LASTEXITCODE -ne 0 -or $fixtureOutput.Count -ne 1) {
+        throw 'three-process integration fixture failed'
+    }
+    $fixture = ($fixtureOutput[0] | ConvertFrom-Json)
+    foreach ($transaction in $fixture.transactions) {
+        Write-Host ("COVERED SCENARIO scenario={0} role={1} country-code={2} result={3}" -f `
+            $transaction.scenario, $transaction.role, $transaction.countryCode, $transaction.result)
+    }
     Write-Host 'SAFE OUTPUT: no subscription URL, auth value, UUID, or node configuration was emitted.'
 }
 finally {
