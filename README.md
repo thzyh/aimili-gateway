@@ -4,6 +4,8 @@ Aimili Gateway 是 AimiliVPN 与 3x-ui 的轻量统一控制台项目。统一�
 
 ## 当前阶段
 
+2026-09-01 出口可见性与动态订阅别名增量已完成本地 TDD 和三仓库集成验证：主连接协议切换前先收敛真实身份；候选入口 IP 与实测出口 IP 分字段；页面使用可关闭的中文分区通知和单页面单端口；四个订阅名称按逻辑出口与当前国家生成。动态别名只写 `aimili-gateway-subscription` 的 Gateway 受管公网入站关联，协议切换只读验证别名，不接管其他 3x-ui 资源。完整本地证据与尚未执行的生产层级见 `docs/verification/2026-09-01-egress-ux-and-dynamic-subscription-alias.md`。
+
 2026-08-31 增量已完成本地 TDD：四个运行节点固定为主连接、出口1、出口2、出口3并显示公网/mixed 端口；AimiliVPN 增加代理容量隔离、OpenVPN 失败回收和固定 30 条两层节点池；Gateway 在公网协议事务前验证真实槽位与 mixed。最新本地与生产分层证据见 `docs/verification/2026-08-31-stable-runtime-order-and-country-cache.md`。
 
 主连接安全切换与每出口独立协议模式的增量设计已经批准，功能分支正在按 TDD 完成本地实现与部署验证。该增量保持四个逻辑出口，每个出口只保留一个公网协议配置；mixed/SOCKS5H 不参与协议切换。正式运行手册见 `docs/runbooks/main-switch-protocol-modes.md`，生产结果只以 `docs/verification/2026-08-29-main-switch-protocol-modes.md` 中实际标记为通过的层级为准。未完成 VPS 阶梯验收前，下面记录的 Test 风格纯 TCP/Vision 生产基线仍是现网事实。
@@ -26,6 +28,9 @@ Gateway 只管理 `agw-` 命名空间；不接管非受管 3x-ui/Xray 资源，�
 - `docs/superpowers/specs/2026-08-28-xui-upgrade-capacity-country-refresh-design.md`：3x-ui v3.7.0、按国家刷新、出口去重和 512 MiB 容量阶梯的批准设计。
 - `docs/superpowers/specs/2026-08-29-test-style-subscription-design.md`：已实现的 3x-ui 原生多入站 VLESS 订阅、主连接检测和旧聚合迁移设计。
 - `docs/superpowers/specs/2026-08-29-main-switch-protocol-modes-design.md`：已批准的主连接两阶段事务、每出口单协议模式与混合协议订阅增量设计。
+- `docs/superpowers/specs/2026-09-01-egress-ux-and-dynamic-subscription-alias-design.md`：真实出口 IP、中文反馈、主身份同步和逐关联动态订阅别名设计。
+- `docs/superpowers/plans/2026-09-01-egress-ux-and-dynamic-subscription-alias.md`：三仓库 TDD、回滚故障注入和阶梯部署计划。
+- `docs/verification/2026-09-01-egress-ux-and-dynamic-subscription-alias.md`：本增量的脱敏本地、部署和最终客户端验收记录。
 - `docs/superpowers/plans/2026-08-29-main-switch-protocol-modes.md`：本增量的 TDD、本地故障注入和 VPS 阶梯实施计划。
 - `docs/runbooks/main-switch-protocol-modes.md`：本增量的备份、回滚、证书、UDP 边界与 `repair_required` 运维手册。
 - `docs/verification/2026-08-29-main-switch-protocol-modes.md`：本增量的脱敏本地与生产验收记录。
@@ -92,6 +97,8 @@ sudo aimili-gateway-account
 V1-D 中该命令是三服务统一用户名和密码的唯一受支持修改入口。密码不能查询或恢复，只能生成随机新密码或设置自定义新密码；首次升级后必须执行一次统一密码重置，自动代登录才会从“等待统一重置”进入可用状态。修改统一用户名或密码、或修复三账户同步成功后，命令会自动退出并立即重载 Gateway，避免运行中的适配器继续使用旧凭据；无需再次选择“退出”。Gateway TOTP 仍是独立的可选第二因素，不同步到底层后台。
 
 ## 验证
+
+本增量的本地总验证入口为 `scripts/verify-egress-ux-aliases.ps1`。它从固定 3x-ui v3.7.0 提交应用可复现补丁，验证逐客户端别名隔离、Gateway 三类跨仓事务、前端、Go race/vet/双二进制和 AimiliVPN 全套测试；`-IntegrationOnly` 只运行脱敏 fixture 和定向事务。脚本只使用工作区 `.tmp` 缓存，不修改系统 Go 或全局 Git 配置。
 
 当前 Test 风格订阅生产验证使用 `scripts/verify-test-style-subscription.py`：核对订阅只包含 `8443`、`20000–20002`，逐条启动临时 Xray 客户端验证公网出口，并复测主 VLESS 与 SOCKS5H。`scripts/deploy-test-style-cleanup-remote.sh` 在迁移前备份 Gateway 二进制、Gateway 数据库、x-ui 数据库和 Xray 运行时配置，失败时整体恢复。
 
