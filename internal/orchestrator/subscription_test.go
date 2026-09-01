@@ -150,7 +150,7 @@ func TestReplaceCandidateAliasFailuresRestoreOldState(t *testing.T) {
 			fixture.xui.ensureSubscriptionAliasDrifts = test.drifts
 			_, err := fixture.orchestratorWithMax(t, 3).ReplaceCandidate(context.Background(), "new-node", target.ID)
 			if test.wantRepair {
-				if codeOf(err) != "repair_required" {
+				if codeOf(err) != "repair_required" || fixture.store.groups[target.ID].Status != domain.ProxyGroupRepairRequired || fixture.aimili.createdSlots[0].NodeID != "old-node" {
 					t.Fatalf("error=%v", err)
 				}
 				return
@@ -161,6 +161,12 @@ func TestReplaceCandidateAliasFailuresRestoreOldState(t *testing.T) {
 			stored := fixture.store.groups[target.ID]
 			if stored.CandidateID != "old-node" || stored.CountryName != "日本" || stored.Status != domain.ProxyGroupReady {
 				t.Fatalf("old group not restored: %#v", stored)
+			}
+			if slot := fixture.aimili.createdSlots[0]; slot.NodeID != "old-node" || slot.Country != "JP" || !slot.EgressOK || slot.Status != "up" {
+				t.Fatalf("AimiliVPN target slot not restored: %#v", slot)
+			}
+			if fixture.aimili.createdSlots[1].NodeID != "us-node" || fixture.aimili.createdSlots[2].NodeID != "kr-node" {
+				t.Fatalf("non-target slots changed: %#v", fixture.aimili.createdSlots)
 			}
 			want := map[int64]string{1: "主连接_日本", 2: "出口位 1_日本", 3: "出口位 2_美国", 4: "出口位 3_韩国"}
 			if !reflect.DeepEqual(fixture.xui.subscriptionDesired.Aliases, want) || fixture.xui.ensureSubscriptionCalls != 2 {

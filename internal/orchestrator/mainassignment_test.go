@@ -103,20 +103,45 @@ func TestReplaceCandidateMarksMainRepairRequiredWhenRollbackFails(t *testing.T) 
 }
 
 func TestReplaceMainAliasWriteFailureRestoresOldMainAndAliases(t *testing.T) {
-	fixture, _ := aliasReplacementFixture(t)
-	fixture.store.mainEgress.CandidateID = "old-main"
-	fixture.aimili.mainStatus = aimili.MainStatus{CandidateID: "old-main", Country: "US", CountryName: "美国", ProxyType: "datacenter", ExitIP: "203.0.113.10", Port: 7928, EgressOK: true, Active: true}
-	fixture.aimili.stagedMainStatus = aimili.MainStatus{CandidateID: "new-main", Country: "JP", CountryName: "日本", ProxyType: "datacenter", ExitIP: "203.0.113.20", Port: 7928, EgressOK: true, Active: true}
-	fixture.aimili.candidates = []aimili.Candidate{{ID: "new-main", CountryCode: "JP", CountryName: "日本", ProxyType: "datacenter", ProbeStatus: "available"}}
-	fixture.xui.ensureSubscriptionErrors = []error{errors.New("alias write failed"), nil}
-
-	_, err := fixture.orchestratorWithMax(t, 3).ReplaceCandidate(context.Background(), "new-main", "agw-main")
-	if err == nil || fixture.store.mainEgress.CandidateID != "old-main" || !contains(fixture.calls, "main.rollback") {
-		t.Fatalf("error=%v main=%#v calls=%#v", err, fixture.store.mainEgress, fixture.calls)
+	tests := []struct {
+		name   string
+		errors []error
+		drifts []bool
+		repair bool
+	}{
+		{"alias write failure", []error{errors.New("alias write failed"), nil}, nil, false},
+		{"subscription fetch failure", []error{errors.New("subscription fetch failed"), nil}, nil, false},
+		{"post write mismatch", nil, []bool{true, false}, false},
+		{"alias rollback failure", []error{errors.New("alias write failed"), errors.New("alias rollback failed")}, nil, true},
 	}
-	want := map[int64]string{1: "主连接_United States", 2: "出口位 1_日本", 3: "出口位 2_美国", 4: "出口位 3_韩国"}
-	if !reflect.DeepEqual(fixture.xui.subscriptionDesired.Aliases, want) || fixture.xui.ensureSubscriptionCalls != 2 {
-		t.Fatalf("aliases=%#v writes=%d", fixture.xui.subscriptionDesired.Aliases, fixture.xui.ensureSubscriptionCalls)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture, _ := aliasReplacementFixture(t)
+			fixture.store.mainEgress.CandidateID = "old-main"
+			fixture.aimili.mainStatus = aimili.MainStatus{CandidateID: "old-main", Country: "US", CountryName: "美国", ProxyType: "datacenter", ExitIP: "203.0.113.10", Port: 7928, EgressOK: true, Active: true}
+			fixture.aimili.stagedMainStatus = aimili.MainStatus{CandidateID: "new-main", Country: "JP", CountryName: "日本", ProxyType: "datacenter", ExitIP: "203.0.113.20", Port: 7928, EgressOK: true, Active: true}
+			fixture.aimili.candidates = []aimili.Candidate{{ID: "new-main", CountryCode: "JP", CountryName: "日本", ProxyType: "datacenter", ProbeStatus: "available"}}
+			fixture.xui.ensureSubscriptionErrors = test.errors
+			fixture.xui.ensureSubscriptionAliasDrifts = test.drifts
+
+			_, err := fixture.orchestratorWithMax(t, 3).ReplaceCandidate(context.Background(), "new-main", "agw-main")
+			if test.repair {
+				if codeOf(err) != "repair_required" || !contains(fixture.calls, "main.rollback") {
+					t.Fatalf("error=%v calls=%#v", err, fixture.calls)
+				}
+				return
+			}
+			if err == nil || fixture.store.mainEgress.CandidateID != "old-main" || !contains(fixture.calls, "main.rollback") {
+				t.Fatalf("error=%v main=%#v calls=%#v", err, fixture.store.mainEgress, fixture.calls)
+			}
+			want := map[int64]string{1: "主连接_United States", 2: "出口位 1_日本", 3: "出口位 2_美国", 4: "出口位 3_韩国"}
+			if !reflect.DeepEqual(fixture.xui.subscriptionDesired.Aliases, want) || fixture.xui.ensureSubscriptionCalls != 2 {
+				t.Fatalf("aliases=%#v writes=%d", fixture.xui.subscriptionDesired.Aliases, fixture.xui.ensureSubscriptionCalls)
+			}
+			if fixture.aimili.createdSlots[0].NodeID != "old-node" || fixture.aimili.createdSlots[1].NodeID != "us-node" || fixture.aimili.createdSlots[2].NodeID != "kr-node" {
+				t.Fatalf("non-target exits changed: %#v", fixture.aimili.createdSlots)
+			}
+		})
 	}
 }
 
