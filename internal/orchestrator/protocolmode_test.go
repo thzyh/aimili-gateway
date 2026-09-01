@@ -679,6 +679,39 @@ func TestRecoverProtocolModesRollsBackInterruptedTransactionBeforeValidatingOldP
 	}
 }
 
+func TestRecoverProtocolModesConvergesFinalizedTargetAfterGatewayCrash(t *testing.T) {
+	fixture, group := protocolFixture(t)
+	fixture.xui.subscriptionProfiles = []xui.PublicProfile{{
+		InboundID: group.PublicInboundID, Mode: domain.ProtocolVLESSTCPRealityVision,
+		ClientID: "client-id", PublicKey: "public-key", ShortID: "short-id", ServerName: "proxy.example.test",
+	}}
+	state := fixture.store.protocolModes[group.ID]
+	state.State = domain.ProtocolSubscriptionPending
+	state.DesiredMode = domain.ProtocolVLESSTCPRealityVision
+	state.LastOperationID = "protocol-finalized-before-store"
+	state.LastRequestHash = "6af401c9f2d5ea78d750f2fe88f14e71946854e4333f26915c8cd26d1383ea1f"
+	fixture.store.protocolModes[group.ID] = state
+	client := &fakeProtocolTransaction{
+		calls: &fixture.calls,
+		rollbackResult: protocoltxn.Result{
+			OperationID: state.LastOperationID, Status: "failed", ErrorCode: "operation_finalized",
+		},
+	}
+	orchestrator := fixture.orchestratorWithMax(t, 3)
+	orchestrator.protocolTransaction = client
+
+	if err := orchestrator.RecoverProtocolModes(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	recovered := fixture.store.protocolModes[group.ID]
+	if recovered.State != domain.ProtocolReady || recovered.ActiveMode != domain.ProtocolVLESSTCPRealityVision || recovered.DesiredMode != recovered.ActiveMode || recovered.LastErrorCode != "" {
+		t.Fatalf("recovered state = %#v", recovered)
+	}
+	if !orderedSubset(fixture.calls, []string{"protocol.rollback", "slot.check", "validate.socks", "validate.public"}) {
+		t.Fatalf("finalized target was not validated: %#v", fixture.calls)
+	}
+}
+
 func TestRecoverProtocolModesClearsStaleErrorFromReadyStateWithoutRuntimeWrites(t *testing.T) {
 	fixture, group := protocolFixture(t)
 	state := fixture.store.protocolModes[group.ID]

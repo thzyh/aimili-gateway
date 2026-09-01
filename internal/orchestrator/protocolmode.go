@@ -430,6 +430,19 @@ func (o *Orchestrator) recoverProtocolMode(ctx context.Context, persistence prot
 		}()
 	}
 	result, rollbackErr := o.protocolTransaction.Rollback(operationCtx, state.LastOperationID)
+	finalized := rollbackErr == nil && result.OperationID == state.LastOperationID && result.Status == "failed" && result.ErrorCode == "operation_finalized"
+	if finalized {
+		request := protocoltxn.Request{
+			OperationID: state.LastOperationID, EgressID: state.EgressID,
+			InboundID: target.inboundID, InboundTag: target.inboundTag, Port: target.port,
+			OldMode: string(state.ActiveMode), NewMode: string(state.DesiredMode),
+		}
+		if state.DesiredMode == state.ActiveMode || state.LastRequestHash == "" || protocolRequestFingerprint(request) != state.LastRequestHash {
+			_, repairErr := o.markProtocolRepair(ctx, persistence, state)
+			return repairErr
+		}
+		return o.convergeRecoveredProtocolMode(operationCtx, ctx, persistence, state, target, state.DesiredMode, mutationLease)
+	}
 	rollbackSafe := rollbackErr == nil && result.OperationID == state.LastOperationID && (result.Status == "rolled_back" ||
 		(result.Status == "failed" && result.ErrorCode == "operation_not_applied"))
 	if mutationLease != nil && mutationLease.failure() != nil {
@@ -440,10 +453,14 @@ func (o *Orchestrator) recoverProtocolMode(ctx context.Context, persistence prot
 		_, repairErr := o.markProtocolRepair(ctx, persistence, state)
 		return repairErr
 	}
+	return o.convergeRecoveredProtocolMode(operationCtx, ctx, persistence, state, target, state.ActiveMode, mutationLease)
+}
+
+func (o *Orchestrator) convergeRecoveredProtocolMode(runtimeCtx, persistenceCtx context.Context, persistence protocolModeStore, state domain.EgressProtocolMode, target protocolTarget, recoveredMode domain.ProtocolMode, mutationLease *mainMutationLeaseGuard) error {
 	if target.main {
-		status, statusErr := o.aimili.MainStatus(operationCtx)
+		status, statusErr := o.aimili.MainStatus(runtimeCtx)
 		if statusErr != nil || !mainStatusUsable(status) {
-			_, repairErr := o.markProtocolRepair(ctx, persistence, state)
+			_, repairErr := o.markProtocolRepair(persistenceCtx, persistence, state)
 			return repairErr
 		}
 		target.group.CandidateID = status.CandidateID
@@ -452,28 +469,28 @@ func (o *Orchestrator) recoverProtocolMode(ctx context.Context, persistence prot
 		target.group.ProxyType = normalizedMainProxyType(status.ProxyType)
 		target.group.ExitIP = status.ExitIP
 	}
-	subscription, err := o.verifySubscription(operationCtx)
+	subscription, err := o.verifySubscription(runtimeCtx)
 	if err == nil {
-		err = o.verifyProtocolTarget(operationCtx, target, state.ActiveMode, subscription)
+		err = o.verifyProtocolTarget(runtimeCtx, target, recoveredMode, subscription)
 	}
 	if err != nil {
-		_, repairErr := o.markProtocolRepair(ctx, persistence, state)
+		_, repairErr := o.markProtocolRepair(persistenceCtx, persistence, state)
 		return repairErr
 	}
 	if target.main {
-		if _, renewErr := mutationLease.renewNow(operationCtx); renewErr != nil {
-			_, repairErr := o.markProtocolRepair(ctx, persistence, state)
+		if _, renewErr := mutationLease.renewNow(runtimeCtx); renewErr != nil {
+			_, repairErr := o.markProtocolRepair(persistenceCtx, persistence, state)
 			return repairErr
 		}
-		status, statusErr := o.aimili.MainStatus(operationCtx)
+		status, statusErr := o.aimili.MainStatus(runtimeCtx)
 		mainStore, storeOK := o.store.(mainEgressStore)
 		if statusErr != nil || !storeOK || !mainStatusMatchesGroup(status, target.group) {
-			_, repairErr := o.markProtocolRepair(ctx, persistence, state)
+			_, repairErr := o.markProtocolRepair(persistenceCtx, persistence, state)
 			return repairErr
 		}
-		main, mainErr := mainStore.GetMainEgress(ctx)
+		main, mainErr := mainStore.GetMainEgress(persistenceCtx)
 		if mainErr != nil {
-			_, repairErr := o.markProtocolRepair(ctx, persistence, state)
+			_, repairErr := o.markProtocolRepair(persistenceCtx, persistence, state)
 			return repairErr
 		}
 		main.CandidateID = status.CandidateID
@@ -484,20 +501,21 @@ func (o *Orchestrator) recoverProtocolMode(ctx context.Context, persistence prot
 		main.LastErrorCode = ""
 		main.LastCheckedAt = o.config.Now().UTC()
 		main.UpdatedAt = main.LastCheckedAt
-		if o.store.SaveMainEgress(ctx, main) != nil {
-			_, repairErr := o.markProtocolRepair(ctx, persistence, state)
+		if o.store.SaveMainEgress(persistenceCtx, main) != nil {
+			_, repairErr := o.markProtocolRepair(persistenceCtx, persistence, state)
 			return repairErr
 		}
 	}
-	state.DesiredMode = state.ActiveMode
+	state.ActiveMode = recoveredMode
+	state.DesiredMode = recoveredMode
 	state.LastErrorCode = ""
-	if err := state.Transition(domain.ProtocolReady); err != nil || o.saveProtocolState(ctx, persistence, &state) != nil {
+	if err := state.Transition(domain.ProtocolReady); err != nil || o.saveProtocolState(persistenceCtx, persistence, &state) != nil {
 		return &Error{Code: "repair_required"}
 	}
 	if mutationLease != nil {
 		mutationLease.stopAndWait()
 		if mutationLease.failure() != nil {
-			_, repairErr := o.markMutationLeaseRepair(ctx, persistence, state)
+			_, repairErr := o.markMutationLeaseRepair(persistenceCtx, persistence, state)
 			return repairErr
 		}
 	}

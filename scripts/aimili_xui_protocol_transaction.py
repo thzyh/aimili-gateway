@@ -1104,6 +1104,12 @@ class ProtocolTransactionManager:
             "phase": "rolled_back",
         }:
             return self._result(operation_id, "rolled_back")
+        if snapshot == {
+            "version": 1,
+            "operationId": operation_id,
+            "phase": "finalized",
+        }:
+            return self._result(operation_id, "failed", "operation_finalized")
         self._rollback_snapshot(snapshot_path, remove_on_success=False)
         _private_atomic_json(
             snapshot_path,

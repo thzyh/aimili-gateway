@@ -370,6 +370,31 @@ func TestMainReplacementRecoversWhenFinalizeSucceededBeforeGatewayStore(t *testi
 	}
 }
 
+func TestMainReplacementResumesPendingCommitBeforeReportingSuccess(t *testing.T) {
+	fixture := newFixture()
+	fixture.aimili.mainAssignment = aimili.MainAssignmentStatus{
+		OperationID: "operation-safe-1", State: "pending_commit", OldCandidateID: "old-main",
+		NewCandidateID: "new-main", Country: "JP", ProxyType: "datacenter", Port: 7928,
+		DNSVerified: true, ExitVerified: true, Available: true,
+	}
+	fixture.aimili.mainStatus = aimili.MainStatus{
+		CandidateID: "new-main", Country: "JP", CountryName: "Japan", ProxyType: "datacenter",
+		ExitIP: "203.0.113.20", Port: 7928, EgressOK: true, Active: true,
+	}
+
+	group, err := fixture.orchestrator(t).ReplaceCandidate(context.Background(), "new-main", "agw-main")
+
+	if err != nil || group.CandidateID != "new-main" {
+		t.Fatalf("group=%#v err=%v", group, err)
+	}
+	if fixture.aimili.mainCommitCalls != 1 || contains(fixture.calls, "main.stage") || contains(fixture.calls, "main.repair-commit") {
+		t.Fatalf("pending commit was not resumed safely: calls=%#v commits=%d", fixture.calls, fixture.aimili.mainCommitCalls)
+	}
+	if fixture.store.mainEgress.CandidateID != "new-main" || fixture.store.mainEgress.ExitIP != "203.0.113.20" {
+		t.Fatalf("stored main = %#v", fixture.store.mainEgress)
+	}
+}
+
 func repairAssignment(candidateID, country, proxyType string) aimili.MainAssignmentStatus {
 	return aimili.MainAssignmentStatus{
 		OperationID: "operation-safe-1", State: "repair_required", OldCandidateID: "old-main",

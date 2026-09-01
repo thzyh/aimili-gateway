@@ -763,6 +763,32 @@ class ProtocolTransactionTests(unittest.TestCase):
             tombstone,
         )
 
+    def test_explicit_rollback_reports_already_finalized_without_restoring_target(self):
+        original = self._inbound_row(41)
+        manager = self._manager()
+        manager.apply(self._request())
+        target = self._inbound_row(41)
+        self.assertNotEqual(original, target)
+        manager.finalize(OPERATION_ID)
+
+        result = manager.rollback(OPERATION_ID)
+
+        self.assertEqual(
+            {
+                "operationId": OPERATION_ID,
+                "status": "failed",
+                "errorCode": "operation_finalized",
+            },
+            result,
+        )
+        self.assertEqual(target, self._inbound_row(41))
+        tombstone = json.loads(
+            (self.snapshot_dir / OPERATION_ID / "snapshot.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual("finalized", tombstone["phase"])
+
     def test_recover_pending_ignores_rolled_back_completion_tombstone(self):
         manager = self._manager()
         manager.apply(self._request())

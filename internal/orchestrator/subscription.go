@@ -342,7 +342,7 @@ func (o *Orchestrator) replaceMainCandidate(ctx context.Context, candidateID str
 	if err != nil {
 		return domain.ProxyGroup{}, operationError(err)
 	}
-	if assignment.State == "repair_required" || assignment.State == "pending_gateway_validation" {
+	if assignment.State == "pending_commit" || assignment.State == "repair_required" || assignment.State == "pending_gateway_validation" {
 		return o.repairMainCandidate(ctx, manager, assignment, candidateID)
 	}
 	current, err := o.aimili.MainStatus(ctx)
@@ -419,7 +419,11 @@ func (o *Orchestrator) repairMainCandidate(ctx context.Context, manager mainAssi
 	}
 	targetMatches := mainCandidateMatches(candidateID, assignment.NewCandidateID, assignment.Country, assignment.ProxyType)
 	pending := assignment
-	if assignment.State == "pending_gateway_validation" {
+	if assignment.State == "pending_commit" {
+		if !targetMatches {
+			return domain.ProxyGroup{}, &Error{Code: "conflict"}
+		}
+	} else if assignment.State == "pending_gateway_validation" {
 		if !targetMatches {
 			return domain.ProxyGroup{}, &Error{Code: "conflict"}
 		}
@@ -462,10 +466,10 @@ func (o *Orchestrator) repairMainCandidate(ctx context.Context, manager mainAssi
 			return domain.ProxyGroup{}, operationError(repairErr)
 		}
 	}
-	if pending.State != "pending_gateway_validation" && pending.State != "committed" {
+	if pending.State != "pending_commit" && pending.State != "pending_gateway_validation" && pending.State != "committed" {
 		return domain.ProxyGroup{}, &Error{Code: "egress_unavailable"}
 	}
-	if pending.State == "pending_gateway_validation" && (!pending.DNSVerified || !pending.ExitVerified || !pending.Available) {
+	if pending.State != "committed" && (!pending.DNSVerified || !pending.ExitVerified || !pending.Available) {
 		return domain.ProxyGroup{}, &Error{Code: "egress_unavailable"}
 	}
 	checked, err := o.checkMain(ctx, false)
