@@ -25,8 +25,12 @@ def verify(output, exit_code, platform):
         raise ValueError("unexpected 3x-ui full-test failure outside Windows")
     if exit_code == 124 or "BOUNDED_COMMAND_TIMEOUT" in output:
         raise ValueError("unexpected 3x-ui full-test timeout")
+    if exit_code == 125 or "TREE_TERMINATION_FAILED" in output:
+        raise ValueError("unexpected 3x-ui test-process termination failure")
     if re.search(r"(^|\n)(panic:|fatal error:|.*\[build failed\])", output, re.I):
         raise ValueError("unexpected 3x-ui panic or build failure")
+    if re.search(r"^(?:ERROR|FATAL|FAILED)(?:\s|:|$)", output, re.I | re.M):
+        raise ValueError("unexpected unbound 3x-ui command failure")
 
     pending_tests = []
     classified_packages = set()
@@ -37,6 +41,8 @@ def verify(output, exit_code, platform):
             continue
         package_match = re.match(r"^FAIL\s+(github\.com/mhsanaei/3x-ui/v3\S*)\s", line)
         if not package_match:
+            if line.startswith("FAIL "):
+                raise ValueError(f"unexpected unbound 3x-ui failure: {line}")
             continue
         package = package_match.group(1)
         allowed = KNOWN.get(package)

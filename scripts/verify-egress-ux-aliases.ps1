@@ -60,6 +60,7 @@ $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("aimili-egress-alias-" +
 $patchedXUI = Join-Path $tmpRoot '3x-ui'
 $gatewayBinary = Join-Path $tmpRoot 'aimili-gateway.exe'
 $adminBinary = Join-Path $tmpRoot 'aimili-gateway-admin.exe'
+$gatewayHTTPFixture = Join-Path $tmpRoot 'gateway-http-fixture.exe'
 New-Item -ItemType Directory -Path $tmpRoot | Out-Null
 
 try {
@@ -149,6 +150,10 @@ try {
             -FilePath 'go' `
             -Arguments @('test', './internal/orchestrator', '-run', 'SwitchMainProtocolSynchronizesHealthyRuntimeIdentityBeforeStrictPreflight|ReplaceCandidateUpdatesOnlyTheTargetSubscriptionAlias|ReplaceCandidateAliasFailuresRestoreOldState|ReplaceCandidateReloadsCandidatesOnlyAfterPersistedRejection', '-count=1', '-v') `
             -WorkingDirectory $gatewayRepository
+        Invoke-Checked -Label 'Gateway HTTP process fixture build' `
+            -FilePath 'go' `
+            -Arguments @('test', '-c', '-o', $gatewayHTTPFixture, './internal/httpapi') `
+            -WorkingDirectory $gatewayRepository
         if (-not $IntegrationOnly) {
             Invoke-Checked -Label 'Gateway web tests' -FilePath 'npm' -Arguments @('test', '--prefix', 'web') -WorkingDirectory $gatewayRepository
             Invoke-Checked -Label 'Gateway web build' -FilePath 'npm' -Arguments @('run', 'build', '--prefix', 'web') -WorkingDirectory $gatewayRepository
@@ -171,7 +176,7 @@ try {
     }
 
     Write-Host 'VERIFY temporary AimiliVPN, 3x-ui, and Gateway HTTP processes'
-    $fixtureOutput = @(& python (Join-Path $PSScriptRoot 'egress_ux_alias_process_fixture.py'))
+    $fixtureOutput = @(& python (Join-Path $PSScriptRoot 'egress_ux_alias_process_fixture.py') --gateway-binary $gatewayHTTPFixture)
     if ($LASTEXITCODE -ne 0 -or $fixtureOutput.Count -ne 1) {
         throw 'three-process integration fixture failed'
     }

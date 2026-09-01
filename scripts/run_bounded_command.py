@@ -8,15 +8,22 @@ from pathlib import Path
 
 def stop_tree(process):
     if os.name == "nt":
-        subprocess.run(
-            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-            timeout=5,
-        )
-    else:
+        try:
+            completed = subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=30,
+            )
+            return completed.returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+    try:
         os.killpg(process.pid, signal.SIGKILL)
+        return True
+    except OSError:
+        return False
 
 
 def main():
@@ -44,12 +51,16 @@ def main():
         except subprocess.TimeoutExpired:
             stream.write(f"\nBOUNDED_COMMAND_TIMEOUT seconds={args.timeout_seconds}\n")
             stream.flush()
-            stop_tree(process)
+            tree_stopped = stop_tree(process)
             try:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=5)
+            if not tree_stopped:
+                stream.write("TREE_TERMINATION_FAILED\n")
+                stream.flush()
+                return 125
             return 124
 
 
