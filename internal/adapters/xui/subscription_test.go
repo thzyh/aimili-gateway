@@ -99,7 +99,11 @@ func (f *subscriptionFixture) handler(w http.ResponseWriter, r *http.Request) {
 			}
 			f.aliasWrites = append(f.aliasWrites, payload.Aliases)
 			if !f.aliasReadMismatch {
-				f.client["inboundAliases"] = payload.Aliases
+				aliases := make(map[string]any, len(payload.Aliases))
+				for _, item := range payload.Aliases {
+					aliases[fmt.Sprint(item["inboundId"])] = item["alias"]
+				}
+				f.client["inboundAliases"] = aliases
 			}
 			fmt.Fprint(w, `{"success":true,"obj":null}`)
 		default:

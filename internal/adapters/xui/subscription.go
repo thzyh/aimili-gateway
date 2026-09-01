@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -468,6 +469,18 @@ func (c *Client) setSubscriptionAliases(ctx context.Context, email string, alias
 func parseSubscriptionAliases(value any) (map[int64]string, error) {
 	if value == nil {
 		return nil, nil
+	}
+	if mapping, ok := value.(map[string]any); ok {
+		result := make(map[int64]string, len(mapping))
+		for key, value := range mapping {
+			id, err := strconv.ParseInt(key, 10, 64)
+			name, nameOK := value.(string)
+			if err != nil || id < 1 || strconv.FormatInt(id, 10) != key || !nameOK || name == "" {
+				return nil, &AdapterError{Code: "invalid_response"}
+			}
+			result[id] = name
+		}
+		return result, nil
 	}
 	raw, ok := value.([]any)
 	if !ok {
