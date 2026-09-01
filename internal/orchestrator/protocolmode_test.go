@@ -99,6 +99,22 @@ func TestSwitchProtocolModeRollsBackAndRevalidatesOldPath(t *testing.T) {
 	}
 }
 
+func TestSwitchProtocolAliasDriftRollsBackWithoutAliasWrite(t *testing.T) {
+	fixture, group := protocolFixture(t)
+	fixture.xui.verifySubscriptionErr = &xui.AdapterError{Code: "subscription_incomplete"}
+	client := &fakeProtocolTransaction{calls: &fixture.calls}
+	orchestrator := fixture.orchestratorWithMax(t, 3)
+	orchestrator.protocolTransaction = client
+
+	_, err := orchestrator.SwitchProtocolMode(context.Background(), group.ID, domain.ProtocolVLESSTCPRealityVision)
+	if codeOf(err) != "repair_required" || fixture.xui.ensureSubscriptionCalls != 0 || fixture.xui.verifySubscriptionCalls != 2 {
+		t.Fatalf("error=%v writes=%d reads=%d calls=%#v", err, fixture.xui.ensureSubscriptionCalls, fixture.xui.verifySubscriptionCalls, fixture.calls)
+	}
+	if !contains(fixture.calls, "protocol.rollback") || contains(fixture.calls, "protocol.finalize") {
+		t.Fatalf("protocol transaction accepted alias drift: %#v", fixture.calls)
+	}
+}
+
 func TestSwitchProtocolModeRenewsHelperLeaseWhileValidationIsBlocked(t *testing.T) {
 	fixture, group := protocolFixture(t)
 	entered := make(chan struct{})
