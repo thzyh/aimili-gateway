@@ -169,14 +169,18 @@ def orchestrate(gateway_binary):
             require(status, 200, "main protocol switch")
             status, aimili_state = request_json(urls["aimili"] + "/fixture/state")
             require(status, 200, "AimiliVPN main readback")
-            if aimili_state["mainReads"] != 1 or protocol.get("protocolMode") != "vless_xhttp_reality":
+            status, groups_after_protocol = request_json(gateway["url"] + "/api/v1/proxy-groups", opener=opener)
+            require(status, 200, "Gateway state after protocol switch")
+            main_after_protocol = group_by_id(groups_after_protocol, "agw-main")
+            if aimili_state["mainReads"] != 1 or protocol.get("protocolMode") != "vless_xhttp_reality" or main_after_protocol is None:
                 raise RuntimeError("Gateway did not read the current main identity before switching protocol")
 
             status, replaced = request_json(gateway["url"] + "/api/v1/proxy-groups/candidate-kr/replace", "POST", {"targetGroupId": "agw-slot-1"}, opener, dict(mutation_headers, **{"Idempotency-Key": "fixture-country-replace"}))
             require(status, 200, "country replacement")
             status, aliases = request_json(urls["xui"] + "/panel/api/clients/gateway/inboundAliases")
             require(status, 200, "x-ui alias readback")
-            if replaced.get("countryCode") != "KR" or aliases["aliases"] != {"main": "主连接_日本", "slot1": "出口位 1_韩国"}:
+            alias_updated = aliases["aliases"] == {"main": "主连接_日本", "slot1": "出口位 1_韩国"}
+            if replaced.get("countryCode") != "KR" or not alias_updated:
                 raise RuntimeError("only the target subscription alias must follow the replacement country")
 
             status, groups_before = request_json(gateway["url"] + "/api/v1/proxy-groups", opener=opener)
@@ -196,10 +200,13 @@ def orchestrate(gateway_binary):
             if failure.get("error") != "candidate_dial_failed" or not all((gateway_preserved, aliases_preserved, candidate_excluded)):
                 raise RuntimeError("failed replacement did not preserve the committed state")
 
+            slot_after_failure = group_by_id(groups_after, "agw-slot-1")
+            rollback_result = "rolled_back" if gateway_preserved and aliases_preserved else "rollback_failed"
+
             transactions = [
-                {"scenario": "old_main_protocol_switch", "role": "main", "countryCode": "JP", "result": "ready"},
-                {"scenario": "candidate_country_replace", "role": "slot-1", "countryCode": replaced["countryCode"], "result": "ready", "aliasUpdated": True},
-                {"scenario": "failed_replace", "role": "slot-1", "countryCode": "KR", "result": "rolled_back", "errorCode": failure["error"], "candidateExcluded": candidate_excluded, "gatewayStatePreserved": gateway_preserved, "aliasesPreserved": aliases_preserved},
+                {"scenario": "old_main_protocol_switch", "role": main_after_protocol["id"], "countryCode": main_after_protocol["countryCode"], "result": protocol["protocolState"]},
+                {"scenario": "candidate_country_replace", "role": replaced["id"], "countryCode": replaced["countryCode"], "result": replaced["status"], "aliasUpdated": alias_updated},
+                {"scenario": "failed_replace", "role": slot_after_failure["id"], "countryCode": slot_after_failure["countryCode"], "result": rollback_result, "errorCode": failure["error"], "candidateExcluded": candidate_excluded, "gatewayStatePreserved": gateway_preserved, "aliasesPreserved": aliases_preserved},
             ]
             print(json.dumps({"services": ["aimili-fixture", "xui-fixture", "gateway-test-binary"], "transactions": transactions}, ensure_ascii=False))
         finally:

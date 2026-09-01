@@ -59,6 +59,7 @@ FAIL
             ("FAIL\n", 1),
             ("FAILED command-level setup\n--- FAIL: TestUpdateProxyEnvVars (0.00s)\nFAIL\tgithub.com/mhsanaei/3x-ui/v3/internal/web/service/panel\t1.0s\nFAIL\n", 1),
             ("--- FAIL: TestUpdateProxyEnvVars (0.00s)\nFAIL\texample.invalid/unbound\t1.0s\nFAIL\n", 1),
+            ("--- FAIL: TestUpdateProxyEnvVars (0.00s)\nFAIL\tgithub.com/mhsanaei/3x-ui/v3/internal/web/service/panel\t1.0s\n--- FAIL: TestForeign (0.00s)\nFAIL\texample.invalid/unbound\t1.0s\nFAIL\n", 1),
         ):
             with self.subTest(output=output):
                 with self.assertRaisesRegex(ValueError, "unexpected"):

@@ -41,7 +41,7 @@ def verify(output, exit_code, platform):
             continue
         package_match = re.match(r"^FAIL\s+(github\.com/mhsanaei/3x-ui/v3\S*)\s", line)
         if not package_match:
-            if line.startswith("FAIL "):
+            if re.match(r"^FAIL\s+\S", line):
                 raise ValueError(f"unexpected unbound 3x-ui failure: {line}")
             continue
         package = package_match.group(1)
