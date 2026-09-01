@@ -181,7 +181,7 @@ func (o *Orchestrator) SwitchProtocolModeExpected(ctx context.Context, egressID 
 	}
 	if applyErr == nil {
 		var subscription SubscriptionResult
-		subscription, applyErr = o.Subscription(validationCtx)
+		subscription, applyErr = o.verifySubscription(validationCtx)
 		if applyErr == nil {
 			applyErr = o.verifyProtocolTarget(validationCtx, targetResource, target, subscription)
 		}
@@ -452,7 +452,7 @@ func (o *Orchestrator) recoverProtocolMode(ctx context.Context, persistence prot
 		target.group.ProxyType = normalizedMainProxyType(status.ProxyType)
 		target.group.ExitIP = status.ExitIP
 	}
-	subscription, err := o.Subscription(operationCtx)
+	subscription, err := o.verifySubscription(operationCtx)
 	if err == nil {
 		err = o.verifyProtocolTarget(operationCtx, target, state.ActiveMode, subscription)
 	}
@@ -645,7 +645,7 @@ func (o *Orchestrator) rollbackProtocolMode(runtimeCtx, persistenceCtx context.C
 	if mutationLease != nil && mutationLease.failure() != nil {
 		return o.markMutationLeaseRepair(persistenceCtx, persistence, state)
 	}
-	subscription, err := o.Subscription(runtimeCtx)
+	subscription, err := o.verifySubscription(runtimeCtx)
 	if err != nil {
 		if mutationLease != nil && mutationLease.failure() != nil {
 			return o.markMutationLeaseRepair(persistenceCtx, persistence, state)

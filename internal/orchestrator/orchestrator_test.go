@@ -810,33 +810,56 @@ func (a *fakeAimili) slot(ip string) aimili.Slot {
 }
 
 type fakeXUI struct {
-	calls                  *[]string
-	deleteError            error
-	desired                xui.DesiredGroup
-	updated                []xui.DesiredGroup
-	updateNames            []string
-	updateErrors           map[int]error
-	returnedPublicKey      string
-	returnedShortID        string
-	returnedServerName     string
-	returnedVLESSInboundID int64
-	returnedMixedInboundID int64
-	returnedResourceName   string
-	deletedAggregate       xui.ManagedAggregate
-	deleteAggregateError   error
-	snapshot               xui.Snapshot
-	subscriptionDesired    xui.SubscriptionDesired
-	subscriptionProfiles   []xui.PublicProfile
-	profileSequences       [][]xui.PublicProfile
-	ensureLegacyMainCalls  int
+	calls                         *[]string
+	deleteError                   error
+	desired                       xui.DesiredGroup
+	updated                       []xui.DesiredGroup
+	updateNames                   []string
+	updateErrors                  map[int]error
+	returnedPublicKey             string
+	returnedShortID               string
+	returnedServerName            string
+	returnedVLESSInboundID        int64
+	returnedMixedInboundID        int64
+	returnedResourceName          string
+	deletedAggregate              xui.ManagedAggregate
+	deleteAggregateError          error
+	snapshot                      xui.Snapshot
+	subscriptionDesired           xui.SubscriptionDesired
+	ensureSubscriptionCalls       int
+	ensureSubscriptionErrors      []error
+	ensureSubscriptionAliasDrifts []bool
+	subscriptionProfiles          []xui.PublicProfile
+	verifySubscriptionErr         error
+	verifySubscriptionCalls       int
+	profileSequences              [][]xui.PublicProfile
+	ensureLegacyMainCalls         int
 }
 
 func (x *fakeXUI) Snapshot(context.Context) (xui.Snapshot, error) { return x.snapshot, nil }
 func (x *fakeXUI) EnsureSubscriptionClient(_ context.Context, desired xui.SubscriptionDesired) (xui.Subscription, error) {
+	x.ensureSubscriptionCalls++
+	if len(x.ensureSubscriptionErrors) > 0 {
+		err := x.ensureSubscriptionErrors[0]
+		x.ensureSubscriptionErrors = x.ensureSubscriptionErrors[1:]
+		if err != nil {
+			return xui.Subscription{}, err
+		}
+	}
 	x.subscriptionDesired = desired
 	aliases := make(map[int64]string, len(desired.Aliases))
 	for id, alias := range desired.Aliases {
 		aliases[id] = alias
+	}
+	if len(x.ensureSubscriptionAliasDrifts) > 0 {
+		drift := x.ensureSubscriptionAliasDrifts[0]
+		x.ensureSubscriptionAliasDrifts = x.ensureSubscriptionAliasDrifts[1:]
+		if drift {
+			for id := range aliases {
+				aliases[id] = "出口位 1_漂移"
+				break
+			}
+		}
 	}
 	profiles := append([]xui.PublicProfile(nil), x.subscriptionProfiles...)
 	if len(x.profileSequences) > 0 {
@@ -849,6 +872,16 @@ func (x *fakeXUI) EnsureSubscriptionClient(_ context.Context, desired xui.Subscr
 		}
 	}
 	return xui.Subscription{ResourceName: "aimili-gateway-subscription", ClientID: 42, ClientEmail: desired.ClientEmail, ClientUUID: desired.ClientUUID, SubscriptionID: "opaque", InboundIDs: append([]int64(nil), desired.InboundIDs...), SubscriptionPath: "/sub-test/", PublicProfiles: profiles, Aliases: aliases}, nil
+}
+func (x *fakeXUI) VerifySubscriptionClient(_ context.Context, desired xui.SubscriptionDesired) (xui.Subscription, error) {
+	x.verifySubscriptionCalls++
+	if x.verifySubscriptionErr != nil {
+		return xui.Subscription{}, x.verifySubscriptionErr
+	}
+	before := x.ensureSubscriptionCalls
+	result, err := x.EnsureSubscriptionClient(context.Background(), desired)
+	x.ensureSubscriptionCalls = before
+	return result, err
 }
 func (x *fakeXUI) SubscriptionURL(_ context.Context, subscription xui.Subscription) (string, error) {
 	return subscription.SubscriptionPath + subscription.SubscriptionID, nil

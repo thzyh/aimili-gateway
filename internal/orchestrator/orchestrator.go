@@ -114,6 +114,7 @@ type xuiClient interface {
 type subscriptionXUIClient interface {
 	Snapshot(context.Context) (xui.Snapshot, error)
 	EnsureSubscriptionClient(context.Context, xui.SubscriptionDesired) (xui.Subscription, error)
+	VerifySubscriptionClient(context.Context, xui.SubscriptionDesired) (xui.Subscription, error)
 	SubscriptionURL(context.Context, xui.Subscription) (string, error)
 }
 

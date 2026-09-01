@@ -116,6 +116,51 @@ func (c *Client) EnsureSubscriptionClient(ctx context.Context, desired Subscript
 	}, nil
 }
 
+// VerifySubscriptionClient reads the exclusive client and proves its current
+// associated aliases without changing associations or aliases.
+func (c *Client) VerifySubscriptionClient(ctx context.Context, desired SubscriptionDesired) (Subscription, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := validateSubscriptionDesired(desired); err != nil {
+		return Subscription{}, err
+	}
+	if err := c.authenticate(ctx); err != nil {
+		return Subscription{}, err
+	}
+	snapshot, err := c.snapshot(ctx)
+	if err != nil {
+		return Subscription{}, err
+	}
+	allowed := ownedPublicIDs(snapshot.Inbounds, desired.InboundIDs)
+	if !sameInboundIDs(allowed, desired.InboundIDs) {
+		return Subscription{}, &AdapterError{Code: "managed_resource_missing"}
+	}
+	if desired.Aliases != nil {
+		if err := validateSubscriptionAliasesDesired(desired.Aliases, allowed); err != nil {
+			return Subscription{}, err
+		}
+	}
+	client, found, err := c.getSubscriptionClient(ctx, desired.ClientEmail)
+	if err != nil {
+		return Subscription{}, err
+	}
+	if !found || client.uuid != desired.ClientUUID || client.email != desired.ClientEmail || !sameInboundIDs(client.inboundIDs, allowed) {
+		return Subscription{}, &AdapterError{Code: "subscription_incomplete"}
+	}
+	if desired.Aliases != nil {
+		if err := ValidateSubscriptionAliases(client.aliases, desired.Aliases); err != nil {
+			return Subscription{}, err
+		}
+	}
+	profiles, err := c.publicProfiles(ctx, allowed, client)
+	if err != nil {
+		return Subscription{}, err
+	}
+	return Subscription{ResourceName: managedSubscriptionEmail, ClientID: client.dbID, ClientEmail: client.email, ClientUUID: client.uuid,
+		SubscriptionID: client.subID, InboundIDs: append([]int64(nil), allowed...), SubscriptionPath: c.readSubscriptionPath(ctx),
+		PublicProfiles: profiles, Aliases: copySubscriptionAliases(client.aliases)}, nil
+}
+
 // SubscriptionURL returns a relative public path. The caller adds the
 // configured PublicOrigin; no token is written to logs or persistent state.
 func (c *Client) SubscriptionURL(ctx context.Context, subscription Subscription) (string, error) {

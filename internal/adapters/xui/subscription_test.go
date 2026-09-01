@@ -13,13 +13,15 @@ import (
 )
 
 type subscriptionFixture struct {
-	client      map[string]any
-	added       map[string]any
-	attached    []int64
-	settingPath int
-	settingVerb string
-	attachCalls int
-	aliasWrites [][]map[string]any
+	client            map[string]any
+	added             map[string]any
+	attached          []int64
+	settingPath       int
+	settingVerb       string
+	attachCalls       int
+	aliasWrites       [][]map[string]any
+	aliasWriteFailure bool
+	aliasReadMismatch bool
 }
 
 func (f *subscriptionFixture) handler(w http.ResponseWriter, r *http.Request) {
@@ -83,6 +85,11 @@ func (f *subscriptionFixture) handler(w http.ResponseWriter, r *http.Request) {
 			f.client["inboundIds"] = values
 			fmt.Fprint(w, `{"success":true,"obj":null}`)
 		case strings.HasPrefix(r.URL.Path, "/panel/panel/api/clients/") && strings.HasSuffix(r.URL.Path, "/inboundAliases"):
+			if f.aliasWriteFailure {
+				w.WriteHeader(http.StatusInternalServerError)
+				fmt.Fprint(w, `{"success":false}`)
+				return
+			}
 			var payload struct {
 				Aliases []map[string]any `json:"aliases"`
 			}
@@ -91,11 +98,32 @@ func (f *subscriptionFixture) handler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			f.aliasWrites = append(f.aliasWrites, payload.Aliases)
-			f.client["inboundAliases"] = payload.Aliases
+			if !f.aliasReadMismatch {
+				f.client["inboundAliases"] = payload.Aliases
+			}
 			fmt.Fprint(w, `{"success":true,"obj":null}`)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
+	}
+}
+
+func TestEnsureSubscriptionClientRejectsAliasWriteFailure(t *testing.T) {
+	fixture := &subscriptionFixture{client: map[string]any{"id": 42, "email": "aimili-gateway-subscription", "subId": "stable-sub", "client": map[string]any{"id": "stable-client"}, "inboundIds": []any{1, 2}}, aliasWriteFailure: true}
+	client := newSubscriptionFixtureClient(t, fixture)
+	_, err := client.EnsureSubscriptionClient(context.Background(), SubscriptionDesired{ClientEmail: "aimili-gateway-subscription", ClientUUID: "stable-client", InboundIDs: []int64{1, 2}, Aliases: map[int64]string{1: "主连接_日本", 2: "出口位 1_日本"}})
+	if err == nil || len(fixture.aliasWrites) != 0 {
+		t.Fatalf("error=%v writes=%#v", err, fixture.aliasWrites)
+	}
+}
+
+func TestEnsureSubscriptionClientRejectsAliasReadMismatch(t *testing.T) {
+	fixture := &subscriptionFixture{client: map[string]any{"id": 42, "email": "aimili-gateway-subscription", "subId": "stable-sub", "client": map[string]any{"id": "stable-client"}, "inboundIds": []any{1, 2}}, aliasReadMismatch: true}
+	client := newSubscriptionFixtureClient(t, fixture)
+	_, err := client.EnsureSubscriptionClient(context.Background(), SubscriptionDesired{ClientEmail: "aimili-gateway-subscription", ClientUUID: "stable-client", InboundIDs: []int64{1, 2}, Aliases: map[int64]string{1: "主连接_日本", 2: "出口位 1_日本"}})
+	var adapterError *AdapterError
+	if !errors.As(err, &adapterError) || adapterError.Code != "subscription_incomplete" || len(fixture.aliasWrites) != 1 {
+		t.Fatalf("error=%v writes=%#v", err, fixture.aliasWrites)
 	}
 }
 
@@ -135,6 +163,27 @@ func TestEnsureSubscriptionClientRejectsUnownedAliasBeforeAnyClientWrite(t *test
 	}
 	if fixture.added != nil || fixture.attachCalls != 0 || len(fixture.aliasWrites) != 0 {
 		t.Fatalf("unowned alias caused writes: added=%#v attach=%d aliases=%#v", fixture.added, fixture.attachCalls, fixture.aliasWrites)
+	}
+}
+
+func TestVerifySubscriptionClientRejectsAliasDriftWithoutWriting(t *testing.T) {
+	fixture := &subscriptionFixture{client: map[string]any{
+		"id": 42, "email": "aimili-gateway-subscription", "subId": "stable-sub",
+		"client": map[string]any{"id": "stable-client"}, "inboundIds": []any{1, 2},
+		"inboundAliases": []any{map[string]any{"inboundId": float64(1), "alias": "主连接_日本"}, map[string]any{"inboundId": float64(2), "alias": "出口位 1_美国"}},
+	}}
+	client := newSubscriptionFixtureClient(t, fixture)
+
+	_, err := client.VerifySubscriptionClient(context.Background(), SubscriptionDesired{
+		ClientEmail: "aimili-gateway-subscription", ClientUUID: "stable-client", InboundIDs: []int64{1, 2},
+		Aliases: map[int64]string{1: "主连接_日本", 2: "出口位 1_日本"},
+	})
+	var adapterError *AdapterError
+	if !errors.As(err, &adapterError) || adapterError.Code != "subscription_incomplete" {
+		t.Fatalf("error = %v", err)
+	}
+	if len(fixture.aliasWrites) != 0 {
+		t.Fatalf("read-only verification wrote aliases: %#v", fixture.aliasWrites)
 	}
 }
 

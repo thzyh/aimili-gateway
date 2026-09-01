@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -128,6 +129,75 @@ func TestReplaceCandidateUpdatesOnlyTheTargetSubscriptionAlias(t *testing.T) {
 	if !reflect.DeepEqual(fixture.xui.subscriptionDesired.Aliases, want) {
 		t.Fatalf("desired aliases = %#v, want %#v", fixture.xui.subscriptionDesired.Aliases, want)
 	}
+}
+
+func TestReplaceCandidateAliasFailuresRestoreOldState(t *testing.T) {
+	tests := []struct {
+		name       string
+		errors     []error
+		drifts     []bool
+		wantRepair bool
+	}{
+		{name: "alias write failure", errors: []error{errors.New("alias write failed"), nil}},
+		{name: "subscription fetch failure", errors: []error{errors.New("subscription fetch failed"), nil}},
+		{name: "alias read mismatch", drifts: []bool{true, false}},
+		{name: "alias rollback failure", errors: []error{errors.New("alias write failed"), errors.New("alias rollback failed")}, wantRepair: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture, target := aliasReplacementFixture(t)
+			fixture.xui.ensureSubscriptionErrors = test.errors
+			fixture.xui.ensureSubscriptionAliasDrifts = test.drifts
+			_, err := fixture.orchestratorWithMax(t, 3).ReplaceCandidate(context.Background(), "new-node", target.ID)
+			if test.wantRepair {
+				if codeOf(err) != "repair_required" {
+					t.Fatalf("error=%v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("alias failure committed replacement")
+			}
+			stored := fixture.store.groups[target.ID]
+			if stored.CandidateID != "old-node" || stored.CountryName != "日本" || stored.Status != domain.ProxyGroupReady {
+				t.Fatalf("old group not restored: %#v", stored)
+			}
+			want := map[int64]string{1: "主连接_日本", 2: "出口位 1_日本", 3: "出口位 2_美国", 4: "出口位 3_韩国"}
+			if !reflect.DeepEqual(fixture.xui.subscriptionDesired.Aliases, want) || fixture.xui.ensureSubscriptionCalls != 2 {
+				t.Fatalf("aliases=%#v writes=%d", fixture.xui.subscriptionDesired.Aliases, fixture.xui.ensureSubscriptionCalls)
+			}
+		})
+	}
+}
+
+func aliasReplacementFixture(t *testing.T) (*fixture, domain.ProxyGroup) {
+	t.Helper()
+	fixture := newFixture()
+	fixture.store.mainEgress = store.MainEgress{ResourceName: "agw-main", Enabled: true, PublicInboundID: 1, CountryName: "日本", CountryCode: "JP", ProxyType: domain.ProxyTypeDatacenter, CandidateID: "main", ExitIP: "203.0.113.1", PublicPort: 8443, MixedInboundID: 98, MixedPort: 31000, UpdatedAt: fixture.now()}
+	values := []struct{ code, name, node string }{{"JP", "日本", "old-node"}, {"US", "美国", "us-node"}, {"KR", "韩国", "kr-node"}}
+	fixture.aimili.createdSlots = map[int]aimili.Slot{}
+	inbounds := []xui.Inbound{{ID: 1, Tag: "aimili-reality", Remark: "Aimili Reality", Protocol: "vless", Port: 8443}}
+	var target domain.ProxyGroup
+	for slot, value := range values {
+		group, _ := domain.NewProxyGroupIdentity(value.code, domain.ProxyTypeDatacenter, value.node)
+		group.Status, group.AimiliSlot, group.PublicInboundID, group.MixedInboundID = domain.ProxyGroupReady, slot, int64(slot+2), int64(slot+20)
+		group.CountryName, group.PublicPort, group.MixedPort, group.ExitIP, group.CandidateID = value.name, 20000+slot, 30000+slot, fmt.Sprintf("203.0.113.%d", slot+2), value.node
+		group.RealityPublicKey, group.RealityShortID, group.RealityServerName = "key", "short", "proxy.example.test"
+		fixture.store.groups[group.ID] = group
+		fixture.store.protocolModes[group.ID] = domain.EgressProtocolMode{EgressID: group.ID, ActiveMode: domain.ProtocolVLESSTCPRealityVision, DesiredMode: domain.ProtocolVLESSTCPRealityVision, State: domain.ProtocolReady, Version: 1, UpdatedAt: fixture.now()}
+		fixture.aimili.createdSlots[slot] = aimili.Slot{Number: slot, NodeID: value.node, Country: value.code, CountryName: value.name, ProxyType: "datacenter", ExitIP: group.ExitIP, Status: "up", EgressOK: true}
+		inbounds = append(inbounds, xui.Inbound{ID: group.PublicInboundID, Tag: group.ResourceName + "-vless", Remark: "Aimili Gateway " + group.ResourceName + " VLESS", Protocol: "vless", Port: group.PublicPort})
+		if slot == 0 {
+			target = group
+		}
+	}
+	fixture.xui.snapshot = xui.Snapshot{Inbounds: inbounds}
+	fixture.aimili.candidates = []aimili.Candidate{{ID: "new-node", CountryCode: "KR", CountryName: "韩国", ProxyType: "datacenter", ProbeStatus: "available", IP: "198.51.100.99"}}
+	fixture.aimili.assignedSlots = []aimili.Slot{
+		{Number: 0, NodeID: "new-node", Country: "KR", CountryName: "韩国", ProxyType: "datacenter", ExitIP: "203.0.113.99", Status: "up", EgressOK: true},
+		fixture.aimili.createdSlots[0],
+	}
+	return fixture, target
 }
 
 func TestSubscriptionIncludesMainAndReadyManagedVLESSOnly(t *testing.T) {

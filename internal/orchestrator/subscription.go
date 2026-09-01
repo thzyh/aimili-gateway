@@ -20,6 +20,12 @@ import (
 
 const legacyAggregateVLESSPort = 21000
 
+type subscriptionReadOnlyKey struct{}
+
+func (o *Orchestrator) verifySubscription(ctx context.Context) (SubscriptionResult, error) {
+	return o.Subscription(context.WithValue(ctx, subscriptionReadOnlyKey{}, true))
+}
+
 func subscriptionAliases(main store.MainEgress, groups []domain.ProxyGroup) (map[int64]string, error) {
 	mainCountry := strings.TrimSpace(main.CountryName)
 	if main.ResourceName != "agw-main" || !main.Enabled || main.PublicInboundID < 1 || mainCountry == "" || mainCountry != main.CountryName || len(groups) != 3 {
@@ -129,9 +135,15 @@ func (o *Orchestrator) Subscription(ctx context.Context) (SubscriptionResult, er
 	if err != nil {
 		return SubscriptionResult{}, err
 	}
-	subscription, err := manager.EnsureSubscriptionClient(ctx, xui.SubscriptionDesired{
+	desired := xui.SubscriptionDesired{
 		ClientEmail: "aimili-gateway-subscription", ClientUUID: string(credentials.vlessID), InboundIDs: ids, Aliases: aliases,
-	})
+	}
+	var subscription xui.Subscription
+	if readOnly, _ := ctx.Value(subscriptionReadOnlyKey{}).(bool); readOnly {
+		subscription, err = manager.VerifySubscriptionClient(ctx, desired)
+	} else {
+		subscription, err = manager.EnsureSubscriptionClient(ctx, desired)
+	}
 	if err != nil {
 		return SubscriptionResult{}, operationError(err)
 	}
