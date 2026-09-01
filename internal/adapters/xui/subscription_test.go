@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -18,6 +19,7 @@ type subscriptionFixture struct {
 	settingPath int
 	settingVerb string
 	attachCalls int
+	aliasWrites [][]map[string]any
 }
 
 func (f *subscriptionFixture) handler(w http.ResponseWriter, r *http.Request) {
@@ -80,9 +82,59 @@ func (f *subscriptionFixture) handler(w http.ResponseWriter, r *http.Request) {
 			}
 			f.client["inboundIds"] = values
 			fmt.Fprint(w, `{"success":true,"obj":null}`)
+		case strings.HasPrefix(r.URL.Path, "/panel/panel/api/clients/") && strings.HasSuffix(r.URL.Path, "/inboundAliases"):
+			var payload struct {
+				Aliases []map[string]any `json:"aliases"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			f.aliasWrites = append(f.aliasWrites, payload.Aliases)
+			f.client["inboundAliases"] = payload.Aliases
+			fmt.Fprint(w, `{"success":true,"obj":null}`)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
+	}
+}
+
+func TestEnsureSubscriptionClientSetsAndVerifiesOwnedAliases(t *testing.T) {
+	fixture := &subscriptionFixture{client: map[string]any{
+		"id": 42, "email": "aimili-gateway-subscription", "subId": "stable-sub",
+		"client": map[string]any{"id": "stable-client"}, "inboundIds": []any{1, 2},
+	}}
+	client := newSubscriptionFixtureClient(t, fixture)
+	want := map[int64]string{1: "主连接_日本", 2: "出口位 1_日本"}
+
+	subscription, err := client.EnsureSubscriptionClient(context.Background(), SubscriptionDesired{
+		ClientEmail: "aimili-gateway-subscription", ClientUUID: "stable-client", InboundIDs: []int64{1, 2}, Aliases: want,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(subscription.Aliases, want) {
+		t.Fatalf("aliases = %#v, want %#v", subscription.Aliases, want)
+	}
+	if len(fixture.aliasWrites) != 1 || len(fixture.aliasWrites[0]) != 2 {
+		t.Fatalf("alias writes = %#v", fixture.aliasWrites)
+	}
+}
+
+func TestEnsureSubscriptionClientRejectsUnownedAliasBeforeAnyClientWrite(t *testing.T) {
+	fixture := &subscriptionFixture{}
+	client := newSubscriptionFixtureClient(t, fixture)
+
+	_, err := client.EnsureSubscriptionClient(context.Background(), SubscriptionDesired{
+		ClientEmail: "aimili-gateway-subscription", ClientUUID: "stable-client", InboundIDs: []int64{1, 2, 4},
+		Aliases: map[int64]string{1: "主连接_日本", 2: "出口位 1_日本", 4: "出口位 2_美国"},
+	})
+	var adapterError *AdapterError
+	if !errors.As(err, &adapterError) || adapterError.Code != "invalid_request" {
+		t.Fatalf("error = %v", err)
+	}
+	if fixture.added != nil || fixture.attachCalls != 0 || len(fixture.aliasWrites) != 0 {
+		t.Fatalf("unowned alias caused writes: added=%#v attach=%d aliases=%#v", fixture.added, fixture.attachCalls, fixture.aliasWrites)
 	}
 }
 

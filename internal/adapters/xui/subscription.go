@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/thzyh/aimili-gateway/internal/domain"
 )
@@ -35,6 +36,11 @@ func (c *Client) EnsureSubscriptionClient(ctx context.Context, desired Subscript
 	allowed := ownedPublicIDs(snapshot.Inbounds, desired.InboundIDs)
 	if len(allowed) == 0 {
 		return Subscription{}, &AdapterError{Code: "managed_resource_missing"}
+	}
+	if desired.Aliases != nil {
+		if err := validateSubscriptionAliasesDesired(desired.Aliases, allowed); err != nil {
+			return Subscription{}, err
+		}
 	}
 
 	client, found, err := c.getSubscriptionClient(ctx, desired.ClientEmail)
@@ -77,6 +83,21 @@ func (c *Client) EnsureSubscriptionClient(ctx context.Context, desired Subscript
 	if client.uuid != desired.ClientUUID || client.email != desired.ClientEmail {
 		return Subscription{}, &AdapterError{Code: "ownership_conflict"}
 	}
+	if desired.Aliases != nil {
+		if err := c.setSubscriptionAliases(ctx, desired.ClientEmail, desired.Aliases); err != nil {
+			return Subscription{}, err
+		}
+		client, _, err = c.getSubscriptionClient(ctx, desired.ClientEmail)
+		if err != nil {
+			return Subscription{}, err
+		}
+		if client.uuid != desired.ClientUUID || client.email != desired.ClientEmail {
+			return Subscription{}, &AdapterError{Code: "ownership_conflict"}
+		}
+		if err := ValidateSubscriptionAliases(client.aliases, desired.Aliases); err != nil {
+			return Subscription{}, err
+		}
+	}
 	profiles, err := c.publicProfiles(ctx, allowed, client)
 	if err != nil {
 		return Subscription{}, err
@@ -91,6 +112,7 @@ func (c *Client) EnsureSubscriptionClient(ctx context.Context, desired Subscript
 		InboundIDs:       append([]int64(nil), allowed...),
 		SubscriptionPath: path,
 		PublicProfiles:   profiles,
+		Aliases:          copySubscriptionAliases(client.aliases),
 	}, nil
 }
 
@@ -122,6 +144,21 @@ type subscriptionClient struct {
 	subID      string
 	auth       string
 	inboundIDs []int64
+	aliases    map[int64]string
+}
+
+// ValidateSubscriptionAliases rejects a response that does not exactly match
+// the aliases requested for the exclusive Gateway subscription client.
+func ValidateSubscriptionAliases(actual, expected map[int64]string) error {
+	if len(actual) != len(expected) {
+		return &AdapterError{Code: "subscription_incomplete"}
+	}
+	for id, alias := range expected {
+		if id < 1 || alias == "" || actual[id] != alias {
+			return &AdapterError{Code: "subscription_incomplete"}
+		}
+	}
+	return nil
 }
 
 // ValidateSubscriptionCoverage is used before any legacy aggregate cleanup.
@@ -357,10 +394,91 @@ func parseSubscriptionClient(obj json.RawMessage) (subscriptionClient, error) {
 	if len(result.inboundIDs) == 0 {
 		result.inboundIDs = integerValues(clientRaw["inboundIds"])
 	}
+	aliases, err := parseSubscriptionAliases(raw["inboundAliases"])
+	if err != nil {
+		return subscriptionClient{}, err
+	}
+	result.aliases = aliases
 	if result.email == "" || result.uuid == "" || result.subID == "" {
 		return subscriptionClient{}, &AdapterError{Code: "invalid_response"}
 	}
 	return result, nil
+}
+
+func (c *Client) setSubscriptionAliases(ctx context.Context, email string, aliases map[int64]string) error {
+	items := make([]map[string]any, 0, len(aliases))
+	ids := make([]int64, 0, len(aliases))
+	for id := range aliases {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	for _, id := range ids {
+		items = append(items, map[string]any{"inboundId": id, "alias": aliases[id]})
+	}
+	path := "panel/api/clients/" + url.PathEscape(email) + "/inboundAliases"
+	_, err := c.call(ctx, http.MethodPost, path, map[string]any{"aliases": items}, false)
+	return err
+}
+
+func parseSubscriptionAliases(value any) (map[int64]string, error) {
+	if value == nil {
+		return nil, nil
+	}
+	raw, ok := value.([]any)
+	if !ok {
+		return nil, &AdapterError{Code: "invalid_response"}
+	}
+	result := make(map[int64]string, len(raw))
+	for _, value := range raw {
+		alias, ok := decodeObject(value)
+		if !ok {
+			return nil, &AdapterError{Code: "invalid_response"}
+		}
+		id := integerValue(alias["inboundId"])
+		name := stringValue(alias["alias"])
+		if id < 1 || name == "" {
+			return nil, &AdapterError{Code: "invalid_response"}
+		}
+		if _, exists := result[id]; exists {
+			return nil, &AdapterError{Code: "invalid_response"}
+		}
+		result[id] = name
+	}
+	return result, nil
+}
+
+func validateSubscriptionAliasesDesired(aliases map[int64]string, allowed []int64) error {
+	if len(aliases) != len(allowed) {
+		return &AdapterError{Code: "invalid_request"}
+	}
+	owned := make(map[int64]bool, len(allowed))
+	for _, id := range allowed {
+		owned[id] = true
+	}
+	for id, alias := range aliases {
+		if !owned[id] || !validSubscriptionAlias(alias) {
+			return &AdapterError{Code: "invalid_request"}
+		}
+	}
+	return nil
+}
+
+func validSubscriptionAlias(alias string) bool {
+	if alias == "" || strings.TrimSpace(alias) != alias || len([]rune(alias)) > 96 {
+		return false
+	}
+	return !strings.ContainsFunc(alias, unicode.IsControl)
+}
+
+func copySubscriptionAliases(aliases map[int64]string) map[int64]string {
+	if aliases == nil {
+		return nil
+	}
+	result := make(map[int64]string, len(aliases))
+	for id, alias := range aliases {
+		result[id] = alias
+	}
+	return result
 }
 
 func ownedPublicIDs(inbounds []Inbound, requested []int64) []int64 {

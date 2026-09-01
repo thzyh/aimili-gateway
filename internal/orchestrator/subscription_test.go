@@ -2,6 +2,8 @@ package orchestrator
 
 import (
 	"context"
+	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +14,121 @@ import (
 	"github.com/thzyh/aimili-gateway/internal/store"
 	"github.com/thzyh/aimili-gateway/internal/validator"
 )
+
+func TestSubscriptionAliasesBuildsFourStableLogicalNames(t *testing.T) {
+	main := store.MainEgress{ResourceName: "agw-main", Enabled: true, PublicInboundID: 1, CountryName: "日本"}
+	groups := []domain.ProxyGroup{
+		{ResourceName: "agw-slot-two", Status: domain.ProxyGroupReady, AimiliSlot: 1, PublicInboundID: 3, CountryName: "美国"},
+		{ResourceName: "agw-slot-one", Status: domain.ProxyGroupReady, AimiliSlot: 0, PublicInboundID: 2, CountryName: "日本"},
+		{ResourceName: "agw-slot-three", Status: domain.ProxyGroupReady, AimiliSlot: 2, PublicInboundID: 4, CountryName: "韩国"},
+	}
+
+	got, err := subscriptionAliases(main, groups)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[int64]string{1: "主连接_日本", 2: "出口位 1_日本", 3: "出口位 2_美国", 4: "出口位 3_韩国"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("aliases = %#v, want %#v", got, want)
+	}
+}
+
+func TestSubscriptionAliasesRejectsDuplicateLogicalSlot(t *testing.T) {
+	_, err := subscriptionAliases(
+		store.MainEgress{ResourceName: "agw-main", Enabled: true, PublicInboundID: 1, CountryName: "日本"},
+		[]domain.ProxyGroup{
+			{ResourceName: "agw-one", Status: domain.ProxyGroupReady, AimiliSlot: 0, PublicInboundID: 2, CountryName: "日本"},
+			{ResourceName: "agw-two", Status: domain.ProxyGroupReady, AimiliSlot: 0, PublicInboundID: 3, CountryName: "美国"},
+			{ResourceName: "agw-three", Status: domain.ProxyGroupReady, AimiliSlot: 2, PublicInboundID: 4, CountryName: "韩国"},
+		},
+	)
+	if codeOf(err) != "invalid_request" {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestSubscriptionAliasesRejectsBlankCountry(t *testing.T) {
+	_, err := subscriptionAliases(
+		store.MainEgress{ResourceName: "agw-main", Enabled: true, PublicInboundID: 1, CountryName: "日本"},
+		[]domain.ProxyGroup{
+			{ResourceName: "agw-one", Status: domain.ProxyGroupReady, AimiliSlot: 0, PublicInboundID: 2, CountryName: "日本"},
+			{ResourceName: "agw-two", Status: domain.ProxyGroupReady, AimiliSlot: 1, PublicInboundID: 3, CountryName: ""},
+			{ResourceName: "agw-three", Status: domain.ProxyGroupReady, AimiliSlot: 2, PublicInboundID: 4, CountryName: "韩国"},
+		},
+	)
+	if codeOf(err) != "invalid_request" {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestSubscriptionPassesFourVerifiedAliasesToTheExclusiveClient(t *testing.T) {
+	fixture := newFixture()
+	fixture.store.mainEgress = store.MainEgress{ResourceName: "agw-main", Enabled: true, PublicInboundID: 1, CountryName: "日本", CountryCode: "JP", ProxyType: domain.ProxyTypeDatacenter, CandidateID: "main", ExitIP: "203.0.113.1", PublicPort: 8443, MixedInboundID: 98, MixedPort: 31000, UpdatedAt: fixture.now()}
+	countries := []struct {
+		code string
+		name string
+	}{
+		{code: "JP", name: "日本"}, {code: "US", name: "美国"}, {code: "KR", name: "韩国"},
+	}
+	inbounds := []xui.Inbound{{ID: 1, Tag: "aimili-reality", Remark: "Aimili Reality", Protocol: "vless", Port: 8443}}
+	for slot, country := range countries {
+		group, _ := domain.NewProxyGroupIdentity(country.code, domain.ProxyTypeDatacenter, fmt.Sprintf("node-%d", slot))
+		group.Status, group.AimiliSlot, group.PublicInboundID, group.MixedInboundID = domain.ProxyGroupReady, slot, int64(slot+2), int64(slot+20)
+		group.CountryName, group.PublicPort, group.MixedPort, group.ExitIP = country.name, 20000+slot, 30000+slot, fmt.Sprintf("203.0.113.%d", slot+2)
+		fixture.store.groups[group.ID] = group
+		inbounds = append(inbounds, xui.Inbound{ID: group.PublicInboundID, Tag: group.ResourceName + "-vless", Remark: "Aimili Gateway " + group.ResourceName + " VLESS", Protocol: "vless", Port: group.PublicPort})
+	}
+	fixture.xui.snapshot = xui.Snapshot{Inbounds: inbounds}
+
+	_, err := fixture.orchestratorWithMax(t, 3).Subscription(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[int64]string{1: "主连接_日本", 2: "出口位 1_日本", 3: "出口位 2_美国", 4: "出口位 3_韩国"}
+	if !reflect.DeepEqual(fixture.xui.subscriptionDesired.Aliases, want) {
+		t.Fatalf("desired aliases = %#v, want %#v", fixture.xui.subscriptionDesired.Aliases, want)
+	}
+}
+
+func TestReplaceCandidateUpdatesOnlyTheTargetSubscriptionAlias(t *testing.T) {
+	fixture := newFixture()
+	fixture.store.mainEgress = store.MainEgress{ResourceName: "agw-main", Enabled: true, PublicInboundID: 1, CountryName: "日本", CountryCode: "JP", ProxyType: domain.ProxyTypeDatacenter, CandidateID: "main", ExitIP: "203.0.113.1", PublicPort: 8443, MixedInboundID: 98, MixedPort: 31000, UpdatedAt: fixture.now()}
+	countries := []struct {
+		code string
+		name string
+		node string
+	}{
+		{code: "JP", name: "日本", node: "old-node"}, {code: "US", name: "美国", node: "us-node"}, {code: "KR", name: "韩国", node: "kr-node"},
+	}
+	inbounds := []xui.Inbound{{ID: 1, Tag: "aimili-reality", Remark: "Aimili Reality", Protocol: "vless", Port: 8443}}
+	var target domain.ProxyGroup
+	fixture.aimili.createdSlots = make(map[int]aimili.Slot)
+	for slot, country := range countries {
+		group, _ := domain.NewProxyGroupIdentity(country.code, domain.ProxyTypeDatacenter, country.node)
+		group.Status, group.AimiliSlot, group.PublicInboundID, group.MixedInboundID = domain.ProxyGroupReady, slot, int64(slot+2), int64(slot+20)
+		group.CountryName, group.PublicPort, group.MixedPort, group.ExitIP = country.name, 20000+slot, 30000+slot, fmt.Sprintf("203.0.113.%d", slot+2)
+		group.CandidateID, group.RealityPublicKey, group.RealityShortID, group.RealityServerName = country.node, "key", "short", "proxy.example.test"
+		fixture.store.groups[group.ID] = group
+		fixture.store.protocolModes[group.ID] = domain.EgressProtocolMode{EgressID: group.ID, ActiveMode: domain.ProtocolVLESSTCPRealityVision, DesiredMode: domain.ProtocolVLESSTCPRealityVision, State: domain.ProtocolReady, Version: 1, UpdatedAt: fixture.now()}
+		fixture.aimili.createdSlots[slot] = aimili.Slot{Number: slot, NodeID: country.node, Country: country.code, CountryName: country.name, ProxyType: "datacenter", ExitIP: group.ExitIP, Port: 17930 + slot, Status: "up", EgressOK: true}
+		inbounds = append(inbounds, xui.Inbound{ID: group.PublicInboundID, Tag: group.ResourceName + "-vless", Remark: "Aimili Gateway " + group.ResourceName + " VLESS", Protocol: "vless", Port: group.PublicPort})
+		if slot == 0 {
+			target = group
+		}
+	}
+	fixture.xui.snapshot = xui.Snapshot{Inbounds: inbounds}
+	fixture.aimili.candidates = []aimili.Candidate{{ID: "new-node", CountryCode: "KR", CountryName: "韩国", ProxyType: "datacenter", ProbeStatus: "available", IP: "198.51.100.99"}}
+	fixture.aimili.assignedSlot = aimili.Slot{Number: 0, NodeID: "new-node", Country: "KR", CountryName: "韩国", ProxyType: "datacenter", ExitIP: "203.0.113.99", Port: 17930, Status: "up", EgressOK: true}
+
+	_, err := fixture.orchestratorWithMax(t, 3).ReplaceCandidate(context.Background(), "new-node", target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[int64]string{1: "主连接_日本", 2: "出口位 1_韩国", 3: "出口位 2_美国", 4: "出口位 3_韩国"}
+	if !reflect.DeepEqual(fixture.xui.subscriptionDesired.Aliases, want) {
+		t.Fatalf("desired aliases = %#v, want %#v", fixture.xui.subscriptionDesired.Aliases, want)
+	}
+}
 
 func TestSubscriptionIncludesMainAndReadyManagedVLESSOnly(t *testing.T) {
 	fixture := newFixture()

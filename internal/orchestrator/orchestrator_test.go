@@ -834,6 +834,10 @@ type fakeXUI struct {
 func (x *fakeXUI) Snapshot(context.Context) (xui.Snapshot, error) { return x.snapshot, nil }
 func (x *fakeXUI) EnsureSubscriptionClient(_ context.Context, desired xui.SubscriptionDesired) (xui.Subscription, error) {
 	x.subscriptionDesired = desired
+	aliases := make(map[int64]string, len(desired.Aliases))
+	for id, alias := range desired.Aliases {
+		aliases[id] = alias
+	}
 	profiles := append([]xui.PublicProfile(nil), x.subscriptionProfiles...)
 	if len(x.profileSequences) > 0 {
 		profiles = append([]xui.PublicProfile(nil), x.profileSequences[0]...)
@@ -844,7 +848,7 @@ func (x *fakeXUI) EnsureSubscriptionClient(_ context.Context, desired xui.Subscr
 			profiles = append(profiles, xui.PublicProfile{InboundID: id, Mode: domain.ProtocolVLESSTCPRealityVision, ClientID: desired.ClientUUID, PublicKey: "public-key", ShortID: "short-id", ServerName: "proxy.example.test"})
 		}
 	}
-	return xui.Subscription{ResourceName: "aimili-gateway-subscription", ClientID: 42, ClientEmail: desired.ClientEmail, ClientUUID: desired.ClientUUID, SubscriptionID: "opaque", InboundIDs: append([]int64(nil), desired.InboundIDs...), SubscriptionPath: "/sub-test/", PublicProfiles: profiles}, nil
+	return xui.Subscription{ResourceName: "aimili-gateway-subscription", ClientID: 42, ClientEmail: desired.ClientEmail, ClientUUID: desired.ClientUUID, SubscriptionID: "opaque", InboundIDs: append([]int64(nil), desired.InboundIDs...), SubscriptionPath: "/sub-test/", PublicProfiles: profiles, Aliases: aliases}, nil
 }
 func (x *fakeXUI) SubscriptionURL(_ context.Context, subscription xui.Subscription) (string, error) {
 	return subscription.SubscriptionPath + subscription.SubscriptionID, nil

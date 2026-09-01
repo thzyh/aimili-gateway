@@ -20,6 +20,54 @@ import (
 
 const legacyAggregateVLESSPort = 21000
 
+func subscriptionAliases(main store.MainEgress, groups []domain.ProxyGroup) (map[int64]string, error) {
+	mainCountry := strings.TrimSpace(main.CountryName)
+	if main.ResourceName != "agw-main" || !main.Enabled || main.PublicInboundID < 1 || mainCountry == "" || mainCountry != main.CountryName || len(groups) != 3 {
+		return nil, &Error{Code: "invalid_request"}
+	}
+	aliases := map[int64]string{main.PublicInboundID: "主连接_" + mainCountry}
+	seenSlots := make(map[int]bool, 3)
+	for _, group := range groups {
+		country := strings.TrimSpace(group.CountryName)
+		if !subscribableProxyGroup(group) || !strings.HasPrefix(group.ResourceName, "agw-") || group.ResourceName == "agw-main" ||
+			group.AimiliSlot < 0 || group.AimiliSlot > 2 || group.PublicInboundID < 1 || country == "" || country != group.CountryName || seenSlots[group.AimiliSlot] {
+			return nil, &Error{Code: "invalid_request"}
+		}
+		if _, duplicate := aliases[group.PublicInboundID]; duplicate {
+			return nil, &Error{Code: "invalid_request"}
+		}
+		seenSlots[group.AimiliSlot] = true
+		aliases[group.PublicInboundID] = fmt.Sprintf("出口位 %d_%s", group.AimiliSlot+1, country)
+	}
+	if len(seenSlots) != 3 {
+		return nil, &Error{Code: "invalid_request"}
+	}
+	return aliases, nil
+}
+
+func (o *Orchestrator) refreshDynamicSubscription(ctx context.Context) error {
+	groups, err := o.store.ListProxyGroups(ctx)
+	if err != nil {
+		return err
+	}
+	if len(groups) != 3 {
+		return nil
+	}
+	mainStore, ok := o.store.(mainEgressStore)
+	if !ok {
+		return &Error{Code: "not_configured"}
+	}
+	main, err := mainStore.GetMainEgress(ctx)
+	if err != nil {
+		return err
+	}
+	if _, err := subscriptionAliases(main, groups); err != nil {
+		return err
+	}
+	_, err = o.Subscription(ctx)
+	return err
+}
+
 type LegacyAggregateCleanup struct {
 	Removed   bool      `json:"removed"`
 	UpdatedAt time.Time `json:"updatedAt"`
@@ -57,18 +105,43 @@ func (o *Orchestrator) Subscription(ctx context.Context) (SubscriptionResult, er
 	if len(ids) == 0 {
 		return SubscriptionResult{}, &Error{Code: "not_ready"}
 	}
+	var aliases map[int64]string
+	if len(ids) == 4 && len(groups) == 3 {
+		mainStore, ok := o.store.(mainEgressStore)
+		if !ok {
+			return SubscriptionResult{}, &Error{Code: "not_configured"}
+		}
+		main, err := mainStore.GetMainEgress(ctx)
+		if err != nil {
+			return SubscriptionResult{}, &Error{Code: "not_ready"}
+		}
+		aliases, err = subscriptionAliases(main, groups)
+		if err != nil || len(aliases) != len(ids) {
+			return SubscriptionResult{}, &Error{Code: "not_ready"}
+		}
+		for _, id := range ids {
+			if aliases[id] == "" {
+				return SubscriptionResult{}, &Error{Code: "not_ready"}
+			}
+		}
+	}
 	credentials, err := o.runtimeCredentials(ctx)
 	if err != nil {
 		return SubscriptionResult{}, err
 	}
 	subscription, err := manager.EnsureSubscriptionClient(ctx, xui.SubscriptionDesired{
-		ClientEmail: "aimili-gateway-subscription", ClientUUID: string(credentials.vlessID), InboundIDs: ids,
+		ClientEmail: "aimili-gateway-subscription", ClientUUID: string(credentials.vlessID), InboundIDs: ids, Aliases: aliases,
 	})
 	if err != nil {
 		return SubscriptionResult{}, operationError(err)
 	}
 	if err := xui.ValidateSubscriptionCoverage(subscription.InboundIDs, ids); err != nil {
 		return SubscriptionResult{}, operationError(err)
+	}
+	if aliases != nil {
+		if err := xui.ValidateSubscriptionAliases(subscription.Aliases, aliases); err != nil {
+			return SubscriptionResult{}, operationError(err)
+		}
 	}
 	relative, err := manager.SubscriptionURL(ctx, subscription)
 	if err != nil {
@@ -242,6 +315,9 @@ func (o *Orchestrator) ReplaceCandidate(ctx context.Context, candidateID, target
 	if err := o.save(ctx, &group); err != nil {
 		return domain.ProxyGroup{}, err
 	}
+	if err := o.refreshDynamicSubscription(ctx); err != nil {
+		return o.rollbackCandidateReplacement(ctx, group, previousSlot, assigner, err)
+	}
 	return group, nil
 }
 
@@ -308,15 +384,18 @@ func (o *Orchestrator) replaceMainCandidate(ctx context.Context, candidateID str
 	if err != nil {
 		return o.rollbackMainCandidate(ctx, manager, staged.OperationID, err)
 	}
+	if err := o.store.SaveMainEgress(ctx, checked); err != nil {
+		return o.rollbackMainCandidate(ctx, manager, staged.OperationID, &Error{Code: "storage_failed"})
+	}
+	if err := o.refreshDynamicSubscription(ctx); err != nil {
+		return o.rollbackMainCandidate(ctx, manager, staged.OperationID, err)
+	}
 	committed, err := commitMainAssignmentIdempotently(ctx, manager, staged.OperationID)
 	if err != nil || committed.State != "committed" {
 		if err == nil {
 			err = &Error{Code: "commit_failed"}
 		}
 		return o.rollbackMainCandidate(ctx, manager, staged.OperationID, err)
-	}
-	if err := o.store.SaveMainEgress(ctx, checked); err != nil {
-		return domain.ProxyGroup{}, &Error{Code: "storage_failed"}
 	}
 	return mainEgressGroup(checked), nil
 }
@@ -398,6 +477,9 @@ func (o *Orchestrator) repairMainCandidate(ctx context.Context, manager mainAssi
 	if err := o.store.SaveMainEgress(ctx, checked); err != nil {
 		return domain.ProxyGroup{}, &Error{Code: "storage_failed"}
 	}
+	if err := o.refreshDynamicSubscription(ctx); err != nil {
+		return o.rollbackMainCandidate(ctx, manager, operationID, err)
+	}
 	return mainEgressGroup(checked), nil
 }
 
@@ -428,6 +510,9 @@ func (o *Orchestrator) rollbackMainCandidate(ctx context.Context, manager mainAs
 		return domain.ProxyGroup{}, &Error{Code: "repair_required"}
 	}
 	if _, verifyErr := o.checkMain(ctx, true); verifyErr != nil {
+		return domain.ProxyGroup{}, &Error{Code: "repair_required"}
+	}
+	if subscriptionErr := o.refreshDynamicSubscription(ctx); subscriptionErr != nil {
 		return domain.ProxyGroup{}, &Error{Code: "repair_required"}
 	}
 	return domain.ProxyGroup{}, operationError(cause)
@@ -472,6 +557,13 @@ func (o *Orchestrator) rollbackCandidateReplacement(ctx context.Context, group d
 	group.UpdatedAt = group.LastCheckedAt
 	if saveErr := o.save(ctx, &group); saveErr != nil {
 		return domain.ProxyGroup{}, saveErr
+	}
+	if subscriptionErr := o.refreshDynamicSubscription(ctx); subscriptionErr != nil {
+		group.Status = domain.ProxyGroupRepairRequired
+		group.LastErrorCode = "rollback_failed"
+		group.UpdatedAt = o.config.Now().UTC()
+		_ = o.save(ctx, &group)
+		return domain.ProxyGroup{}, &Error{Code: "repair_required"}
 	}
 	return domain.ProxyGroup{}, operationError(cause)
 }

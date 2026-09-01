@@ -115,6 +115,7 @@ type SubscriptionDesired struct {
 	ClientEmail string
 	ClientUUID  string
 	InboundIDs  []int64
+	Aliases     map[int64]string
 }
 
 type Subscription struct {
@@ -126,6 +127,7 @@ type Subscription struct {
 	InboundIDs       []int64
 	SubscriptionPath string
 	PublicProfiles   []PublicProfile
+	Aliases          map[int64]string
 }
 
 type PublicProfile struct {
