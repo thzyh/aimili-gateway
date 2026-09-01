@@ -475,8 +475,11 @@ func parseSubscriptionAliases(value any) (map[int64]string, error) {
 		for key, value := range mapping {
 			id, err := strconv.ParseInt(key, 10, 64)
 			name, nameOK := value.(string)
-			if err != nil || id < 1 || strconv.FormatInt(id, 10) != key || !nameOK || name == "" {
+			if err != nil || id < 1 || strconv.FormatInt(id, 10) != key || !nameOK {
 				return nil, &AdapterError{Code: "invalid_response"}
+			}
+			if name == "" {
+				continue
 			}
 			result[id] = name
 		}
@@ -494,8 +497,11 @@ func parseSubscriptionAliases(value any) (map[int64]string, error) {
 		}
 		id := integerValue(alias["inboundId"])
 		name := stringValue(alias["alias"])
-		if id < 1 || name == "" {
+		if id < 1 {
 			return nil, &AdapterError{Code: "invalid_response"}
+		}
+		if name == "" {
+			continue
 		}
 		if _, exists := result[id]; exists {
 			return nil, &AdapterError{Code: "invalid_response"}

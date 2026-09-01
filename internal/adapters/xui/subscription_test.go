@@ -135,6 +135,7 @@ func TestEnsureSubscriptionClientSetsAndVerifiesOwnedAliases(t *testing.T) {
 	fixture := &subscriptionFixture{client: map[string]any{
 		"id": 42, "email": "aimili-gateway-subscription", "subId": "stable-sub",
 		"client": map[string]any{"id": "stable-client"}, "inboundIds": []any{1, 2},
+		"inboundAliases": map[string]any{"1": "", "2": ""},
 	}}
 	client := newSubscriptionFixtureClient(t, fixture)
 	want := map[int64]string{1: "主连接_日本", 2: "出口位 1_日本"}
