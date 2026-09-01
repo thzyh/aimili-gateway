@@ -180,6 +180,10 @@ func (o *Orchestrator) Pool(ctx context.Context) ([]domain.ProxyGroup, error) {
 		}
 		standby.CountryName = candidate.CountryName
 		standby.CandidateIP = candidate.IP
+		if normalizedExit, ok := normalizeExitIP(candidate.ExitIP); ok {
+			standby.ExitIP = normalizedExit
+			standby.ExitIPCheckedAt = candidate.ExitIPCheckedAt
+		}
 		standby.CandidateLatencyMS = candidate.LatencyMS
 		standby.Status = domain.ProxyGroupStandby
 		result = append(result, standby)
@@ -314,6 +318,9 @@ func (o *Orchestrator) adoptLegacyGroups(ctx context.Context, groups []domain.Pr
 		group.CandidateID = candidate.ID
 		group.CandidateIP = candidate.IP
 		group.CandidateLatencyMS = candidate.LatencyMS
+		if slot.CheckedAt > 0 {
+			group.ExitIPCheckedAt = slot.CheckedAt
+		}
 		group.LastSeenAt = o.config.Now().UTC()
 		group.UpdatedAt = group.LastSeenAt
 		if err := o.save(ctx, group); err != nil {

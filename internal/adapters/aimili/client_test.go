@@ -24,7 +24,7 @@ func TestClientCandidatesSendsBearerTokenAndDecodesSafeFields(t *testing.T) {
 			t.Fatal("missing control bearer token")
 		}
 		response.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(response, `{"data":[{"id":"node-safe","country_short":"JP","country":"Japan","ip":"198.51.100.10","proxy_type":"datacenter","owner":"Example","asn":"AS64500","as_name":"Example","latency_ms":42,"score":9,"probe_status":"available","last_probe_at":1700000000}]}`)
+		fmt.Fprint(response, `{"data":[{"id":"node-safe","country_short":"JP","country":"Japan","ip":"198.51.100.10","exit_ip":"203.0.113.10","exit_ip_checked_at":1700000005,"proxy_type":"datacenter","owner":"Example","asn":"AS64500","as_name":"Example","latency_ms":42,"score":9,"probe_status":"available","last_probe_at":1700000000},{"id":"node-no-exit","country_short":"US","country":"United States","ip":"198.51.100.11","proxy_type":"residential","probe_status":"available"}]}`)
 	}))
 	t.Cleanup(server.Close)
 
@@ -36,8 +36,61 @@ func TestClientCandidatesSendsBearerTokenAndDecodesSafeFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(candidates) != 1 || candidates[0].ProxyType != "datacenter" || candidates[0].CountryCode != "JP" {
+	if len(candidates) != 2 || candidates[0].ProxyType != "datacenter" || candidates[0].CountryCode != "JP" {
 		t.Fatalf("unexpected candidates: %#v", candidates)
+	}
+	if candidates[0].IP != "198.51.100.10" || candidates[0].ExitIP != "203.0.113.10" || candidates[0].ExitIPCheckedAt != 1700000005 {
+		t.Fatalf("candidate entry and exit addresses were not kept separate: %#v", candidates[0])
+	}
+	if candidates[1].ExitIP != "" || candidates[1].ExitIPCheckedAt != 0 {
+		t.Fatalf("missing verified exit was fabricated: %#v", candidates[1])
+	}
+}
+
+func TestClientCandidatesRejectsInvalidExitMetadata(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "missing candidate id", body: `{"data":[{"country_short":"JP","ip":"198.51.100.10","proxy_type":"datacenter","probe_status":"available"}]}`},
+		{name: "missing candidate ip", body: `{"data":[{"id":"node","country_short":"JP","proxy_type":"datacenter","probe_status":"available"}]}`},
+		{name: "invalid candidate ip", body: `{"data":[{"id":"node","country_short":"JP","ip":"not-an-ip","proxy_type":"datacenter","probe_status":"available"}]}`},
+		{name: "invalid exit ip", body: `{"data":[{"id":"node","country_short":"JP","ip":"198.51.100.10","exit_ip":"not-an-ip","proxy_type":"datacenter","probe_status":"available"}]}`},
+		{name: "oversized exit ip", body: `{"data":[{"id":"node","country_short":"JP","ip":"198.51.100.10","exit_ip":"` + strings.Repeat("1", 65) + `","proxy_type":"datacenter","probe_status":"available"}]}`},
+		{name: "negative exit check", body: `{"data":[{"id":"node","country_short":"JP","ip":"198.51.100.10","exit_ip":"203.0.113.10","exit_ip_checked_at":-1,"proxy_type":"datacenter","probe_status":"available"}]}`},
+		{name: "wrong exit check type", body: `{"data":[{"id":"node","country_short":"JP","ip":"198.51.100.10","exit_ip_checked_at":"now","proxy_type":"datacenter","probe_status":"available"}]}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+				fmt.Fprint(response, test.body)
+			}))
+			t.Cleanup(server.Close)
+			client, err := NewClient(server.URL+"/", []byte("test-token"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := client.Candidates(context.Background()); err == nil {
+				t.Fatal("invalid candidate response was accepted")
+			}
+		})
+	}
+}
+
+func TestClientPreservesSafeCandidateRejectedErrorField(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.WriteHeader(http.StatusConflict)
+		fmt.Fprint(response, `{"error":{"code":"candidate_dial_failed","candidateRejected":true}}`)
+	}))
+	t.Cleanup(server.Close)
+	client, err := NewClient(server.URL+"/", []byte("test-token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.AssignSlotNode(context.Background(), 2, AssignSlotRequest{CandidateID: "node", Country: "JP", ProxyType: "datacenter"})
+	var adapterError *AdapterError
+	if !errors.As(err, &adapterError) || adapterError.Code != "candidate_dial_failed" || !adapterError.CandidateRejected {
+		t.Fatalf("candidate rejection metadata was lost: %#v", err)
 	}
 }
 
@@ -432,7 +485,7 @@ func TestClientCountryRefreshUsesVersionedClosedRequests(t *testing.T) {
 			if request.Method != http.MethodGet || request.URL.Path != "/control/v1/candidates/refresh" {
 				t.Fatalf("unexpected status request %s %s", request.Method, request.URL.Path)
 			}
-			fmt.Fprint(response, `{"data":{"state":"completed","country":"JP","phase":"","catalogCount":20,"countryCandidateCount":8,"testedCount":5,"validCount":4,"preservedCount":1,"startedAt":1700000000,"finishedAt":1700000010,"errorCode":""}}`)
+			fmt.Fprint(response, `{"data":{"state":"completed","country":"JP","phase":"","resultCode":"success","catalogCount":20,"officialCount":8,"countryCandidateCount":8,"testedCount":5,"usableCount":4,"retainedCount":1,"validCount":4,"preservedCount":1,"startedAt":1700000000,"finishedAt":1700000010,"errorCode":""}}`)
 		default:
 			t.Fatalf("unexpected extra request %d", requests)
 		}
@@ -451,8 +504,45 @@ func TestClientCountryRefreshUsesVersionedClosedRequests(t *testing.T) {
 		t.Fatalf("started = %#v, err = %v", started, err)
 	}
 	status, err := client.CountryRefresh(context.Background())
-	if err != nil || status.State != "completed" || status.TestedCount != 5 || status.ValidCount != 4 {
+	if err != nil || status.State != "completed" || status.ResultCode != "success" || status.OfficialCount != 8 || status.TestedCount != 5 || status.UsableCount != 4 || status.RetainedCount != 1 || status.ValidCount != 4 {
 		t.Fatalf("status = %#v, err = %v", status, err)
+	}
+}
+
+func TestCountryRefreshAcceptsOnlyClosedResultCodesAndNonnegativeCounts(t *testing.T) {
+	validCodes := []string{"", "success", "no_official_candidates", "no_usable_nodes", "operation_busy", "maintenance_busy", "upstream_unavailable"}
+	for _, code := range validCodes {
+		refresh := CountryRefresh{State: "completed", Country: "JP", ResultCode: code}
+		if !validCountryRefresh(refresh) {
+			t.Fatalf("valid result code %q was rejected", code)
+		}
+	}
+	invalid := []CountryRefresh{
+		{State: "completed", Country: "JP", ResultCode: "refresh_failed"},
+		{State: "completed", Country: "JP", ResultCode: strings.Repeat("x", 65)},
+		{State: "completed", Country: "JP", OfficialCount: -1},
+		{State: "completed", Country: "JP", UsableCount: -1},
+		{State: "completed", Country: "JP", RetainedCount: -1},
+		{State: "completed", Country: "JP", StartedAt: -1},
+	}
+	for _, refresh := range invalid {
+		if validCountryRefresh(refresh) {
+			t.Fatalf("invalid refresh was accepted: %#v", refresh)
+		}
+	}
+}
+
+func TestClientCountryRefreshRejectsWrongStructuredFieldTypes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(response, `{"data":{"state":"completed","country":"JP","resultCode":"success","officialCount":"eight"}}`)
+	}))
+	t.Cleanup(server.Close)
+	client, err := NewClient(server.URL+"/", []byte("test-token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.CountryRefresh(context.Background()); err == nil {
+		t.Fatal("wrong structured refresh field type was accepted")
 	}
 }
 

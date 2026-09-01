@@ -160,13 +160,50 @@ func TestReplaceCandidateAssignsExistingSlotAndKeepsStablePorts(t *testing.T) {
 	fixture.store.protocolModes[group.ID] = domain.EgressProtocolMode{EgressID: group.ID, ActiveMode: domain.ProtocolVLESSTCPRealityVision, DesiredMode: domain.ProtocolVLESSTCPRealityVision, State: domain.ProtocolReady, Version: 1, UpdatedAt: fixture.now()}
 	fixture.aimili.createdSlots = map[int]aimili.Slot{2: {Number: 2, NodeID: "old-node", Country: "JP", CountryName: "日本", ProxyType: "datacenter", ExitIP: "203.0.113.7", Port: 17932, Status: "up", EgressOK: true}}
 	fixture.aimili.candidates = []aimili.Candidate{{ID: "new-node", CountryCode: "KR", CountryName: "韩国", ProxyType: "datacenter", ProbeStatus: "available", IP: "198.51.100.8", LatencyMS: 45}}
-	fixture.aimili.assignedSlot = aimili.Slot{Number: 2, NodeID: "new-node", Country: "KR", CountryName: "韩国", ProxyType: "datacenter", ExitIP: "203.0.113.8", Port: 17932, Status: "up", EgressOK: true}
+	fixture.aimili.assignedSlot = aimili.Slot{Number: 2, NodeID: "new-node", Country: "KR", CountryName: "韩国", ProxyType: "datacenter", ExitIP: "203.0.113.8", CheckedAt: 1_700_000_010.5, Port: 17932, Status: "up", EgressOK: true}
 	updated, err := fixture.orchestratorWithMax(t, 3).ReplaceCandidate(context.Background(), "new-node", group.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.CandidateID != "new-node" || updated.AimiliSlot != 2 || updated.PublicPort != 20000 || updated.MixedPort != 30000 || updated.ExitIP != "203.0.113.8" {
+	if updated.CandidateID != "new-node" || updated.AimiliSlot != 2 || updated.PublicPort != 20000 || updated.MixedPort != 30000 || updated.ExitIP != "203.0.113.8" || updated.ExitIPCheckedAt != 1_700_000_010.5 {
 		t.Fatalf("updated=%#v", updated)
+	}
+}
+
+func TestReplaceCandidateReloadsCandidatesOnlyAfterPersistedRejection(t *testing.T) {
+	tests := []struct {
+		name      string
+		assignErr error
+		checkErr  error
+		wantReads int
+	}{
+		{name: "persisted candidate rejection", assignErr: &aimili.AdapterError{Code: "candidate_dial_failed", CandidateRejected: true}, wantReads: 2},
+		{name: "persisted egress rejection", checkErr: &aimili.AdapterError{Code: "candidate_egress_failed", CandidateRejected: true}, wantReads: 2},
+		{name: "outer assignment failure", assignErr: &aimili.AdapterError{Code: "upstream_rejected"}, wantReads: 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newFixture()
+			group, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter, "old-node")
+			group.Status = domain.ProxyGroupReady
+			group.AimiliSlot = 2
+			group.PublicPort = 20000
+			group.MixedPort = 30000
+			group.ExitIP = "203.0.113.7"
+			group.CreatedAt = fixture.now()
+			group.UpdatedAt = fixture.now()
+			fixture.store.groups[group.ID] = group
+			fixture.aimili.createdSlots = map[int]aimili.Slot{2: {Number: 2, NodeID: "old-node", Country: "JP", CountryName: "日本", ProxyType: "datacenter", ExitIP: "203.0.113.7", Port: 17932, Status: "up", EgressOK: true}}
+			fixture.aimili.candidates = []aimili.Candidate{{ID: "new-node", CountryCode: "KR", CountryName: "韩国", IP: "198.51.100.8", ProxyType: "datacenter", ProbeStatus: "available"}}
+			fixture.aimili.assignErrors = []error{test.assignErr, nil}
+			fixture.aimili.checkErrors = []error{test.checkErr}
+			fixture.aimili.assignedSlots = []aimili.Slot{{}, {Number: 2, NodeID: "old-node", Country: "JP", CountryName: "日本", ProxyType: "datacenter", ExitIP: "203.0.113.7", Port: 17932, Status: "up", EgressOK: true}}
+
+			_, _ = fixture.orchestratorWithMax(t, 3).ReplaceCandidate(context.Background(), "new-node", group.ID)
+			if fixture.aimili.candidateReads != test.wantReads {
+				t.Fatalf("candidate reads=%d, want=%d", fixture.aimili.candidateReads, test.wantReads)
+			}
+		})
 	}
 }
 

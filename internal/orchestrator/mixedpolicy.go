@@ -70,6 +70,9 @@ func (o *Orchestrator) SetMixedPolicy(ctx context.Context, requested store.Mixed
 		}
 		original := group
 		group.ExitIP = slot.ExitIP
+		if slot.CheckedAt > 0 {
+			group.ExitIPCheckedAt = slot.CheckedAt
+		}
 		managed := managedFromGroup(group)
 		updates = append(updates, mixedPolicyUpdate{
 			group: group, original: original, managed: managed,

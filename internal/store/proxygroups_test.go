@@ -53,6 +53,7 @@ func TestProxyGroupRoundTripAndOptimisticVersion(t *testing.T) {
 	actual.CountryName = "韩国"
 	actual.ProxyType = domain.ProxyTypeResidential
 	actual.ExitIP = "203.0.113.7"
+	actual.ExitIPCheckedAt = 1_700_000_005.25
 	actual.UpdatedAt = now.Add(time.Minute)
 	if err := database.UpdateProxyGroup(ctx, actual, 1); err != nil {
 		t.Fatal(err)
@@ -61,7 +62,7 @@ func TestProxyGroupRoundTripAndOptimisticVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.CandidateID != "candidate-adopted" || updated.CandidateIP != "198.51.100.20" || updated.CountryCode != "KR" || updated.ProxyType != domain.ProxyTypeResidential {
+	if updated.CandidateID != "candidate-adopted" || updated.CandidateIP != "198.51.100.20" || updated.CountryCode != "KR" || updated.ProxyType != domain.ProxyTypeResidential || updated.ExitIPCheckedAt != 1_700_000_005.25 {
 		t.Fatalf("candidate adoption was not persisted: %#v", updated)
 	}
 	if err := database.UpdateProxyGroup(ctx, actual, 1); !errors.Is(err, ErrProxyGroupChanged) {

@@ -60,6 +60,7 @@ type ProxyGroup struct {
 	ProtocolState         ProtocolState
 	ProtocolLastErrorCode string
 	ExitIP                string
+	ExitIPCheckedAt       float64
 	ConfigFingerprint     string
 	PublicInboundID       int64
 	MixedInboundID        int64

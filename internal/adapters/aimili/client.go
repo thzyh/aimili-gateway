@@ -32,18 +32,20 @@ type Capabilities struct {
 }
 
 type Candidate struct {
-	ID          string  `json:"id"`
-	CountryCode string  `json:"country_short"`
-	CountryName string  `json:"country"`
-	IP          string  `json:"ip"`
-	ProxyType   string  `json:"proxy_type"`
-	Owner       string  `json:"owner"`
-	ASN         string  `json:"asn"`
-	ASName      string  `json:"as_name"`
-	LatencyMS   int     `json:"latency_ms"`
-	Score       int     `json:"score"`
-	ProbeStatus string  `json:"probe_status"`
-	LastProbeAt float64 `json:"last_probe_at"`
+	ID              string  `json:"id"`
+	CountryCode     string  `json:"country_short"`
+	CountryName     string  `json:"country"`
+	IP              string  `json:"ip"`
+	ExitIP          string  `json:"exit_ip"`
+	ExitIPCheckedAt float64 `json:"exit_ip_checked_at"`
+	ProxyType       string  `json:"proxy_type"`
+	Owner           string  `json:"owner"`
+	ASN             string  `json:"asn"`
+	ASName          string  `json:"as_name"`
+	LatencyMS       int     `json:"latency_ms"`
+	Score           int     `json:"score"`
+	ProbeStatus     string  `json:"probe_status"`
+	LastProbeAt     float64 `json:"last_probe_at"`
 }
 
 type CandidateCountry struct {
@@ -60,9 +62,13 @@ type CountryRefresh struct {
 	State                 string  `json:"state"`
 	Country               string  `json:"country"`
 	Phase                 string  `json:"phase"`
+	ResultCode            string  `json:"resultCode"`
 	CatalogCount          int     `json:"catalogCount"`
+	OfficialCount         int     `json:"officialCount"`
 	CountryCandidateCount int     `json:"countryCandidateCount"`
 	TestedCount           int     `json:"testedCount"`
+	UsableCount           int     `json:"usableCount"`
+	RetainedCount         int     `json:"retainedCount"`
 	ValidCount            int     `json:"validCount"`
 	PreservedCount        int     `json:"preservedCount"`
 	StartedAt             float64 `json:"startedAt"`
@@ -167,7 +173,8 @@ type AdminSession struct {
 }
 
 type AdapterError struct {
-	Code string
+	Code              string
+	CandidateRejected bool
 }
 
 func (e *AdapterError) Error() string {
@@ -242,8 +249,30 @@ func (c *Client) Capabilities(ctx context.Context) (Capabilities, error) {
 
 func (c *Client) Candidates(ctx context.Context) ([]Candidate, error) {
 	var result []Candidate
-	err := c.do(ctx, c.readTimeout, http.MethodGet, "control/v1/candidates", nil, &result)
-	return result, err
+	if err := c.do(ctx, c.readTimeout, http.MethodGet, "control/v1/candidates", nil, &result); err != nil {
+		return nil, err
+	}
+	for _, candidate := range result {
+		if !validCandidate(candidate) {
+			return nil, &AdapterError{Code: "invalid_response"}
+		}
+	}
+	return result, nil
+}
+
+func validCandidate(candidate Candidate) bool {
+	if strings.TrimSpace(candidate.ID) == "" || len(candidate.ID) > 256 || strings.TrimSpace(candidate.IP) == "" || candidate.LastProbeAt < 0 || candidate.ExitIPCheckedAt < 0 {
+		return false
+	}
+	if candidate.CountryCode != "" && (len(candidate.CountryCode) != 2 || candidate.CountryCode != strings.ToUpper(candidate.CountryCode)) {
+		return false
+	}
+	for _, address := range []string{candidate.IP, candidate.ExitIP} {
+		if address != "" && (len(address) > 64 || net.ParseIP(address) == nil) {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *Client) CandidateCountries(ctx context.Context) ([]CandidateCountry, error) {
@@ -297,7 +326,15 @@ func validCountryRefresh(refresh CountryRefresh) bool {
 	if refresh.Country != "" && (len(refresh.Country) != 2 || refresh.Country != strings.ToUpper(refresh.Country)) {
 		return false
 	}
-	return refresh.CatalogCount >= 0 && refresh.CountryCandidateCount >= 0 && refresh.TestedCount >= 0 &&
+	if refresh.ResultCode != "" {
+		switch refresh.ResultCode {
+		case "success", "no_official_candidates", "no_usable_nodes", "operation_busy", "maintenance_busy", "upstream_unavailable":
+		default:
+			return false
+		}
+	}
+	return refresh.CatalogCount >= 0 && refresh.OfficialCount >= 0 && refresh.CountryCandidateCount >= 0 && refresh.TestedCount >= 0 &&
+		refresh.UsableCount >= 0 && refresh.RetainedCount >= 0 &&
 		refresh.ValidCount >= 0 && refresh.PreservedCount >= 0 && refresh.StartedAt >= 0 && refresh.FinishedAt >= 0 &&
 		refresh.CacheTotal >= 0 && refresh.CountryValidCount >= 0
 }
@@ -652,13 +689,14 @@ func (c *Client) doJSON(ctx context.Context, timeout time.Duration, method, path
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		var failure struct {
 			Error struct {
-				Code string `json:"code"`
+				Code              string `json:"code"`
+				CandidateRejected bool   `json:"candidateRejected"`
 			} `json:"error"`
 		}
 		if json.Unmarshal(raw, &failure) != nil || failure.Error.Code == "" {
 			return &AdapterError{Code: "upstream_rejected"}
 		}
-		return &AdapterError{Code: failure.Error.Code}
+		return &AdapterError{Code: failure.Error.Code, CandidateRejected: failure.Error.CandidateRejected}
 	}
 	if output == nil {
 		if response.StatusCode != http.StatusNoContent || len(raw) != 0 {

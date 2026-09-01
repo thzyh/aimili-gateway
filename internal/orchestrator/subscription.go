@@ -199,6 +199,12 @@ func (o *Orchestrator) ReplaceCandidate(ctx context.Context, candidateID, target
 	if err == nil {
 		assigned, err = o.waitForSlot(ctx, group.AimiliSlot)
 	}
+	if err != nil {
+		var adapterError *aimili.AdapterError
+		if errors.As(err, &adapterError) && adapterError.CandidateRejected {
+			_, _ = o.aimili.Candidates(ctx)
+		}
+	}
 	if err != nil || !assigned.EgressOK || net.ParseIP(assigned.ExitIP) == nil {
 		if err == nil {
 			err = &Error{Code: "egress_unavailable"}
@@ -212,6 +218,7 @@ func (o *Orchestrator) ReplaceCandidate(ctx context.Context, candidateID, target
 	group.CountryName = candidate.CountryName
 	group.ProxyType = domain.ProxyType(candidate.ProxyType)
 	group.ExitIP = assigned.ExitIP
+	group.ExitIPCheckedAt = assigned.CheckedAt
 	_, credentials, inputErr := o.runtimeInputs(ctx)
 	if inputErr == nil {
 		var socksResult, vlessResult validator.Result

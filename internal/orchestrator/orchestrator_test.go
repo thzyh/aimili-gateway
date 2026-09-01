@@ -323,6 +323,44 @@ func TestCheckSynchronizesRuntimeCandidateIdentity(t *testing.T) {
 	}
 }
 
+func TestPoolKeepsVerifiedCandidateExitSeparateAndDoesNotFabricateMissingExit(t *testing.T) {
+	fixture := newFixture()
+	fixture.aimili.candidates = []aimili.Candidate{
+		{ID: "jp-verified", CountryCode: "JP", CountryName: "日本", IP: "198.51.100.10", ExitIP: "203.0.113.10", ExitIPCheckedAt: 1700000005, ProxyType: "datacenter", ProbeStatus: "available"},
+		{ID: "us-unverified", CountryCode: "US", CountryName: "美国", IP: "198.51.100.11", ProxyType: "residential", ProbeStatus: "available"},
+	}
+
+	pool, err := fixture.orchestratorWithMax(t, 1).Pool(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pool) != 2 {
+		t.Fatalf("pool = %#v", pool)
+	}
+	if pool[0].CandidateIP != "198.51.100.10" || pool[0].ExitIP != "203.0.113.10" || pool[0].ExitIPCheckedAt != 1700000005 {
+		t.Fatalf("verified candidate metadata was not separated: %#v", pool[0])
+	}
+	if pool[1].CandidateIP != "198.51.100.11" || pool[1].ExitIP != "" || pool[1].ExitIPCheckedAt != 0 {
+		t.Fatalf("missing candidate exit was fabricated: %#v", pool[1])
+	}
+}
+
+func TestLegacySlotWithoutCheckedAtDoesNotClearKnownExitCheckTime(t *testing.T) {
+	group := domain.ProxyGroup{CandidateID: "candidate-a", ExitIP: "203.0.113.10", ExitIPCheckedAt: 1700000005}
+	applySlotSnapshot(&group, aimili.Slot{NodeID: "candidate-a", ExitIP: "203.0.113.11", CheckedAt: 0})
+	if group.ExitIP != "203.0.113.11" || group.ExitIPCheckedAt != 1700000005 {
+		t.Fatalf("legacy slot cleared verified exit check time: %#v", group)
+	}
+}
+
+func TestSlotCandidateChangeWithoutCheckedAtClearsPreviousExitCheckTime(t *testing.T) {
+	group := domain.ProxyGroup{CandidateID: "candidate-a", ExitIP: "203.0.113.10", ExitIPCheckedAt: 1700000005}
+	applySlotSnapshot(&group, aimili.Slot{NodeID: "candidate-b", ExitIP: "203.0.113.11", CheckedAt: 0})
+	if group.CandidateID != "candidate-b" || group.ExitIP != "203.0.113.11" || group.ExitIPCheckedAt != 0 {
+		t.Fatalf("new candidate retained the previous exit check time: %#v", group)
+	}
+}
+
 func TestCheckValidatesTheCurrentXHTTPProfileInsteadOfAssumingTCP(t *testing.T) {
 	fixture := newFixture()
 	group, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter, "node-one")
@@ -525,6 +563,7 @@ type fakeAimili struct {
 	rotateCalls               int
 	unreadyChecks             int
 	candidates                []aimili.Candidate
+	candidateReads            int
 	slotsByCandidate          map[string]aimili.Slot
 	createdSlots              map[int]aimili.Slot
 	createErrors              map[string]error
@@ -534,6 +573,7 @@ type fakeAimili struct {
 	assignErrors              []error
 	assignCalls               int
 	checkResults              []aimili.SlotCheck
+	checkErrors               []error
 	assignRequests            []aimili.AssignSlotRequest
 	stagedMainStatus          aimili.MainStatus
 	mainAssignment            aimili.MainAssignmentStatus
@@ -673,6 +713,7 @@ func (a *fakeAimili) AssignSlotNode(_ context.Context, number int, request aimil
 }
 
 func (a *fakeAimili) Candidates(context.Context) ([]aimili.Candidate, error) {
+	a.candidateReads++
 	if a.candidates != nil {
 		return append([]aimili.Candidate(nil), a.candidates...), nil
 	}
@@ -701,6 +742,13 @@ func (a *fakeAimili) ListSlots(context.Context) ([]aimili.Slot, error) {
 }
 func (a *fakeAimili) CheckSlot(_ context.Context, number int) (aimili.SlotCheck, error) {
 	*a.calls = append(*a.calls, "slot.check")
+	if len(a.checkErrors) > 0 {
+		err := a.checkErrors[0]
+		a.checkErrors = a.checkErrors[1:]
+		if err != nil {
+			return aimili.SlotCheck{}, err
+		}
+	}
 	if len(a.checkResults) > 0 {
 		result := a.checkResults[0]
 		a.checkResults = a.checkResults[1:]

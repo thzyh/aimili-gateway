@@ -98,3 +98,16 @@ func TestProxyGroupSupportsMainEgressSource(t *testing.T) {
 		t.Fatal("main egress source should be valid")
 	}
 }
+
+func TestProxyGroupKeepsCandidateAndVerifiedExitMetadataSeparate(t *testing.T) {
+	group, err := NewProxyGroupIdentity("JP", ProxyTypeDatacenter, "candidate-one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	group.CandidateIP = "198.51.100.10"
+	group.ExitIP = "203.0.113.10"
+	group.ExitIPCheckedAt = 1700000005
+	if group.CandidateIP == group.ExitIP || group.ExitIPCheckedAt != 1700000005 {
+		t.Fatalf("candidate and exit metadata collapsed: %#v", group)
+	}
+}

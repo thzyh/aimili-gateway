@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"testing"
 
+	"github.com/thzyh/aimili-gateway/internal/adapters/aimili"
 	"github.com/thzyh/aimili-gateway/internal/domain"
 	"github.com/thzyh/aimili-gateway/internal/store"
 	"github.com/thzyh/aimili-gateway/internal/validator"
@@ -144,6 +145,8 @@ func TestRepairManagedValidatesAndPersistsTheFreshAimiliExit(t *testing.T) {
 	group.ExitIP = "203.0.113.6"
 	fixture.store.groups = map[string]domain.ProxyGroup{group.ID: group}
 	fixture.store.policy = store.MixedSourcePolicy{Enabled: true, CIDRs: []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24")}, ApplyStatus: store.MixedPolicyApplied, UpdatedAt: fixture.now()}
+	fixture.aimili.createdSlots = map[int]aimili.Slot{}
+	fixture.aimili.checkResults = []aimili.SlotCheck{{Number: 1, Country: "JP", ProxyType: "datacenter", Port: 17930, Status: "up", ExitIP: "203.0.113.7", EgressOK: true, CheckedAt: 1_700_000_020.5}}
 
 	if err := fixture.orchestrator(t).RepairManaged(context.Background()); err != nil {
 		t.Fatal(err)
@@ -151,7 +154,7 @@ func TestRepairManagedValidatesAndPersistsTheFreshAimiliExit(t *testing.T) {
 	if !equalStrings(fixture.validator.socksExpectedIPs, []string{"203.0.113.7"}) {
 		t.Fatalf("SOCKS validation did not use the fresh Aimili exit: %#v", fixture.validator.socksExpectedIPs)
 	}
-	if stored := fixture.store.groups[group.ID]; stored.ExitIP != "203.0.113.7" {
+	if stored := fixture.store.groups[group.ID]; stored.ExitIP != "203.0.113.7" || stored.ExitIPCheckedAt != 1_700_000_020.5 {
 		t.Fatalf("fresh Aimili exit was not persisted: %#v", stored)
 	}
 }

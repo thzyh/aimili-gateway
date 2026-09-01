@@ -26,15 +26,15 @@ func (s *Store) CreateProxyGroup(ctx context.Context, group domain.ProxyGroup) e
 			id, resource_name, country_code, country_name, proxy_type,
 			candidate_id, candidate_ip, candidate_latency_ms, vless_latency_ms, socks_latency_ms, status,
 			egress_source,
-			aimili_slot, public_port, mixed_port, exit_ip, config_fingerprint,
+			aimili_slot, public_port, mixed_port, exit_ip, exit_ip_checked_at, config_fingerprint,
 			public_inbound_id, mixed_inbound_id, reality_public_key, reality_short_id, reality_server_name, reality_mldsa65_verify,
 			last_error_code, recovery_state, version, created_at, updated_at,
 			last_checked_at, last_rotated_at, last_seen_at
-		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		group.ID, group.ResourceName, group.CountryCode, group.CountryName,
 		group.ProxyType, group.CandidateID, group.CandidateIP, group.CandidateLatencyMS,
 		group.VLESSLatencyMS, group.SOCKSLatencyMS, group.Status, normalizedEgressSource(group.EgressSource), group.AimiliSlot, group.PublicPort,
-		group.MixedPort, group.ExitIP, group.ConfigFingerprint,
+		group.MixedPort, group.ExitIP, group.ExitIPCheckedAt, group.ConfigFingerprint,
 		group.PublicInboundID, group.MixedInboundID, group.RealityPublicKey,
 		group.RealityShortID, group.RealityServerName, group.RealityMLDSA65Verify,
 		group.LastErrorCode, group.RecoveryState, group.Version, group.CreatedAt.UTC().UnixMilli(),
@@ -55,7 +55,7 @@ func (s *Store) GetProxyGroup(ctx context.Context, id string) (domain.ProxyGroup
 		SELECT id, resource_name, country_code, country_name, proxy_type,
 			candidate_id, candidate_ip, candidate_latency_ms, vless_latency_ms, socks_latency_ms, status,
 			egress_source,
-			aimili_slot, public_port, mixed_port, exit_ip, config_fingerprint,
+			aimili_slot, public_port, mixed_port, exit_ip, exit_ip_checked_at, config_fingerprint,
 			public_inbound_id, mixed_inbound_id, reality_public_key, reality_short_id, reality_server_name, reality_mldsa65_verify,
 			last_error_code, recovery_state, version, created_at, updated_at,
 			last_checked_at, last_rotated_at, last_seen_at
@@ -67,7 +67,7 @@ func (s *Store) ListProxyGroups(ctx context.Context) ([]domain.ProxyGroup, error
 		SELECT id, resource_name, country_code, country_name, proxy_type,
 			candidate_id, candidate_ip, candidate_latency_ms, vless_latency_ms, socks_latency_ms, status,
 			egress_source,
-			aimili_slot, public_port, mixed_port, exit_ip, config_fingerprint,
+			aimili_slot, public_port, mixed_port, exit_ip, exit_ip_checked_at, config_fingerprint,
 			public_inbound_id, mixed_inbound_id, reality_public_key, reality_short_id, reality_server_name, reality_mldsa65_verify,
 			last_error_code, recovery_state, version, created_at, updated_at,
 			last_checked_at, last_rotated_at, last_seen_at
@@ -99,13 +99,13 @@ func (s *Store) UpdateProxyGroup(ctx context.Context, group domain.ProxyGroup, e
 			resource_name = ?, country_code = ?, country_name = ?, proxy_type = ?, candidate_id = ?, candidate_ip = ?, candidate_latency_ms = ?, vless_latency_ms = ?, socks_latency_ms = ?,
 			status = ?, aimili_slot = ?, public_port = ?, mixed_port = ?,
 			egress_source = ?,
-			exit_ip = ?, config_fingerprint = ?, public_inbound_id = ?, mixed_inbound_id = ?,
+			exit_ip = ?, exit_ip_checked_at = ?, config_fingerprint = ?, public_inbound_id = ?, mixed_inbound_id = ?,
 			reality_public_key = ?, reality_short_id = ?, reality_server_name = ?, reality_mldsa65_verify = ?, last_error_code = ?, recovery_state = ?,
 			version = version + 1, updated_at = ?, last_checked_at = ?, last_rotated_at = ?, last_seen_at = ?
 		WHERE id = ? AND version = ?`,
 		group.ResourceName, group.CountryCode, group.CountryName, group.ProxyType, group.CandidateID, group.CandidateIP, group.CandidateLatencyMS, group.VLESSLatencyMS, group.SOCKSLatencyMS,
 		group.Status, group.AimiliSlot, group.PublicPort, group.MixedPort, normalizedEgressSource(group.EgressSource),
-		group.ExitIP, group.ConfigFingerprint, group.PublicInboundID,
+		group.ExitIP, group.ExitIPCheckedAt, group.ConfigFingerprint, group.PublicInboundID,
 		group.MixedInboundID, group.RealityPublicKey, group.RealityShortID, group.RealityServerName, group.RealityMLDSA65Verify, group.LastErrorCode,
 		group.RecoveryState, group.UpdatedAt.UTC().UnixMilli(),
 		unixMillis(group.LastCheckedAt), unixMillis(group.LastRotatedAt), unixMillis(group.LastSeenAt),
@@ -167,7 +167,7 @@ func scanProxyGroup(row rowScanner) (domain.ProxyGroup, error) {
 		&group.ID, &group.ResourceName, &group.CountryCode, &group.CountryName,
 		&group.ProxyType, &group.CandidateID, &group.CandidateIP, &group.CandidateLatencyMS,
 		&group.VLESSLatencyMS, &group.SOCKSLatencyMS, &group.Status, &group.EgressSource, &group.AimiliSlot, &group.PublicPort,
-		&group.MixedPort, &group.ExitIP, &group.ConfigFingerprint,
+		&group.MixedPort, &group.ExitIP, &group.ExitIPCheckedAt, &group.ConfigFingerprint,
 		&group.PublicInboundID, &group.MixedInboundID, &group.RealityPublicKey,
 		&group.RealityShortID, &group.RealityServerName, &group.RealityMLDSA65Verify,
 		&group.LastErrorCode, &group.RecoveryState, &group.Version,
@@ -193,7 +193,7 @@ func validateProxyGroup(group domain.ProxyGroup) error {
 		(group.EgressSource != "" && !group.EgressSource.Valid()) ||
 		group.AimiliSlot < 0 || group.PublicPort < 1 || group.PublicPort > 65535 ||
 		group.MixedPort < 1 || group.MixedPort > 65535 || group.Version < 1 ||
-		len(group.CandidateID) > 256 || len(group.RealityMLDSA65Verify) > 4096 || strings.ContainsAny(group.RealityMLDSA65Verify, "\x00\r\n") || group.CandidateLatencyMS < 0 || group.VLESSLatencyMS < 0 || group.SOCKSLatencyMS < 0 ||
+		len(group.CandidateID) > 256 || len(group.RealityMLDSA65Verify) > 4096 || strings.ContainsAny(group.RealityMLDSA65Verify, "\x00\r\n") || group.CandidateLatencyMS < 0 || group.VLESSLatencyMS < 0 || group.SOCKSLatencyMS < 0 || group.ExitIPCheckedAt < 0 ||
 		group.CreatedAt.IsZero() || group.UpdatedAt.IsZero() {
 		return errors.New("invalid proxy group")
 	}

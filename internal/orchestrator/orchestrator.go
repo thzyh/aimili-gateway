@@ -365,6 +365,7 @@ func (o *Orchestrator) Enable(ctx context.Context, request EnableRequest) (domai
 		return domain.ProxyGroup{}, o.rollbackEnable(ctx, &group, xui.ManagedGroup{}, errorCode(err))
 	}
 	group.ExitIP = checked.ExitIP
+	group.ExitIPCheckedAt = checked.CheckedAt
 	managed, err := o.xui.EnsureManagedGroup(ctx, xui.DesiredGroup{
 		ResourceName: group.ResourceName, SOCKSPort: checked.Port, VLESSPort: group.PublicPort, MixedPort: group.MixedPort,
 		VLESSClientID: string(credentials.vlessID), MixedUsername: string(credentials.mixedUsername), MixedPassword: string(credentials.mixedPassword),
@@ -532,8 +533,12 @@ func applySlotSnapshot(group *domain.ProxyGroup, slot aimili.Slot) {
 	if group == nil {
 		return
 	}
+	previousCandidateID := group.CandidateID
 	if nodeID := strings.TrimSpace(slot.NodeID); nodeID != "" {
 		group.CandidateID = nodeID
+		if nodeID != previousCandidateID {
+			group.ExitIPCheckedAt = 0
+		}
 	}
 	if candidateIP := strings.TrimSpace(slot.CandidateIP); net.ParseIP(candidateIP) != nil {
 		group.CandidateIP = candidateIP
@@ -552,6 +557,9 @@ func applySlotSnapshot(group *domain.ProxyGroup, slot aimili.Slot) {
 	}
 	if exitIP := strings.TrimSpace(slot.ExitIP); net.ParseIP(exitIP) != nil {
 		group.ExitIP = exitIP
+		if slot.CheckedAt > 0 {
+			group.ExitIPCheckedAt = slot.CheckedAt
+		}
 	}
 }
 
