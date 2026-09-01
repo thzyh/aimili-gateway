@@ -98,6 +98,10 @@ func (o *Orchestrator) SwitchProtocolModeExpected(ctx context.Context, egressID 
 			mutationLease.cancelOperation()
 		}()
 	}
+	targetResource, err = o.syncProtocolTargetEgress(operationCtx, targetResource)
+	if err != nil {
+		return domain.EgressProtocolMode{}, err
+	}
 	if err := o.verifyEgressReady(operationCtx, &targetResource); err != nil {
 		return domain.EgressProtocolMode{}, err
 	}
@@ -545,6 +549,16 @@ func (o *Orchestrator) protocolTarget(ctx context.Context, egressID string) (pro
 		return protocolTarget{}, &Error{Code: "not_ready"}
 	}
 	return protocolTarget{egressID: egressID, inboundID: group.PublicInboundID, inboundTag: group.ResourceName + "-vless", port: group.PublicPort, group: group}, nil
+}
+
+func (o *Orchestrator) syncProtocolTargetEgress(ctx context.Context, target protocolTarget) (protocolTarget, error) {
+	if !target.main {
+		return target, nil
+	}
+	if _, err := o.checkMain(ctx, true); err != nil {
+		return protocolTarget{}, err
+	}
+	return o.protocolTarget(ctx, target.egressID)
 }
 
 func (o *Orchestrator) verifyProtocolTarget(ctx context.Context, target protocolTarget, mode domain.ProtocolMode, subscription SubscriptionResult) error {

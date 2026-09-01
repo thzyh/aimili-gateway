@@ -251,6 +251,10 @@ func TestSwitchMainProtocolChecksMainTunnelAndMixedPath(t *testing.T) {
 	fixture.store.protocolModes["agw-main"] = domain.EgressProtocolMode{EgressID: "agw-main", ActiveMode: domain.ProtocolVLESSXHTTPReality, DesiredMode: domain.ProtocolVLESSXHTTPReality, State: domain.ProtocolReady, Version: 1, UpdatedAt: fixture.now()}
 	fixture.aimili.mainStatus = aimili.MainStatus{CandidateID: "main-node", Country: "US", ProxyType: "datacenter", ExitIP: "203.0.113.10", Port: 7928, EgressOK: true, Active: true}
 	fixture.xui.snapshot.Inbounds = []xui.Inbound{{ID: 7, Tag: "aimili-reality", Remark: "Aimili Reality", Protocol: "vless", Port: 8443}}
+	fixture.xui.profileSequences = [][]xui.PublicProfile{
+		{{InboundID: 7, Mode: domain.ProtocolVLESSXHTTPReality, ClientID: "client-id", PublicKey: "public-key", ShortID: "short-id", ServerName: "proxy.example.test", XHTTPPath: "/current-path"}},
+		{{InboundID: 7, Mode: domain.ProtocolVLESSTCPRealityVision, ClientID: "client-id", PublicKey: "public-key", ShortID: "short-id", ServerName: "proxy.example.test"}},
+	}
 	client := &fakeProtocolTransaction{calls: &fixture.calls}
 	orchestrator := fixture.orchestratorWithMax(t, 3)
 	orchestrator.protocolTransaction = client
@@ -259,7 +263,7 @@ func TestSwitchMainProtocolChecksMainTunnelAndMixedPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.State != domain.ProtocolReady || fixture.validator.socksCalls != 2 || len(fixture.validator.publicTargets) != 1 {
+	if result.State != domain.ProtocolReady || fixture.validator.socksCalls != 3 || len(fixture.validator.publicTargets) != 2 {
 		t.Fatalf("main path was not fully checked: result=%#v calls=%#v", result, fixture.calls)
 	}
 	if client.applied.InboundTag != "aimili-reality" || client.applied.Port != 8443 {
@@ -267,6 +271,84 @@ func TestSwitchMainProtocolChecksMainTunnelAndMixedPath(t *testing.T) {
 	}
 	if !orderedSubset(fixture.calls, []string{"main.lease.acquire", "protocol.apply", "protocol.finalize", "main.lease.release"}) {
 		t.Fatalf("main mutation lease did not cover transaction: %#v", fixture.calls)
+	}
+}
+
+func TestSwitchMainProtocolSynchronizesHealthyRuntimeIdentityBeforeStrictPreflight(t *testing.T) {
+	fixture := mainProtocolFixture()
+	fixture.store.mainEgress.CandidateID = "stale-main"
+	fixture.store.mainEgress.CountryCode = "US"
+	fixture.store.mainEgress.CountryName = "美国"
+	fixture.store.mainEgress.ExitIP = "203.0.113.10"
+	fixture.aimili.mainStatus = aimili.MainStatus{
+		CandidateID: "current-main", Country: "JP", CountryName: "日本", ProxyType: "residential",
+		ExitIP: "203.0.113.20", Port: 7928, EgressOK: true, Active: true,
+	}
+	client := &fakeProtocolTransaction{calls: &fixture.calls}
+	orchestrator := fixture.orchestratorWithMax(t, 3)
+	orchestrator.protocolTransaction = client
+
+	result, err := orchestrator.SwitchProtocolMode(context.Background(), "agw-main", domain.ProtocolVLESSTCPRealityVision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	main := fixture.store.mainEgress
+	if result.State != domain.ProtocolReady || main.CandidateID != "current-main" || main.CountryCode != "JP" || main.CountryName != "日本" || main.ProxyType != domain.ProxyTypeResidential || main.ExitIP != "203.0.113.20" {
+		t.Fatalf("runtime main identity was not synchronized: result=%#v main=%#v", result, main)
+	}
+	if len(client.actions) == 0 || !orderedSubset(fixture.calls, []string{"main.lease.acquire", "validate.socks", "validate.public", "validate.socks", "protocol.apply"}) {
+		t.Fatalf("strict preflight did not run after synchronization: actions=%#v calls=%#v", client.actions, fixture.calls)
+	}
+	for _, expectedIP := range fixture.validator.socksExpectedIPs {
+		if expectedIP != "203.0.113.20" {
+			t.Fatalf("mixed validation used stale exit IP: %#v", fixture.validator.socksExpectedIPs)
+		}
+	}
+}
+
+func TestSwitchMainProtocolRejectsUnsafeSynchronizationBeforeHelperWrites(t *testing.T) {
+	tests := []struct {
+		name      string
+		wantCode  string
+		configure func(*fixture)
+	}{
+		{
+			name: "main exit unavailable", wantCode: "not_ready",
+			configure: func(fixture *fixture) {
+				fixture.aimili.mainStatus.EgressOK = false
+			},
+		},
+		{
+			name: "mixed validation failed", wantCode: "config_invalid",
+			configure: func(fixture *fixture) {
+				fixture.validator.socksErrors = []error{&validator.Error{Code: "config_invalid"}}
+			},
+		},
+		{
+			name: "current public protocol failed", wantCode: "config_invalid",
+			configure: func(fixture *fixture) {
+				fixture.validator.publicErrors = []error{&validator.Error{Code: "config_invalid"}}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := mainProtocolFixture()
+			test.configure(fixture)
+			before := fixture.store.protocolModes["agw-main"]
+			beforeMain := fixture.store.mainEgress
+			client := &fakeProtocolTransaction{calls: &fixture.calls}
+			orchestrator := fixture.orchestratorWithMax(t, 3)
+			orchestrator.protocolTransaction = client
+
+			_, err := orchestrator.SwitchProtocolMode(context.Background(), "agw-main", domain.ProtocolVLESSTCPRealityVision)
+			if codeOf(err) != test.wantCode {
+				t.Fatalf("error=%v, want code=%s", err, test.wantCode)
+			}
+			if len(client.actions) != 0 || fixture.store.protocolModes["agw-main"] != before || fixture.store.mainEgress != beforeMain {
+				t.Fatalf("unsafe synchronization mutated helper, protocol state, or main identity: actions=%#v state=%#v main=%#v calls=%#v", client.actions, fixture.store.protocolModes["agw-main"], fixture.store.mainEgress, fixture.calls)
+			}
+		})
 	}
 }
 
@@ -294,7 +376,7 @@ func TestSwitchMainProtocolMutationLeaseRenewFailureStopsHelperMutationAndMarksR
 	fixture.aimili.mutationLeaseRenewed = make(chan struct{}, 1)
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	validator := &blockingProtocolValidator{delegate: fixture.validator, entered: entered, release: release}
+	validator := &blockingProtocolValidator{delegate: fixture.validator, entered: entered, release: release, blockOnCall: 2}
 	client := &fakeProtocolTransaction{calls: &fixture.calls}
 	orchestrator := fixture.orchestratorWithMax(t, 3)
 	orchestrator.protocolTransaction = client
@@ -421,7 +503,7 @@ func TestSwitchMainProtocolMutationLeaseLossDuringFinalizeCancelsHelperAndMarksR
 
 func TestSwitchMainProtocolMutationLeaseCoversBlockedRollbackAndLossFailsClosed(t *testing.T) {
 	fixture := mainProtocolFixture()
-	fixture.validator.publicErrors = []error{&validator.Error{Code: "protocol_failed"}}
+	fixture.validator.publicErrors = []error{nil, &validator.Error{Code: "protocol_failed"}}
 	fixture.aimili.mutationLeaseRenewed = make(chan struct{}, 8)
 	fixture.aimili.mutationLeaseRenewErrors = make(chan error, 1)
 	renewTicks := make(chan struct{}, 3)
@@ -506,6 +588,11 @@ func mainProtocolFixture() *fixture {
 	fixture.store.protocolModes["agw-main"] = domain.EgressProtocolMode{EgressID: "agw-main", ActiveMode: domain.ProtocolVLESSXHTTPReality, DesiredMode: domain.ProtocolVLESSXHTTPReality, State: domain.ProtocolReady, Version: 1, UpdatedAt: fixture.now()}
 	fixture.aimili.mainStatus = aimili.MainStatus{CandidateID: "main-node", Country: "US", ProxyType: "datacenter", ExitIP: "203.0.113.10", Port: 7928, EgressOK: true, Active: true}
 	fixture.xui.snapshot.Inbounds = []xui.Inbound{{ID: 7, Tag: "aimili-reality", Remark: "Aimili Reality", Protocol: "vless", Port: 8443}}
+	fixture.xui.profileSequences = [][]xui.PublicProfile{
+		{{InboundID: 7, Mode: domain.ProtocolVLESSXHTTPReality, ClientID: "client-id", PublicKey: "public-key", ShortID: "short-id", ServerName: "proxy.example.test", XHTTPPath: "/current-path"}},
+		{{InboundID: 7, Mode: domain.ProtocolVLESSTCPRealityVision, ClientID: "client-id", PublicKey: "public-key", ShortID: "short-id", ServerName: "proxy.example.test"}},
+		{{InboundID: 7, Mode: domain.ProtocolVLESSXHTTPReality, ClientID: "client-id", PublicKey: "public-key", ShortID: "short-id", ServerName: "proxy.example.test", XHTTPPath: "/current-path"}},
+	}
 	return fixture
 }
 
@@ -786,10 +873,12 @@ func (f *fakeProtocolTransaction) Finalize(ctx context.Context, operationID stri
 }
 
 type blockingProtocolValidator struct {
-	delegate *fakeValidator
-	entered  chan struct{}
-	release  chan struct{}
-	once     sync.Once
+	delegate    *fakeValidator
+	entered     chan struct{}
+	release     chan struct{}
+	once        sync.Once
+	call        int
+	blockOnCall int
 }
 
 func (v *blockingProtocolValidator) ValidateSOCKS5H(ctx context.Context, target validator.SOCKSTarget) (validator.Result, error) {
@@ -801,11 +890,18 @@ func (v *blockingProtocolValidator) ValidateVLESS(ctx context.Context, target va
 }
 
 func (v *blockingProtocolValidator) ValidatePublic(ctx context.Context, target validator.PublicTarget) (validator.Result, error) {
+	v.call++
+	blockOnCall := v.blockOnCall
+	if blockOnCall == 0 {
+		blockOnCall = 1
+	}
 	blocked := false
-	v.once.Do(func() {
-		blocked = true
-		close(v.entered)
-	})
+	if v.call == blockOnCall {
+		v.once.Do(func() {
+			blocked = true
+			close(v.entered)
+		})
+	}
 	if blocked {
 		select {
 		case <-ctx.Done():
