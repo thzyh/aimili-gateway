@@ -43,7 +43,7 @@ export interface ProxyGroupPayload {
   publicPort?: number
   protocolMode?: ProtocolMode; desiredProtocolMode?: ProtocolMode; protocolState?: ProtocolState; subscriptionState?: SubscriptionState
   availableProtocolModes?: ProtocolMode[]
-  vlessPort: number; mixedPort: number; exitIp: string; candidateLatencyMs: number; vlessLatencyMs: number; socksLatencyMs: number
+  vlessPort: number; mixedPort: number; candidateIp?: string; exitIp: string; exitIpCheckedAt?: number; candidateLatencyMs: number; vlessLatencyMs: number; socksLatencyMs: number
   lastErrorCode?: string; version: number; lastCheckedAt?: string
 }
 export interface ConnectionsPayload { protocolMode: ProtocolMode; publicUri: string; vlessUri?: string; vlessError?: string; socks5hUri: string }
@@ -61,6 +61,8 @@ export interface CandidateCountryPayload { code: string; name: string; candidate
 export type CountryRefreshState = 'idle' | 'running' | 'completed' | 'failed'
 export interface CountryRefreshPayload {
   state: CountryRefreshState; country: string; phase: string
+  resultCode?: 'success' | 'no_official_candidates' | 'no_usable_nodes' | 'operation_busy' | 'maintenance_busy' | 'upstream_unavailable'
+  officialCount?: number; usableCount?: number; retainedCount?: number
   catalogCount?: number; countryCandidateCount?: number; testedCount: number; validCount: number; preservedCount?: number
   startedAt?: number; finishedAt?: number; errorCode?: string
   stopReason?: string; cacheTotal?: number; countryValidCount?: number

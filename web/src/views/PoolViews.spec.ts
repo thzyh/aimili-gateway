@@ -20,13 +20,14 @@ vi.mock('vue-router', () => ({
 }))
 
 import VpnPoolView from './VpnPoolView.vue'
+import SocksPoolView from './SocksPoolView.vue'
 
 const rows = [
-  { id: 'agw-main', countryCode: 'SG', countryName: '新加坡', proxyType: 'datacenter', status: 'ready', egressSource: 'main', fixed: true, publicPort: 8443, vlessPort: 8443, mixedPort: 31000, exitIp: '203.0.113.9', candidateLatencyMs: 18, vlessLatencyMs: 76, socksLatencyMs: 66, protocolMode: 'vless_tcp_reality_vision', desiredProtocolMode: 'vless_tcp_reality_vision', protocolState: 'ready', subscriptionState: 'ready', availableProtocolModes: ['vless_tcp_reality_vision', 'vless_xhttp_reality', 'hysteria2_quic_tls'], version: 2 },
+  { id: 'agw-main', countryCode: 'SG', countryName: '新加坡', proxyType: 'datacenter', status: 'ready', egressSource: 'main', fixed: true, publicPort: 8443, vlessPort: 8443, mixedPort: 31000, candidateIp: '198.51.100.9', exitIp: '203.0.113.9', exitIpCheckedAt: 1_700_000_010, candidateLatencyMs: 18, vlessLatencyMs: 76, socksLatencyMs: 66, protocolMode: 'vless_tcp_reality_vision', desiredProtocolMode: 'vless_tcp_reality_vision', protocolState: 'ready', subscriptionState: 'ready', availableProtocolModes: ['vless_tcp_reality_vision', 'vless_xhttp_reality', 'hysteria2_quic_tls'], version: 2 },
   { id: 'jp-one', countryCode: 'JP', countryName: '日本', proxyType: 'datacenter', status: 'ready', slotNumber: 1, fixed: true, publicPort: 20000, vlessPort: 20000, mixedPort: 30000, exitIp: '203.0.113.10', candidateLatencyMs: 20, vlessLatencyMs: 81, socksLatencyMs: 70, protocolMode: 'vless_xhttp_reality', desiredProtocolMode: 'vless_xhttp_reality', protocolState: 'ready', subscriptionState: 'ready', availableProtocolModes: ['vless_tcp_reality_vision', 'vless_xhttp_reality', 'hysteria2_quic_tls'], version: 2, lastCheckedAt: '2026-08-26T00:00:00Z' },
   { id: 'kr-one', countryCode: 'KR', countryName: '韩国', proxyType: 'residential', status: 'degraded', slotNumber: 2, fixed: true, publicPort: 20001, vlessPort: 20001, mixedPort: 30001, exitIp: '203.0.113.11', candidateLatencyMs: 30, vlessLatencyMs: 0, socksLatencyMs: 0, version: 2 },
-  { id: 'us-standby', countryCode: 'US', countryName: '美国', proxyType: 'datacenter', status: 'standby', vlessPort: 0, mixedPort: 0, exitIp: '', candidateLatencyMs: 44, vlessLatencyMs: 0, socksLatencyMs: 0, version: 1 },
-  { id: 'fr-provisioning', countryCode: 'FR', countryName: '法国', proxyType: 'datacenter', status: 'provisioning', vlessPort: 0, mixedPort: 0, exitIp: '', candidateLatencyMs: 50, vlessLatencyMs: 0, socksLatencyMs: 0, version: 1 },
+  { id: 'us-standby', countryCode: 'US', countryName: '美国', proxyType: 'datacenter', status: 'standby', vlessPort: 0, mixedPort: 0, candidateIp: '198.51.100.12', exitIp: '203.0.113.12', exitIpCheckedAt: 1_700_000_020, candidateLatencyMs: 44, vlessLatencyMs: 0, socksLatencyMs: 0, version: 1 },
+  { id: 'fr-provisioning', countryCode: 'FR', countryName: '法国', proxyType: 'datacenter', status: 'provisioning', vlessPort: 0, mixedPort: 0, candidateIp: '198.51.100.13', exitIp: '', candidateLatencyMs: 50, vlessLatencyMs: 0, socksLatencyMs: 0, version: 1 },
   { id: 'de-rotating', countryCode: 'DE', countryName: '德国', proxyType: 'residential', status: 'rotating', slotNumber: 3, fixed: true, publicPort: 20002, vlessPort: 20002, mixedPort: 30002, exitIp: '', candidateLatencyMs: 51, vlessLatencyMs: 0, socksLatencyMs: 0, version: 2 },
   { id: 'gb-disabling', countryCode: 'GB', countryName: '英国', proxyType: 'datacenter', status: 'disabling', vlessPort: 20003, mixedPort: 30003, exitIp: '', candidateLatencyMs: 52, vlessLatencyMs: 0, socksLatencyMs: 0, version: 2 },
   { id: 'ca-repair', countryCode: 'CA', countryName: '加拿大', proxyType: 'datacenter', status: 'repair_required', vlessPort: 20004, mixedPort: 30004, exitIp: '', candidateLatencyMs: 53, vlessLatencyMs: 0, socksLatencyMs: 0, lastErrorCode: 'compensation_failed', version: 2 },
@@ -121,7 +122,7 @@ it('copies a test-style VLESS subscription', async () => {
   expect(wrapper.text()).toContain('复制节点订阅')
 })
 
-it('keeps four runtime rows in logical order and shows both ports regardless of API order', async () => {
+it('keeps four runtime rows in logical order and shows only the current page port', async () => {
   mocks.apiFetch.mockImplementation((path: string) => {
     if (path === '/api/v1/proxy-groups') return Promise.resolve([rows[5], rows[2], rows[1], rows[0], ...rows.slice(3, 5), ...rows.slice(6)])
     if (path === '/api/v1/settings/aimilivpn/countries') return Promise.resolve([])
@@ -132,8 +133,24 @@ it('keeps four runtime rows in logical order and shows both ports regardless of 
   await flushPromises()
 
   expect(wrapper.findAll('[data-pool-row]').slice(0, 4).map(row => row.attributes('data-row-id'))).toEqual(['agw-main', 'jp-one', 'kr-one', 'de-rotating'])
-  expect(wrapper.get('[data-row-ports="agw-main"]').text()).toContain('公网 8443')
-  expect(wrapper.get('[data-row-ports="agw-main"]').text()).toContain('mixed 31000')
+  expect(wrapper.get('[data-row-ports="agw-main"]').text()).toContain('VPN 节点 8443')
+  expect(wrapper.get('[data-row-ports="agw-main"]').text()).not.toContain('31000')
+
+  const socks = mount(SocksPoolView)
+  await flushPromises()
+  expect(socks.get('[data-row-ports="agw-main"]').text()).toContain('SOCKS5H 31000')
+  expect(socks.get('[data-row-ports="agw-main"]').text()).not.toContain('8443')
+})
+
+it('shows verified exits for enabled and standby nodes and labels only legacy candidate fallback', async () => {
+  const wrapper = mount(VpnPoolView)
+  await flushPromises()
+
+  expect(wrapper.get('[data-row-ip="agw-main"]').text()).toContain('203.0.113.9')
+  expect(wrapper.get('[data-row-ip="us-standby"]').text()).toContain('203.0.113.12')
+  expect(wrapper.get('[data-row-ip="us-standby"]').text()).not.toContain('节点 IP')
+  expect(wrapper.get('[data-row-ip="fr-provisioning"]').text()).toContain('节点 IP 198.51.100.13')
+  expect(wrapper.text()).not.toContain('等待出口')
 })
 
 it('shows fixed ready slots and replaces a standby candidate through a closable dialog', async () => {
@@ -164,6 +181,30 @@ it('replaces a standby candidate into the main connection with a main-specific r
 	expect(wrapper.text()).toContain('主连接替换成功')
 })
 
+it('keeps replacement failure inside the dialog and reloads rejected candidates', async () => {
+	let groupReads = 0
+	mocks.apiFetch.mockImplementation((path: string, init?: RequestInit) => {
+		if (path === '/api/v1/proxy-groups') { groupReads++; return Promise.resolve(rows) }
+		if (path === '/api/v1/settings/aimilivpn/countries') return Promise.resolve([])
+		if (path === '/api/v1/settings/aimilivpn/refresh') return Promise.resolve({ state: 'idle', country: '', phase: '', testedCount: 0, validCount: 0 })
+		if (path.endsWith('/replace') && init?.method === 'POST') return Promise.reject(new Error('candidate_egress_failed'))
+		return Promise.resolve(undefined)
+	})
+	const wrapper = mount(VpnPoolView)
+	await flushPromises()
+	await wrapper.get('[data-replace="us-standby"]').trigger('click')
+	await wrapper.get('[data-replace-target]').setValue('jp-one')
+	await wrapper.get('[data-confirm-replace]').trigger('click')
+	await flushPromises()
+
+	expect(wrapper.find('[data-replace-dialog]').exists()).toBe(true)
+	expect((wrapper.get('[data-replace-target]').element as HTMLSelectElement).value).toBe('jp-one')
+	expect(wrapper.get('[data-replace-notice]').text()).toContain('候选节点的真实出口检测失败')
+	expect(wrapper.get('[data-replace-notice]').text()).not.toContain('candidate_egress_failed')
+	expect(wrapper.get('[data-replace-notice]').attributes('data-notice-kind')).toBe('error')
+	expect(groupReads).toBeGreaterThan(1)
+})
+
 it('switches one ready egress protocol without changing mixed or SOCKS5H', async () => {
 	const wrapper = mount(VpnPoolView)
 	await flushPromises()
@@ -175,6 +216,30 @@ it('switches one ready egress protocol without changing mixed or SOCKS5H', async
 		method: 'PUT', headers: { 'Idempotency-Key': 'test-key' }, body: JSON.stringify({ protocolMode: 'hysteria2_quic_tls' }),
 	})
 	expect(wrapper.text()).toContain('mixed/SOCKS5H 未变化')
+	expect(wrapper.get('[data-top-notice]').attributes('data-notice-kind')).toBe('success')
+	await wrapper.get('[data-top-notice] [aria-label="关闭提示"]').trigger('click')
+	expect(wrapper.find('[data-top-notice]').exists()).toBe(false)
+})
+
+it('shows a closable Chinese protocol error without exposing backend codes', async () => {
+	mocks.apiFetch.mockImplementation((path: string, init?: RequestInit) => {
+		if (path === '/api/v1/proxy-groups') return Promise.resolve(rows)
+		if (path === '/api/v1/settings/aimilivpn/countries') return Promise.resolve([])
+		if (path === '/api/v1/settings/aimilivpn/refresh') return Promise.resolve({ state: 'idle', country: '', phase: '', testedCount: 0, validCount: 0 })
+		if (path.endsWith('/protocol-mode') && init?.method === 'PUT') return Promise.reject(new Error('egress_unavailable'))
+		return Promise.resolve(undefined)
+	})
+	const wrapper = mount(VpnPoolView)
+	await flushPromises()
+	await wrapper.get('[data-protocol="jp-one"]').setValue('hysteria2_quic_tls')
+	await flushPromises()
+
+	const notice = wrapper.get('[data-top-notice]')
+	expect(notice.attributes('data-notice-kind')).toBe('error')
+	expect(notice.text()).toContain('协议切换失败，已请求恢复旧协议')
+	expect(notice.text()).toContain('当前出口不可用')
+	expect(notice.text()).not.toContain('egress_unavailable')
+	expect(wrapper.find('[data-refresh-notice]').exists()).toBe(false)
 })
 
 it('disables public copy and protocol changes while subscription is pending or repair is required', async () => {
@@ -224,6 +289,64 @@ it('separates cached-country filtering from official-country supplementation', a
 	expect(wrapper.get('[data-sync-pool]').text()).toContain('同步代理状态')
 	expect(wrapper.get('[data-pool-stats]').text()).toContain('官方 100')
 	expect(wrapper.get('[data-pool-stats]').text()).toContain('当前有效 25')
+})
+
+it('shows country refresh feedback in a separate closable card with a Chinese country name', async () => {
+	mocks.apiFetch.mockImplementation((path: string, init?: RequestInit) => {
+		if (path === '/api/v1/proxy-groups') return Promise.resolve(rows)
+		if (path === '/api/v1/settings/aimilivpn/countries') return Promise.resolve([{ code: 'US', name: '美国', candidateCount: 4, observedAt: 1_700_000_000 }])
+		if (path === '/api/v1/settings/aimilivpn/refresh' && init?.method === 'POST') return Promise.reject(new Error('no_usable_nodes'))
+		if (path === '/api/v1/settings/aimilivpn/refresh') return Promise.resolve({ state: 'idle', country: '', phase: '', testedCount: 0, validCount: 0 })
+		return Promise.resolve(undefined)
+	})
+	const wrapper = mount(VpnPoolView)
+	await flushPromises()
+	await wrapper.get('[data-country-supplement]').setValue('US')
+	await wrapper.get('[data-refresh-country]').trigger('click')
+	await flushPromises()
+
+	const notice = wrapper.get('[data-refresh-notice]')
+	expect(notice.attributes('data-notice-kind')).toBe('error')
+	expect(notice.text()).toContain('美国刷新失败')
+	expect(notice.text()).toContain('没有找到可用节点')
+	expect(notice.text()).not.toContain('no_usable_nodes')
+	expect(wrapper.find('[data-top-notice]').exists()).toBe(false)
+	await notice.get('[aria-label="关闭提示"]').trigger('click')
+	expect(wrapper.find('[data-refresh-notice]').exists()).toBe(false)
+})
+
+it('shows the last structured refresh result, counts, and time', async () => {
+	mocks.apiFetch.mockImplementation((path: string) => {
+		if (path === '/api/v1/proxy-groups') return Promise.resolve(rows)
+		if (path === '/api/v1/settings/aimilivpn/countries') return Promise.resolve([{ code: 'US', name: '美国', candidateCount: 4, observedAt: 1_700_000_000 }])
+		if (path === '/api/v1/settings/aimilivpn/refresh') return Promise.resolve({ state: 'completed', country: 'US', phase: '', resultCode: 'success', officialCount: 12, usableCount: 5, retainedCount: 4, testedCount: 6, validCount: 5, finishedAt: 1_700_000_000 })
+		return Promise.resolve(undefined)
+	})
+	const wrapper = mount(VpnPoolView)
+	await flushPromises()
+
+	const summary = wrapper.get('[data-refresh-summary]')
+	expect(summary.text()).toContain('美国')
+	expect(summary.text()).toContain('成功')
+	expect(summary.text()).toContain('官方 12')
+	expect(summary.text()).toContain('可用 5')
+	expect(summary.text()).toContain('保留 4')
+	expect(summary.text()).toMatch(/11\/|11月/)
+})
+
+it('does not describe a completed refresh with a failure result code as successful', async () => {
+	mocks.apiFetch.mockImplementation((path: string) => {
+		if (path === '/api/v1/proxy-groups') return Promise.resolve(rows)
+		if (path === '/api/v1/settings/aimilivpn/countries') return Promise.resolve([{ code: 'US', name: '美国', candidateCount: 0, observedAt: 1_700_000_000 }])
+		if (path === '/api/v1/settings/aimilivpn/refresh') return Promise.resolve({ state: 'completed', country: 'US', phase: '', resultCode: 'no_usable_nodes', officialCount: 12, usableCount: 0, retainedCount: 0, testedCount: 6, validCount: 0, finishedAt: 1_700_000_000 })
+		return Promise.resolve(undefined)
+	})
+	const wrapper = mount(VpnPoolView)
+	await flushPromises()
+
+	const summary = wrapper.get('[data-refresh-summary]').text()
+	expect(summary).toContain('失败')
+	expect(summary).not.toContain('成功')
 })
 
 it('polls a running country refresh and reloads the pool after completion', async () => {
