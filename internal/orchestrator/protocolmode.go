@@ -261,7 +261,7 @@ func (o *Orchestrator) revalidateProtocolRepair(ctx context.Context, persistence
 		err = o.verifyProtocolTarget(ctx, target, state.ActiveMode, subscription)
 	}
 	if err != nil {
-		state.LastErrorCode = "protocol_repair_validation_failed"
+		state.LastErrorCode = codeOr(err, "protocol_repair_validation_failed")
 		_ = o.saveProtocolState(ctx, persistence, state)
 		return err
 	}

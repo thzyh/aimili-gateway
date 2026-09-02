@@ -1011,6 +1011,28 @@ func TestSwitchProtocolModeKeepsDegradedRepairSlotLockedWhenSlotIdentityChangesD
 	}
 }
 
+func TestSwitchProtocolModeRecordsTheSafeRepairValidationFailureCode(t *testing.T) {
+	fixture, group := protocolFixture(t)
+	state := fixture.store.protocolModes[group.ID]
+	state.State = domain.ProtocolRepairRequired
+	fixture.store.protocolModes[group.ID] = state
+	fixture.validator.publicErrors = []error{&validator.Error{Code: "protocol_failed"}}
+	fixture.xui.subscriptionProfiles = []xui.PublicProfile{{
+		InboundID: group.PublicInboundID, Mode: state.ActiveMode, ClientID: "client-id", PublicKey: "public-key",
+		ShortID: "short-id", ServerName: "proxy.example.test", XHTTPPath: "/current-path",
+	}}
+	orchestrator := fixture.orchestratorWithMax(t, 3)
+	orchestrator.protocolTransaction = &fakeProtocolTransaction{calls: &fixture.calls}
+
+	_, err := orchestrator.SwitchProtocolMode(context.Background(), group.ID, state.ActiveMode)
+	if errorCode(err) != "protocol_failed" {
+		t.Fatalf("repair validation error=%v code=%s", err, errorCode(err))
+	}
+	if locked := fixture.store.protocolModes[group.ID]; locked.State != domain.ProtocolRepairRequired || locked.LastErrorCode != "protocol_failed" {
+		t.Fatalf("repair failure was not persisted precisely: %#v", locked)
+	}
+}
+
 func protocolFixture(t *testing.T) (*fixture, domain.ProxyGroup) {
 	t.Helper()
 	fixture := newFixture()
