@@ -592,7 +592,17 @@ func (o *Orchestrator) rollbackCandidateReplacement(ctx context.Context, group d
 }
 
 func (o *Orchestrator) CheckMain(ctx context.Context) (store.MainEgress, error) {
-	return o.checkMain(ctx, true)
+	checked, err := o.checkMain(ctx, true)
+	if err != nil {
+		return store.MainEgress{}, err
+	}
+	// Current-public validation reads the subscription before the newly observed
+	// main identity is persisted. Refresh the four dynamic display aliases after
+	// persistence so a background main drift cannot leave a stale country label.
+	if err := o.refreshDynamicSubscription(ctx); err != nil {
+		return store.MainEgress{}, err
+	}
+	return checked, nil
 }
 
 func (o *Orchestrator) checkMain(ctx context.Context, persist bool) (store.MainEgress, error) {

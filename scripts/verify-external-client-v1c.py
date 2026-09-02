@@ -176,7 +176,8 @@ try:
     suffix='_'+match.group(2) if match.group(2) else ''
     raise RuntimeError('remote_connections_slot_'+str(int(group.get('slotNumber') or 0))+'_http_'+match.group(1)+suffix) from None
    raise
-  materials.append({'exitIp':group['exitIp'],'protocolMode':group['protocolMode'],'publicUri':connections['publicUri'],'socks5hUri':connections['socks5hUri'],'slotNumber':int(group.get('slotNumber') or 0),'publicPort':int(group.get('publicPort') or group.get('vlessPort') or 0),'mixedPort':int(group.get('mixedPort') or 0),'authorizedSocks5h':authorized_socks(connections['socks5hUri'],group['exitIp'])})
+  alias=('\u4e3b\u8fde\u63a5_' if group.get('egressSource')=='main' else '\u51fa\u53e3\u4f4d '+str(int(group.get('slotNumber') or 0))+'_')+str(group.get('countryName') or '')
+  materials.append({'exitIp':group['exitIp'],'protocolMode':group['protocolMode'],'publicUri':connections['publicUri'],'socks5hUri':connections['socks5hUri'],'subscriptionAlias':alias,'slotNumber':int(group.get('slotNumber') or 0),'publicPort':int(group.get('publicPort') or group.get('vlessPort') or 0),'mixedPort':int(group.get('mixedPort') or 0),'authorizedSocks5h':authorized_socks(connections['socks5hUri'],group['exitIp'])})
  subscription=call('GET','/api/v1/proxy-groups/subscription')
  request=urllib.request.Request(subscription['url'],headers={'Accept':'text/plain','User-Agent':'v2rayN/7.24.4'})
  with op.open(request,timeout=30) as response: subscription_raw=response.read(1<<20)
@@ -293,7 +294,7 @@ def decode_subscription(raw: bytes) -> list[str]:
 def validate_subscription_coverage(
     materials: list[dict[str, str]], entries: list[str]
 ) -> dict[str, int]:
-    def canonical(uri: str) -> tuple[object, ...]:
+    def canonical(uri: str, ignore_fragment: bool = False) -> tuple[object, ...]:
         parsed = urllib.parse.urlsplit(uri)
         if not parsed.hostname or not parsed.port:
             raise RuntimeError("subscription coverage mismatch")
@@ -322,13 +323,15 @@ def validate_subscription_coverage(
             if path in {"", "/"}:
                 path = ""
         query = tuple(sorted(query_values.items()))
-        fragment = urllib.parse.unquote(parsed.fragment)
-        if fragment in MAIN_SUBSCRIPTION_REMARKS:
-            fragment = "agw-main"
-        else:
-            match = re.fullmatch(r"Aimili Gateway (agw-[A-Za-z0-9_-]+) VLESS", fragment)
-            if match is not None:
-                fragment = match.group(1)
+        fragment = ""
+        if not ignore_fragment:
+            fragment = urllib.parse.unquote(parsed.fragment)
+            if fragment in MAIN_SUBSCRIPTION_REMARKS:
+                fragment = "agw-main"
+            else:
+                match = re.fullmatch(r"Aimili Gateway (agw-[A-Za-z0-9_-]+) VLESS", fragment)
+                if match is not None:
+                    fragment = match.group(1)
         return (
             scheme,
             urllib.parse.unquote(parsed.username or ""),
@@ -340,12 +343,19 @@ def validate_subscription_coverage(
             fragment,
         )
 
-    expected = {urllib.parse.urlsplit(str(material["publicUri"])).port: str(material["publicUri"]) for material in materials}
+    expected = {urllib.parse.urlsplit(str(material["publicUri"])).port: material for material in materials}
     actual = {urllib.parse.urlsplit(entry).port: entry for entry in entries}
     if None in expected or None in actual or len(expected) != len(materials) or len(actual) != len(entries) or set(actual) != set(expected):
         raise RuntimeError("subscription coverage mismatch")
-    if any(canonical(actual[port]) != canonical(expected[port]) for port in expected):
-        raise RuntimeError("subscription coverage mismatch")
+    for port, material in expected.items():
+        expected_alias = material.get("subscriptionAlias")
+        if expected_alias is not None:
+            if not isinstance(expected_alias, str) or urllib.parse.unquote(urllib.parse.urlsplit(actual[port]).fragment) != expected_alias:
+                raise RuntimeError("subscription coverage mismatch")
+            if canonical(actual[port], ignore_fragment=True) != canonical(str(material["publicUri"]), ignore_fragment=True):
+                raise RuntimeError("subscription coverage mismatch")
+        elif canonical(actual[port]) != canonical(str(material["publicUri"])):
+            raise RuntimeError("subscription coverage mismatch")
     return {
         "entryCount": len(entries),
         "hysteria2": sum(canonical(value)[0] == "hysteria2" for value in actual.values()),

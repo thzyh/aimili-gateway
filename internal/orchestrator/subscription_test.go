@@ -487,6 +487,32 @@ func TestCheckMainStoresBothProtocolLatencies(t *testing.T) {
 	}
 }
 
+func TestCheckMainRefreshesDynamicSubscriptionAfterMainIdentityDrift(t *testing.T) {
+	fixture := newFixture()
+	fixture.store.mainEgress = store.MainEgress{ResourceName: "agw-main", CandidateID: "old-main", CountryCode: "US", CountryName: "美国", ProxyType: domain.ProxyTypeResidential, ExitIP: "203.0.113.10", PublicInboundID: 1, MixedInboundID: 98, PublicPort: 8443, MixedPort: 31000, Enabled: true, UpdatedAt: fixture.now()}
+	fixture.store.protocolModes["agw-main"] = domain.EgressProtocolMode{EgressID: "agw-main", ActiveMode: domain.ProtocolVLESSTCPRealityVision, DesiredMode: domain.ProtocolVLESSTCPRealityVision, State: domain.ProtocolReady, Version: 1, UpdatedAt: fixture.now()}
+	fixture.aimili.mainStatus = aimili.MainStatus{CandidateID: "new-main", Country: "CA", CountryName: "加拿大", ProxyType: "datacenter", ExitIP: "203.0.113.20", Port: 7928, EgressOK: true, Active: true}
+	fixture.xui.snapshot = xui.Snapshot{Inbounds: []xui.Inbound{{ID: 1, Tag: "aimili-reality", Remark: "Aimili Reality", Protocol: "vless", Port: 8443}}}
+	for slot, country := range []string{"日本", "韩国", "美国"} {
+		group, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter, fmt.Sprintf("node-%d", slot))
+		group.Status, group.AimiliSlot, group.PublicInboundID, group.MixedInboundID = domain.ProxyGroupReady, slot, int64(slot+2), int64(slot+20)
+		group.CountryName, group.PublicPort, group.MixedPort = country, 20000+slot, 30000+slot
+		fixture.store.groups[group.ID] = group
+		fixture.xui.snapshot.Inbounds = append(fixture.xui.snapshot.Inbounds, xui.Inbound{ID: group.PublicInboundID, Tag: group.ResourceName + "-vless", Remark: "Aimili Gateway " + group.ResourceName + " VLESS", Protocol: "vless", Port: group.PublicPort})
+	}
+
+	main, err := fixture.orchestratorWithMax(t, 3).CheckMain(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if main.CountryName != "加拿大" || main.ExitIP != "203.0.113.20" || fixture.xui.ensureSubscriptionCalls != 2 {
+		t.Fatalf("main=%#v subscription_writes=%d", main, fixture.xui.ensureSubscriptionCalls)
+	}
+	if fixture.xui.subscriptionDesired.Aliases[1] != "主连接_加拿大" || fixture.xui.subscriptionDesired.Aliases[2] != "出口位 1_日本" {
+		t.Fatalf("aliases=%#v", fixture.xui.subscriptionDesired.Aliases)
+	}
+}
+
 func TestCheckMainWaitsForBothProtocolsAfterXrayReload(t *testing.T) {
 	fixture := newFixture()
 	fixture.aimili.mainStatus = aimili.MainStatus{Country: "JP", CountryName: "日本", ProxyType: "datacenter", ExitIP: "203.0.113.20", Port: 7928, EgressOK: true, Active: true}

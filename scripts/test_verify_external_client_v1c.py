@@ -245,6 +245,11 @@ class VerificationHelperTests(unittest.TestCase):
         self.assertIn("if slot >= 0:", MODULE.REMOTE_HELPER)
         self.assertIn("if slot == 0:", MODULE.REMOTE_HELPER)
         self.assertIn("g.get('egressSource')=='main'", MODULE.REMOTE_HELPER)
+        self.assertIn("'subscriptionAlias'", MODULE.REMOTE_HELPER)
+
+    def test_remote_helper_source_is_ascii_for_ssh_stdin_compatibility(self):
+        self.assertTrue(MODULE.REMOTE_HELPER.isascii())
+        self.assertIn(r"'\u4e3b\u8fde\u63a5_'", MODULE.REMOTE_HELPER)
 
     def test_subscription_coverage_matches_ports_and_protocols(self):
         materials = [
@@ -402,6 +407,24 @@ class VerificationHelperTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "subscription coverage mismatch"):
             MODULE.validate_subscription_coverage(materials, [
                 "vless://client@example.test:20000?type=xhttp&path=%2Fopaque#wrong-name"
+            ])
+
+    def test_subscription_coverage_accepts_exact_dynamic_alias_but_rejects_drift(self):
+        materials = [{
+            "exitIp": "203.0.113.1",
+            "protocolMode": "vless_xhttp_reality",
+            "publicUri": "vless://client@example.test:20000?type=xhttp&path=%2Fopaque#agw-slot-one",
+            "socks5hUri": "socks5h://first",
+            "subscriptionAlias": "出口位 1_日本",
+        }]
+        exact = "vless://client@example.test:20000?type=xhttp&path=%2Fopaque#%E5%87%BA%E5%8F%A3%E4%BD%8D%201_%E6%97%A5%E6%9C%AC"
+        self.assertEqual(
+            {"entryCount": 1, "hysteria2": 0, "vless": 1},
+            MODULE.validate_subscription_coverage(materials, [exact]),
+        )
+        with self.assertRaisesRegex(RuntimeError, "subscription coverage mismatch"):
+            MODULE.validate_subscription_coverage(materials, [
+                "vless://client@example.test:20000?type=xhttp&path=%2Fopaque#%E5%87%BA%E5%8F%A3%E4%BD%8D%201_%E9%9F%A9%E5%9B%BD"
             ])
 
     def test_subscription_coverage_accepts_3xui_stable_remarks_and_default_parameters(self):
