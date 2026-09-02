@@ -257,6 +257,13 @@ func (o *Orchestrator) revalidateProtocolRepair(ctx context.Context, persistence
 		return err
 	}
 	subscription, err := o.verifySubscription(ctx)
+	if errorCode(err) == "subscription_incomplete" {
+		if _, repairErr := o.repairSubscriptionAliases(ctx); repairErr != nil {
+			err = repairErr
+		} else {
+			subscription, err = o.verifySubscription(ctx)
+		}
+	}
 	if err == nil {
 		err = o.verifyProtocolTarget(ctx, target, state.ActiveMode, subscription)
 	}

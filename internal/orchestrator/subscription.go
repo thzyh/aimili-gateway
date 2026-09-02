@@ -21,9 +21,14 @@ import (
 const legacyAggregateVLESSPort = 21000
 
 type subscriptionReadOnlyKey struct{}
+type subscriptionAliasRepairKey struct{}
 
 func (o *Orchestrator) verifySubscription(ctx context.Context) (SubscriptionResult, error) {
 	return o.Subscription(context.WithValue(ctx, subscriptionReadOnlyKey{}, true))
+}
+
+func (o *Orchestrator) repairSubscriptionAliases(ctx context.Context) (SubscriptionResult, error) {
+	return o.Subscription(context.WithValue(ctx, subscriptionAliasRepairKey{}, true))
 }
 
 func subscriptionAliases(main store.MainEgress, groups []domain.ProxyGroup) (map[int64]string, error) {
@@ -141,6 +146,8 @@ func (o *Orchestrator) Subscription(ctx context.Context) (SubscriptionResult, er
 	var subscription xui.Subscription
 	if readOnly, _ := ctx.Value(subscriptionReadOnlyKey{}).(bool); readOnly {
 		subscription, err = manager.VerifySubscriptionClient(ctx, desired)
+	} else if repairAliases, _ := ctx.Value(subscriptionAliasRepairKey{}).(bool); repairAliases {
+		subscription, err = manager.RepairSubscriptionAliases(ctx, desired)
 	} else {
 		subscription, err = manager.EnsureSubscriptionClient(ctx, desired)
 	}

@@ -1003,7 +1003,7 @@ func TestSwitchProtocolModeKeepsDegradedRepairSlotLockedWhenSlotIdentityChangesD
 	if codeOf(err) != "egress_unavailable" {
 		t.Fatalf("error = %v", err)
 	}
-	if locked := fixture.store.protocolModes[group.ID]; locked.State != domain.ProtocolRepairRequired || locked.LastErrorCode != "protocol_repair_validation_failed" {
+	if locked := fixture.store.protocolModes[group.ID]; locked.State != domain.ProtocolRepairRequired || locked.LastErrorCode != "egress_unavailable" {
 		t.Fatalf("protocol lock was cleared: %#v", locked)
 	}
 	if stored := fixture.store.groups[group.ID]; stored.CandidateID != group.CandidateID || stored.Status != domain.ProxyGroupDegraded {
@@ -1030,6 +1030,28 @@ func TestSwitchProtocolModeRecordsTheSafeRepairValidationFailureCode(t *testing.
 	}
 	if locked := fixture.store.protocolModes[group.ID]; locked.State != domain.ProtocolRepairRequired || locked.LastErrorCode != "protocol_failed" {
 		t.Fatalf("repair failure was not persisted precisely: %#v", locked)
+	}
+}
+
+func TestSwitchProtocolModeRepairsExclusiveSubscriptionAliasesBeforeUnlockingProtocolRepair(t *testing.T) {
+	fixture, group := protocolFixture(t)
+	state := fixture.store.protocolModes[group.ID]
+	state.State = domain.ProtocolRepairRequired
+	fixture.store.protocolModes[group.ID] = state
+	fixture.xui.verifySubscriptionErrors = []error{&xui.AdapterError{Code: "subscription_incomplete"}, nil}
+	fixture.xui.subscriptionProfiles = []xui.PublicProfile{{
+		InboundID: group.PublicInboundID, Mode: state.ActiveMode, ClientID: "client-id", PublicKey: "public-key",
+		ShortID: "short-id", ServerName: "proxy.example.test", XHTTPPath: "/current-path",
+	}}
+	orchestrator := fixture.orchestratorWithMax(t, 3)
+	orchestrator.protocolTransaction = &fakeProtocolTransaction{calls: &fixture.calls}
+
+	updated, err := orchestrator.SwitchProtocolMode(context.Background(), group.ID, state.ActiveMode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.State != domain.ProtocolReady || fixture.xui.repairSubscriptionAliasesCalls != 1 || fixture.xui.verifySubscriptionCalls != 2 || fixture.xui.ensureSubscriptionCalls != 0 {
+		t.Fatalf("repair state=%#v aliasRepairs=%d reads=%d ensures=%d", updated, fixture.xui.repairSubscriptionAliasesCalls, fixture.xui.verifySubscriptionCalls, fixture.xui.ensureSubscriptionCalls)
 	}
 }
 

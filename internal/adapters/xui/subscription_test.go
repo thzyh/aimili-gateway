@@ -192,6 +192,50 @@ func TestVerifySubscriptionClientRejectsAliasDriftWithoutWriting(t *testing.T) {
 	}
 }
 
+func TestRepairSubscriptionAliasesCorrectsExclusiveAliasDriftWithoutChangingAssociations(t *testing.T) {
+	fixture := &subscriptionFixture{client: map[string]any{
+		"id": 42, "email": "aimili-gateway-subscription", "subId": "stable-sub",
+		"client": map[string]any{"id": "stable-client"}, "inboundIds": []any{1, 2},
+		"inboundAliases": map[string]any{"1": "主连接_旧国家", "2": "出口位 1_日本"},
+	}}
+	client := newSubscriptionFixtureClient(t, fixture)
+	want := map[int64]string{1: "主连接_日本", 2: "出口位 1_日本"}
+
+	subscription, err := client.RepairSubscriptionAliases(context.Background(), SubscriptionDesired{
+		ClientEmail: "aimili-gateway-subscription", ClientUUID: "stable-client", InboundIDs: []int64{1, 2}, Aliases: want,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(subscription.Aliases, want) {
+		t.Fatalf("aliases = %#v, want %#v", subscription.Aliases, want)
+	}
+	if fixture.added != nil || fixture.attachCalls != 0 || len(fixture.aliasWrites) != 1 || len(fixture.aliasWrites[0]) != 2 {
+		t.Fatalf("repair changed more than aliases: added=%#v attaches=%d aliasWrites=%#v", fixture.added, fixture.attachCalls, fixture.aliasWrites)
+	}
+}
+
+func TestRepairSubscriptionAliasesRejectsIncompleteAssociationWithoutWriting(t *testing.T) {
+	fixture := &subscriptionFixture{client: map[string]any{
+		"id": 42, "email": "aimili-gateway-subscription", "subId": "stable-sub",
+		"client": map[string]any{"id": "stable-client"}, "inboundIds": []any{1},
+		"inboundAliases": map[string]any{"1": "主连接_日本"},
+	}}
+	client := newSubscriptionFixtureClient(t, fixture)
+
+	_, err := client.RepairSubscriptionAliases(context.Background(), SubscriptionDesired{
+		ClientEmail: "aimili-gateway-subscription", ClientUUID: "stable-client", InboundIDs: []int64{1, 2},
+		Aliases: map[int64]string{1: "主连接_日本", 2: "出口位 1_日本"},
+	})
+	var adapterError *AdapterError
+	if !errors.As(err, &adapterError) || adapterError.Code != "subscription_incomplete" {
+		t.Fatalf("error = %v", err)
+	}
+	if fixture.added != nil || fixture.attachCalls != 0 || len(fixture.aliasWrites) != 0 {
+		t.Fatalf("incomplete association caused writes: added=%#v attaches=%d aliasWrites=%#v", fixture.added, fixture.attachCalls, fixture.aliasWrites)
+	}
+}
+
 func TestEnsureSubscriptionClientReadsMixedPublicProfilesWithoutReattaching(t *testing.T) {
 	fixture := &subscriptionFixture{client: map[string]any{
 		"id": 42, "email": "aimili-gateway-subscription", "subId": "stable-sub",
