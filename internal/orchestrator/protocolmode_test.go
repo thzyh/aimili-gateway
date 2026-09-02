@@ -837,6 +837,11 @@ func TestRecoverProtocolModesRevalidatesReadyRepairSlotWithoutHelperWrites(t *te
 	state.State = domain.ProtocolRepairRequired
 	state.LastErrorCode = "protocol_rollback_validation_failed"
 	fixture.store.protocolModes[group.ID] = state
+	fixture.aimili.createdSlots[group.AimiliSlot] = aimili.Slot{
+		Number: group.AimiliSlot, NodeID: "runtime-recovered", CandidateIP: "198.51.100.44",
+		Country: "KR", CountryName: "韩国", ProxyType: "residential", ExitIP: "203.0.113.44",
+		Port: 17929, Status: "up", EgressOK: true, CheckedAt: 1_700_000_011,
+	}
 	fixture.xui.subscriptionProfiles = []xui.PublicProfile{{
 		InboundID: group.PublicInboundID, Mode: state.ActiveMode, ClientID: "client-id", PublicKey: "public-key",
 		ShortID: "short-id", ServerName: "proxy.example.test", XHTTPPath: "/current-path",
@@ -849,6 +854,9 @@ func TestRecoverProtocolModesRevalidatesReadyRepairSlotWithoutHelperWrites(t *te
 	}
 	if recovered := fixture.store.protocolModes[group.ID]; recovered.State != domain.ProtocolReady || recovered.LastErrorCode != "" {
 		t.Fatalf("recovered protocol = %#v", recovered)
+	}
+	if recovered := fixture.store.groups[group.ID]; recovered.Status != domain.ProxyGroupReady || recovered.CandidateID != "runtime-recovered" || recovered.ExitIP != "203.0.113.44" {
+		t.Fatalf("recovered slot = %#v", recovered)
 	}
 	if contains(fixture.calls, "protocol.rollback") || contains(fixture.calls, "protocol.apply") {
 		t.Fatalf("repair recovery ran helper writes: %#v", fixture.calls)

@@ -672,19 +672,18 @@ func (o *Orchestrator) protocolTarget(ctx context.Context, egressID string) (pro
 	return protocolTarget{egressID: egressID, inboundID: group.PublicInboundID, inboundTag: group.ResourceName + "-vless", port: group.PublicPort, group: group}, nil
 }
 
-// protocolRepairTarget admits only a structurally complete degraded ordinary
-// slot. Its live Aimili identity is still re-read and verified before any
-// stored identity or protocol lock is changed.
+// protocolRepairTarget admits only a structurally complete ready or degraded
+// ordinary slot. Its live Aimili identity is still re-read and verified before
+// any stored identity or protocol lock is changed.
 func (o *Orchestrator) protocolRepairTarget(ctx context.Context, egressID string) (protocolTarget, error) {
-	target, err := o.protocolTarget(ctx, egressID)
-	if err == nil || egressID == "agw-main" {
-		return target, err
+	if egressID == "agw-main" {
+		return o.protocolTarget(ctx, egressID)
 	}
-	group, groupErr := o.store.GetProxyGroup(ctx, egressID)
-	if groupErr != nil {
-		return protocolTarget{}, operationError(groupErr)
+	group, err := o.store.GetProxyGroup(ctx, egressID)
+	if err != nil {
+		return protocolTarget{}, operationError(err)
 	}
-	if group.Status != domain.ProxyGroupDegraded || group.PublicInboundID < 1 || group.PublicPort < 1 || group.AimiliSlot < 0 {
+	if (group.Status != domain.ProxyGroupReady && group.Status != domain.ProxyGroupDegraded) || group.PublicInboundID < 1 || group.PublicPort < 1 || group.AimiliSlot < 0 {
 		return protocolTarget{}, &Error{Code: "not_ready"}
 	}
 	return protocolTarget{egressID: egressID, inboundID: group.PublicInboundID, inboundTag: group.ResourceName + "-vless", port: group.PublicPort, group: group, repairEgress: true}, nil
