@@ -141,6 +141,10 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 
 func startInitialReconcile(ctx context.Context, reconciler initialReconciler) error {
 	if err := reconciler.RecoverProtocolModes(ctx); err != nil {
+		var protocolError *orchestrator.Error
+		if errors.As(err, &protocolError) && protocolError.Code == "repair_required" {
+			return nil
+		}
 		return err
 	}
 	go func() {

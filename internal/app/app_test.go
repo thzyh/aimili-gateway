@@ -81,6 +81,27 @@ func TestInitialReconcileStopsWhenProtocolRecoveryFails(t *testing.T) {
 	}
 }
 
+func TestInitialReconcileStartsWithoutOrdinaryReconcileWhenProtocolRepairIsRequired(t *testing.T) {
+	called := make(chan struct{})
+	events := make(chan string, 2)
+	err := startInitialReconcile(t.Context(), recordingReconciler{
+		called:        called,
+		events:        events,
+		recoveryError: &orchestrator.Error{Code: "repair_required"},
+	})
+	if err != nil {
+		t.Fatalf("startInitialReconcile() error = %v", err)
+	}
+	if event := <-events; event != "recover" {
+		t.Fatalf("first startup event = %q", event)
+	}
+	select {
+	case <-called:
+		t.Fatal("ordinary reconciliation ran while protocol repair remains required")
+	case <-time.After(20 * time.Millisecond):
+	}
+}
+
 func TestInitialReconcileBlocksStartupUntilProtocolRecoveryFinishes(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
