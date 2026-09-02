@@ -242,7 +242,29 @@ it('shows a closable Chinese protocol error without exposing backend codes', asy
 	expect(wrapper.find('[data-refresh-notice]').exists()).toBe(false)
 })
 
-it('disables public copy and protocol changes while subscription is pending or repair is required', async () => {
+it('shows the recorded rollback validation reason when a protected protocol switch is rejected', async () => {
+	let groupReads = 0
+	mocks.apiFetch.mockImplementation((path: string, init?: RequestInit) => {
+		if (path === '/api/v1/proxy-groups') {
+			groupReads += 1
+			return Promise.resolve(groupReads === 1 ? rows : rows.map(row => row.id === 'jp-one' ? { ...row, protocolState: 'repair_required', subscriptionState: 'repair_required', lastErrorCode: 'protocol_rollback_validation_failed' } : row))
+		}
+		if (path === '/api/v1/settings/aimilivpn/countries') return Promise.resolve([])
+		if (path === '/api/v1/settings/aimilivpn/refresh') return Promise.resolve({ state: 'idle', country: '', phase: '', testedCount: 0, validCount: 0 })
+		if (path.endsWith('/protocol-mode') && init?.method === 'PUT') return Promise.reject(new Error('repair_required'))
+		return Promise.resolve(undefined)
+	})
+	const wrapper = mount(VpnPoolView)
+	await flushPromises()
+	await wrapper.get('[data-protocol="jp-one"]').setValue('hysteria2_quic_tls')
+	await flushPromises()
+
+	const notice = wrapper.get('[data-top-notice]')
+	expect(notice.text()).toContain('旧协议恢复后链路验证未通过')
+	expect(notice.text()).not.toContain('repair_required')
+})
+
+it('keeps public copy disabled during repair but permits a safe protocol revalidation request', async () => {
 	const unsafeRows = rows.map(row => row.id === 'jp-one' ? { ...row, protocolState: 'subscription_pending', subscriptionState: 'pending' } : row)
 	unsafeRows.push({ ...rows[1], id: 'repair-protocol', protocolState: 'repair_required', subscriptionState: 'repair_required' })
 	mocks.apiFetch.mockImplementation((path: string) => {
@@ -255,7 +277,7 @@ it('disables public copy and protocol changes while subscription is pending or r
 	await flushPromises()
 	expect(wrapper.get('[data-protocol="jp-one"]').attributes('disabled')).toBeDefined()
 	expect(wrapper.get('[data-copy="jp-one"]').attributes('disabled')).toBeDefined()
-	expect(wrapper.get('[data-protocol="repair-protocol"]').attributes('disabled')).toBeDefined()
+	expect(wrapper.get('[data-protocol="repair-protocol"]').attributes()).not.toHaveProperty('disabled')
 	expect(wrapper.get('[data-row-detail="jp-one"]').text()).toContain('订阅验证中')
 	expect(wrapper.get('[data-row-detail="repair-protocol"]').text()).toContain('协议需要修复')
 })
@@ -287,8 +309,9 @@ it('separates cached-country filtering from official-country supplementation', a
 		body: JSON.stringify({ country: 'JP' }),
 	})
 	expect(wrapper.get('[data-sync-pool]').text()).toContain('同步代理状态')
-	expect(wrapper.get('[data-pool-stats]').text()).toContain('官方 100')
-	expect(wrapper.get('[data-pool-stats]').text()).toContain('当前有效 25')
+	expect(wrapper.get('[data-pool-stats-official]').text()).toContain('官方 100')
+	expect(wrapper.get('[data-pool-stats-valid]').text()).toContain('当前有效 25')
+	expect(wrapper.get('[data-pool-stats-countries]').text()).toContain('5 国')
 })
 
 it('shows country refresh feedback in a separate closable card with a Chinese country name', async () => {

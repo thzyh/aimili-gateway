@@ -70,6 +70,11 @@ func (o *Orchestrator) SwitchProtocolModeExpected(ctx context.Context, egressID 
 	if expected != "" && (!expected.Valid() || state.ActiveMode != expected) {
 		return domain.EgressProtocolMode{}, &Error{Code: "expected_state_mismatch"}
 	}
+	if state.State == domain.ProtocolRepairRequired {
+		if err := o.revalidateProtocolRepair(ctx, persistence, &state); err != nil {
+			return domain.EgressProtocolMode{}, err
+		}
+	}
 	if state.State == domain.ProtocolReady && state.ActiveMode == target {
 		return state, nil
 	}
@@ -233,6 +238,35 @@ func (o *Orchestrator) SwitchProtocolModeExpected(ctx context.Context, egressID 
 		return o.markProtocolRepair(ctx, persistence, state)
 	}
 	return o.rollbackProtocolMode(operationCtx, ctx, persistence, state, targetResource, applyErr, applied, mutationLease)
+}
+
+// revalidateProtocolRepair only unlocks a previous failed transaction after the
+// currently recorded protocol, subscription, and egress identity all pass the
+// same read-only checks used by a completed rollback.
+func (o *Orchestrator) revalidateProtocolRepair(ctx context.Context, persistence protocolModeStore, state *domain.EgressProtocolMode) error {
+	target, err := o.protocolTarget(ctx, state.EgressID)
+	if err != nil {
+		return err
+	}
+	target, err = o.syncProtocolTargetEgress(ctx, target)
+	if err != nil {
+		return err
+	}
+	subscription, err := o.verifySubscription(ctx)
+	if err == nil {
+		err = o.verifyProtocolTarget(ctx, target, state.ActiveMode, subscription)
+	}
+	if err != nil {
+		state.LastErrorCode = "protocol_repair_validation_failed"
+		_ = o.saveProtocolState(ctx, persistence, state)
+		return err
+	}
+	state.DesiredMode = state.ActiveMode
+	state.LastErrorCode = ""
+	if err := state.Transition(domain.ProtocolReady); err != nil || o.saveProtocolState(ctx, persistence, state) != nil {
+		return &Error{Code: "storage_failed"}
+	}
+	return nil
 }
 
 type mainMutationLeaseGuard struct {
@@ -657,7 +691,7 @@ func (o *Orchestrator) rollbackProtocolMode(runtimeCtx, persistenceCtx context.C
 			if mutationLease != nil && mutationLease.failure() != nil {
 				return o.markMutationLeaseRepair(persistenceCtx, persistence, state)
 			}
-			return o.markProtocolRepair(persistenceCtx, persistence, state)
+			return o.markProtocolRepairWithCode(persistenceCtx, persistence, state, "protocol_rollback_failed")
 		}
 	}
 	if mutationLease != nil && mutationLease.failure() != nil {
@@ -668,13 +702,13 @@ func (o *Orchestrator) rollbackProtocolMode(runtimeCtx, persistenceCtx context.C
 		if mutationLease != nil && mutationLease.failure() != nil {
 			return o.markMutationLeaseRepair(persistenceCtx, persistence, state)
 		}
-		return o.markProtocolRepair(persistenceCtx, persistence, state)
+		return o.markProtocolRepairWithCode(persistenceCtx, persistence, state, "protocol_rollback_subscription_failed")
 	}
 	if err := o.verifyProtocolTarget(runtimeCtx, target, state.ActiveMode, subscription); err != nil {
 		if mutationLease != nil && mutationLease.failure() != nil {
 			return o.markMutationLeaseRepair(persistenceCtx, persistence, state)
 		}
-		return o.markProtocolRepair(persistenceCtx, persistence, state)
+		return o.markProtocolRepairWithCode(persistenceCtx, persistence, state, "protocol_rollback_validation_failed")
 	}
 	if mutationLease != nil {
 		if _, err := mutationLease.renewNow(runtimeCtx); err != nil {
@@ -695,9 +729,13 @@ func (o *Orchestrator) rollbackProtocolMode(runtimeCtx, persistenceCtx context.C
 }
 
 func (o *Orchestrator) markProtocolRepair(ctx context.Context, persistence protocolModeStore, state domain.EgressProtocolMode) (domain.EgressProtocolMode, error) {
+	return o.markProtocolRepairWithCode(ctx, persistence, state, "rollback_failed")
+}
+
+func (o *Orchestrator) markProtocolRepairWithCode(ctx context.Context, persistence protocolModeStore, state domain.EgressProtocolMode, code string) (domain.EgressProtocolMode, error) {
 	state.State = domain.ProtocolRepairRequired
 	state.DesiredMode = state.ActiveMode
-	state.LastErrorCode = "rollback_failed"
+	state.LastErrorCode = code
 	_ = o.saveProtocolState(ctx, persistence, &state)
 	return domain.EgressProtocolMode{}, &Error{Code: "repair_required"}
 }

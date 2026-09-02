@@ -162,10 +162,10 @@ func TestSwitchProtocolModeRenewFailureRollsBackAndNeverFinalizes(t *testing.T) 
 	}
 }
 
-func TestSwitchProtocolModeMarksRepairWhenRollbackOrOldVerificationFails(t *testing.T) {
+func TestSwitchProtocolModeRecordsOldPathValidationFailureAfterSuccessfulRollback(t *testing.T) {
 	fixture, group := protocolFixture(t)
 	fixture.validator.publicErrors = []error{&validator.Error{Code: "protocol_failed"}, &validator.Error{Code: "protocol_failed"}}
-	client := &fakeProtocolTransaction{calls: &fixture.calls, rollbackError: errors.New("rollback failed")}
+	client := &fakeProtocolTransaction{calls: &fixture.calls}
 	orchestrator := fixture.orchestratorWithMax(t, 3)
 	orchestrator.protocolTransaction = client
 
@@ -174,8 +174,32 @@ func TestSwitchProtocolModeMarksRepairWhenRollbackOrOldVerificationFails(t *test
 		t.Fatalf("error = %v", err)
 	}
 	state := fixture.store.protocolModes[group.ID]
-	if state.State != domain.ProtocolRepairRequired || state.ActiveMode != domain.ProtocolVLESSXHTTPReality {
+	if state.State != domain.ProtocolRepairRequired || state.ActiveMode != domain.ProtocolVLESSXHTTPReality || state.LastErrorCode != "protocol_rollback_validation_failed" {
 		t.Fatalf("repair state = %#v", state)
+	}
+}
+
+func TestSwitchProtocolModeRevalidatesRepairRequiredOldPathBeforeAcceptingNewSwitch(t *testing.T) {
+	fixture, group := protocolFixture(t)
+	state := fixture.store.protocolModes[group.ID]
+	state.State = domain.ProtocolRepairRequired
+	state.LastErrorCode = "protocol_rollback_validation_failed"
+	fixture.store.protocolModes[group.ID] = state
+	fixture.xui.profileSequences = [][]xui.PublicProfile{
+		{{InboundID: group.PublicInboundID, Mode: domain.ProtocolVLESSXHTTPReality, ClientID: "client-id", PublicKey: "public-key", ShortID: "short-id", ServerName: "proxy.example.test", XHTTPPath: "/old-path"}},
+		{{InboundID: group.PublicInboundID, Mode: domain.ProtocolVLESSTCPRealityVision, ClientID: "client-id", PublicKey: "public-key", ShortID: "short-id", ServerName: "proxy.example.test"}},
+	}
+	client := &fakeProtocolTransaction{calls: &fixture.calls}
+	orchestrator := fixture.orchestratorWithMax(t, 3)
+	orchestrator.protocolTransaction = client
+
+	result, err := orchestrator.SwitchProtocolMode(context.Background(), group.ID, domain.ProtocolVLESSTCPRealityVision)
+
+	if err != nil || result.State != domain.ProtocolReady || result.ActiveMode != domain.ProtocolVLESSTCPRealityVision || result.LastErrorCode != "" {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if !orderedSubset(fixture.calls, []string{"validate.socks", "validate.public", "protocol.apply", "protocol.finalize"}) {
+		t.Fatalf("repair revalidation did not precede the new switch: %#v", fixture.calls)
 	}
 }
 

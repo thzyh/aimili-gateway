@@ -9,7 +9,8 @@ const latency = (row: ProxyGroupPayload) => props.protocol === 'vless' ? row.vle
 const checkedAt = (value?: string) => value ? new Intl.DateTimeFormat('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}).format(new Date(value)) : '尚未检测'
 const allModes: ProtocolMode[] = ['vless_tcp_reality_vision', 'vless_xhttp_reality', 'hysteria2_quic_tls']
 const protocolLabel = (mode: ProtocolMode) => ({ vless_tcp_reality_vision: 'TCP/Vision', vless_xhttp_reality: 'XHTTP/REALITY', hysteria2_quic_tls: 'Hysteria2/QUIC' })[mode]
-const protocolDisabled = (row: ProxyGroupPayload) => row.status !== 'ready' || row.protocolState !== 'ready' || row.subscriptionState !== 'ready' || props.busy !== ''
+const protocolRecoverable = (row: ProxyGroupPayload) => row.protocolState === 'repair_required' && row.subscriptionState === 'repair_required'
+const protocolDisabled = (row: ProxyGroupPayload) => row.status !== 'ready' || (row.protocolState !== 'ready' && !protocolRecoverable(row)) || (row.subscriptionState !== 'ready' && !protocolRecoverable(row)) || props.busy !== ''
 const copyDisabled = (row: ProxyGroupPayload) => row.status !== 'ready' || props.busy !== '' || (props.protocol === 'vless' && (row.protocolState !== 'ready' || row.subscriptionState !== 'ready'))
 const ipSource = (row: ProxyGroupPayload) => row.exitIp ? 'exit' : row.candidateIp ? 'candidate' : 'missing'
 const ipText = (row: ProxyGroupPayload) => row.exitIp || (row.candidateIp ? `节点 IP ${row.candidateIp}` : '暂无可验证 IP')
