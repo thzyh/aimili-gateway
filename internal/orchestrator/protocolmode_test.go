@@ -873,6 +873,78 @@ func TestRecoverRepairRequiredMainRejectsUnknownProxyType(t *testing.T) {
 	}
 }
 
+func TestSwitchProtocolModeRevalidatesDegradedRepairSlotAndRebindsVerifiedIdentity(t *testing.T) {
+	fixture, group := protocolFixture(t)
+	group.Status = domain.ProxyGroupDegraded
+	group.LastErrorCode = "egress_unavailable"
+	fixture.store.groups[group.ID] = group
+	state := fixture.store.protocolModes[group.ID]
+	state.State = domain.ProtocolRepairRequired
+	state.LastErrorCode = "protocol_rollback_validation_failed"
+	fixture.store.protocolModes[group.ID] = state
+	fixture.aimili.createdSlots[group.AimiliSlot] = aimili.Slot{
+		Number: group.AimiliSlot, NodeID: "runtime-recovered", CandidateIP: "198.51.100.44",
+		Country: "KR", CountryName: "韩国", ProxyType: "residential", ExitIP: "203.0.113.44",
+		Port: 17929, Status: "up", EgressOK: true, CheckedAt: 1_700_000_011,
+	}
+	fixture.xui.subscriptionProfiles = []xui.PublicProfile{{
+		InboundID: group.PublicInboundID, Mode: state.ActiveMode, ClientID: "client-id", PublicKey: "public-key",
+		ShortID: "short-id", ServerName: "proxy.example.test", XHTTPPath: "/current-path",
+	}}
+	orchestrator := fixture.orchestratorWithMax(t, 3)
+	orchestrator.protocolTransaction = &fakeProtocolTransaction{calls: &fixture.calls}
+
+	result, err := orchestrator.SwitchProtocolMode(context.Background(), group.ID, state.ActiveMode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.State != domain.ProtocolReady || result.ActiveMode != state.ActiveMode || result.LastErrorCode != "" {
+		t.Fatalf("revalidated protocol = %#v", result)
+	}
+	recovered := fixture.store.groups[group.ID]
+	if recovered.Status != domain.ProxyGroupReady || recovered.CandidateID != "runtime-recovered" ||
+		recovered.CountryCode != "KR" || recovered.ProxyType != domain.ProxyTypeResidential ||
+		recovered.ExitIP != "203.0.113.44" || recovered.ExitIPCheckedAt != 1_700_000_011 {
+		t.Fatalf("recovered slot identity = %#v", recovered)
+	}
+	if len(fixture.validator.publicTargets) != 1 || fixture.validator.publicTargets[0].ExpectedExitIP != "203.0.113.44" ||
+		len(fixture.calls) == 0 || contains(fixture.calls, "protocol.apply") {
+		t.Fatalf("unsafe repair path calls=%#v public=%#v", fixture.calls, fixture.validator.publicTargets)
+	}
+}
+
+func TestSwitchProtocolModeKeepsDegradedRepairSlotLockedWhenSlotIdentityChangesDuringValidation(t *testing.T) {
+	fixture, group := protocolFixture(t)
+	group.Status = domain.ProxyGroupDegraded
+	group.LastErrorCode = "egress_unavailable"
+	fixture.store.groups[group.ID] = group
+	state := fixture.store.protocolModes[group.ID]
+	state.State = domain.ProtocolRepairRequired
+	state.LastErrorCode = "protocol_rollback_validation_failed"
+	fixture.store.protocolModes[group.ID] = state
+	fixture.aimili.checkResults = []aimili.SlotCheck{
+		{NodeID: "runtime-recovered", CandidateIP: "198.51.100.44", Country: "KR", CountryName: "韩国", ProxyType: "residential", ExitIP: "203.0.113.44", Port: 17929, Status: "up", EgressOK: true},
+		{NodeID: "unexpected-node", CandidateIP: "198.51.100.45", Country: "KR", CountryName: "韩国", ProxyType: "residential", ExitIP: "203.0.113.45", Port: 17929, Status: "up", EgressOK: true},
+	}
+	fixture.xui.subscriptionProfiles = []xui.PublicProfile{{
+		InboundID: group.PublicInboundID, Mode: state.ActiveMode, ClientID: "client-id", PublicKey: "public-key",
+		ShortID: "short-id", ServerName: "proxy.example.test", XHTTPPath: "/current-path",
+	}}
+	orchestrator := fixture.orchestratorWithMax(t, 3)
+	orchestrator.protocolTransaction = &fakeProtocolTransaction{calls: &fixture.calls}
+
+	_, err := orchestrator.SwitchProtocolMode(context.Background(), group.ID, state.ActiveMode)
+	if codeOf(err) != "egress_unavailable" {
+		t.Fatalf("error = %v", err)
+	}
+	if locked := fixture.store.protocolModes[group.ID]; locked.State != domain.ProtocolRepairRequired || locked.LastErrorCode != "protocol_repair_validation_failed" {
+		t.Fatalf("protocol lock was cleared: %#v", locked)
+	}
+	if stored := fixture.store.groups[group.ID]; stored.CandidateID != group.CandidateID || stored.Status != domain.ProxyGroupDegraded {
+		t.Fatalf("unverified slot identity was persisted: %#v", stored)
+	}
+}
+
 func protocolFixture(t *testing.T) (*fixture, domain.ProxyGroup) {
 	t.Helper()
 	fixture := newFixture()

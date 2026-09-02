@@ -244,7 +244,7 @@ func (o *Orchestrator) SwitchProtocolModeExpected(ctx context.Context, egressID 
 // currently recorded protocol, subscription, and egress identity all pass the
 // same read-only checks used by a completed rollback.
 func (o *Orchestrator) revalidateProtocolRepair(ctx context.Context, persistence protocolModeStore, state *domain.EgressProtocolMode) error {
-	target, err := o.protocolTarget(ctx, state.EgressID)
+	target, err := o.protocolRepairTarget(ctx, state.EgressID)
 	if err != nil {
 		return err
 	}
@@ -260,6 +260,15 @@ func (o *Orchestrator) revalidateProtocolRepair(ctx context.Context, persistence
 		state.LastErrorCode = "protocol_repair_validation_failed"
 		_ = o.saveProtocolState(ctx, persistence, state)
 		return err
+	}
+	if target.repairEgress {
+		target.group.Status = domain.ProxyGroupReady
+		target.group.LastErrorCode = ""
+		target.group.LastCheckedAt = o.config.Now().UTC()
+		target.group.UpdatedAt = target.group.LastCheckedAt
+		if err := o.save(ctx, &target.group); err != nil {
+			return err
+		}
 	}
 	state.DesiredMode = state.ActiveMode
 	state.LastErrorCode = ""
@@ -573,12 +582,13 @@ func (o *Orchestrator) markMutationLeaseRepair(ctx context.Context, persistence 
 }
 
 type protocolTarget struct {
-	egressID   string
-	inboundID  int64
-	inboundTag string
-	port       int
-	group      domain.ProxyGroup
-	main       bool
+	egressID     string
+	inboundID    int64
+	inboundTag   string
+	port         int
+	group        domain.ProxyGroup
+	main         bool
+	repairEgress bool
 }
 
 func (o *Orchestrator) protocolTarget(ctx context.Context, egressID string) (protocolTarget, error) {
@@ -603,8 +613,34 @@ func (o *Orchestrator) protocolTarget(ctx context.Context, egressID string) (pro
 	return protocolTarget{egressID: egressID, inboundID: group.PublicInboundID, inboundTag: group.ResourceName + "-vless", port: group.PublicPort, group: group}, nil
 }
 
+// protocolRepairTarget admits only a structurally complete degraded ordinary
+// slot. Its live Aimili identity is still re-read and verified before any
+// stored identity or protocol lock is changed.
+func (o *Orchestrator) protocolRepairTarget(ctx context.Context, egressID string) (protocolTarget, error) {
+	target, err := o.protocolTarget(ctx, egressID)
+	if err == nil || egressID == "agw-main" {
+		return target, err
+	}
+	group, groupErr := o.store.GetProxyGroup(ctx, egressID)
+	if groupErr != nil {
+		return protocolTarget{}, operationError(groupErr)
+	}
+	if group.Status != domain.ProxyGroupDegraded || group.PublicInboundID < 1 || group.PublicPort < 1 || group.AimiliSlot < 0 {
+		return protocolTarget{}, &Error{Code: "not_ready"}
+	}
+	return protocolTarget{egressID: egressID, inboundID: group.PublicInboundID, inboundTag: group.ResourceName + "-vless", port: group.PublicPort, group: group, repairEgress: true}, nil
+}
+
 func (o *Orchestrator) syncProtocolTargetEgress(ctx context.Context, target protocolTarget) (protocolTarget, error) {
-	if !target.main {
+	if !target.main && !target.repairEgress {
+		return target, nil
+	}
+	if target.repairEgress {
+		checked, err := o.aimili.CheckSlot(ctx, target.group.AimiliSlot)
+		if err != nil || !usableProtocolRepairSlot(checked) {
+			return protocolTarget{}, &Error{Code: "egress_unavailable"}
+		}
+		applySlotSnapshot(&target.group, checked)
 		return target, nil
 	}
 	if _, err := o.checkMain(ctx, true); err != nil {
@@ -650,8 +686,7 @@ func (o *Orchestrator) verifyEgressReady(ctx context.Context, target *protocolTa
 		target.group.ExitIP = status.ExitIP
 	} else {
 		checked, err := o.aimili.CheckSlot(ctx, target.group.AimiliSlot)
-		if err != nil || checked.Status != "up" || !checked.EgressOK || checked.NodeID != target.group.CandidateID ||
-			net.ParseIP(checked.ExitIP) == nil || checked.ExitIP != target.group.ExitIP {
+		if err != nil || !protocolRepairSlotMatchesGroup(checked, target.group) {
 			return &Error{Code: "egress_unavailable"}
 		}
 	}
@@ -659,6 +694,20 @@ func (o *Orchestrator) verifyEgressReady(ctx context.Context, target *protocolTa
 		return err
 	}
 	return nil
+}
+
+func usableProtocolRepairSlot(checked aimili.SlotCheck) bool {
+	country := strings.ToUpper(strings.TrimSpace(checked.Country))
+	proxyType := domain.ProxyType(strings.ToLower(strings.TrimSpace(checked.ProxyType)))
+	return checked.Status == "up" && checked.EgressOK && strings.TrimSpace(checked.NodeID) != "" &&
+		net.ParseIP(strings.TrimSpace(checked.ExitIP)) != nil && len(country) == 2 && proxyType.Valid()
+}
+
+func protocolRepairSlotMatchesGroup(checked aimili.SlotCheck, group domain.ProxyGroup) bool {
+	return usableProtocolRepairSlot(checked) && checked.NodeID == group.CandidateID &&
+		strings.TrimSpace(checked.ExitIP) == group.ExitIP &&
+		strings.ToUpper(strings.TrimSpace(checked.Country)) == group.CountryCode &&
+		domain.ProxyType(strings.ToLower(strings.TrimSpace(checked.ProxyType))) == group.ProxyType
 }
 
 func mainStatusUsable(status aimili.MainStatus) bool {
