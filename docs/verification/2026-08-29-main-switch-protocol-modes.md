@@ -167,3 +167,18 @@ AimiliVPN 单独重启演练先后暴露启动阶段 `is_connecting` 占位、�
 - Gateway UI 与 v2rayN GUI 的最终点击验收尚未完成：Codex 的浏览器/Windows 应用控制宿主在初始化时发生本机运行时资源路径错误。不得用后端/API 证据冒充该 GUI 验收。
 - 未提交主事务的重启自动回滚尚缺一次“旧主在 180 秒后仍可拨”条件下的成功证据。最新失败是外部 VPNGate 节点离线；历史 repair 恢复不得冒充自动 rollback 或 Gateway 三路径验证通过。
 - 最终脱敏数据库检查仍有 2 条早期失败请求保留为历史 `started`；它们只约束各自旧幂等键，不阻塞新请求。当前操作计数为 `completed=18 / failed=4 / started=2`，helper 请求队列为空，四条协议状态均为 `ready`，无 `repair_required`。如需清理历史审计行，应作为独立数据维护任务处理，不在本次协议部署中直接改生产数据库。
+
+## 12. 2026-09-02 最终混合状态补证
+
+本节是在前述记录基础上的最新生产补证。除明确说明的 Gateway 正式 `check` 原路径外，未直接修改生产数据库；没有增加 AimiliVPN 运行出口，也没有切换 mixed/SOCKS5H。
+
+| 检查 | 结果 |
+| --- | --- |
+| 3x-ui 专属别名修复 | 通过。仅对存在 `alias_override` 的 Gateway 关联返回专属别名，其他入站继续使用全局模板；安装器备份二进制与数据库、重启失败自动回滚，并验证服务 active、关联指纹不变、Xray=1。 |
+| 主连接自动漂移处理 | 通过。确认原 OpenVPN 节点连接重置且重连失败后，AimiliVPN 既有保护自动选择健康节点；Gateway 随后经正式主连接检查完成 SOCKS、公网协议验证和身份同步。 |
+| 普通槽位身份漂移处理 | 通过。确认两个槽位实际出口与 Gateway 记录不一致后，分别经 Gateway 正式 `check` 原路径验证并同步；未更换节点、未修改 3x-ui 路由。 |
+| 四个授权 SOCKS5H | 通过，四条实际出口均与各自运行节点一致。 |
+| 完整外部客户端验证 | `status=pass`：4 个 ready、4 个唯一出口、4 条订阅、4 个公网入站、4 个 mixed 入站、单 Xray 均通过；公网协议实际拨号为 TCP/Vision 2、XHTTP/REALITY 1、Hysteria2/QUIC/TLS 1。公开 SOCKS5H 受来源限制策略保护，未将其当作失败。 |
+| 五分钟稳定性观察 | 通过：30 个采样、300 秒；Gateway、AimiliVPN、x-ui、Caddy 均 active 且无重启；Xray=1、OpenVPN=4、专属别名=4；协议与非 Gateway 受管资源指纹均无漂移。 |
+
+本次补证完成了“每出口独立使用 TCP、XHTTP、Hysteria2，并形成最终混合状态”的生产外部验证。第 11 节列出的 GUI 人工点击与旧主在线条件下的未提交事务自动回滚，仍是独立未决验收项，不能由本节替代。
