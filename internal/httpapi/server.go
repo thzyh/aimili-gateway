@@ -144,6 +144,7 @@ func NewServer(dependencies Dependencies) http.Handler {
 	mux.HandleFunc("POST /api/v1/proxy-groups/legacy-aggregate/cleanup", server.handleCleanupLegacyAggregate)
 	mux.HandleFunc("GET /api/v1/settings/mixed-source-policy", server.handleGetMixedPolicy)
 	mux.HandleFunc("PUT /api/v1/settings/mixed-source-policy", server.handleSetMixedPolicy)
+	mux.HandleFunc("POST /api/v1/settings/mixed-source-policy/authorize-current", server.handleAuthorizeCurrentMixedPolicy)
 	mux.HandleFunc("GET /api/v1/settings/summary", server.handleSettingsSummary)
 	mux.HandleFunc("GET /api/v1/settings/aimilivpn", server.handleAimiliSettings)
 	mux.HandleFunc("GET /api/v1/settings/aimilivpn/countries", server.handleAimiliCountries)

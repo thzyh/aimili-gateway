@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/netip"
 	"strconv"
@@ -659,6 +660,67 @@ func (s *server) handleSetMixedPolicy(response http.ResponseWriter, request *htt
 		return
 	}
 	writeJSON(response, http.StatusOK, safeMixedPolicy(policy))
+}
+
+func (s *server) handleAuthorizeCurrentMixedPolicy(response http.ResponseWriter, request *http.Request) {
+	if _, ok := s.authorizeMutation(response, request); !ok {
+		return
+	}
+	prefix, ok := currentForwardedClientPrefix(request)
+	if !ok {
+		writeAPIError(response, http.StatusForbidden, "client_address_unavailable")
+		return
+	}
+	policy, err := s.proxyManager.MixedPolicy(request.Context())
+	if err != nil {
+		writeProxyError(response, err)
+		return
+	}
+	policy.Enabled = true
+	found := false
+	for _, existing := range policy.CIDRs {
+		if existing == prefix {
+			found = true
+			break
+		}
+	}
+	if !found {
+		policy.CIDRs = append(policy.CIDRs, prefix)
+	}
+	if err := s.proxyManager.SetMixedPolicy(request.Context(), policy); err != nil {
+		writeProxyError(response, err)
+		return
+	}
+	updated, err := s.proxyManager.MixedPolicy(request.Context())
+	if err != nil {
+		writeProxyError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, safeMixedPolicy(updated))
+}
+
+func currentForwardedClientPrefix(request *http.Request) (netip.Prefix, bool) {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(request.RemoteAddr))
+	if err != nil {
+		return netip.Prefix{}, false
+	}
+	peer, err := netip.ParseAddr(host)
+	if err != nil || !peer.IsLoopback() {
+		return netip.Prefix{}, false
+	}
+	values := strings.Split(request.Header.Get("X-Forwarded-For"), ",")
+	if len(values) == 0 {
+		return netip.Prefix{}, false
+	}
+	client, err := netip.ParseAddr(strings.TrimSpace(values[len(values)-1]))
+	if err != nil {
+		return netip.Prefix{}, false
+	}
+	client = client.Unmap()
+	if !client.IsGlobalUnicast() || client.IsPrivate() || client.IsLoopback() || client.IsLinkLocalUnicast() {
+		return netip.Prefix{}, false
+	}
+	return netip.PrefixFrom(client, client.BitLen()), true
 }
 
 func safeMixedPolicy(policy store.MixedSourcePolicy) mixedPolicyResponse {

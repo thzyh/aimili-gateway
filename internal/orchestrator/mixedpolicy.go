@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/netip"
 	"sort"
@@ -18,6 +19,12 @@ type mixedPolicyUpdate struct {
 	desired    xui.DesiredGroup
 	oldDesired xui.DesiredGroup
 	updated    xui.ManagedGroup
+}
+
+type mixedPolicyMainUpdate struct {
+	group      domain.ProxyGroup
+	desired    xui.LegacyMainDesired
+	oldDesired xui.LegacyMainDesired
 }
 
 func (o *Orchestrator) MixedPolicy(ctx context.Context) (store.MixedSourcePolicy, error) {
@@ -53,6 +60,24 @@ func (o *Orchestrator) SetMixedPolicy(ctx context.Context, requested store.Mixed
 	credentials, err := o.runtimeCredentials(ctx)
 	if err != nil {
 		return err
+	}
+	var mainUpdate *mixedPolicyMainUpdate
+	var mainManager legacyMainXUIClient
+	if mainStore, ok := o.store.(mainEgressStore); ok {
+		main, mainErr := mainStore.GetMainEgress(ctx)
+		if mainErr != nil && !errors.Is(mainErr, store.ErrProxyGroupNotFound) {
+			return &Error{Code: "storage_failed"}
+		}
+		if mainErr == nil && main.Enabled {
+			var managerOK bool
+			mainManager, managerOK = o.xui.(legacyMainXUIClient)
+			if !managerOK {
+				return &Error{Code: "not_configured"}
+			}
+			mainUpdate = &mixedPolicyMainUpdate{
+				group: mainEgressGroup(main), desired: o.desiredLegacyMain(credentials, desired), oldDesired: o.desiredLegacyMain(credentials, oldPolicy),
+			}
+		}
 	}
 	groups, err := o.store.ListProxyGroups(ctx)
 	if err != nil {
@@ -98,7 +123,15 @@ func (o *Orchestrator) SetMixedPolicy(ctx context.Context, requested store.Mixed
 			_, updateErr = o.validateSOCKS(ctx, update.group, credentials)
 		}
 		if updateErr != nil {
-			return o.failMixedPolicyUpdate(ctx, oldPolicy, desired, applied, nil)
+			return o.failMixedPolicyUpdate(ctx, oldPolicy, desired, applied, nil, nil)
+		}
+	}
+	if mainUpdate != nil {
+		if _, updateErr := mainManager.EnsureLegacyMain(ctx, mainUpdate.desired); updateErr != nil {
+			return o.failMixedPolicyUpdate(ctx, oldPolicy, desired, applied, nil, mainUpdate)
+		}
+		if _, updateErr := o.validateSOCKS(ctx, mainUpdate.group, credentials); updateErr != nil {
+			return o.failMixedPolicyUpdate(ctx, oldPolicy, desired, applied, nil, mainUpdate)
 		}
 	}
 
@@ -115,19 +148,29 @@ func (o *Orchestrator) SetMixedPolicy(ctx context.Context, requested store.Mixed
 		changed.RealityMLDSA65Verify = update.updated.MLDSA65Verify
 		changed.UpdatedAt = now
 		if err := o.save(ctx, &changed); err != nil {
-			return o.failMixedPolicyUpdate(ctx, oldPolicy, desired, applied, saved)
+			return o.failMixedPolicyUpdate(ctx, oldPolicy, desired, applied, saved, mainUpdate)
 		}
 		saved = append(saved, update)
 	}
 	desired.ApplyStatus = store.MixedPolicyApplied
 	if err := o.store.ReplaceMixedSourcePolicy(ctx, desired); err != nil {
-		return o.failMixedPolicyUpdate(ctx, oldPolicy, desired, applied, saved)
+		return o.failMixedPolicyUpdate(ctx, oldPolicy, desired, applied, saved, mainUpdate)
 	}
 	return nil
 }
 
-func (o *Orchestrator) failMixedPolicyUpdate(ctx context.Context, oldPolicy, desired store.MixedSourcePolicy, applied, saved []mixedPolicyUpdate) error {
+func (o *Orchestrator) failMixedPolicyUpdate(ctx context.Context, oldPolicy, desired store.MixedSourcePolicy, applied, saved []mixedPolicyUpdate, mainUpdate *mixedPolicyMainUpdate) error {
 	rollbackFailed := false
+	if mainUpdate != nil {
+		manager, ok := o.xui.(legacyMainXUIClient)
+		if !ok {
+			rollbackFailed = true
+		} else if _, err := manager.EnsureLegacyMain(ctx, mainUpdate.oldDesired); err != nil {
+			rollbackFailed = true
+		} else if _, err := o.validateSOCKS(ctx, mainUpdate.group, runtimeCredentials{mixedUsername: []byte(mainUpdate.oldDesired.MixedUsername), mixedPassword: []byte(mainUpdate.oldDesired.MixedPassword)}); err != nil {
+			rollbackFailed = true
+		}
+	}
 	for index := len(applied) - 1; index >= 0; index-- {
 		update := applied[index]
 		if _, err := o.xui.UpdateManagedGroup(ctx, update.oldDesired, update.updated); err != nil {
@@ -165,6 +208,15 @@ func (o *Orchestrator) desiredGroup(group domain.ProxyGroup, socksPort int, cred
 	return xui.DesiredGroup{
 		ResourceName: group.ResourceName, SOCKSPort: socksPort, VLESSPort: group.PublicPort, MixedPort: group.MixedPort,
 		VLESSClientID: string(credentials.vlessID), MixedUsername: string(credentials.mixedUsername), MixedPassword: string(credentials.mixedPassword),
+		MixedSourceRestrictionEnabled: policy.Enabled, MixedSourceCIDRs: prefixStrings(policy.CIDRs),
+		RealityTarget: "127.0.0.1:443", RealityServerName: o.config.PublicHost,
+	}
+}
+
+func (o *Orchestrator) desiredLegacyMain(credentials runtimeCredentials, policy store.MixedSourcePolicy) xui.LegacyMainDesired {
+	return xui.LegacyMainDesired{
+		VLESSPort: 8443, MixedPort: o.config.MainMixedPort, SOCKSPort: 7928,
+		MixedUsername: string(credentials.mixedUsername), MixedPassword: string(credentials.mixedPassword),
 		MixedSourceRestrictionEnabled: policy.Enabled, MixedSourceCIDRs: prefixStrings(policy.CIDRs),
 		RealityTarget: "127.0.0.1:443", RealityServerName: o.config.PublicHost,
 	}

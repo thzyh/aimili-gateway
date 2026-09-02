@@ -54,3 +54,32 @@ it('requires a CIDR when enabling the source restriction and saves only the appr
     body: JSON.stringify({ enabled: true, cidrs: ['198.51.100.0/24'] }),
   })
 })
+
+it('reports a failed source-policy application instead of presenting it as pending', async () => {
+  mocks.apiFetch.mockImplementation((path: string) => {
+    if (path === '/api/v1/settings/summary') return Promise.resolve({ accountSyncStatus: 'synced', candidateCount: 24, onlineCount: 1, maxOnline: 1 })
+    if (path === '/api/v1/settings/mixed-source-policy') return Promise.resolve({ enabled: true, cidrs: ['198.51.100.7/32'], applyStatus: 'failed' })
+    return Promise.resolve(undefined)
+  })
+  const wrapper = mount(SettingsView)
+  await flushPromises()
+
+  expect(wrapper.text()).toContain('当前状态：应用失败')
+  expect(wrapper.text()).not.toContain('当前状态：待处理')
+})
+
+it('authorizes only the current network through the dedicated safe action', async () => {
+  mocks.apiFetch.mockImplementation((path: string) => {
+    if (path === '/api/v1/settings/summary') return Promise.resolve({ accountSyncStatus: 'synced', candidateCount: 24, onlineCount: 1, maxOnline: 1 })
+    if (path === '/api/v1/settings/mixed-source-policy') return Promise.resolve({ enabled: true, cidrs: ['198.51.100.0/24'], applyStatus: 'applied' })
+    if (path === '/api/v1/settings/mixed-source-policy/authorize-current') return Promise.resolve({ enabled: true, cidrs: ['198.51.100.0/24', '198.51.100.7/32'], applyStatus: 'applied' })
+    return Promise.resolve(undefined)
+  })
+  const wrapper = mount(SettingsView)
+  await flushPromises()
+
+  await wrapper.get('[data-authorize-current-network]').trigger('click')
+  await flushPromises()
+  expect(mocks.apiFetch).toHaveBeenCalledWith('/api/v1/settings/mixed-source-policy/authorize-current', { method: 'POST' })
+  expect((wrapper.get('[data-cidr-editor]').element as HTMLTextAreaElement).value).toContain('198.51.100.7/32')
+})

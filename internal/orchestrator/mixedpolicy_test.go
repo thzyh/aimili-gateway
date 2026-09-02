@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/thzyh/aimili-gateway/internal/adapters/aimili"
+	"github.com/thzyh/aimili-gateway/internal/adapters/xui"
 	"github.com/thzyh/aimili-gateway/internal/domain"
 	"github.com/thzyh/aimili-gateway/internal/store"
 	"github.com/thzyh/aimili-gateway/internal/validator"
@@ -57,6 +58,28 @@ func TestSetMixedPolicyDisablesWhitelistButKeepsAuthenticatedMixedRouting(t *tes
 	}
 	if fixture.store.policy.Enabled || fixture.store.policy.ApplyStatus != store.MixedPolicyApplied {
 		t.Fatalf("stored policy = %#v", fixture.store.policy)
+	}
+}
+
+func TestSetMixedPolicyUpdatesEnabledMainMixedSourceRules(t *testing.T) {
+	fixture := newFixture()
+	fixture.store.mainEgress = store.MainEgress{
+		ResourceName: "agw-main", CountryCode: "JP", CountryName: "日本", ProxyType: domain.ProxyTypeDatacenter,
+		CandidateID: "main-candidate", ExitIP: "203.0.113.6", PublicInboundID: 1, MixedInboundID: 98,
+		PublicPort: 8443, MixedPort: 31000, Enabled: true, UpdatedAt: fixture.now(),
+	}
+	fixture.store.policy = store.MixedSourcePolicy{Enabled: false, ApplyStatus: store.MixedPolicyApplied, UpdatedAt: fixture.now()}
+
+	if err := fixture.orchestrator(t).SetMixedPolicy(context.Background(), store.MixedSourcePolicy{Enabled: true, CIDRs: []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24")}}); err != nil {
+		t.Fatal(err)
+	}
+	if fixture.xui.ensureLegacyMainCalls != 1 {
+		t.Fatalf("main mixed update calls = %d", fixture.xui.ensureLegacyMainCalls)
+	}
+	want := xui.LegacyMainDesired{VLESSPort: 8443, MixedPort: 31000, SOCKSPort: 7928, MixedSourceRestrictionEnabled: true, MixedSourceCIDRs: []string{"198.51.100.0/24"}, RealityTarget: "127.0.0.1:443", RealityServerName: "proxy.example.test"}
+	got := fixture.xui.legacyMainDesired
+	if got.VLESSPort != want.VLESSPort || got.MixedPort != want.MixedPort || got.SOCKSPort != want.SOCKSPort || got.MixedSourceRestrictionEnabled != want.MixedSourceRestrictionEnabled || !equalStrings(got.MixedSourceCIDRs, want.MixedSourceCIDRs) || got.RealityTarget != want.RealityTarget || got.RealityServerName != want.RealityServerName || got.MixedUsername == "" || got.MixedPassword == "" {
+		t.Fatalf("main mixed source rules = %#v", got)
 	}
 }
 

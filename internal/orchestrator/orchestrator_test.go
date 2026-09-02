@@ -836,6 +836,7 @@ type fakeXUI struct {
 	repairSubscriptionAliasesCalls int
 	profileSequences               [][]xui.PublicProfile
 	ensureLegacyMainCalls          int
+	legacyMainDesired              xui.LegacyMainDesired
 }
 
 func (x *fakeXUI) Snapshot(context.Context) (xui.Snapshot, error) { return x.snapshot, nil }
@@ -910,6 +911,7 @@ func (x *fakeXUI) DeleteManagedAggregate(_ context.Context, managed xui.ManagedA
 
 func (x *fakeXUI) EnsureLegacyMain(_ context.Context, desired xui.LegacyMainDesired) (xui.LegacyMain, error) {
 	x.ensureLegacyMainCalls++
+	x.legacyMainDesired = desired
 	return xui.LegacyMain{VLESSInboundID: 1, MixedInboundID: 98, VLESSPort: desired.VLESSPort, MixedPort: desired.MixedPort, ClientID: "legacy-client", PublicKey: "legacy-public", ShortID: "legacy-short", ServerName: "www.microsoft.com", OutboundTag: "aimili-socks"}, nil
 }
 

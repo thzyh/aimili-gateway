@@ -569,6 +569,29 @@ func TestMixedSourcePolicyRejectsUnsafeOrNonCanonicalCIDRs(t *testing.T) {
 	}
 }
 
+func TestMixedSourcePolicyAuthorizesCurrentForwardedClientAsSingleHost(t *testing.T) {
+	manager := &fakeProxyManager{mixedPolicy: store.MixedSourcePolicy{
+		Enabled:     false,
+		CIDRs:       []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24")},
+		ApplyStatus: store.MixedPolicyFailed,
+	}}
+	environment := newAuthTestEnvironmentConfigured(t, true, func(dependencies *Dependencies) { dependencies.ProxyManager = manager })
+	assertResponseStatus(t, environment.login(t), http.StatusNoContent)
+	csrf := environment.session(t).CSRFToken
+	request := environment.newRequest(t, http.MethodPost, "/api/v1/settings/mixed-source-policy/authorize-current", nil, environment.origin, csrf)
+	request.RemoteAddr = "127.0.0.1:41000"
+	request.Header.Set("X-Forwarded-For", "198.51.100.7")
+	response, err := environment.client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	assertResponseStatus(t, response, http.StatusOK)
+	if !manager.mixedPolicy.Enabled || manager.mixedPolicy.ApplyStatus != store.MixedPolicyApplied || len(manager.mixedPolicy.CIDRs) != 2 || manager.mixedPolicy.CIDRs[1] != netip.MustParsePrefix("198.51.100.7/32") {
+		t.Fatalf("authorized policy = %#v", manager.mixedPolicy)
+	}
+}
+
 func (e *authTestEnvironment) requestWithHeaders(t *testing.T, method, path string, payload any, origin, csrf string, headers map[string]string) *http.Response {
 	t.Helper()
 	responseRequest := e.newRequest(t, method, path, payload, origin, csrf)

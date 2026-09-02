@@ -38,6 +38,7 @@ function changeProtocol(row: ProxyGroupPayload, event: Event): void {
             <button :data-copy="row.id" class="primary-small" :disabled="copyDisabled(row)" @click="emit('copy', row)">复制{{ protocol === 'vless' ? '节点' : '代理' }}</button>
             <button v-if="row.status === 'standby'" :data-replace="row.id" class="icon-button activate-button" :disabled="busy !== ''" title="选择一个已启用出口位进行替换" @click="emit('replace', row)">替换到出口位</button>
             <button v-else-if="row.status === 'ready'" :data-check="row.id" class="icon-button" :disabled="busy !== ''" title="重新检测" @click="emit('check', row)">检测</button>
+            <button v-else-if="row.status === 'repair_required'" :data-repair="row.id" class="icon-button activate-button" :disabled="busy !== ''" title="核对运行时身份、代理和当前公网协议" @click="emit('check', row)">重新检测并同步</button>
           </td>
         </tr>
       </tbody>

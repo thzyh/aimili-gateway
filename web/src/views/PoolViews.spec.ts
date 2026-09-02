@@ -122,6 +122,24 @@ it('copies a test-style VLESS subscription', async () => {
   expect(wrapper.text()).toContain('复制节点订阅')
 })
 
+it('offers a repair-required runtime slot a safe recheck and synchronization action', async () => {
+	const repairRow = { ...rows[1], id: 'repair-slot', status: 'repair_required', lastErrorCode: 'rollback_failed' }
+	mocks.apiFetch.mockImplementation((path: string) => {
+		if (path === '/api/v1/proxy-groups') return Promise.resolve([repairRow])
+		if (path === '/api/v1/settings/aimilivpn/countries') return Promise.resolve([])
+		if (path === '/api/v1/settings/aimilivpn/refresh') return Promise.resolve({ state: 'idle', country: '', phase: '', testedCount: 0, validCount: 0 })
+		if (path === '/api/v1/proxy-groups/repair-slot/check') return Promise.resolve({ ...repairRow, status: 'ready' })
+		return Promise.resolve(undefined)
+	})
+	const wrapper = mount(VpnPoolView)
+	await flushPromises()
+
+	expect(wrapper.get('[data-repair="repair-slot"]').text()).toContain('重新检测并同步')
+	await wrapper.get('[data-repair="repair-slot"]').trigger('click')
+	await flushPromises()
+	expect(mocks.apiFetch).toHaveBeenCalledWith('/api/v1/proxy-groups/repair-slot/check', { method: 'POST' })
+})
+
 it('keeps four runtime rows in logical order and shows only the current page port', async () => {
   mocks.apiFetch.mockImplementation((path: string) => {
     if (path === '/api/v1/proxy-groups') return Promise.resolve([rows[5], rows[2], rows[1], rows[0], ...rows.slice(3, 5), ...rows.slice(6)])
