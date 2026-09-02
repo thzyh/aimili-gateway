@@ -129,6 +129,7 @@ type subscriptionStore interface {
 
 type mainEgressStore interface {
 	GetMainEgress(context.Context) (store.MainEgress, error)
+	SaveMainEgress(context.Context, store.MainEgress) error
 }
 
 type protocolModeStore interface {

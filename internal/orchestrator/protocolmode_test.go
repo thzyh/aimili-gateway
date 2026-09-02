@@ -797,6 +797,64 @@ func TestRecoverProtocolModesMarksRepairWhenRollbackCannotProveOldState(t *testi
 	}
 }
 
+func TestRecoverProtocolModesRevalidatesDegradedRepairSlotWithoutHelperWrites(t *testing.T) {
+	fixture, group := protocolFixture(t)
+	group.Status = domain.ProxyGroupDegraded
+	fixture.store.groups[group.ID] = group
+	state := fixture.store.protocolModes[group.ID]
+	state.State = domain.ProtocolRepairRequired
+	state.LastErrorCode = "protocol_rollback_validation_failed"
+	fixture.store.protocolModes[group.ID] = state
+	fixture.aimili.createdSlots[group.AimiliSlot] = aimili.Slot{
+		Number: group.AimiliSlot, NodeID: "runtime-recovered", CandidateIP: "198.51.100.44",
+		Country: "KR", CountryName: "韩国", ProxyType: "residential", ExitIP: "203.0.113.44",
+		Port: 17929, Status: "up", EgressOK: true, CheckedAt: 1_700_000_011,
+	}
+	fixture.xui.subscriptionProfiles = []xui.PublicProfile{{
+		InboundID: group.PublicInboundID, Mode: state.ActiveMode, ClientID: "client-id", PublicKey: "public-key",
+		ShortID: "short-id", ServerName: "proxy.example.test", XHTTPPath: "/current-path",
+	}}
+	orchestrator := fixture.orchestratorWithMax(t, 3)
+	orchestrator.protocolTransaction = &fakeProtocolTransaction{calls: &fixture.calls}
+
+	if err := orchestrator.RecoverProtocolModes(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if recovered := fixture.store.protocolModes[group.ID]; recovered.State != domain.ProtocolReady || recovered.LastErrorCode != "" {
+		t.Fatalf("recovered protocol = %#v", recovered)
+	}
+	if recovered := fixture.store.groups[group.ID]; recovered.Status != domain.ProxyGroupReady || recovered.CandidateID != "runtime-recovered" || recovered.ExitIP != "203.0.113.44" {
+		t.Fatalf("recovered slot = %#v", recovered)
+	}
+	if contains(fixture.calls, "protocol.rollback") || contains(fixture.calls, "protocol.apply") {
+		t.Fatalf("repair recovery ran helper writes: %#v", fixture.calls)
+	}
+}
+
+func TestRecoverProtocolModesRevalidatesReadyRepairSlotWithoutHelperWrites(t *testing.T) {
+	fixture, group := protocolFixture(t)
+	state := fixture.store.protocolModes[group.ID]
+	state.State = domain.ProtocolRepairRequired
+	state.LastErrorCode = "protocol_rollback_validation_failed"
+	fixture.store.protocolModes[group.ID] = state
+	fixture.xui.subscriptionProfiles = []xui.PublicProfile{{
+		InboundID: group.PublicInboundID, Mode: state.ActiveMode, ClientID: "client-id", PublicKey: "public-key",
+		ShortID: "short-id", ServerName: "proxy.example.test", XHTTPPath: "/current-path",
+	}}
+	orchestrator := fixture.orchestratorWithMax(t, 3)
+	orchestrator.protocolTransaction = &fakeProtocolTransaction{calls: &fixture.calls}
+
+	if err := orchestrator.RecoverProtocolModes(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if recovered := fixture.store.protocolModes[group.ID]; recovered.State != domain.ProtocolReady || recovered.LastErrorCode != "" {
+		t.Fatalf("recovered protocol = %#v", recovered)
+	}
+	if contains(fixture.calls, "protocol.rollback") || contains(fixture.calls, "protocol.apply") {
+		t.Fatalf("repair recovery ran helper writes: %#v", fixture.calls)
+	}
+}
+
 func TestRecoverRepairRequiredMainRebindsOnlyAfterCurrentProtocolValidation(t *testing.T) {
 	fixture := newFixture()
 	fixture.store.mainEgress = store.MainEgress{
@@ -831,11 +889,11 @@ func TestRecoverRepairRequiredMainRebindsOnlyAfterCurrentProtocolValidation(t *t
 	if main.CandidateID != "current-main" || main.CountryCode != "JP" || main.ExitIP != "203.0.113.20" {
 		t.Fatalf("recovered main identity = %#v", main)
 	}
-	if !orderedSubset(fixture.calls, []string{"protocol.rollback", "validate.socks", "validate.public"}) || fixture.xui.ensureLegacyMainCalls != 0 {
+	if !orderedSubset(fixture.calls, []string{"validate.socks", "validate.public"}) || contains(fixture.calls, "protocol.rollback") || fixture.xui.ensureLegacyMainCalls != 0 {
 		t.Fatalf("recovery calls = %#v legacy=%d", fixture.calls, fixture.xui.ensureLegacyMainCalls)
 	}
-	if !orderedSubset(fixture.calls, []string{"main.lease.acquire", "protocol.rollback", "validate.public", "main.lease.release"}) {
-		t.Fatalf("main recovery was not covered by mutation lease: %#v", fixture.calls)
+	if contains(fixture.calls, "main.lease.acquire") || contains(fixture.calls, "main.lease.release") {
+		t.Fatalf("read-only main repair recovery acquired a mutation lease: %#v", fixture.calls)
 	}
 	if len(fixture.validator.publicTargets) != 1 || fixture.validator.publicTargets[0].ExpectedExitIP != "203.0.113.20" {
 		t.Fatalf("public targets = %#v", fixture.validator.publicTargets)

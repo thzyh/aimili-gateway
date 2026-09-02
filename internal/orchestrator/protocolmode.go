@@ -248,7 +248,11 @@ func (o *Orchestrator) revalidateProtocolRepair(ctx context.Context, persistence
 	if err != nil {
 		return err
 	}
-	target, err = o.syncProtocolTargetEgress(ctx, target)
+	if target.main {
+		target, err = o.snapshotProtocolRepairMain(ctx, target)
+	} else {
+		target, err = o.syncProtocolTargetEgress(ctx, target)
+	}
 	if err != nil {
 		return err
 	}
@@ -261,7 +265,11 @@ func (o *Orchestrator) revalidateProtocolRepair(ctx context.Context, persistence
 		_ = o.saveProtocolState(ctx, persistence, state)
 		return err
 	}
-	if target.repairEgress {
+	if target.main {
+		if err := o.saveProtocolRepairMain(ctx, target.group); err != nil {
+			return err
+		}
+	} else if target.repairEgress {
 		target.group.Status = domain.ProxyGroupReady
 		target.group.LastErrorCode = ""
 		target.group.LastCheckedAt = o.config.Now().UTC()
@@ -273,6 +281,42 @@ func (o *Orchestrator) revalidateProtocolRepair(ctx context.Context, persistence
 	state.DesiredMode = state.ActiveMode
 	state.LastErrorCode = ""
 	if err := state.Transition(domain.ProtocolReady); err != nil || o.saveProtocolState(ctx, persistence, state) != nil {
+		return &Error{Code: "storage_failed"}
+	}
+	return nil
+}
+
+func (o *Orchestrator) snapshotProtocolRepairMain(ctx context.Context, target protocolTarget) (protocolTarget, error) {
+	status, err := o.aimili.MainStatus(ctx)
+	if err != nil || !mainStatusUsable(status) {
+		return protocolTarget{}, &Error{Code: "egress_unavailable"}
+	}
+	target.group.CandidateID = status.CandidateID
+	target.group.CountryCode = normalizedMainCountry(status.Country)
+	target.group.CountryName = status.CountryName
+	target.group.ProxyType = normalizedMainProxyType(status.ProxyType)
+	target.group.ExitIP = status.ExitIP
+	return target, nil
+}
+
+func (o *Orchestrator) saveProtocolRepairMain(ctx context.Context, group domain.ProxyGroup) error {
+	persistence, ok := o.store.(mainEgressStore)
+	if !ok {
+		return &Error{Code: "not_configured"}
+	}
+	main, err := persistence.GetMainEgress(ctx)
+	if err != nil {
+		return operationError(err)
+	}
+	main.CandidateID = group.CandidateID
+	main.CountryCode = group.CountryCode
+	main.CountryName = group.CountryName
+	main.ProxyType = group.ProxyType
+	main.ExitIP = group.ExitIP
+	main.LastErrorCode = ""
+	main.LastCheckedAt = o.config.Now().UTC()
+	main.UpdatedAt = main.LastCheckedAt
+	if err := persistence.SaveMainEgress(ctx, main); err != nil {
 		return &Error{Code: "storage_failed"}
 	}
 	return nil
@@ -408,6 +452,7 @@ func (o *Orchestrator) RecoverProtocolModes(ctx context.Context) error {
 	if err != nil {
 		return &Error{Code: "storage_failed"}
 	}
+	repairRemains := false
 	for _, state := range states {
 		if state.State == domain.ProtocolReady {
 			if state.ActiveMode != state.DesiredMode {
@@ -426,11 +471,25 @@ func (o *Orchestrator) RecoverProtocolModes(ctx context.Context) error {
 			continue
 		}
 		unlock := o.locks.lock(state.EgressID)
+		if state.State == domain.ProtocolRepairRequired {
+			err := o.revalidateProtocolRepair(ctx, persistence, &state)
+			unlock()
+			if err != nil {
+				if errorCode(err) == "storage_failed" || errorCode(err) == "not_configured" {
+					return err
+				}
+				repairRemains = true
+			}
+			continue
+		}
 		err := o.recoverProtocolMode(ctx, persistence, state)
 		unlock()
 		if err != nil {
 			return err
 		}
+	}
+	if repairRemains {
+		return &Error{Code: "repair_required"}
 	}
 	return nil
 }
