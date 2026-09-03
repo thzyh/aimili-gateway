@@ -29,8 +29,8 @@ func TestServiceReturnsOnlyApprovedMaintenanceSummaries(t *testing.T) {
 		{ID: "agw-jp-res-a", ResourceName: "agw-jp-res-a", Status: domain.ProxyGroupReady, PublicInboundID: 11, MixedInboundID: 12, ConfigFingerprint: "fingerprint-one", LastCheckedAt: now},
 	}
 	xuiSource := &fakeXUISource{snapshot: xui.Snapshot{
-		Inbounds:        []xui.Inbound{{ID: 11, Tag: "agw-jp-res-a-vless", Protocol: "vless"}, {ID: 12, Tag: "agw-jp-res-a-mixed", Protocol: "mixed"}},
-		Outbounds:       []xui.Outbound{{Tag: "agw-jp-res-a-socks", Protocol: "socks"}, {Tag: "user-outbound", Protocol: "freedom"}},
+		Inbounds:        []xui.Inbound{{ID: 1, Tag: "aimili-reality", Protocol: "vless"}, {ID: 2, Tag: "agw-main-mixed", Protocol: "mixed"}, {ID: 11, Tag: "agw-jp-res-a-vless", Protocol: "vless"}, {ID: 12, Tag: "agw-jp-res-a-mixed", Protocol: "mixed"}},
+		Outbounds:       []xui.Outbound{{Tag: "aimili-socks", Protocol: "socks"}, {Tag: "agw-jp-res-a-socks", Protocol: "socks"}, {Tag: "user-outbound", Protocol: "freedom"}},
 		OutboundTestURL: "https://must-not-escape.invalid/secret",
 	}}
 	groupSource := &fakeGroupSource{groups: groups}
@@ -58,7 +58,7 @@ func TestServiceReturnsOnlyApprovedMaintenanceSummaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if xuiSummary.ManagedVLESSCount != 1 || xuiSummary.ManagedMixedCount != 1 || xuiSummary.ManagedOutboundCount != 1 || !xuiSummary.OwnershipMatches {
+	if xuiSummary.ManagedPublicCount != 2 || xuiSummary.ManagedVLESSCount != 2 || xuiSummary.ManagedMixedCount != 2 || xuiSummary.ManagedOutboundCount != 2 || !xuiSummary.OwnershipMatches {
 		t.Fatalf("3x-ui summary = %#v", xuiSummary)
 	}
 
@@ -89,6 +89,38 @@ func TestServiceChecksManagedSlotsAndRepairsOnlyManagedResources(t *testing.T) {
 	}
 	if groupSource.repairCalls != 1 {
 		t.Fatalf("repair calls = %d", groupSource.repairCalls)
+	}
+}
+
+func TestXUISummaryRecognizesMainAndMixedPublicProtocols(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	groups := []domain.ProxyGroup{
+		{ID: "agw-a", ResourceName: "agw-a", PublicInboundID: 11, MixedInboundID: 12, ConfigFingerprint: "a", LastCheckedAt: now},
+		{ID: "agw-b", ResourceName: "agw-b", PublicInboundID: 21, MixedInboundID: 22, ConfigFingerprint: "b", LastCheckedAt: now},
+		{ID: "agw-c", ResourceName: "agw-c", PublicInboundID: 31, MixedInboundID: 32, ConfigFingerprint: "c", LastCheckedAt: now},
+	}
+	snapshot := xui.Snapshot{
+		Inbounds: []xui.Inbound{
+			{ID: 1, Tag: "aimili-reality", Protocol: "vless"}, {ID: 2, Tag: "agw-main-mixed", Protocol: "mixed"},
+			{ID: 11, Tag: "agw-a-vless", Protocol: "vless"}, {ID: 12, Tag: "agw-a-mixed", Protocol: "mixed"},
+			{ID: 21, Tag: "agw-b-vless", Protocol: "hysteria"}, {ID: 22, Tag: "agw-b-mixed", Protocol: "mixed"},
+			{ID: 31, Tag: "agw-c-vless", Protocol: "vless"}, {ID: 32, Tag: "agw-c-mixed", Protocol: "mixed"},
+		},
+		Outbounds: []xui.Outbound{
+			{Tag: "aimili-socks", Protocol: "socks"},
+			{Tag: "agw-a-socks", Protocol: "socks"}, {Tag: "agw-b-socks", Protocol: "socks"}, {Tag: "agw-c-socks", Protocol: "socks"},
+		},
+	}
+	service, err := New(Config{MaxOnline: 3}, &fakeAimiliSource{}, &fakeXUISource{snapshot: snapshot}, &fakeGroupSource{groups: groups}, &fakeAccountStatus{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary, err := service.XUI(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.ManagedPublicCount != 4 || summary.ManagedVLESSCount != 3 || summary.ManagedMixedCount != 4 || summary.ManagedOutboundCount != 4 || !summary.OwnershipMatches {
+		t.Fatalf("mixed protocol summary = %#v", summary)
 	}
 }
 

@@ -40,6 +40,7 @@ type AimiliSummary struct {
 }
 
 type XUISummary struct {
+	ManagedPublicCount   int       `json:"managedPublicCount"`
 	ManagedVLESSCount    int       `json:"managedVlessCount"`
 	ManagedMixedCount    int       `json:"managedMixedCount"`
 	ManagedOutboundCount int       `json:"managedOutboundCount"`
@@ -244,10 +245,31 @@ func (service *Service) XUI(ctx context.Context) (XUISummary, error) {
 	for _, outbound := range snapshot.Outbounds {
 		outbounds[outbound.Tag] = outbound
 	}
+	if public, ok := inboundByTag(snapshot.Inbounds, "aimili-reality"); ok && managedPublicProtocol(public.Protocol) {
+		result.ManagedPublicCount++
+		if public.Protocol == "vless" {
+			result.ManagedVLESSCount++
+		}
+	} else {
+		result.OwnershipMatches = false
+	}
+	if mixed, ok := inboundByTag(snapshot.Inbounds, "agw-main-mixed"); ok && mixed.Protocol == "mixed" {
+		result.ManagedMixedCount++
+	} else {
+		result.OwnershipMatches = false
+	}
+	if outbound, ok := outbounds["aimili-socks"]; ok && outbound.Protocol == "socks" {
+		result.ManagedOutboundCount++
+	} else {
+		result.OwnershipMatches = false
+	}
 	for _, group := range groups {
 		vless, vlessOK := inbounds[group.PublicInboundID]
-		if vlessOK && vless.Tag == group.ResourceName+"-vless" && vless.Protocol == "vless" {
-			result.ManagedVLESSCount++
+		if vlessOK && vless.Tag == group.ResourceName+"-vless" && managedPublicProtocol(vless.Protocol) {
+			result.ManagedPublicCount++
+			if vless.Protocol == "vless" {
+				result.ManagedVLESSCount++
+			}
 		} else {
 			result.OwnershipMatches = false
 		}
@@ -271,6 +293,25 @@ func (service *Service) XUI(ctx context.Context) (XUISummary, error) {
 		}
 	}
 	return result, nil
+}
+
+func inboundByTag(inbounds []xui.Inbound, tag string) (xui.Inbound, bool) {
+	var result xui.Inbound
+	found := false
+	for _, inbound := range inbounds {
+		if inbound.Tag != tag {
+			continue
+		}
+		if found {
+			return xui.Inbound{}, false
+		}
+		result, found = inbound, true
+	}
+	return result, found
+}
+
+func managedPublicProtocol(protocol string) bool {
+	return protocol == "vless" || protocol == "hysteria"
 }
 
 func (service *Service) CheckXUI(ctx context.Context) (XUISummary, error) { return service.XUI(ctx) }

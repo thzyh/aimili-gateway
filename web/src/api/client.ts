@@ -67,7 +67,7 @@ export interface CountryRefreshPayload {
   startedAt?: number; finishedAt?: number; errorCode?: string
   stopReason?: string; cacheTotal?: number; countryValidCount?: number
 }
-export interface XUISettingsPayload { managedVlessCount: number; managedMixedCount: number; managedOutboundCount: number; ownershipMatches: boolean; lastCheckedAt?: string }
+export interface XUISettingsPayload { managedPublicCount: number; managedVlessCount: number; managedMixedCount: number; managedOutboundCount: number; ownershipMatches: boolean; lastCheckedAt?: string }
 
 export function idempotencyHeaders(): HeadersInit {
   const random = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`

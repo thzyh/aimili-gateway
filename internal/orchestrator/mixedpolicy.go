@@ -62,18 +62,12 @@ func (o *Orchestrator) SetMixedPolicy(ctx context.Context, requested store.Mixed
 		return err
 	}
 	var mainUpdate *mixedPolicyMainUpdate
-	var mainManager legacyMainXUIClient
 	if mainStore, ok := o.store.(mainEgressStore); ok {
 		main, mainErr := mainStore.GetMainEgress(ctx)
 		if mainErr != nil && !errors.Is(mainErr, store.ErrProxyGroupNotFound) {
 			return &Error{Code: "storage_failed"}
 		}
 		if mainErr == nil && main.Enabled {
-			var managerOK bool
-			mainManager, managerOK = o.xui.(legacyMainXUIClient)
-			if !managerOK {
-				return &Error{Code: "not_configured"}
-			}
 			mainUpdate = &mixedPolicyMainUpdate{
 				group: mainEgressGroup(main), desired: o.desiredLegacyMain(credentials, desired), oldDesired: o.desiredLegacyMain(credentials, oldPolicy),
 			}
@@ -115,7 +109,7 @@ func (o *Orchestrator) SetMixedPolicy(ctx context.Context, requested store.Mixed
 
 	applied := make([]mixedPolicyUpdate, 0, len(updates))
 	for _, update := range updates {
-		updated, updateErr := o.xui.UpdateManagedGroup(ctx, update.desired, update.managed)
+		updated, updateErr := o.xui.UpdateManagedMixedPolicy(ctx, update.desired, update.managed)
 		if updateErr == nil {
 			update.updated = updated
 			update.oldDesired.ResourceName = updated.ResourceName
@@ -127,7 +121,7 @@ func (o *Orchestrator) SetMixedPolicy(ctx context.Context, requested store.Mixed
 		}
 	}
 	if mainUpdate != nil {
-		if _, updateErr := mainManager.EnsureLegacyMain(ctx, mainUpdate.desired); updateErr != nil {
+		if updateErr := o.xui.UpdateLegacyMainMixedPolicy(ctx, mainUpdate.desired); updateErr != nil {
 			return o.failMixedPolicyUpdate(ctx, oldPolicy, desired, applied, nil, mainUpdate)
 		}
 		if _, updateErr := o.validateSOCKS(ctx, mainUpdate.group, credentials); updateErr != nil {
@@ -162,10 +156,7 @@ func (o *Orchestrator) SetMixedPolicy(ctx context.Context, requested store.Mixed
 func (o *Orchestrator) failMixedPolicyUpdate(ctx context.Context, oldPolicy, desired store.MixedSourcePolicy, applied, saved []mixedPolicyUpdate, mainUpdate *mixedPolicyMainUpdate) error {
 	rollbackFailed := false
 	if mainUpdate != nil {
-		manager, ok := o.xui.(legacyMainXUIClient)
-		if !ok {
-			rollbackFailed = true
-		} else if _, err := manager.EnsureLegacyMain(ctx, mainUpdate.oldDesired); err != nil {
+		if err := o.xui.UpdateLegacyMainMixedPolicy(ctx, mainUpdate.oldDesired); err != nil {
 			rollbackFailed = true
 		} else if _, err := o.validateSOCKS(ctx, mainUpdate.group, runtimeCredentials{mixedUsername: []byte(mainUpdate.oldDesired.MixedUsername), mixedPassword: []byte(mainUpdate.oldDesired.MixedPassword)}); err != nil {
 			rollbackFailed = true
@@ -173,7 +164,7 @@ func (o *Orchestrator) failMixedPolicyUpdate(ctx context.Context, oldPolicy, des
 	}
 	for index := len(applied) - 1; index >= 0; index-- {
 		update := applied[index]
-		if _, err := o.xui.UpdateManagedGroup(ctx, update.oldDesired, update.updated); err != nil {
+		if _, err := o.xui.UpdateManagedMixedPolicy(ctx, update.oldDesired, update.updated); err != nil {
 			rollbackFailed = true
 			continue
 		}

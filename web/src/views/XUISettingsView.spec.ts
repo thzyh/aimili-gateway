@@ -13,13 +13,14 @@ import XUISettingsView from './XUISettingsView.vue'
 beforeEach(() => {
   mocks.apiFetch.mockReset()
   mocks.openBackend.mockReset()
-  mocks.apiFetch.mockResolvedValue({ managedVlessCount: 1, managedMixedCount: 1, managedOutboundCount: 1, ownershipMatches: true, lastCheckedAt: '2026-08-27T00:00:00Z' })
+  mocks.apiFetch.mockResolvedValue({ managedPublicCount: 4, managedVlessCount: 4, managedMixedCount: 4, managedOutboundCount: 4, ownershipMatches: true, lastCheckedAt: '2026-08-27T00:00:00Z' })
 })
 
 it('shows managed 3x-ui ownership and exposes only check and repair actions', async () => {
   const wrapper = mount(XUISettingsView)
   await flushPromises()
   expect(wrapper.text()).toContain('所有权核对通过')
+  expect(wrapper.text()).toContain('受管公网协议')
   expect(wrapper.text()).not.toContain('账户密码')
   expect(wrapper.text()).not.toContain('随机路径')
 

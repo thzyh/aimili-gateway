@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"testing"
 	"time"
@@ -589,6 +590,32 @@ func TestMixedSourcePolicyAuthorizesCurrentForwardedClientAsSingleHost(t *testin
 	assertResponseStatus(t, response, http.StatusOK)
 	if !manager.mixedPolicy.Enabled || manager.mixedPolicy.ApplyStatus != store.MixedPolicyApplied || len(manager.mixedPolicy.CIDRs) != 2 || manager.mixedPolicy.CIDRs[1] != netip.MustParsePrefix("198.51.100.7/32") {
 		t.Fatalf("authorized policy = %#v", manager.mixedPolicy)
+	}
+}
+
+func TestCurrentForwardedClientPrefixClassifiesUnavailableSources(t *testing.T) {
+	tests := []struct {
+		name       string
+		remoteAddr string
+		forwarded  string
+		wantCode   string
+	}{
+		{name: "untrusted peer", remoteAddr: "198.51.100.8:41000", forwarded: "198.51.100.7", wantCode: "client_peer_untrusted"},
+		{name: "missing forwarded header", remoteAddr: "127.0.0.1:41000", wantCode: "client_forwarded_for_missing"},
+		{name: "invalid forwarded value", remoteAddr: "127.0.0.1:41000", forwarded: "unknown", wantCode: "client_forwarded_for_invalid"},
+		{name: "private forwarded value", remoteAddr: "127.0.0.1:41000", forwarded: "192.168.1.2", wantCode: "client_forwarded_for_non_public"},
+		{name: "loopback forwarded value", remoteAddr: "127.0.0.1:41000", forwarded: "127.0.0.1", wantCode: "client_forwarded_for_non_public"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, "/", nil)
+			request.RemoteAddr = test.remoteAddr
+			request.Header.Set("X-Forwarded-For", test.forwarded)
+			_, code := currentForwardedClientPrefix(request)
+			if code != test.wantCode {
+				t.Fatalf("code = %q, want %q", code, test.wantCode)
+			}
+		})
 	}
 }
 

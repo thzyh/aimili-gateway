@@ -44,7 +44,7 @@ function formatTime(value?: string): string { return value ? new Date(value).toL
       <p v-if="notice" class="notice" role="status">{{ notice }}</p>
       <section class="ownership" :class="{ warning: data && !data.ownershipMatches }"><span class="status-dot" /><div><strong>{{ data?.ownershipMatches ? '所有权核对通过' : '发现受管资源漂移' }}</strong><p>{{ data?.ownershipMatches ? 'Gateway 受管入站与出站均可识别。' : '只会修复 agw- 命名空间，不会修改其他 3x-ui 资源。' }}</p></div><small>最近检测：{{ formatTime(data?.lastCheckedAt) }}</small></section>
       <section class="metric-grid">
-        <article><span>受管 VLESS</span><strong>{{ data?.managedVlessCount ?? '—' }}</strong><small>节点入站</small></article>
+        <article><span>受管公网协议</span><strong>{{ data?.managedPublicCount ?? data?.managedVlessCount ?? '—' }}</strong><small>VLESS / Hysteria2 入站</small></article>
         <article><span>受管 mixed</span><strong>{{ data?.managedMixedCount ?? '—' }}</strong><small>SOCKS5H 入站</small></article>
         <article><span>受管出站</span><strong>{{ data?.managedOutboundCount ?? '—' }}</strong><small>AimiliVPN 出口路由</small></article>
       </section>

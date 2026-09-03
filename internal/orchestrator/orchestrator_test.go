@@ -955,6 +955,16 @@ func (x *fakeXUI) UpdateManagedGroup(_ context.Context, desired xui.DesiredGroup
 	return managed, nil
 }
 
+func (x *fakeXUI) UpdateManagedMixedPolicy(ctx context.Context, desired xui.DesiredGroup, managed xui.ManagedGroup) (xui.ManagedGroup, error) {
+	return x.UpdateManagedGroup(ctx, desired, managed)
+}
+
+func (x *fakeXUI) UpdateLegacyMainMixedPolicy(_ context.Context, desired xui.LegacyMainDesired) error {
+	x.ensureLegacyMainCalls++
+	x.legacyMainDesired = desired
+	return nil
+}
+
 type fakeValidator struct {
 	calls            *[]string
 	vlessError       error

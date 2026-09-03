@@ -108,6 +108,8 @@ type aimiliClient interface {
 type xuiClient interface {
 	EnsureManagedGroup(context.Context, xui.DesiredGroup) (xui.ManagedGroup, error)
 	UpdateManagedGroup(context.Context, xui.DesiredGroup, xui.ManagedGroup) (xui.ManagedGroup, error)
+	UpdateManagedMixedPolicy(context.Context, xui.DesiredGroup, xui.ManagedGroup) (xui.ManagedGroup, error)
+	UpdateLegacyMainMixedPolicy(context.Context, xui.LegacyMainDesired) error
 	DeleteManagedGroup(context.Context, xui.ManagedGroup) error
 }
 

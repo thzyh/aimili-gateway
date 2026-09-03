@@ -140,6 +140,24 @@ it('offers a repair-required runtime slot a safe recheck and synchronization act
 	expect(mocks.apiFetch).toHaveBeenCalledWith('/api/v1/proxy-groups/repair-slot/check', { method: 'POST' })
 })
 
+it('offers a degraded runtime slot the same safe recheck and synchronization action', async () => {
+	const degradedRow = { ...rows[1], id: 'degraded-slot', status: 'degraded' }
+	mocks.apiFetch.mockImplementation((path: string) => {
+		if (path === '/api/v1/proxy-groups') return Promise.resolve([degradedRow])
+		if (path === '/api/v1/settings/aimilivpn/countries') return Promise.resolve([])
+		if (path === '/api/v1/settings/aimilivpn/refresh') return Promise.resolve({ state: 'idle', country: '', phase: '', testedCount: 0, validCount: 0 })
+		if (path === '/api/v1/proxy-groups/degraded-slot/check') return Promise.resolve({ ...degradedRow, status: 'ready' })
+		return Promise.resolve(undefined)
+	})
+	const wrapper = mount(VpnPoolView)
+	await flushPromises()
+
+	expect(wrapper.get('[data-repair="degraded-slot"]').text()).toContain('重新检测并同步')
+	await wrapper.get('[data-repair="degraded-slot"]').trigger('click')
+	await flushPromises()
+	expect(mocks.apiFetch).toHaveBeenCalledWith('/api/v1/proxy-groups/degraded-slot/check', { method: 'POST' })
+})
+
 it('keeps four runtime rows in logical order and shows only the current page port', async () => {
   mocks.apiFetch.mockImplementation((path: string) => {
     if (path === '/api/v1/proxy-groups') return Promise.resolve([rows[5], rows[2], rows[1], rows[0], ...rows.slice(3, 5), ...rows.slice(6)])
