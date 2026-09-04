@@ -22,6 +22,7 @@ type subscriptionFixture struct {
 	aliasWrites       [][]map[string]any
 	aliasWriteFailure bool
 	aliasReadMismatch bool
+	updated           map[string]any
 }
 
 func (f *subscriptionFixture) handler(w http.ResponseWriter, r *http.Request) {
@@ -68,6 +69,16 @@ func (f *subscriptionFixture) handler(w http.ResponseWriter, r *http.Request) {
 			client, _ := f.added["client"].(map[string]any)
 			f.client = map[string]any{"id": 42, "email": client["email"], "subId": client["subId"], "client": client, "inboundIds": []any{}}
 			fmt.Fprint(w, `{"success":true,"obj":null}`)
+		case strings.HasPrefix(r.URL.Path, "/panel/panel/api/clients/update/"):
+			if err := json.NewDecoder(r.Body).Decode(&f.updated); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			f.client["subId"] = f.updated["subId"]
+			if nested, ok := f.client["client"].(map[string]any); ok {
+				nested["subId"] = f.updated["subId"]
+			}
+			fmt.Fprint(w, `{"success":true,"obj":null}`)
 		case strings.HasPrefix(r.URL.Path, "/panel/panel/api/clients/") && strings.HasSuffix(r.URL.Path, "/attach"):
 			f.attachCalls++
 			var payload struct {
@@ -109,6 +120,23 @@ func (f *subscriptionFixture) handler(w http.ResponseWriter, r *http.Request) {
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
+	}
+}
+
+func TestEnsureSubscriptionClientRestoresPersistedSubIDBeforeAttach(t *testing.T) {
+	fixture := &subscriptionFixture{client: map[string]any{
+		"id": 42, "email": "aimili-gateway-subscription", "subId": "",
+		"client": map[string]any{"id": "stable-client", "email": "aimili-gateway-subscription"}, "inboundIds": []any{1},
+	}}
+	client := newSubscriptionFixtureClient(t, fixture)
+	subscription, err := client.EnsureSubscriptionClient(context.Background(), SubscriptionDesired{
+		ClientEmail: "aimili-gateway-subscription", ClientUUID: "stable-client", SubscriptionID: "stable-sub", InboundIDs: []int64{1, 2},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fixture.updated["subId"] != "stable-sub" || fixture.attachCalls != 1 || subscription.SubscriptionID != "stable-sub" {
+		t.Fatalf("updated=%#v attach=%d subscription=%#v", fixture.updated, fixture.attachCalls, subscription)
 	}
 }
 

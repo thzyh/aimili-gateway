@@ -64,6 +64,7 @@ func TestSubscriptionAliasesRejectsBlankCountry(t *testing.T) {
 
 func TestSubscriptionPassesFourVerifiedAliasesToTheExclusiveClient(t *testing.T) {
 	fixture := newFixture()
+	fixture.store.subscription = store.GatewaySubscription{ResourceName: "aimili-gateway-subscription", ClientID: 42, SubscriptionID: "stable-sub", UpdatedAt: fixture.now()}
 	fixture.store.mainEgress = store.MainEgress{ResourceName: "agw-main", Enabled: true, PublicInboundID: 1, CountryName: "日本", CountryCode: "JP", ProxyType: domain.ProxyTypeDatacenter, CandidateID: "main", ExitIP: "203.0.113.1", PublicPort: 8443, MixedInboundID: 98, MixedPort: 31000, UpdatedAt: fixture.now()}
 	countries := []struct {
 		code string
@@ -88,6 +89,9 @@ func TestSubscriptionPassesFourVerifiedAliasesToTheExclusiveClient(t *testing.T)
 	want := map[int64]string{1: "主连接_日本", 2: "出口位 1_日本", 3: "出口位 2_美国", 4: "出口位 3_韩国"}
 	if !reflect.DeepEqual(fixture.xui.subscriptionDesired.Aliases, want) {
 		t.Fatalf("desired aliases = %#v, want %#v", fixture.xui.subscriptionDesired.Aliases, want)
+	}
+	if fixture.xui.subscriptionDesired.SubscriptionID != "stable-sub" {
+		t.Fatalf("persisted subscription ID was not supplied for recovery")
 	}
 }
 

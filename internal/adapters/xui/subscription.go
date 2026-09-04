@@ -71,6 +71,28 @@ func (c *Client) EnsureSubscriptionClient(ctx context.Context, desired Subscript
 	if client.email != desired.ClientEmail || client.uuid == "" || client.uuid != desired.ClientUUID {
 		return Subscription{}, &AdapterError{Code: "ownership_conflict"}
 	}
+	if client.subID == "" {
+		if desired.SubscriptionID == "" {
+			return Subscription{}, &AdapterError{Code: "subscription_incomplete"}
+		}
+		updatePath := "panel/api/clients/update/" + url.PathEscape(desired.ClientEmail)
+		if _, err := c.call(ctx, http.MethodPost, updatePath, map[string]any{
+			"id": desired.ClientUUID, "email": desired.ClientEmail, "subId": desired.SubscriptionID,
+			"flow": "xtls-rprx-vision", "enable": true,
+		}, false); err != nil {
+			return Subscription{}, err
+		}
+		client, found, err = c.getSubscriptionClient(ctx, desired.ClientEmail)
+		if err != nil {
+			return Subscription{}, err
+		}
+		if !found {
+			return Subscription{}, &AdapterError{Code: "subscription_incomplete"}
+		}
+	}
+	if desired.SubscriptionID != "" && client.subID != desired.SubscriptionID {
+		return Subscription{}, &AdapterError{Code: "ownership_conflict"}
+	}
 	if !sameInboundIDs(client.inboundIDs, allowed) {
 		attachPath := "panel/api/clients/" + url.PathEscape(desired.ClientEmail) + "/attach"
 		if _, err := c.call(ctx, http.MethodPost, attachPath, map[string]any{"inboundIds": allowed}, false); err != nil {
@@ -505,7 +527,7 @@ func parseSubscriptionClient(obj json.RawMessage) (subscriptionClient, error) {
 		return subscriptionClient{}, err
 	}
 	result.aliases = aliases
-	if result.email == "" || result.uuid == "" || result.subID == "" {
+	if result.email == "" || result.uuid == "" {
 		return subscriptionClient{}, &AdapterError{Code: "invalid_response"}
 	}
 	return result, nil
@@ -746,7 +768,8 @@ func isOwnedSubscriptionInbound(inbound Inbound) bool {
 }
 
 func validateSubscriptionDesired(desired SubscriptionDesired) error {
-	if desired.ClientEmail != managedSubscriptionEmail || strings.TrimSpace(desired.ClientUUID) == "" || len(desired.ClientUUID) > 128 || strings.ContainsAny(desired.ClientUUID, " \t\r\n") || len(desired.InboundIDs) == 0 {
+	if desired.ClientEmail != managedSubscriptionEmail || strings.TrimSpace(desired.ClientUUID) == "" || len(desired.ClientUUID) > 128 || strings.ContainsAny(desired.ClientUUID, " \t\r\n") ||
+		len(desired.SubscriptionID) > 256 || strings.ContainsAny(desired.SubscriptionID, "/\\?#\x00\r\n\t ") || len(desired.InboundIDs) == 0 {
 		return &AdapterError{Code: "invalid_request"}
 	}
 	return nil

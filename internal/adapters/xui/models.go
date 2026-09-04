@@ -112,10 +112,11 @@ type LegacyMain struct {
 // Gateway-managed subscription client. Inbound IDs are filtered against the
 // authenticated 3x-ui snapshot before any write is made.
 type SubscriptionDesired struct {
-	ClientEmail string
-	ClientUUID  string
-	InboundIDs  []int64
-	Aliases     map[int64]string
+	ClientEmail    string
+	ClientUUID     string
+	SubscriptionID string
+	InboundIDs     []int64
+	Aliases        map[int64]string
 }
 
 type Subscription struct {

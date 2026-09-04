@@ -548,6 +548,9 @@ func (s *fakeStore) SaveGatewaySubscription(_ context.Context, value store.Gatew
 	s.subscription = value
 	return nil
 }
+func (s *fakeStore) GetGatewaySubscription(context.Context) (store.GatewaySubscription, error) {
+	return s.subscription, nil
+}
 func (s *fakeStore) GetAggregateConfig(context.Context) (store.AggregateConfig, error) {
 	return s.aggregate, nil
 }

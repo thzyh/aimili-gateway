@@ -361,6 +361,18 @@ func (c *Client) RepairManagedPublic(ctx context.Context, desired DesiredGroup, 
 		if staleRaw == nil {
 			return ManagedGroup{}, &AdapterError{Code: "managed_resource_missing"}
 		}
+		staleSettings, staleSettingsOK := decodeObject(staleRaw["settings"])
+		templateSettings, templateSettingsOK := decodeObject(template["settings"])
+		if !staleSettingsOK || !templateSettingsOK {
+			return ManagedGroup{}, &AdapterError{Code: "invalid_response"}
+		}
+		for _, client := range asObjectSlice(staleSettings["clients"]) {
+			if stringValue(client["email"]) == managedSubscriptionEmail {
+				templateSettings["clients"] = append(asObjectSlice(templateSettings["clients"]), cloneObject(client))
+				break
+			}
+		}
+		template["settings"] = mustJSONString(templateSettings)
 		if err := c.updateInbound(ctx, stale.ID, template); err != nil {
 			return ManagedGroup{}, err
 		}

@@ -798,6 +798,10 @@ func TestRepairManagedPublicReclaimsStoredOwnedTCPWithXUIAutoTag(t *testing.T) {
 	if managed.VLESSInboundID != 11 || !reflect.DeepEqual(fixture.updatedInboundIDs, []int64{11}) || fixture.inbounds[0]["tag"] != "agw-jp-dc-vless" {
 		t.Fatalf("repair=%#v updates=%#v inbound=%#v", managed, fixture.updatedInboundIDs, fixture.inbounds[0])
 	}
+	repairedSettings, ok := decodeObject(fixture.inbounds[0]["settings"])
+	if !ok || len(asObjectSlice(repairedSettings["clients"])) != 2 {
+		t.Fatalf("repair did not preserve Gateway subscription client: %#v", fixture.inbounds[0]["settings"])
+	}
 	if !reflect.DeepEqual(beforeUnmanaged, fixture.inbounds[2]) {
 		t.Fatalf("repair changed unmanaged inbound: %#v", fixture.inbounds[2])
 	}

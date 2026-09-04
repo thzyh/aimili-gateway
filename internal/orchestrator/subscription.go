@@ -140,8 +140,16 @@ func (o *Orchestrator) Subscription(ctx context.Context) (SubscriptionResult, er
 	if err != nil {
 		return SubscriptionResult{}, err
 	}
+	persisted, err := persistence.GetGatewaySubscription(ctx)
+	if err != nil {
+		return SubscriptionResult{}, &Error{Code: "storage_failed"}
+	}
+	persistedID := ""
+	if persisted.ResourceName == "aimili-gateway-subscription" {
+		persistedID = persisted.SubscriptionID
+	}
 	desired := xui.SubscriptionDesired{
-		ClientEmail: "aimili-gateway-subscription", ClientUUID: string(credentials.vlessID), InboundIDs: ids, Aliases: aliases,
+		ClientEmail: "aimili-gateway-subscription", ClientUUID: string(credentials.vlessID), SubscriptionID: persistedID, InboundIDs: ids, Aliases: aliases,
 	}
 	var subscription xui.Subscription
 	if readOnly, _ := ctx.Value(subscriptionReadOnlyKey{}).(bool); readOnly {

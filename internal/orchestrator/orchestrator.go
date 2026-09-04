@@ -129,6 +129,7 @@ type legacyAggregateCleanupXUIClient interface {
 
 type subscriptionStore interface {
 	SaveGatewaySubscription(context.Context, store.GatewaySubscription) error
+	GetGatewaySubscription(context.Context) (store.GatewaySubscription, error)
 }
 
 type mainEgressStore interface {
