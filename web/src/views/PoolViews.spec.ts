@@ -384,13 +384,16 @@ it('shows the last structured refresh result, counts, and time', async () => {
 	const wrapper = mount(VpnPoolView)
 	await flushPromises()
 
-	const summary = wrapper.get('[data-refresh-summary]')
+	const summary = wrapper.get('[data-refresh-notice]')
+	expect(summary.attributes('data-notice-kind')).toBe('success')
 	expect(summary.text()).toContain('美国')
 	expect(summary.text()).toContain('成功')
 	expect(summary.text()).toContain('官方 12')
 	expect(summary.text()).toContain('可用 5')
 	expect(summary.text()).toContain('保留 4')
 	expect(summary.text()).toMatch(/11\/|11月/)
+	await summary.get('[aria-label="关闭提示"]').trigger('click')
+	expect(wrapper.find('[data-refresh-notice]').exists()).toBe(false)
 })
 
 it('does not describe a completed refresh with a failure result code as successful', async () => {
@@ -403,9 +406,31 @@ it('does not describe a completed refresh with a failure result code as successf
 	const wrapper = mount(VpnPoolView)
 	await flushPromises()
 
-	const summary = wrapper.get('[data-refresh-summary]').text()
+	const summary = wrapper.get('[data-refresh-notice]').text()
 	expect(summary).toContain('失败')
 	expect(summary).not.toContain('成功')
+})
+
+it('uses the official ISO country name when runtime metadata is stale', async () => {
+	const staleRows = [
+		{ ...rows[1], id: 'vn-slot', countryCode: 'VN', countryName: '越南' },
+		{ ...rows[2], id: 'kr-slot', countryCode: 'KR', countryName: '越南' },
+	]
+	mocks.apiFetch.mockImplementation((path: string) => {
+		if (path === '/api/v1/proxy-groups') return Promise.resolve(staleRows)
+		if (path === '/api/v1/settings/aimilivpn/countries') return Promise.resolve([
+			{ code: 'KR', name: '韩国', candidateCount: 3, observedAt: 1_700_000_000 },
+			{ code: 'VN', name: '越南', candidateCount: 2, observedAt: 1_700_000_000 },
+		])
+		if (path === '/api/v1/settings/aimilivpn/refresh') return Promise.resolve({ state: 'idle', country: '', phase: '', testedCount: 0, validCount: 0 })
+		return Promise.resolve(undefined)
+	})
+	const wrapper = mount(VpnPoolView)
+	await flushPromises()
+
+	const options = wrapper.findAll('[data-country-filter] option').map(option => option.text())
+	expect(options.filter(text => text === '越南')).toHaveLength(1)
+	expect(options.filter(text => text === '韩国')).toHaveLength(1)
 })
 
 it('polls a running country refresh and reloads the pool after completion', async () => {

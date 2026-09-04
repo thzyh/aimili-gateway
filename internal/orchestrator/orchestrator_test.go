@@ -815,6 +815,7 @@ type fakeXUI struct {
 	desired                        xui.DesiredGroup
 	updated                        []xui.DesiredGroup
 	updateNames                    []string
+	repairPublicNames              []string
 	updateErrors                   map[int]error
 	returnedPublicKey              string
 	returnedShortID                string
@@ -951,6 +952,23 @@ func (x *fakeXUI) UpdateManagedGroup(_ context.Context, desired xui.DesiredGroup
 		managed.VLESSInboundTag = x.returnedResourceName + "-vless"
 		managed.MixedInboundTag = x.returnedResourceName + "-mixed"
 		managed.OutboundTag = x.returnedResourceName + "-socks"
+	}
+	return managed, nil
+}
+
+func (x *fakeXUI) RepairManagedPublic(_ context.Context, desired xui.DesiredGroup, managed xui.ManagedGroup, _ domain.ProtocolMode) (xui.ManagedGroup, error) {
+	x.repairPublicNames = append(x.repairPublicNames, desired.ResourceName)
+	if x.returnedPublicKey != "" {
+		managed.PublicKey = x.returnedPublicKey
+	}
+	if x.returnedShortID != "" {
+		managed.ShortID = x.returnedShortID
+	}
+	if x.returnedServerName != "" {
+		managed.ServerName = x.returnedServerName
+	}
+	if x.returnedVLESSInboundID != 0 {
+		managed.VLESSInboundID = x.returnedVLESSInboundID
 	}
 	return managed, nil
 }

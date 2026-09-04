@@ -40,10 +40,14 @@ func (o *Orchestrator) RepairManaged(ctx context.Context) error {
 	if err != nil {
 		return &Error{Code: "storage_failed"}
 	}
-	return o.SetMixedPolicy(ctx, policy)
+	return o.setMixedPolicy(ctx, policy, true)
 }
 
 func (o *Orchestrator) SetMixedPolicy(ctx context.Context, requested store.MixedSourcePolicy) error {
+	return o.setMixedPolicy(ctx, requested, false)
+}
+
+func (o *Orchestrator) setMixedPolicy(ctx context.Context, requested store.MixedSourcePolicy, repairPublic bool) error {
 	ctx, mutationUnlock := o.lockMutation(ctx)
 	defer mutationUnlock()
 	desired, err := canonicalMixedPolicy(requested)
@@ -88,11 +92,22 @@ func (o *Orchestrator) SetMixedPolicy(ctx context.Context, requested store.Mixed
 			return &Error{Code: "egress_unavailable"}
 		}
 		original := group
-		group.ExitIP = slot.ExitIP
-		if slot.CheckedAt > 0 {
-			group.ExitIPCheckedAt = slot.CheckedAt
-		}
+		applySlotSnapshot(&group, slot)
 		managed := managedFromGroup(group)
+		if repairPublic {
+			persistence, ok := o.store.(protocolModeStore)
+			if !ok {
+				return &Error{Code: "not_configured"}
+			}
+			state, stateErr := persistence.GetEgressProtocolMode(ctx, group.ID)
+			if stateErr != nil || state.State != domain.ProtocolReady || !state.ActiveMode.Valid() {
+				return &Error{Code: "not_ready"}
+			}
+			managed, err = o.xui.RepairManagedPublic(ctx, o.desiredGroup(group, slot.Port, credentials, desired), managed, state.ActiveMode)
+			if err != nil {
+				return operationError(err)
+			}
+		}
 		updates = append(updates, mixedPolicyUpdate{
 			group: group, original: original, managed: managed,
 			desired:    o.desiredGroup(group, slot.Port, credentials, desired),

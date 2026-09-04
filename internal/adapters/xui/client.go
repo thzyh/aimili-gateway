@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/thzyh/aimili-gateway/internal/domain"
 	"github.com/thzyh/aimili-gateway/internal/securefile"
 )
 
@@ -242,6 +243,179 @@ func (c *Client) UpdateManagedGroup(ctx context.Context, desired DesiredGroup, m
 	managed.ShortID = shortID
 	managed.ServerName = serverName
 	managed.MLDSA65Verify = mldsa65Verify
+	return managed, nil
+}
+
+// RepairManagedPublic verifies the exact Gateway-owned public inbound and may
+// recreate a missing VLESS/TCP inbound. Other protocol modes require material
+// that must not be guessed when the public resource is absent.
+func (c *Client) RepairManagedPublic(ctx context.Context, desired DesiredGroup, managed ManagedGroup, mode domain.ProtocolMode) (ManagedGroup, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := validateDesiredGroup(desired); err != nil {
+		return ManagedGroup{}, err
+	}
+	if managed.ResourceName != desired.ResourceName || managed.VLESSInboundID <= 0 || managed.MixedInboundID <= 0 ||
+		managed.VLESSInboundTag != desired.ResourceName+"-vless" || managed.MixedInboundTag != desired.ResourceName+"-mixed" ||
+		managed.OutboundTag != desired.ResourceName+"-socks" || !mode.Valid() {
+		return ManagedGroup{}, &AdapterError{Code: "invalid_request"}
+	}
+	if err := c.authenticate(ctx); err != nil {
+		return ManagedGroup{}, err
+	}
+	snapshot, err := c.snapshot(ctx)
+	if err != nil {
+		return ManagedGroup{}, err
+	}
+	managed, err = resolveManagedMixedInboundID(snapshot.Inbounds, desired, managed)
+	if err != nil {
+		return ManagedGroup{}, err
+	}
+	if err := c.verifyCurrentMixedAccount(ctx, desired, managed); err != nil {
+		return ManagedGroup{}, err
+	}
+	if err := verifyManagedSocksOutbound(snapshot.XraySetting, managed.OutboundTag, desired.SOCKSPort); err != nil {
+		return ManagedGroup{}, err
+	}
+
+	expectedProtocol := "vless"
+	if mode == domain.ProtocolHysteria2QUICTLS {
+		expectedProtocol = "hysteria"
+	}
+	var public, stale *Inbound
+	for index := range snapshot.Inbounds {
+		inbound := &snapshot.Inbounds[index]
+		if inbound.ID == managed.VLESSInboundID && inbound.Tag != managed.VLESSInboundTag {
+			if stale != nil || mode != domain.ProtocolVLESSTCPRealityVision || inbound.Protocol != "vless" || inbound.Port != desired.VLESSPort ||
+				!strings.HasPrefix(inbound.Remark, "Aimili Gateway ") || !strings.HasPrefix(inbound.Tag, "agw-") || !strings.HasSuffix(inbound.Tag, "-vless") {
+				return ManagedGroup{}, &AdapterError{Code: "ownership_conflict"}
+			}
+			stale = inbound
+			continue
+		}
+		if inbound.Tag == managed.VLESSInboundTag {
+			if public != nil || inbound.Protocol != expectedProtocol || inbound.Port != desired.VLESSPort || !strings.HasPrefix(inbound.Remark, "Aimili Gateway ") {
+				return ManagedGroup{}, &AdapterError{Code: "ownership_conflict"}
+			}
+			public = inbound
+			continue
+		}
+		if inbound.Port == desired.VLESSPort {
+			return ManagedGroup{}, &AdapterError{Code: "port_conflict"}
+		}
+	}
+	if public != nil && stale != nil {
+		return ManagedGroup{}, &AdapterError{Code: "ownership_conflict"}
+	}
+	if public != nil {
+		managed.VLESSInboundID = public.ID
+		if mode != domain.ProtocolVLESSTCPRealityVision {
+			return managed, nil
+		}
+		publicKey, shortID, serverName, verify, materialErr := c.currentRealityMaterial(ctx, desired, managed)
+		if materialErr != nil {
+			return ManagedGroup{}, materialErr
+		}
+		managed.PublicKey, managed.ShortID, managed.ServerName, managed.MLDSA65Verify = publicKey, shortID, serverName, verify
+		return managed, nil
+	}
+	if mode != domain.ProtocolVLESSTCPRealityVision {
+		return ManagedGroup{}, &AdapterError{Code: "managed_resource_missing"}
+	}
+
+	privateKey, publicKey, err := c.newX25519(ctx)
+	if err != nil {
+		return ManagedGroup{}, err
+	}
+	shortIDBytes := make([]byte, 4)
+	if _, err := rand.Read(shortIDBytes); err != nil {
+		return ManagedGroup{}, &AdapterError{Code: "random_failed"}
+	}
+	shortID := hex.EncodeToString(shortIDBytes)
+	template := vlessInbound(desired, managed.VLESSInboundTag, privateKey, publicKey, shortID)
+	var staleRaw map[string]any
+	if stale != nil {
+		details, detailsErr := c.inboundDetails(ctx)
+		if detailsErr != nil {
+			return ManagedGroup{}, detailsErr
+		}
+		for _, detail := range details {
+			if detail.ID == stale.ID {
+				staleRaw = cloneObject(detail.Raw)
+				break
+			}
+		}
+		if staleRaw == nil {
+			return ManagedGroup{}, &AdapterError{Code: "managed_resource_missing"}
+		}
+		if err := c.updateInbound(ctx, stale.ID, template); err != nil {
+			return ManagedGroup{}, err
+		}
+	} else if err := c.addInbound(ctx, template); err != nil {
+		return ManagedGroup{}, err
+	}
+	updated, err := c.inbounds(ctx)
+	matches := make([]Inbound, 0, 1)
+	if err == nil {
+		for _, inbound := range updated {
+			if inbound.Tag == managed.VLESSInboundTag && inbound.Protocol == "vless" && inbound.Port == desired.VLESSPort && strings.HasPrefix(inbound.Remark, "Aimili Gateway ") {
+				matches = append(matches, inbound)
+			}
+		}
+	}
+	validWrite := len(matches) == 1 && (stale == nil || matches[0].ID == stale.ID)
+	if !validWrite {
+		if staleRaw != nil {
+			_ = c.updateInbound(ctx, stale.ID, staleRaw)
+		} else {
+			for _, inbound := range updated {
+				if inbound.Tag == managed.VLESSInboundTag && strings.HasPrefix(inbound.Remark, "Aimili Gateway ") {
+					_, _ = c.call(ctx, http.MethodPost, "panel/api/inbounds/del/"+formatInt64(inbound.ID), map[string]any{}, false)
+				}
+			}
+		}
+		return ManagedGroup{}, &AdapterError{Code: "write_verification_failed"}
+	}
+
+	originalSetting := cloneObject(snapshot.XraySetting)
+	setting := cloneObject(snapshot.XraySetting)
+	if stale != nil {
+		routing, _ := setting["routing"].(map[string]any)
+		if routing != nil {
+			kept := make([]any, 0)
+			for _, rule := range asObjectSlice(routing["rules"]) {
+				if !ruleContainsInbound(rule, stale.Tag) {
+					kept = append(kept, rule)
+				}
+			}
+			routing["rules"] = kept
+		}
+	}
+	setting, err = mergeManagedXray(setting, desired, managed.VLESSInboundTag, managed.MixedInboundTag)
+	if err == nil && !reflect.DeepEqual(originalSetting, setting) {
+		err = c.updateXray(ctx, setting, snapshot.OutboundTestURL)
+	}
+	if err != nil {
+		rollbackOK := true
+		if staleRaw != nil {
+			rollbackOK = c.updateInbound(ctx, stale.ID, staleRaw) == nil
+		} else {
+			_, deleteErr := c.call(ctx, http.MethodPost, "panel/api/inbounds/del/"+formatInt64(matches[0].ID), map[string]any{}, false)
+			rollbackOK = deleteErr == nil
+		}
+		if !reflect.DeepEqual(originalSetting, setting) && c.updateXray(ctx, originalSetting, snapshot.OutboundTestURL) != nil {
+			rollbackOK = false
+		}
+		if !rollbackOK {
+			return ManagedGroup{}, &AdapterError{Code: "partial_inbound_update"}
+		}
+		return ManagedGroup{}, err
+	}
+	managed.VLESSInboundID = matches[0].ID
+	managed.PublicKey = publicKey
+	managed.ShortID = shortID
+	managed.ServerName = desired.RealityServerName
+	managed.MLDSA65Verify = ""
 	return managed, nil
 }
 

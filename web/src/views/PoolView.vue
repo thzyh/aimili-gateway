@@ -30,7 +30,11 @@ let noticeSequence = 0
 const title = computed(() => props.protocol === 'vless' ? 'VPN 节点池' : 'SOCKS5H 代理池')
 const description = computed(() => props.protocol === 'vless' ? '每个逻辑出口可独立使用 TCP/Vision、XHTTP/REALITY 或 Hysteria2；mixed/SOCKS5H 始终保持不变。' : '每个在线出口对应一个支持代理 DNS 的 SOCKS5H 地址。')
 const countries = computed(() => {
-  const merged = new Map(groups.value.map(row => [row.countryCode, { code: row.countryCode, name: row.countryName }]))
+  const officialNames = new Map(candidateCountries.value.map(item => [item.code.trim().toUpperCase(), item.name.trim()]))
+  const merged = new Map(groups.value.map(row => {
+    const code = row.countryCode.trim().toUpperCase()
+    return [code, { code, name: officialNames.get(code) || row.countryName || code }]
+  }))
   return [...merged.values()].sort((a, b) => a.code.localeCompare(b.code))
 })
 const officialCountries = computed(() => candidateCountries.value.map(item => ({ code: item.code, name: item.name })).sort((a, b) => a.code.localeCompare(b.code)))
@@ -101,8 +105,8 @@ async function loadCatalog(): Promise<void> {
 async function readRefreshStatus(): Promise<void> {
   try {
     refreshState.value = await apiFetch<CountryRefreshPayload>('/api/v1/settings/aimilivpn/refresh')
+    refreshNotice.value = refreshNoticeFor(refreshState.value)
     if (refreshState.value.state === 'running') {
-      refreshNotice.value = refreshNoticeFor(refreshState.value)
       scheduleRefreshPoll()
     }
   } catch { /* 代理池仍可独立使用 */ }
@@ -282,32 +286,22 @@ async function checkRow(row: ProxyGroupPayload): Promise<void> {
   finally { busy.value = '' }
 }
 
-function refreshStateLabel(): string {
-  if (!refreshState.value || refreshState.value.state === 'idle') return ''
-  const current = refreshState.value
-  const name = refreshCountryName(current.country)
-  if (current.state === 'running') return `${name}正在刷新 · 已精验 ${current.testedCount} 个`
-  const official = current.officialCount ?? current.catalogCount ?? 0
-  const usable = current.usableCount ?? current.validCount
-  const retained = current.retainedCount ?? current.preservedCount ?? current.validCount
-  const time = formatRefreshTime(current.finishedAt)
-  if (current.state === 'completed' && (!current.resultCode || current.resultCode === 'success')) return `最后刷新：${name} · 成功 · 官方 ${official} · 可用 ${usable} · 保留 ${retained}${time ? ` · ${time}` : ''}`
-  return `最后刷新：${name} · 失败 · 官方 ${official} · 可用 ${usable} · 保留 ${retained}${time ? ` · ${time}` : ''}`
-}
-
 function refreshNoticeFor(current: CountryRefreshPayload): UiNoticeData | null {
   if (current.state === 'idle') return null
   const name = refreshCountryName(current.country)
   if (current.state === 'running') {
     return makeNotice('progress', `${name}正在刷新`, `已精验 ${current.testedCount} 个候选，当前在线代理不会中断。`)
   }
+  const official = current.officialCount ?? current.catalogCount ?? 0
+  const usable = current.usableCount ?? current.validCount
+  const retained = current.retainedCount ?? current.preservedCount ?? current.validCount
+  const time = formatRefreshTime(current.finishedAt)
+  const counts = `官方 ${official} · 可用 ${usable} · 保留 ${retained}${time ? ` · ${time}` : ''}`
   if (current.state === 'completed' && (!current.resultCode || current.resultCode === 'success')) {
-    const usable = current.usableCount ?? current.validCount
-    const retained = current.retainedCount ?? current.preservedCount ?? current.validCount
-    return makeNotice('success', `${name}刷新已完成`, `当前可用 ${usable} 个，缓存保留 ${retained} 个。`)
+    return makeNotice('success', `最后刷新：${name} · 成功`, `刷新已完成 · ${counts}`)
   }
   const code = current.resultCode || current.errorCode || 'refresh_failed'
-  return makeNotice('error', `${name}刷新失败`, messageForCode(code, '国家节点刷新失败，请稍后重试。'))
+  return makeNotice('error', `最后刷新：${name} · 失败`, `${counts}。${messageForCode(code, '国家节点刷新失败，请稍后重试。')}`)
 }
 
 function formatRefreshTime(value?: number): string {
@@ -323,7 +317,6 @@ function formatRefreshTime(value?: number): string {
       <div class="heading-actions"><button data-sync-pool class="secondary" :disabled="busy !== ''" @click="refreshPool">{{ busy === 'refresh' ? '正在同步…' : '同步代理状态' }}</button><button data-refresh-country class="secondary" :disabled="busy !== '' || !supplementCountry" @click="refreshCountry">{{ busy === 'country-refresh' ? '正在刷新…' : '补充所选国家' }}</button><button v-if="protocol === 'vless'" data-copy-subscription :disabled="busy !== '' || !subscriptionReady" @click="copySubscription">复制节点订阅</button><button data-copy-all class="secondary" :disabled="busy !== ''" @click="copyAll">复制节点列表</button><button data-export class="secondary" :disabled="busy !== ''" @click="exportRows">导出</button></div>
     </section>
     <UiNotice v-if="topNotice" :key="topNotice.id" data-top-notice :notice="topNotice" @close="topNotice=null" />
-    <p v-if="refreshStateLabel()" data-refresh-summary class="refresh-state">{{ refreshStateLabel() }}</p>
     <section class="pool-toolbar">
       <PoolFilters :countries="countries" :official-countries="officialCountries" :country="country" :supplement-country="supplementCountry" :proxy-type="proxyType" :status="status" :sort="sort" @country="country=$event" @supplement-country="supplementCountry=$event" @proxy-type="proxyType=$event" @status="status=$event" @sort="sort=$event" />
       <div data-pool-stats class="pool-stats"><span data-pool-stats-official class="pool-stat official">官方 <strong>{{ poolStats?.officialCandidateTotal ?? candidateCountries.reduce((sum,item) => sum + item.candidateCount, 0) }}</strong></span><span data-pool-stats-valid class="pool-stat valid">当前有效 <strong>{{ poolStats?.validNodeCount ?? groups.length }}</strong></span><span data-pool-stats-countries class="pool-stat countries"><strong>{{ poolStats?.validCountryCount ?? countries.length }}</strong> 国</span></div>
@@ -345,5 +338,5 @@ function formatRefreshTime(value?: number): string {
 </template>
 
 <style scoped>
-.page-heading{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin-bottom:20px}.eyebrow{margin:0 0 6px;color:var(--accent);font-size:11px;font-weight:800;letter-spacing:.14em}.page-heading h1{margin:0;font-size:28px;letter-spacing:-.035em}.page-heading p:not(.eyebrow){margin:8px 0 0;color:var(--muted-text);font-size:14px}.heading-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px}[data-top-notice],.refresh-notice,.loading{margin:0 0 14px}.loading{padding:10px 13px;border:1px solid var(--border);border-radius:9px;background:var(--panel);color:var(--muted-text);font-size:13px}.refresh-state{margin:-5px 0 14px;color:var(--muted-text);font-size:12px}.pool-toolbar{display:flex;align-items:center;gap:14px;margin-bottom:12px}.pool-stats{display:flex;align-items:center;gap:6px;margin-left:auto;flex:none;font-size:12px}.pool-stat{display:inline-flex;align-items:baseline;gap:3px;padding:5px 8px;border:1px solid var(--border);border-radius:999px;font-weight:700}.pool-stat strong{font-size:14px}.pool-stat.official{color:#788cff;background:rgba(94,112,255,.1)}.pool-stat.valid{color:#18ae70;background:rgba(24,174,112,.1)}.pool-stat.countries{color:#c27cfa;background:rgba(194,124,250,.1)}.fixed-toggle{display:flex;align-items:center;gap:6px;color:var(--muted-text);font-size:12px;white-space:nowrap}.dialog-backdrop{position:fixed;inset:0;z-index:20;display:grid;place-items:center;padding:20px;background:rgba(15,23,42,.52);backdrop-filter:blur(3px)}.replace-dialog{position:relative;width:min(460px,100%);padding:24px;border:1px solid var(--border);border-radius:14px;background:var(--panel);box-shadow:0 24px 70px rgba(15,23,42,.28)}.replace-dialog h2{margin:0 0 10px;font-size:22px}.replace-dialog>p:not(.eyebrow){color:var(--muted-text);font-size:13px;line-height:1.65}.replace-dialog label{display:grid;gap:7px;margin-top:18px;font-size:12px;font-weight:700}.replace-dialog select{height:40px;padding:0 10px;border:1px solid var(--border);border-radius:8px;background:var(--input);color:var(--text)}.replacement-notice{margin-top:14px}.dialog-close{position:absolute;top:12px;right:12px;width:32px;height:32px;padding:0;border:0;background:transparent;color:var(--muted-text);font-size:22px}.dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}@media(max-width:760px){.page-heading{align-items:flex-start;flex-direction:column}.heading-actions{width:100%;justify-content:flex-start}.heading-actions button{flex:1}.pool-toolbar{align-items:stretch;flex-direction:column}.pool-stats{align-self:flex-end;margin-left:0}}
+.page-heading{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin-bottom:20px}.eyebrow{margin:0 0 6px;color:var(--accent);font-size:11px;font-weight:800;letter-spacing:.14em}.page-heading h1{margin:0;font-size:28px;letter-spacing:-.035em}.page-heading p:not(.eyebrow){margin:8px 0 0;color:var(--muted-text);font-size:14px}.heading-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px}[data-top-notice],.refresh-notice,.loading{margin:0 0 14px}.loading{padding:10px 13px;border:1px solid var(--border);border-radius:9px;background:var(--panel);color:var(--muted-text);font-size:13px}.pool-toolbar{display:flex;align-items:center;gap:14px;margin-bottom:12px}.pool-stats{display:flex;align-items:center;gap:6px;margin-left:auto;flex:none;font-size:12px}.pool-stat{display:inline-flex;align-items:baseline;gap:3px;padding:5px 8px;border:1px solid var(--border);border-radius:999px;font-weight:700}.pool-stat strong{font-size:14px}.pool-stat.official{color:#788cff;background:rgba(94,112,255,.1)}.pool-stat.valid{color:#18ae70;background:rgba(24,174,112,.1)}.pool-stat.countries{color:#c27cfa;background:rgba(194,124,250,.1)}.fixed-toggle{display:flex;align-items:center;gap:6px;color:var(--muted-text);font-size:12px;white-space:nowrap}.dialog-backdrop{position:fixed;inset:0;z-index:20;display:grid;place-items:center;padding:20px;background:rgba(15,23,42,.52);backdrop-filter:blur(3px)}.replace-dialog{position:relative;width:min(460px,100%);padding:24px;border:1px solid var(--border);border-radius:14px;background:var(--panel);box-shadow:0 24px 70px rgba(15,23,42,.28)}.replace-dialog h2{margin:0 0 10px;font-size:22px}.replace-dialog>p:not(.eyebrow){color:var(--muted-text);font-size:13px;line-height:1.65}.replace-dialog label{display:grid;gap:7px;margin-top:18px;font-size:12px;font-weight:700}.replace-dialog select{height:40px;padding:0 10px;border:1px solid var(--border);border-radius:8px;background:var(--input);color:var(--text)}.replacement-notice{margin-top:14px}.dialog-close{position:absolute;top:12px;right:12px;width:32px;height:32px;padding:0;border:0;background:transparent;color:var(--muted-text);font-size:22px}.dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}@media(max-width:760px){.page-heading{align-items:flex-start;flex-direction:column}.heading-actions{width:100%;justify-content:flex-start}.heading-actions button{flex:1}.pool-toolbar{align-items:stretch;flex-direction:column}.pool-stats{align-self:flex-end;margin-left:0}}
 </style>

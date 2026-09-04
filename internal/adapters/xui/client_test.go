@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/thzyh/aimili-gateway/internal/domain"
 )
 
 type xuiFixture struct {
@@ -634,6 +636,119 @@ func TestUpdateManagedMixedPolicyPreservesHysteria2PublicInbound(t *testing.T) {
 	rules := asObjectSlice(fixture.updatedXray["routing"].(map[string]any)["rules"])
 	if len(rules) != 3 || len(asStringSlice(rules[0]["source"])) != 3 {
 		t.Fatalf("mixed source rules were not updated: %#v", rules)
+	}
+}
+
+func TestRepairManagedPublicRecreatesMissingTCPWithoutChangingOtherResources(t *testing.T) {
+	mixed := map[string]any{
+		"id": float64(12), "tag": "agw-jp-dc-mixed", "remark": "Aimili Gateway agw-jp-dc mixed",
+		"protocol": "mixed", "port": float64(30000),
+		"settings":       mustJSONString(map[string]any{"auth": "password", "accounts": []any{map[string]any{"user": "proxy-user", "pass": "proxy-password"}}}),
+		"streamSettings": "{}",
+	}
+	unmanaged := map[string]any{
+		"id": float64(99), "tag": "personal-inbound", "remark": "Personal inbound",
+		"protocol": "vless", "port": float64(24443), "settings": "{}", "streamSettings": "{}",
+	}
+	fixture := &xuiFixture{
+		initialXray: map[string]any{
+			"outbounds": []any{
+				map[string]any{"tag": "agw-jp-dc-socks", "protocol": "socks", "settings": map[string]any{"servers": []any{map[string]any{"address": "127.0.0.1", "port": 17930}}}},
+				map[string]any{"tag": "direct", "protocol": "freedom"},
+			},
+			"routing": map[string]any{"rules": []any{
+				map[string]any{"type": "field", "inboundTag": []any{"agw-jp-dc-vless"}, "outboundTag": "agw-jp-dc-socks"},
+				map[string]any{"type": "field", "inboundTag": []any{"personal-inbound"}, "outboundTag": "direct"},
+			}},
+		},
+		inbounds: []map[string]any{mixed, unmanaged},
+	}
+	client := newXUIFixtureClient(t, fixture)
+	desired := DesiredGroup{
+		ResourceName: "agw-jp-dc", SOCKSPort: 17930, VLESSPort: 20000, MixedPort: 30000,
+		VLESSClientID: "client-id", MixedUsername: "proxy-user", MixedPassword: "proxy-password",
+		RealityTarget: "127.0.0.1:443", RealityServerName: "proxy.example.test",
+	}
+	beforeMixed, beforeUnmanaged := cloneObject(mixed), cloneObject(unmanaged)
+	managed, err := client.RepairManagedPublic(context.Background(), desired, ManagedGroup{
+		ResourceName: "agw-jp-dc", VLESSInboundID: 11, MixedInboundID: 12,
+		VLESSInboundTag: "agw-jp-dc-vless", MixedInboundTag: "agw-jp-dc-mixed", OutboundTag: "agw-jp-dc-socks",
+	}, domain.ProtocolVLESSTCPRealityVision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if managed.VLESSInboundID == 0 || managed.VLESSInboundID == 11 || managed.PublicKey == "" || managed.ShortID == "" || managed.ServerName != "proxy.example.test" {
+		t.Fatalf("repaired public identity = %#v", managed)
+	}
+	if strings.Join(fixture.addedProtocols, ",") != "vless" || fixture.updatedXrayCalls != 1 {
+		t.Fatalf("public repair writes protocols=%#v xrayUpdates=%d", fixture.addedProtocols, fixture.updatedXrayCalls)
+	}
+	if !reflect.DeepEqual(beforeMixed, fixture.inbounds[0]) || !reflect.DeepEqual(beforeUnmanaged, fixture.inbounds[1]) {
+		t.Fatalf("public repair changed unrelated resources: %#v", fixture.inbounds)
+	}
+}
+
+func TestRepairManagedPublicRefusesToInventMissingNonTCPProtocol(t *testing.T) {
+	fixture := &xuiFixture{}
+	client := newXUIFixtureClient(t, fixture)
+	_, err := client.RepairManagedPublic(context.Background(), DesiredGroup{
+		ResourceName: "agw-jp-dc", SOCKSPort: 17930, VLESSPort: 20000, MixedPort: 30000,
+		VLESSClientID: "client-id", MixedUsername: "proxy-user", MixedPassword: "proxy-password",
+		RealityTarget: "127.0.0.1:443", RealityServerName: "proxy.example.test",
+	}, ManagedGroup{ResourceName: "agw-jp-dc", VLESSInboundID: 11, MixedInboundID: 12, VLESSInboundTag: "agw-jp-dc-vless", MixedInboundTag: "agw-jp-dc-mixed", OutboundTag: "agw-jp-dc-socks"}, domain.ProtocolHysteria2QUICTLS)
+	var adapterError *AdapterError
+	if !errors.As(err, &adapterError) || adapterError.Code != "managed_resource_missing" || len(fixture.addedProtocols) != 0 {
+		t.Fatalf("error=%v writes=%#v", err, fixture.addedProtocols)
+	}
+}
+
+func TestRepairManagedPublicReclaimsStoredOwnedTCPWithStaleTag(t *testing.T) {
+	stale := map[string]any{
+		"id": float64(11), "tag": "agw-old-vless", "remark": "Aimili Gateway agw-old VLESS",
+		"protocol": "vless", "port": float64(20000), "settings": "{}", "streamSettings": "{}", "sniffing": "{}",
+	}
+	mixed := map[string]any{
+		"id": float64(12), "tag": "agw-jp-dc-mixed", "remark": "Aimili Gateway agw-jp-dc mixed",
+		"protocol": "mixed", "port": float64(30000),
+		"settings": mustJSONString(map[string]any{"auth": "password", "accounts": []any{map[string]any{"user": "proxy-user", "pass": "proxy-password"}}}), "streamSettings": "{}",
+	}
+	unmanaged := map[string]any{"id": float64(99), "tag": "personal-inbound", "remark": "Personal", "protocol": "vless", "port": float64(24443), "settings": "{}", "streamSettings": "{}"}
+	fixture := &xuiFixture{
+		initialXray: map[string]any{
+			"outbounds": []any{
+				map[string]any{"tag": "agw-jp-dc-socks", "protocol": "socks", "settings": map[string]any{"servers": []any{map[string]any{"address": "127.0.0.1", "port": 17930}}}},
+				map[string]any{"tag": "direct", "protocol": "freedom"},
+			},
+			"routing": map[string]any{"rules": []any{
+				map[string]any{"type": "field", "inboundTag": []any{"agw-old-vless"}, "outboundTag": "agw-jp-dc-socks"},
+				map[string]any{"type": "field", "inboundTag": []any{"personal-inbound"}, "outboundTag": "direct"},
+			}},
+		},
+		inbounds: []map[string]any{stale, mixed, unmanaged},
+	}
+	client := newXUIFixtureClient(t, fixture)
+	desired := DesiredGroup{
+		ResourceName: "agw-jp-dc", SOCKSPort: 17930, VLESSPort: 20000, MixedPort: 30000,
+		VLESSClientID: "client-id", MixedUsername: "proxy-user", MixedPassword: "proxy-password",
+		RealityTarget: "127.0.0.1:443", RealityServerName: "proxy.example.test",
+	}
+	beforeUnmanaged := cloneObject(unmanaged)
+	managed, err := client.RepairManagedPublic(context.Background(), desired, ManagedGroup{
+		ResourceName: "agw-jp-dc", VLESSInboundID: 11, MixedInboundID: 12,
+		VLESSInboundTag: "agw-jp-dc-vless", MixedInboundTag: "agw-jp-dc-mixed", OutboundTag: "agw-jp-dc-socks",
+	}, domain.ProtocolVLESSTCPRealityVision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if managed.VLESSInboundID != 11 || strings.Join(fixture.addedProtocols, ",") != "" || !reflect.DeepEqual(fixture.updatedInboundIDs, []int64{11}) {
+		t.Fatalf("repair=%#v adds=%#v updates=%#v", managed, fixture.addedProtocols, fixture.updatedInboundIDs)
+	}
+	if fixture.inbounds[0]["tag"] != "agw-jp-dc-vless" || !reflect.DeepEqual(beforeUnmanaged, fixture.inbounds[2]) {
+		t.Fatalf("repaired inbounds = %#v", fixture.inbounds)
+	}
+	rules := asObjectSlice(fixture.updatedXray["routing"].(map[string]any)["rules"])
+	if !ruleContainsInbound(rules[0], "agw-jp-dc-vless") || ruleContainsInbound(rules[0], "agw-old-vless") {
+		t.Fatalf("repaired routing = %#v", rules)
 	}
 }
 

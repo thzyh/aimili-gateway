@@ -125,6 +125,7 @@ func TestSetMixedPolicyMarksRepairRequiredWhenRollbackFails(t *testing.T) {
 func TestRepairManagedReappliesCurrentPolicyOnlyToStoredGroups(t *testing.T) {
 	fixture := newFixture()
 	fixture.store.groups = mixedPolicyGroups()
+	setReadyRepairModes(fixture)
 	fixture.store.policy = store.MixedSourcePolicy{Enabled: true, CIDRs: []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24")}, ApplyStatus: store.MixedPolicyApplied, UpdatedAt: fixture.now()}
 	if err := fixture.orchestratorWithMax(t, 2).RepairManaged(context.Background()); err != nil {
 		t.Fatal(err)
@@ -144,6 +145,7 @@ func TestRepairManagedPersistsRealityMaterialReturnedByXUI(t *testing.T) {
 	fixture.store.groups = map[string]domain.ProxyGroup{
 		"agw-jp-dc-a": mixedPolicyGroup("agw-jp-dc-a", 20001, 30001, 1),
 	}
+	setReadyRepairModes(fixture)
 	fixture.store.policy = store.MixedSourcePolicy{Enabled: true, CIDRs: []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24")}, ApplyStatus: store.MixedPolicyApplied, UpdatedAt: fixture.now()}
 	fixture.xui.returnedPublicKey = "current-public-key"
 	fixture.xui.returnedShortID = "current-short-id"
@@ -167,6 +169,7 @@ func TestRepairManagedValidatesAndPersistsTheFreshAimiliExit(t *testing.T) {
 	group := mixedPolicyGroup("agw-jp-dc-a", 20001, 30001, 1)
 	group.ExitIP = "203.0.113.6"
 	fixture.store.groups = map[string]domain.ProxyGroup{group.ID: group}
+	setReadyRepairModes(fixture)
 	fixture.store.policy = store.MixedSourcePolicy{Enabled: true, CIDRs: []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24")}, ApplyStatus: store.MixedPolicyApplied, UpdatedAt: fixture.now()}
 	fixture.aimili.createdSlots = map[int]aimili.Slot{}
 	fixture.aimili.checkResults = []aimili.SlotCheck{{Number: 1, Country: "JP", ProxyType: "datacenter", Port: 17930, Status: "up", ExitIP: "203.0.113.7", EgressOK: true, CheckedAt: 1_700_000_020.5}}
@@ -182,10 +185,58 @@ func TestRepairManagedValidatesAndPersistsTheFreshAimiliExit(t *testing.T) {
 	}
 }
 
+func TestRepairManagedRestoresPublicResourceAndSynchronizesFreshSlotIdentity(t *testing.T) {
+	fixture := newFixture()
+	group := mixedPolicyGroup("agw-jp-dc-a", 20001, 30001, 1)
+	group.CandidateID = "stale-candidate"
+	group.CountryCode = "VN"
+	group.CountryName = "越南"
+	group.ProxyType = domain.ProxyTypeResidential
+	fixture.store.groups = map[string]domain.ProxyGroup{group.ID: group}
+	fixture.store.protocolModes[group.ID] = domain.EgressProtocolMode{
+		EgressID: group.ID, ActiveMode: domain.ProtocolVLESSTCPRealityVision,
+		DesiredMode: domain.ProtocolVLESSTCPRealityVision, State: domain.ProtocolReady,
+		Version: 1, UpdatedAt: fixture.now(),
+	}
+	fixture.store.policy = store.MixedSourcePolicy{Enabled: false, ApplyStatus: store.MixedPolicyApplied, UpdatedAt: fixture.now()}
+	fixture.aimili.createdSlots = map[int]aimili.Slot{}
+	fixture.aimili.checkResults = []aimili.SlotCheck{{
+		NodeID: "fresh-candidate", Country: "KR", CountryName: "韩国", ProxyType: "datacenter",
+		Port: 17931, Status: "up", ExitIP: "203.0.113.9", EgressOK: true, CheckedAt: 1_700_000_030.5,
+	}}
+	fixture.xui.returnedPublicKey = "fresh-public-key"
+	fixture.xui.returnedShortID = "fresh-short-id"
+	fixture.xui.returnedServerName = "proxy.example.test"
+	fixture.xui.returnedVLESSInboundID = 51
+
+	if err := fixture.orchestrator(t).RepairManaged(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !equalStrings(fixture.xui.repairPublicNames, []string{group.ResourceName}) {
+		t.Fatalf("public repairs = %#v", fixture.xui.repairPublicNames)
+	}
+	stored := fixture.store.groups[group.ID]
+	if stored.CandidateID != "fresh-candidate" || stored.CountryCode != "KR" || stored.CountryName != "韩国" ||
+		stored.ProxyType != domain.ProxyTypeDatacenter || stored.ExitIP != "203.0.113.9" || stored.PublicInboundID != 51 ||
+		stored.RealityPublicKey != "fresh-public-key" || stored.RealityShortID != "fresh-short-id" {
+		t.Fatalf("synchronized group = %#v", stored)
+	}
+}
+
 func mixedPolicyGroups() map[string]domain.ProxyGroup {
 	return map[string]domain.ProxyGroup{
 		"agw-us-res-b": mixedPolicyGroup("agw-us-res-b", 20002, 30002, 2),
 		"agw-jp-dc-a":  mixedPolicyGroup("agw-jp-dc-a", 20001, 30001, 1),
+	}
+}
+
+func setReadyRepairModes(fixture *fixture) {
+	for id := range fixture.store.groups {
+		fixture.store.protocolModes[id] = domain.EgressProtocolMode{
+			EgressID: id, ActiveMode: domain.ProtocolVLESSTCPRealityVision,
+			DesiredMode: domain.ProtocolVLESSTCPRealityVision, State: domain.ProtocolReady,
+			Version: 1, UpdatedAt: fixture.now(),
+		}
 	}
 }
 

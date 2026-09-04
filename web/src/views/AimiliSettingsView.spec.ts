@@ -48,3 +48,23 @@ it('opens the original AimiliVPN backend through one fixed POST helper and does 
   expect(mocks.openBackend).toHaveBeenCalledWith('/api/v1/backends/aimilivpn/login')
   expect(wrapper.text()).toContain('手动登录')
 })
+
+it('shows a closable AimiliVPN operation error notice', async () => {
+  mocks.apiFetch.mockImplementation((path: string, init?: RequestInit) => {
+    if (path === '/api/v1/settings/aimilivpn') return Promise.resolve({ candidateCount: 18, residentialCount: 7, datacenterCount: 11, managedSlotCount: 3 })
+    if (path === '/api/v1/settings/aimilivpn/refresh') return Promise.resolve({ state: 'idle', country: '', phase: '', testedCount: 0, validCount: 0 })
+    if (path === '/api/v1/settings/aimilivpn/check' && init?.method === 'POST') return Promise.reject(new Error('internal_failure'))
+    return Promise.resolve(undefined)
+  })
+  const wrapper = mount(AimiliSettingsView)
+  await flushPromises()
+  await wrapper.get('[data-check-aimili]').trigger('click')
+  await flushPromises()
+
+  const notice = wrapper.get('[data-aimili-notice]')
+  expect(notice.attributes('data-notice-kind')).toBe('error')
+  expect(notice.text()).toContain('AimiliVPN 同步失败')
+  expect(notice.text()).not.toContain('internal_failure')
+  await notice.get('[aria-label="关闭提示"]').trigger('click')
+  expect(wrapper.find('[data-aimili-notice]').exists()).toBe(false)
+})
