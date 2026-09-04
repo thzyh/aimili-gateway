@@ -286,8 +286,21 @@ func (c *Client) RepairManagedPublic(ctx context.Context, desired DesiredGroup, 
 	for index := range snapshot.Inbounds {
 		inbound := &snapshot.Inbounds[index]
 		if inbound.ID == managed.VLESSInboundID && inbound.Tag != managed.VLESSInboundTag {
+			storedOwned := strings.HasPrefix(inbound.Tag, "agw-") && strings.HasSuffix(inbound.Tag, "-vless")
+			if !storedOwned && inbound.Tag == "in-"+strconv.Itoa(desired.VLESSPort)+"-tcp" && inbound.Remark == "Aimili Gateway "+desired.ResourceName+" VLESS" {
+				details, detailsErr := c.inboundDetails(ctx)
+				if detailsErr != nil {
+					return ManagedGroup{}, detailsErr
+				}
+				for _, detail := range details {
+					if detail.ID == inbound.ID {
+						storedOwned = xuiAutoTaggedTCPBelongsToGateway(detail, desired)
+						break
+					}
+				}
+			}
 			if stale != nil || mode != domain.ProtocolVLESSTCPRealityVision || inbound.Protocol != "vless" || inbound.Port != desired.VLESSPort ||
-				!strings.HasPrefix(inbound.Remark, "Aimili Gateway ") || !strings.HasPrefix(inbound.Tag, "agw-") || !strings.HasSuffix(inbound.Tag, "-vless") {
+				!strings.HasPrefix(inbound.Remark, "Aimili Gateway ") || !storedOwned {
 				return ManagedGroup{}, &AdapterError{Code: "ownership_conflict"}
 			}
 			stale = inbound
@@ -417,6 +430,45 @@ func (c *Client) RepairManagedPublic(ctx context.Context, desired DesiredGroup, 
 	managed.ServerName = desired.RealityServerName
 	managed.MLDSA65Verify = ""
 	return managed, nil
+}
+
+func xuiAutoTaggedTCPBelongsToGateway(inbound inboundDetail, desired DesiredGroup) bool {
+	if inbound.Tag != "in-"+strconv.Itoa(desired.VLESSPort)+"-tcp" || inbound.Remark != "Aimili Gateway "+desired.ResourceName+" VLESS" ||
+		inbound.Protocol != "vless" || inbound.Port != desired.VLESSPort {
+		return false
+	}
+	settings, ok := decodeObject(inbound.Settings)
+	if !ok {
+		return false
+	}
+	clients := asObjectSlice(settings["clients"])
+	if len(clients) < 1 || len(clients) > 2 {
+		return false
+	}
+	expectedManagedEmail := managedClientEmail(desired.ResourceName)
+	foundManaged := false
+	foundSubscription := false
+	for _, client := range clients {
+		if stringValue(client["id"]) != desired.VLESSClientID || stringValue(client["flow"]) != "xtls-rprx-vision" {
+			return false
+		}
+		switch stringValue(client["email"]) {
+		case expectedManagedEmail:
+			if foundManaged {
+				return false
+			}
+			foundManaged = true
+		case "aimili-gateway-subscription":
+			if foundSubscription {
+				return false
+			}
+			foundSubscription = true
+		default:
+			return false
+		}
+	}
+	stream, ok := decodeObject(inbound.StreamSettings)
+	return ok && foundManaged && stringValue(stream["network"]) == "tcp" && stringValue(stream["security"]) == "reality"
 }
 
 // UpdateManagedMixedPolicy changes only the mixed inbound routing policy. It

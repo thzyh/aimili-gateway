@@ -752,6 +752,72 @@ func TestRepairManagedPublicReclaimsStoredOwnedTCPWithStaleTag(t *testing.T) {
 	}
 }
 
+func TestRepairManagedPublicReclaimsStoredOwnedTCPWithXUIAutoTag(t *testing.T) {
+	stale := map[string]any{
+		"id": float64(11), "tag": "in-20000-tcp", "remark": "Aimili Gateway agw-jp-dc VLESS",
+		"protocol": "vless", "port": float64(20000),
+		"settings": mustJSONString(map[string]any{"clients": []any{
+			map[string]any{"id": "client-id", "email": "aimili-gateway-jp-dc", "flow": "xtls-rprx-vision", "enable": true},
+			map[string]any{"id": "client-id", "email": "aimili-gateway-subscription", "flow": "xtls-rprx-vision", "enable": true},
+		}}),
+		"streamSettings": mustJSONString(map[string]any{"network": "tcp", "security": "reality"}), "sniffing": "{}",
+	}
+	mixed := map[string]any{
+		"id": float64(12), "tag": "agw-jp-dc-mixed", "remark": "Aimili Gateway agw-jp-dc mixed",
+		"protocol": "mixed", "port": float64(30000),
+		"settings": mustJSONString(map[string]any{"auth": "password", "accounts": []any{map[string]any{"user": "proxy-user", "pass": "proxy-password"}}}), "streamSettings": "{}",
+	}
+	unmanaged := map[string]any{"id": float64(99), "tag": "personal-inbound", "remark": "Personal", "protocol": "vless", "port": float64(24443), "settings": "{}", "streamSettings": "{}"}
+	fixture := &xuiFixture{
+		initialXray: map[string]any{
+			"outbounds": []any{
+				map[string]any{"tag": "agw-jp-dc-socks", "protocol": "socks", "settings": map[string]any{"servers": []any{map[string]any{"address": "127.0.0.1", "port": 17930}}}},
+				map[string]any{"tag": "direct", "protocol": "freedom"},
+			},
+			"routing": map[string]any{"rules": []any{
+				map[string]any{"type": "field", "inboundTag": []any{"in-20000-tcp"}, "outboundTag": "agw-jp-dc-socks"},
+				map[string]any{"type": "field", "inboundTag": []any{"personal-inbound"}, "outboundTag": "direct"},
+			}},
+		},
+		inbounds: []map[string]any{stale, mixed, unmanaged},
+	}
+	client := newXUIFixtureClient(t, fixture)
+	desired := DesiredGroup{
+		ResourceName: "agw-jp-dc", SOCKSPort: 17930, VLESSPort: 20000, MixedPort: 30000,
+		VLESSClientID: "client-id", MixedUsername: "proxy-user", MixedPassword: "proxy-password",
+		RealityTarget: "127.0.0.1:443", RealityServerName: "proxy.example.test",
+	}
+	beforeUnmanaged := cloneObject(unmanaged)
+	managed, err := client.RepairManagedPublic(context.Background(), desired, ManagedGroup{
+		ResourceName: "agw-jp-dc", VLESSInboundID: 11, MixedInboundID: 12,
+		VLESSInboundTag: "agw-jp-dc-vless", MixedInboundTag: "agw-jp-dc-mixed", OutboundTag: "agw-jp-dc-socks",
+	}, domain.ProtocolVLESSTCPRealityVision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if managed.VLESSInboundID != 11 || !reflect.DeepEqual(fixture.updatedInboundIDs, []int64{11}) || fixture.inbounds[0]["tag"] != "agw-jp-dc-vless" {
+		t.Fatalf("repair=%#v updates=%#v inbound=%#v", managed, fixture.updatedInboundIDs, fixture.inbounds[0])
+	}
+	if !reflect.DeepEqual(beforeUnmanaged, fixture.inbounds[2]) {
+		t.Fatalf("repair changed unmanaged inbound: %#v", fixture.inbounds[2])
+	}
+}
+
+func TestXUIAutoTaggedTCPBelongsToGatewayRejectsForeignClient(t *testing.T) {
+	detail := inboundDetail{
+		ID: 11, Tag: "in-20000-tcp", Remark: "Aimili Gateway agw-jp-dc VLESS", Protocol: "vless", Port: 20000,
+		Settings: mustJSONString(map[string]any{"clients": []any{
+			map[string]any{"id": "client-id", "email": "aimili-gateway-jp-dc", "flow": "xtls-rprx-vision"},
+			map[string]any{"id": "foreign-id", "email": "personal-client", "flow": "xtls-rprx-vision"},
+		}}),
+		StreamSettings: mustJSONString(map[string]any{"network": "tcp", "security": "reality"}),
+	}
+	desired := DesiredGroup{ResourceName: "agw-jp-dc", VLESSPort: 20000, VLESSClientID: "client-id"}
+	if xuiAutoTaggedTCPBelongsToGateway(detail, desired) {
+		t.Fatal("foreign client was accepted as Gateway ownership proof")
+	}
+}
+
 func TestUpdateLegacyMainMixedPolicyPreservesXHTTPPublicInbound(t *testing.T) {
 	public := map[string]any{
 		"id": float64(1), "tag": "aimili-reality", "remark": "Aimili Reality",
