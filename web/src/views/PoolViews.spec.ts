@@ -34,6 +34,7 @@ const rows = [
 ]
 
 beforeEach(() => {
+  localStorage.clear()
   mocks.apiFetch.mockReset()
   mocks.apiDownloadText.mockReset()
   mocks.clipboard.mockReset()
@@ -394,6 +395,31 @@ it('shows the last structured refresh result, counts, and time', async () => {
 	expect(summary.text()).toMatch(/11\/|11月/)
 	await summary.get('[aria-label="关闭提示"]').trigger('click')
 	expect(wrapper.find('[data-refresh-notice]').exists()).toBe(false)
+})
+
+it('keeps the same refresh result dismissed after remount but shows a newer result', async () => {
+	let finishedAt = 1_700_000_000
+	mocks.apiFetch.mockImplementation((path: string) => {
+		if (path === '/api/v1/proxy-groups') return Promise.resolve(rows)
+		if (path === '/api/v1/settings/aimilivpn/countries') return Promise.resolve([{ code: 'US', name: '美国', candidateCount: 4, observedAt: 1_700_000_000 }])
+		if (path === '/api/v1/settings/aimilivpn/refresh') return Promise.resolve({ state: 'completed', country: 'US', phase: '', resultCode: 'success', officialCount: 12, usableCount: 5, retainedCount: 4, testedCount: 6, validCount: 5, startedAt: 1_699_999_900, finishedAt })
+		return Promise.resolve(undefined)
+	})
+
+	const initial = mount(VpnPoolView)
+	await flushPromises()
+	await initial.get('[data-refresh-notice] [aria-label="关闭提示"]').trigger('click')
+	initial.unmount()
+
+	const sameResult = mount(VpnPoolView)
+	await flushPromises()
+	expect(sameResult.find('[data-refresh-notice]').exists()).toBe(false)
+	sameResult.unmount()
+
+	finishedAt += 1
+	const newerResult = mount(VpnPoolView)
+	await flushPromises()
+	expect(newerResult.get('[data-refresh-notice]').text()).toContain('最后刷新：美国 · 成功')
 })
 
 it('does not describe a completed refresh with a failure result code as successful', async () => {

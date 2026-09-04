@@ -24,8 +24,11 @@ const refreshNotice = ref<UiNoticeData | null>(null)
 const replacementNotice = ref<UiNoticeData | null>(null)
 const replacementCandidate = ref<ProxyGroupPayload | null>(null)
 const replacementTarget = ref('')
+const refreshNoticeFingerprint = ref('')
 let refreshTimer: ReturnType<typeof setTimeout> | undefined
 let noticeSequence = 0
+
+const dismissedRefreshStorageKey = 'aimili-gateway:pool-refresh-notice-dismissed:v1'
 
 const title = computed(() => props.protocol === 'vless' ? 'VPN 节点池' : 'SOCKS5H 代理池')
 const description = computed(() => props.protocol === 'vless' ? '每个逻辑出口可独立使用 TCP/Vision、XHTTP/REALITY 或 Hysteria2；mixed/SOCKS5H 始终保持不变。' : '每个在线出口对应一个支持代理 DNS 的 SOCKS5H 地址。')
@@ -105,7 +108,7 @@ async function loadCatalog(): Promise<void> {
 async function readRefreshStatus(): Promise<void> {
   try {
     refreshState.value = await apiFetch<CountryRefreshPayload>('/api/v1/settings/aimilivpn/refresh')
-    refreshNotice.value = refreshNoticeFor(refreshState.value)
+    showRefreshNotice(refreshState.value)
     if (refreshState.value.state === 'running') {
       scheduleRefreshPoll()
     }
@@ -122,7 +125,7 @@ async function pollRefreshStatus(): Promise<void> {
   try {
     const current = await apiFetch<CountryRefreshPayload>('/api/v1/settings/aimilivpn/refresh')
     refreshState.value = current
-    refreshNotice.value = refreshNoticeFor(current)
+    showRefreshNotice(current)
     if (current.state === 'running') {
       scheduleRefreshPoll()
     } else if (current.state === 'completed') {
@@ -143,19 +146,21 @@ async function refreshPool(): Promise<void> {
 
 async function refreshCountry(): Promise<void> {
   if (!supplementCountry.value) {
+    refreshNoticeFingerprint.value = ''
     refreshNotice.value = makeNotice('info', '请选择国家', '请先选择要刷新的国家。')
     return
   }
   const displayName = refreshCountryName()
   busy.value = 'country-refresh'
+  refreshNoticeFingerprint.value = ''
   refreshNotice.value = makeNotice('progress', `${displayName}刷新已开始`, '当前在线代理不会中断。')
   try {
     refreshState.value = await apiFetch<CountryRefreshPayload>('/api/v1/settings/aimilivpn/refresh', {
       method: 'POST', headers: idempotencyHeaders(), body: JSON.stringify({ country: supplementCountry.value }),
     })
-    refreshNotice.value = refreshNoticeFor(refreshState.value)
+    showRefreshNotice(refreshState.value)
     if (refreshState.value.state === 'running') scheduleRefreshPoll()
-  } catch (error) { refreshNotice.value = makeNotice('error', `${displayName}刷新失败`, localizedError(error, '国家节点刷新失败，请稍后重试。')) }
+  } catch (error) { refreshNoticeFingerprint.value = ''; refreshNotice.value = makeNotice('error', `${displayName}刷新失败`, localizedError(error, '国家节点刷新失败，请稍后重试。')) }
   finally { busy.value = '' }
 }
 
@@ -304,6 +309,33 @@ function refreshNoticeFor(current: CountryRefreshPayload): UiNoticeData | null {
   return makeNotice('error', `最后刷新：${name} · 失败`, `${counts}。${messageForCode(code, '国家节点刷新失败，请稍后重试。')}`)
 }
 
+function refreshResultFingerprint(current: CountryRefreshPayload): string {
+  if (current.state === 'idle' || current.state === 'running') return ''
+  const timestamp = current.finishedAt || current.startedAt || 0
+  if (!timestamp) return ''
+  return JSON.stringify([current.state, current.country, current.resultCode || current.errorCode || '', timestamp])
+}
+
+function showRefreshNotice(current: CountryRefreshPayload): void {
+  const fingerprint = refreshResultFingerprint(current)
+  refreshNoticeFingerprint.value = fingerprint
+  try {
+    if (fingerprint && localStorage.getItem(dismissedRefreshStorageKey) === fingerprint) {
+      refreshNotice.value = null
+      return
+    }
+  } catch { /* 浏览器禁用存储时仍正常显示提示 */ }
+  refreshNotice.value = refreshNoticeFor(current)
+}
+
+function dismissRefreshNotice(): void {
+  const fingerprint = refreshNoticeFingerprint.value
+  try {
+    if (fingerprint) localStorage.setItem(dismissedRefreshStorageKey, fingerprint)
+  } catch { /* 浏览器禁用存储时仅关闭当前页面提示 */ }
+  refreshNotice.value = null
+}
+
 function formatRefreshTime(value?: number): string {
   if (!value || value < 0) return ''
   return new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(new Date(value * 1000))
@@ -321,7 +353,7 @@ function formatRefreshTime(value?: number): string {
       <PoolFilters :countries="countries" :official-countries="officialCountries" :country="country" :supplement-country="supplementCountry" :proxy-type="proxyType" :status="status" :sort="sort" @country="country=$event" @supplement-country="supplementCountry=$event" @proxy-type="proxyType=$event" @status="status=$event" @sort="sort=$event" />
       <div data-pool-stats class="pool-stats"><span data-pool-stats-official class="pool-stat official">官方 <strong>{{ poolStats?.officialCandidateTotal ?? candidateCountries.reduce((sum,item) => sum + item.candidateCount, 0) }}</strong></span><span data-pool-stats-valid class="pool-stat valid">当前有效 <strong>{{ poolStats?.validNodeCount ?? groups.length }}</strong></span><span data-pool-stats-countries class="pool-stat countries"><strong>{{ poolStats?.validCountryCount ?? countries.length }}</strong> 国</span></div>
     </section>
-    <UiNotice v-if="refreshNotice" :key="refreshNotice.id" data-refresh-notice class="refresh-notice" :notice="refreshNotice" @close="refreshNotice=null" />
+    <UiNotice v-if="refreshNotice" :key="refreshNotice.id" data-refresh-notice class="refresh-notice" :notice="refreshNotice" @close="dismissRefreshNotice" />
     <div v-if="loading" class="loading">正在读取代理池…</div>
     <PoolTable v-else :rows="rows" :protocol="protocol" :busy="busy" @copy="copyAddress" @replace="openReplacement" @check="checkRow" @protocol="switchProtocol" />
     <div v-if="replacementCandidate" class="dialog-backdrop" @click.self="closeReplacement">
