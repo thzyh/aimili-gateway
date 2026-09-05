@@ -1,11 +1,12 @@
 package gatewayupdate
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -216,7 +217,7 @@ func gatewayFixture(t *testing.T, impactClass string) (Config, *fakeRunner) {
 		}
 	}
 	publicKeyFile := filepath.Join(root, "release.pub")
-	if err := os.WriteFile(publicKeyFile, []byte(base64.StdEncoding.EncodeToString(publicKey)), 0o600); err != nil {
+	if err := os.WriteFile(publicKeyFile, []byte(hex.EncodeToString(publicKey)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	binaryPath := filepath.Join(root, "bin", "aimili-gateway")
@@ -243,6 +244,21 @@ func gatewayFixture(t *testing.T, impactClass string) (Config, *fakeRunner) {
 		ShadowCheck: func(context.Context, string, releaseverify.GatewayManifest) error { return nil },
 		Now:         func() time.Time { return time.Date(2026, 9, 5, 0, 0, 0, 0, time.UTC) },
 	}, runner
+}
+
+func TestReadPublicKeyAcceptsLowercaseHexKeygenFormat(t *testing.T) {
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	filename := filepath.Join(t.TempDir(), "release.pub")
+	if err := os.WriteFile(filename, []byte(hex.EncodeToString(publicKey)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	actual, err := readPublicKey(filename)
+	if err != nil || !bytes.Equal(actual, publicKey) {
+		t.Fatalf("key=%x err=%v", actual, err)
+	}
 }
 
 func fileDigests(t *testing.T, names ...string) [3][32]byte {

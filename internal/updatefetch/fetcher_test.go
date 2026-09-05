@@ -3,6 +3,9 @@ package updatefetch
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"io"
 	"net/http"
@@ -138,5 +141,20 @@ func TestErrorCodeUnwrapsFetcherErrors(t *testing.T) {
 	err := &codedError{code: "fixture", err: errors.New("cause")}
 	if ErrorCode(err) != "fixture" || !errors.Is(err, errors.Unwrap(err)) {
 		t.Fatalf("coded error = %v", err)
+	}
+}
+
+func TestReadPublicKeyAcceptsLowercaseHexKeygenFormat(t *testing.T) {
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	filename := filepath.Join(t.TempDir(), "release.pub")
+	if err := os.WriteFile(filename, []byte(hex.EncodeToString(publicKey)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	actual, err := readPublicKey(filename)
+	if err != nil || !bytes.Equal(actual, publicKey) {
+		t.Fatalf("key=%x err=%v", actual, err)
 	}
 }

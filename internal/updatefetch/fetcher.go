@@ -4,7 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/tls"
-	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -250,7 +250,7 @@ func readPublicKey(filename string) (ed25519.PublicKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(body)))
+	raw, err := hex.DecodeString(strings.TrimSpace(string(body)))
 	if err != nil || len(raw) != ed25519.PublicKeySize {
 		return nil, errors.New("public key is invalid")
 	}

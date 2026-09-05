@@ -4,10 +4,15 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
+
+	"github.com/thzyh/aimili-gateway/internal/releaseverify"
 )
 
 func TestBuildUIBundleIsDeterministic(t *testing.T) {
@@ -86,4 +91,120 @@ func TestRunKeygenCreatesMatchingKeysWithoutOverwrite(t *testing.T) {
 	if code := run([]string{"keygen", "--private", privatePath, "--public", publicPath}, &bytes.Buffer{}, &bytes.Buffer{}); code == 0 {
 		t.Fatal("keygen overwrote an existing key pair")
 	}
+}
+
+func TestRunGatewayWritesVerifiableLinuxAMD64ReleaseAssets(t *testing.T) {
+	directory := t.TempDir()
+	binary := filepath.Join(directory, "gateway-input")
+	if err := os.WriteFile(binary, []byte("gateway binary"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privatePath := filepath.Join(directory, "signing.key")
+	if err := os.WriteFile(privatePath, []byte(hex.EncodeToString(privateKey)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output := filepath.Join(directory, "release")
+	var stdout, stderr bytes.Buffer
+	code := run([]string{
+		"gateway", "--binary", binary, "--private-key", privatePath, "--out", output,
+		"--version", "v1.2.3", "--commit", "abc1234", "--built-at", "2026-09-05T08:00:00+08:00",
+		"--min-database-schema", "11", "--max-database-schema", "13",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("gateway code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	entries, err := os.ReadDir(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	if want := []string{"aimili-gateway", "manifest.json", "manifest.sig"}; !reflect.DeepEqual(names, want) {
+		t.Fatalf("release assets = %q, want %q", names, want)
+	}
+	manifestBody := mustRead(t, filepath.Join(output, "manifest.json"))
+	signature := mustRead(t, filepath.Join(output, "manifest.sig"))
+	releasedBinary := mustRead(t, filepath.Join(output, "aimili-gateway"))
+	manifest, err := releaseverify.VerifyGateway(manifestBody, signature, releasedBinary, privateKey.Public().(ed25519.PublicKey), "v1", "linux-amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256([]byte("gateway binary"))
+	if manifest.SchemaVersion != 1 || manifest.Kind != "gateway" || manifest.Platform != "linux-amd64" || manifest.APIVersion != "v1" ||
+		manifest.ImpactClass != "control-plane-only" || manifest.Binary.Path != "aimili-gateway" || manifest.Binary.SHA256 != hex.EncodeToString(digest[:]) ||
+		manifest.Binary.Bytes != int64(len("gateway binary")) || manifest.Version != "v1.2.3" || manifest.Commit != "abc1234" ||
+		manifest.BuiltAt != "2026-09-05T00:00:00Z" || manifest.MinDatabaseSchema != 11 || manifest.MaxDatabaseSchema != 13 {
+		encoded, _ := json.Marshal(manifest)
+		t.Fatalf("gateway manifest = %s", encoded)
+	}
+}
+
+func TestRunGatewayRejectsInvalidMetadataAndUnsafePaths(t *testing.T) {
+	directory := t.TempDir()
+	binary := filepath.Join(directory, "gateway-input")
+	if err := os.WriteFile(binary, []byte("gateway binary"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privatePath := filepath.Join(directory, "signing.key")
+	if err := os.WriteFile(privatePath, []byte(hex.EncodeToString(privateKey)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	base := []string{"gateway", "--binary", binary, "--private-key", privatePath, "--out", filepath.Join(directory, "release"), "--version", "v1.2.3", "--commit", "abc1234", "--built-at", "2026-09-05T00:00:00Z", "--min-database-schema", "11", "--max-database-schema", "13"}
+	for name, args := range map[string][]string{
+		"version":         replaceGatewayArgument(base, "--version", "1.2.3"),
+		"build time":      replaceGatewayArgument(base, "--built-at", "not-a-time"),
+		"schema range":    replaceGatewayArgument(base, "--max-database-schema", "10"),
+		"same key binary": replaceGatewayArgument(base, "--binary", privatePath),
+		"key in output":   replaceGatewayArgument(base, "--private-key", filepath.Join(directory, "release", "signing.key")),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if code := run(args, &bytes.Buffer{}, &bytes.Buffer{}); code == 0 {
+				t.Fatalf("code=%d", code)
+			}
+		})
+	}
+	output := filepath.Join(directory, "occupied")
+	if err := os.Mkdir(output, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(output, "existing"), []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	args := replaceGatewayArgument(base, "--out", output)
+	if code := run(args, &bytes.Buffer{}, &bytes.Buffer{}); code != 2 {
+		t.Fatalf("occupied output code=%d", code)
+	}
+	if got := string(mustRead(t, filepath.Join(output, "existing"))); got != "keep" {
+		t.Fatalf("existing output overwritten: %q", got)
+	}
+}
+
+func replaceGatewayArgument(args []string, flag, value string) []string {
+	result := append([]string(nil), args...)
+	for index := range result[:len(result)-1] {
+		if result[index] == flag {
+			result[index+1] = value
+			return result
+		}
+	}
+	panic("missing gateway flag")
+}
+
+func mustRead(t *testing.T, filename string) []byte {
+	t.Helper()
+	body, err := os.ReadFile(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
 }
