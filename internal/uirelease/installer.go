@@ -2,6 +2,7 @@ package uirelease
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/ed25519"
@@ -239,7 +240,7 @@ func extractArchive(archive []byte, destination string, files []releaseverify.Fi
 	for _, file := range files {
 		expected[file.Path] = file
 	}
-	gzipReader, err := gzip.NewReader(bytesReader(archive))
+	gzipReader, err := gzip.NewReader(bytes.NewReader(archive))
 	if err != nil {
 		return err
 	}
@@ -286,8 +287,6 @@ func extractArchive(archive []byte, destination string, files []releaseverify.Fi
 	}
 	return nil
 }
-
-func bytesReader(value []byte) *strings.Reader { return strings.NewReader(string(value)) }
 
 func restorePointer(pointers PointerStore, root, name, version string) {
 	if version == "" {
