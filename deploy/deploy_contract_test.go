@@ -230,6 +230,8 @@ func TestExampleConfigUsesOnlyLoopbackAndPlaceholders(t *testing.T) {
 		ProtocolResultDir      string   `json:"protocolResultDir"`
 		ProtocolTimeoutSeconds int      `json:"protocolTimeoutSeconds"`
 		ExternalUIRoot         string   `json:"externalUiRoot"`
+		UpdateRequestDir       string   `json:"updateRequestDir"`
+		UpdateResultDir        string   `json:"updateResultDir"`
 		MaxProxyGroups         int      `json:"maxProxyGroups"`
 		MixedSourceCIDRs       []string `json:"mixedSourceCidrs"`
 	}
@@ -253,6 +255,9 @@ func TestExampleConfigUsesOnlyLoopbackAndPlaceholders(t *testing.T) {
 	}
 	if config.ExternalUIRoot != "/var/lib/aimili-gateway/ui" {
 		t.Fatal("example configuration is missing the external UI root")
+	}
+	if config.UpdateRequestDir != "/var/lib/aimili-gateway/update-spool/requests" || config.UpdateResultDir != "/var/lib/aimili-gateway/update-spool/results" {
+		t.Fatal("example configuration is missing the update spool")
 	}
 }
 

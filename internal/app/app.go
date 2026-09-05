@@ -120,6 +120,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	dependencies.ProxyManager = runtime.proxy
 	dependencies.Maintenance = runtime.maintenance
 	dependencies.BackendLogin = runtime.backendLogin
+	dependencies.Updates = newUpdateManager(cfg.UpdateRequestDir, cfg.UpdateResultDir, cfg.ExternalUIRoot)
 	if cfg.PublicOrigin == "" {
 		dependencies.TestOrigin = "http://" + cfg.ListenAddress
 	}

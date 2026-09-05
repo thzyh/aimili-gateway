@@ -230,6 +230,18 @@ func TestLoadAppliesDocumentedEnvironmentOverrides(t *testing.T) {
 	}
 }
 
+func TestValidateRequiresSiblingUpdateSpoolDirectories(t *testing.T) {
+	cfg := validProductionConfig()
+	cfg.UpdateRequestDir = filepath.FromSlash("/var/lib/aimili-gateway/update-spool/requests")
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("partial update spool accepted")
+	}
+	cfg.UpdateResultDir = filepath.FromSlash("/var/lib/aimili-gateway/update-spool/results")
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid update spool rejected: %v", err)
+	}
+}
+
 func validProductionConfig() Config {
 	return Config{
 		ListenAddress:          "127.0.0.1:9080",
@@ -265,6 +277,8 @@ func clearConfigEnvironment(t *testing.T) {
 		"GATEWAY_AIMILI_BACKEND_URL",
 		"GATEWAY_PROTOCOL_REQUEST_DIR",
 		"GATEWAY_PROTOCOL_RESULT_DIR",
+		"GATEWAY_UPDATE_REQUEST_DIR",
+		"GATEWAY_UPDATE_RESULT_DIR",
 	} {
 		t.Setenv(name, "")
 	}

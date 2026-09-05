@@ -31,6 +31,7 @@ type Dependencies struct {
 	ProxyManager  ProxyManager
 	Maintenance   MaintenanceService
 	BackendLogin  BackendLoginService
+	Updates       UpdateManager
 }
 
 type MaintenanceService interface {
@@ -81,6 +82,7 @@ type server struct {
 	proxyManager        ProxyManager
 	maintenance         MaintenanceService
 	backendLogin        BackendLoginService
+	updates             UpdateManager
 	idempotencyMu       sync.Mutex
 	idempotency         map[string]cachedResponse
 	idempotencyRequests map[string]string
@@ -116,6 +118,7 @@ func NewServer(dependencies Dependencies) http.Handler {
 		proxyManager:        dependencies.ProxyManager,
 		maintenance:         dependencies.Maintenance,
 		backendLogin:        dependencies.BackendLogin,
+		updates:             dependencies.Updates,
 		idempotency:         make(map[string]cachedResponse),
 		idempotencyRequests: make(map[string]string),
 	}
@@ -156,6 +159,10 @@ func NewServer(dependencies Dependencies) http.Handler {
 	mux.HandleFunc("POST /api/v1/settings/3x-ui/repair", server.handleRepairXUISettings)
 	mux.HandleFunc("POST /api/v1/backends/aimilivpn/login", server.handleAimiliBackendLogin)
 	mux.HandleFunc("POST /api/v1/backends/3x-ui/login", server.handleXUIBackendLogin)
+	mux.HandleFunc("GET /api/v1/system/updates", server.handleListUpdates)
+	mux.HandleFunc("POST /api/v1/system/updates/{kind}/{version}/apply", server.handleApplyUpdate)
+	mux.HandleFunc("POST /api/v1/system/updates/{kind}/rollback", server.handleRollbackUpdate)
+	mux.HandleFunc("GET /api/v1/system/updates/{runId}", server.handleUpdateStatus)
 	return noStore(mux)
 }
 

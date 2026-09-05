@@ -48,6 +48,8 @@ type Config struct {
 	ProtocolResultDir      string   `json:"protocolResultDir"`
 	ProtocolTimeoutSeconds int      `json:"protocolTimeoutSeconds"`
 	ExternalUIRoot         string   `json:"externalUiRoot"`
+	UpdateRequestDir       string   `json:"updateRequestDir"`
+	UpdateResultDir        string   `json:"updateResultDir"`
 
 	localTest bool
 }
@@ -191,6 +193,16 @@ func (c Config) Validate() error {
 	if value := strings.TrimSpace(c.ExternalUIRoot); value != "" && !filepath.IsAbs(value) && !pathpkg.IsAbs(filepath.ToSlash(value)) {
 		return errors.New("externalUiRoot must be an absolute path")
 	}
+	if (strings.TrimSpace(c.UpdateRequestDir) == "") != (strings.TrimSpace(c.UpdateResultDir) == "") {
+		return errors.New("updateRequestDir and updateResultDir must be configured together")
+	}
+	if c.UpdateRequestDir != "" {
+		requestDir := pathpkg.Clean(filepath.ToSlash(c.UpdateRequestDir))
+		resultDir := pathpkg.Clean(filepath.ToSlash(c.UpdateResultDir))
+		if pathpkg.Base(requestDir) != "requests" || pathpkg.Base(resultDir) != "results" || pathpkg.Dir(requestDir) != pathpkg.Dir(resultDir) {
+			return errors.New("update spool must use sibling requests and results directories")
+		}
+	}
 	for _, raw := range c.MixedSourceCIDRs {
 		prefix, err := netip.ParsePrefix(raw)
 		if err != nil || prefix.Bits() == 0 || prefix != prefix.Masked() {
@@ -254,6 +266,8 @@ func applyEnvironment(cfg *Config) {
 		{name: "GATEWAY_PROTOCOL_REQUEST_DIR", target: &cfg.ProtocolRequestDir},
 		{name: "GATEWAY_PROTOCOL_RESULT_DIR", target: &cfg.ProtocolResultDir},
 		{name: "GATEWAY_EXTERNAL_UI_ROOT", target: &cfg.ExternalUIRoot},
+		{name: "GATEWAY_UPDATE_REQUEST_DIR", target: &cfg.UpdateRequestDir},
+		{name: "GATEWAY_UPDATE_RESULT_DIR", target: &cfg.UpdateResultDir},
 	}
 	for _, override := range overrides {
 		if value := os.Getenv(override.name); value != "" {
