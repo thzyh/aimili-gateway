@@ -30,11 +30,11 @@
 
 ## 3. 当前 Git 检查点
 
-本节来自 2026-09-05 本地只读检查。ahead 数量包含本次交接文档提交，基于当前本地远程跟踪引用；本次文档整理没有重新 `fetch`，不得把它表述为 GitHub 当前在线状态。
+本节来自 2026-09-05 本轮最新本地检查。Gateway 远程引用已在本轮 `git fetch --prune origin` 后刷新；ahead 数量包含本次交接与验证记录提交，但仍不等于已经推送 GitHub。
 
 | 仓库 | 最新业务代码基线 | 工作区 | 本地相对跟踪分支 |
 | --- | --- | --- | --- |
-| Aimili Gateway | `43b63a4` | 已跟踪文件干净；保留既有未跟踪构建、缓存和 `.deploy-assets/` | ahead 6，其中 4 个业务代码提交、2 个文档提交 |
+| Aimili Gateway | `669221c` | 已跟踪文件干净；保留既有未跟踪构建、缓存和 `.deploy-assets/` | 本次验证记录提交后 ahead 16；基于 2026-09-05 本轮已 fetch 的跟踪引用 |
 | AimiliVPN | `88be2fb` | 干净 | ahead 2 |
 | 3x-ui 补丁与部署 | `5dbe6f0` | 干净；该功能分支没有远程 | 不适用 |
 
@@ -60,8 +60,9 @@ AimiliVPN 尚未推送的两个最新提交：
 - Gateway 数据库 `PRAGMA quick_check=ok`；
 - 稳态为 4 个 OpenVPN、1 个 Xray；
 - 四条协议状态均为 `ready`；主连接当前为 XHTTP/REALITY，三个普通出口合计为两个 TCP/Vision 和一个 Hysteria2/QUIC/TLS；本次没有执行会改变协议的操作；
-- 根分区使用率 51%，可用 `4,559,163,392` 字节；
-- `/var/backups/aimili-gateway` 顶层只保留 `20260905-refresh-notice` 一套回滚资产；
+- 外部 UI Stage A 已启用，Gateway 当前从签名 `current` 提供 UI，并保留 `previous` 与内嵌兜底；生产免重启切换/回滚已验证；
+- 根分区使用率 51%，可用 `4,554,670,080` 字节；
+- `/var/backups/aimili-gateway` 顶层只保留 `20260905-external-ui` 一套回滚资产；
 - 用户已人工反馈当前 v2rayN 测试没有问题。
 
 本次文档整理没有重新执行真实四出口流量、订阅导入、SOCKS5H 或协议切换测试；不得用上述只读摘要替代专题验收记录。
@@ -77,13 +78,13 @@ AimiliVPN 尚未推送的两个最新提交：
 
 ## 6. 当前未实现或未执行
 
-- Gateway 的“外部静态资源免重启发布”与“后端一键安全升级”正式设计草案已写入 `docs/superpowers/specs/2026-09-05-zero-downtime-ui-and-safe-self-update-design.md`，等待用户审核；尚未制定实施计划、编码或部署。
+- Gateway 外部静态资源 Stage A 已完成本地实现和生产验证；低权限自动下载、网页 UI 更新入口、后端 dry-run 与后端一键安全升级仍未实现。
 - Gateway 与 AimiliVPN 最新本地提交尚未推送 GitHub。
 - 本次文档整理没有创建新备份、删除文件、部署服务或修改生产数据库。
 
 ## 7. 前端与后端发布边界
 
-- 纯 UI 免重启：内嵌前端保底，外部静态资源按版本目录发布，校验后原子切换 `current`，失败切回上一版。
+- 纯 UI 免重启：已启用。内嵌前端保底，外部静态资源按签名版本目录发布，校验后原子切换 `current`，失败切回上一版。
 - 后端一键升级：下载已签名的预编译 Gateway 二进制，由权限封闭的 root helper 原子替换，短暂重启 Gateway，并执行健康门和单一回滚。
 - 两者合称“两层发布机制”。第一层是第二层的一部分，而不是两个互斥方案。
-- 在该机制正式实现前，当前 `go:embed` 架构下的任何 UI 修改仍须重新构建并部署 Gateway 二进制。
+- 后续已签名纯 UI 版本可通过离线 installer 免重启发布；网页自动下载入口尚未启用。后端代码变化仍须走现有安全部署，直至后端 updater 完成。

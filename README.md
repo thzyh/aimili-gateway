@@ -12,7 +12,7 @@ Gateway 与 AimiliVPN 的最新本地提交尚未推送 GitHub。纯 UI 外部�
 
 外部 UI Stage A 使用 `scripts/build-ui-release.ps1` 生成 `manifest.json`、`manifest.sig` 和 `ui.tar.gz`，由离线 `aimili-gateway-update-install` 校验并原子切换 `current`/`previous`。首次启用需要随 Gateway 二进制部署并只重启 Gateway；启用后日常签名 UI 发布和回退不重启 Gateway，也不触碰 AimiliVPN、x-ui/Xray 或 Caddy。
 
-两层发布机制的正式设计草案已写入 `docs/superpowers/specs/2026-09-05-zero-downtime-ui-and-safe-self-update-design.md`，当前等待用户审核，尚未进入实现。
+两层发布机制的正式设计已写入 `docs/superpowers/specs/2026-09-05-zero-downtime-ui-and-safe-self-update-design.md`。外部 UI Stage A 已实现并通过生产免重启切换/回滚验证；低权限 fetcher、网页更新入口和后端安全自更新仍按实施计划推进。
 
 以下段落是项目历史演进，用于理解设计来源，不代表当前生产快照。
 
