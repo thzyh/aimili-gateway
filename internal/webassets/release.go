@@ -1,32 +1,19 @@
 package webassets
 
 import (
-	"bytes"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
-	"io"
 	"io/fs"
 	"os"
 	pathpkg "path"
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/thzyh/aimili-gateway/internal/releaseverify"
 )
 
 var entryAssetPattern = regexp.MustCompile(`(?:src|href)=["'](/assets/[^"'?#]+)`)
-
-type uiManifest struct {
-	SchemaVersion int    `json:"schemaVersion"`
-	Kind          string `json:"kind"`
-	Version       string `json:"version"`
-	APIVersion    string `json:"apiVersion"`
-	Files         []struct {
-		Path   string `json:"path"`
-		SHA256 string `json:"sha256"`
-		Bytes  int64  `json:"bytes"`
-	} `json:"files"`
-}
 
 func openCurrent(root, apiVersion string) (fs.FS, string, error) {
 	return openCurrentWithResolver(root, apiVersion, nil)
@@ -64,13 +51,8 @@ func openCurrentWithResolver(root, apiVersion string, resolve func(string) (stri
 	if err != nil {
 		return nil, "", errors.New("read current UI manifest")
 	}
-	var manifest uiManifest
-	decoder := json.NewDecoder(bytes.NewReader(manifestBody))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&manifest); err != nil || manifest.SchemaVersion != 1 || manifest.Kind != "ui" || manifest.Version != parts[1] || manifest.APIVersion != apiVersion {
-		return nil, "", errors.New("current UI manifest is incompatible")
-	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+	manifest, err := releaseverify.ParseUI(manifestBody, apiVersion)
+	if err != nil || manifest.Version != parts[1] {
 		return nil, "", errors.New("current UI manifest is incompatible")
 	}
 	if err := validateReleaseFiles(releasePath, manifest); err != nil {
@@ -101,7 +83,7 @@ func validVersionID(value string) bool {
 	return err == nil
 }
 
-func validateReleaseFiles(releasePath string, manifest uiManifest) error {
+func validateReleaseFiles(releasePath string, manifest releaseverify.UIManifest) error {
 	expected := make(map[string]int64, len(manifest.Files))
 	previous := ""
 	for _, file := range manifest.Files {

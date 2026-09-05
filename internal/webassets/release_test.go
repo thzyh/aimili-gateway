@@ -66,6 +66,15 @@ func TestHandlerReturnsNotFoundForMissingStaticAsset(t *testing.T) {
 	}
 }
 
+func TestHandlerServesExternalManifestWithoutCaching(t *testing.T) {
+	root := makeExternalRelease(t, testUIVersion, "v1", map[string]string{"index.html": `<div id="external"></div>`})
+	response := httptest.NewRecorder()
+	Handler(externalOptions(root, testUIVersion, "v1")).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/manifest.json", nil))
+	if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "no-cache" {
+		t.Fatalf("manifest status=%d cache=%q", response.Code, response.Header().Get("Cache-Control"))
+	}
+}
+
 func TestHandlerFallsBackToIndexOnlyForExtensionlessRoute(t *testing.T) {
 	route := httptest.NewRecorder()
 	Handler(Options{}).ServeHTTP(route, httptest.NewRequest(http.MethodGet, "/settings/updates", nil))
@@ -159,7 +168,10 @@ func makeExternalRelease(t *testing.T, version, apiVersion string, files map[str
 		"schemaVersion": 1,
 		"kind":          "ui",
 		"version":       version,
+		"commit":        "abc1234",
+		"builtAt":       "2026-09-05T00:00:00Z",
 		"apiVersion":    apiVersion,
+		"archive":       map[string]any{"sha256": version, "bytes": 1},
 		"files":         manifestFiles,
 	})
 	if err != nil {

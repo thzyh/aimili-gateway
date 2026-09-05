@@ -53,6 +53,8 @@ func Handler(options Options) http.Handler {
 			response.Header().Set("Content-Type", "text/html; charset=utf-8")
 			http.ServeContent(response, request, "index.html", time.Time{}, bytes.NewReader(contents))
 			return
+		} else if requestedPath == "manifest.json" {
+			response.Header().Set("Cache-Control", "no-cache")
 		} else if strings.HasPrefix(requestedPath, "assets/") {
 			response.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		}
