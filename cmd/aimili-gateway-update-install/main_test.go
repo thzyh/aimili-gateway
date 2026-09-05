@@ -17,6 +17,14 @@ func TestRunRejectsIncompleteUIInstallArguments(t *testing.T) {
 	}
 }
 
+func TestRunRejectsIncompleteGatewayInstallArguments(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"gateway-install", "--root", t.TempDir()}, &stdout, &stderr)
+	if code != 2 || !strings.Contains(stderr.String(), "binary") || stdout.Len() != 0 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
 func TestGatewayHealthCheckReportsManifestVersionMismatchSafely(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("Content-Type", "application/json")

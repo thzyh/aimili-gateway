@@ -24,10 +24,13 @@ func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
 
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: aimili-gateway-update-install <ui-install|ui-rollback>")
+		fmt.Fprintln(stderr, "usage: aimili-gateway-update-install <ui-install|ui-rollback|gateway-dry-run|gateway-install|gateway-rollback>")
 		return 2
 	}
 	command := args[0]
+	if strings.HasPrefix(command, "gateway-") {
+		return runGatewayCommand(command, args[1:], stdout, stderr)
+	}
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	root := flags.String("root", "", "external UI root")
