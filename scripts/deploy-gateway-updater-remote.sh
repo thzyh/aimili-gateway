@@ -93,6 +93,7 @@ if ! id -u aimili-gateway-updater >/dev/null 2>&1; then
     useradd --system --home-dir /var/lib/aimili-gateway-update --shell /usr/sbin/nologin aimili-gateway-updater
 fi
 UPDATER_UID="$(id -u aimili-gateway-updater)"
+install -d -m 0710 -o aimili-gateway -g aimili-gateway /var/lib/aimili-gateway
 install -d -m 0750 -o root -g aimili-gateway /var/lib/aimili-gateway/update-spool
 install -d -m 0750 -o aimili-gateway -g aimili-gateway /var/lib/aimili-gateway/update-spool/requests
 install -d -m 0750 -o root -g aimili-gateway /var/lib/aimili-gateway/update-spool/results

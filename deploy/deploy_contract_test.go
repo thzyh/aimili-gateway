@@ -164,6 +164,43 @@ func TestGatewayUpdaterSeparatesNetworkFetcherFromRootInstaller(t *testing.T) {
 	}
 }
 
+func TestGatewayUpdateFetcherCanTraverseOnlyTheRequestSpool(t *testing.T) {
+	gateway := readAsset(t, "systemd/aimili-gateway.service")
+	fetcher := readAsset(t, "systemd/aimili-gateway-update-fetch.service")
+	deployment := readAsset(t, "../scripts/deploy-gateway-updater-remote.sh")
+	for asset, required := range map[string][]string{
+		"gateway": {
+			"StateDirectory=aimili-gateway",
+			"StateDirectoryMode=0710",
+		},
+		"fetcher": {
+			"SupplementaryGroups=aimili-gateway",
+			"ReadOnlyPaths=/var/lib/aimili-gateway/update-spool/requests",
+		},
+		"deployment": {
+			"install -d -m 0710 -o aimili-gateway -g aimili-gateway /var/lib/aimili-gateway",
+			"install -d -m 0750 -o root -g aimili-gateway /var/lib/aimili-gateway/update-spool",
+			"install -d -m 0750 -o aimili-gateway -g aimili-gateway /var/lib/aimili-gateway/update-spool/requests",
+		},
+	} {
+		contents := map[string]string{"gateway": gateway, "fetcher": fetcher, "deployment": deployment}[asset]
+		for _, marker := range required {
+			if !strings.Contains(contents, marker) {
+				t.Fatalf("%s does not grant request-spool traversal: missing %q", asset, marker)
+			}
+		}
+	}
+	for _, forbidden := range []string{
+		"ReadWritePaths=/var/lib/aimili-gateway/",
+		"ReadWritePaths=/etc/aimili-gateway",
+		"ReadOnlyPaths=/var/lib/aimili-gateway/aimili-gateway.db",
+	} {
+		if strings.Contains(fetcher, forbidden) {
+			t.Fatalf("fetcher has more than read/traverse access: %q", forbidden)
+		}
+	}
+}
+
 func TestGatewayServiceCanOnlySubmitAndReadUpdaterState(t *testing.T) {
 	unit := readAsset(t, "systemd/aimili-gateway.service")
 	for _, required := range []string{
