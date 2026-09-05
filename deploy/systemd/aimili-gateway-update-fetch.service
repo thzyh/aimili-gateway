@@ -38,6 +38,8 @@ SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
 ReadOnlyPaths=/etc/aimili-gateway
 ReadOnlyPaths=/var/lib/aimili-gateway/update-spool/requests
+InaccessiblePaths=/var/lib/aimili-gateway/update-spool/results
+InaccessiblePaths=/var/lib/aimili-gateway/protocol-spool/results
 ReadWritePaths=/var/lib/aimili-gateway-update/staging
 
 [Install]

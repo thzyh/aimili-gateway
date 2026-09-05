@@ -201,6 +201,19 @@ func TestGatewayUpdateFetcherCanTraverseOnlyTheRequestSpool(t *testing.T) {
 	}
 }
 
+func TestGatewayUpdateFetcherCannotReadResultSpools(t *testing.T) {
+	fetcher := readAsset(t, "systemd/aimili-gateway-update-fetch.service")
+	for _, required := range []string{
+		"ReadOnlyPaths=/var/lib/aimili-gateway/update-spool/requests",
+		"InaccessiblePaths=/var/lib/aimili-gateway/update-spool/results",
+		"InaccessiblePaths=/var/lib/aimili-gateway/protocol-spool/results",
+	} {
+		if !strings.Contains(fetcher, required) {
+			t.Fatalf("fetcher result isolation missing %q", required)
+		}
+	}
+}
+
 func TestGatewayServiceCanOnlySubmitAndReadUpdaterState(t *testing.T) {
 	unit := readAsset(t, "systemd/aimili-gateway.service")
 	for _, required := range []string{
