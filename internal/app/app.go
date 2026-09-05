@@ -131,7 +131,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		_ = json.NewEncoder(response).Encode(map[string]string{"status": "ok"})
 	})
 	mux.Handle("/api/v1/", apiHandler)
-	mux.Handle("/", webassets.Handler())
+	mux.Handle("/", webassets.Handler(webassets.Options{ExternalRoot: cfg.ExternalUIRoot, APIVersion: "v1"}))
 	var driftDone <-chan struct{}
 	if runtime.accounts != nil {
 		driftDone = startAccountDriftChecks(appContext, runtime.accounts, accountCheckInitialDelay(), 6*time.Hour)

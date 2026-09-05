@@ -19,6 +19,7 @@ func TestSystemdUnitIsUnprivilegedAndHardened(t *testing.T) {
 		"ProtectHome=true",
 		"ReadWritePaths=/var/lib/aimili-gateway",
 		"ReadOnlyPaths=/var/lib/aimili-gateway/protocol-spool/results",
+		"ReadOnlyPaths=/var/lib/aimili-gateway/ui",
 		"CapabilityBoundingSet=",
 		"LoadCredentialEncrypted=gateway-master-key:",
 		"Environment=GATEWAY_CONFIG=/etc/aimili-gateway/config.json",
@@ -99,6 +100,7 @@ func TestExampleConfigUsesOnlyLoopbackAndPlaceholders(t *testing.T) {
 		ProtocolRequestDir     string   `json:"protocolRequestDir"`
 		ProtocolResultDir      string   `json:"protocolResultDir"`
 		ProtocolTimeoutSeconds int      `json:"protocolTimeoutSeconds"`
+		ExternalUIRoot         string   `json:"externalUiRoot"`
 		MaxProxyGroups         int      `json:"maxProxyGroups"`
 		MixedSourceCIDRs       []string `json:"mixedSourceCidrs"`
 	}
@@ -119,6 +121,9 @@ func TestExampleConfigUsesOnlyLoopbackAndPlaceholders(t *testing.T) {
 	}
 	if config.ProtocolRequestDir != "/var/lib/aimili-gateway/protocol-spool/requests" || config.ProtocolResultDir != "/var/lib/aimili-gateway/protocol-spool/results" || config.ProtocolTimeoutSeconds != 180 {
 		t.Fatal("example configuration is missing the isolated protocol spool contract")
+	}
+	if config.ExternalUIRoot != "/var/lib/aimili-gateway/ui" {
+		t.Fatal("example configuration is missing the external UI root")
 	}
 }
 

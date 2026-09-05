@@ -65,6 +65,22 @@ func TestValidateRequiresSiblingProtocolSpoolDirectories(t *testing.T) {
 	}
 }
 
+func TestValidateAcceptsAbsoluteExternalUIRoot(t *testing.T) {
+	cfg := validProductionConfig()
+	cfg.ExternalUIRoot = filepath.FromSlash("/var/lib/aimili-gateway/ui")
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("absolute external UI root rejected: %v", err)
+	}
+}
+
+func TestValidateRejectsRelativeExternalUIRoot(t *testing.T) {
+	cfg := validProductionConfig()
+	cfg.ExternalUIRoot = filepath.FromSlash("ui/releases")
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "externalUiRoot") {
+		t.Fatalf("relative external UI root error = %v", err)
+	}
+}
+
 func TestValidateRejectsUnsafeProxyRuntimeRanges(t *testing.T) {
 	cfg := validProductionConfig()
 	cfg.MaxProxyGroups = 1
