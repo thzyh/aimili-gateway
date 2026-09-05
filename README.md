@@ -4,11 +4,13 @@ Aimili Gateway 是 AimiliVPN 与 3x-ui 的轻量统一控制台项目。统一�
 
 ## 当前阶段
 
-2026-09-01 出口可见性与动态订阅别名增量已完成本地 TDD 和三仓库集成验证：主连接协议切换前先收敛真实身份；候选入口 IP 与实测出口 IP 分字段；页面使用可关闭的中文分区通知和单页面单端口；四个订阅名称按逻辑出口与当前国家生成。动态别名只写 `aimili-gateway-subscription` 的 Gateway 受管公网入站关联，协议切换只读验证别名，不接管其他 3x-ui 资源。完整本地证据与尚未执行的生产层级见 `docs/verification/2026-09-01-egress-ux-and-dynamic-subscription-alias.md`。
+当前权威入口是 `docs/handoffs/2026-09-05-current-state-handoff.md`。它记录实际功能工作树路径、最新本地提交、生产摘要、回滚资产和仍未实现的发布机制；历史设计、计划和验证文档保留各自时间点的事实，不再承担“当前状态”职责。
 
-2026-08-31 增量已完成本地 TDD：四个运行节点固定为主连接、出口1、出口2、出口3并显示公网/mixed 端口；AimiliVPN 增加代理容量隔离、OpenVPN 失败回收和固定 30 条两层节点池；Gateway 在公网协议事务前验证真实槽位与 mixed。最新本地与生产分层证据见 `docs/verification/2026-08-31-stable-runtime-order-and-country-cache.md`。
+截至 2026-09-05，主连接安全切换、每出口独立协议、混合协议订阅、动态中文别名、受管资源恢复、节点国家规范化和刷新通知持久关闭均已完成本地实现并部署生产。用户已确认当前 v2rayN 测试正常；生产只读检查为四服务 active、4 个 OpenVPN、1 个 Xray、四条协议状态 ready，根分区使用率 51%。
 
-主连接安全切换与每出口独立协议模式的增量设计已经批准，功能分支正在按 TDD 完成本地实现与部署验证。该增量保持四个逻辑出口，每个出口只保留一个公网协议配置；mixed/SOCKS5H 不参与协议切换。正式运行手册见 `docs/runbooks/main-switch-protocol-modes.md`，生产结果只以 `docs/verification/2026-08-29-main-switch-protocol-modes.md` 中实际标记为通过的层级为准。未完成 VPS 阶梯验收前，下面记录的 Test 风格纯 TCP/Vision 生产基线仍是现网事实。
+Gateway 与 AimiliVPN 的最新本地提交尚未推送 GitHub。纯 UI 外部静态资源免重启发布和后端一键安全升级目前仅为架构建议，尚未设计或实现；在此之前 UI 仍随 `go:embed` 打入 Gateway 二进制并按现有安全部署流程发布。
+
+以下段落是项目历史演进，用于理解设计来源，不代表当前生产快照。
 
 2026-08-29 最新生产基线已经完成：Gateway 使用 3x-ui 原生多入站订阅客户端，将主连接 `8443` 和三个受管 VLESS 入站组成一个订阅；导入兼容客户端后得到四个独立 VLESS 节点，mixed/SOCKS5H 不进入该订阅。旧 `21000` 聚合入站、客户端引用、balancer 和 observatory 已安全清理，原聚合接口固定返回弃用错误，不会重新创建历史入口。
 
@@ -22,6 +24,7 @@ Gateway 只管理 `agw-` 命名空间；不接管非受管 3x-ui/Xray 资源，�
 
 ## 重要文件
 
+- `docs/handoffs/2026-09-05-current-state-handoff.md`：当前本地路径、Git、生产摘要、最新修复与未完成事项。
 - `docs/superpowers/specs/2026-08-25-country-proxy-console-design.md`：当前后续设计，定义国家代理目录、VLESS＋mixed 成对编排、容量、安全、统一高级设置和真实出口验收。
 - `docs/superpowers/specs/2026-08-26-online-proxy-pools-design.md`：V1-C 正式设计，定义每候选出口实例、在线双协议资源池、紧凑前端和阶梯容量门槛。
 - `docs/superpowers/specs/2026-08-27-advanced-settings-unified-credentials-design.md`：已批准的 V1-D 正式设计，定义高级设置、三账户同步、服务端自动代登录、SOCKS5H 来源开关和状态简化。

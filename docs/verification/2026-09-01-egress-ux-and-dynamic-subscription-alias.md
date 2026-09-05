@@ -2,6 +2,8 @@
 
 日期：2026-09-01（Asia/Shanghai）
 
+> 历史验收说明：本文记录该增量在 2026-09-01 至 2026-09-03 的实施和验收事实。后续提交、当前路径、Git ahead 状态、生产磁盘和回滚资产请以 `docs/handoffs/2026-09-05-current-state-handoff.md` 为准；不要用本文第 19～22 行的当时基线覆盖当前 Git 状态。
+
 ## 范围与安全边界
 
 本记录对应已批准设计 `docs/superpowers/specs/2026-09-01-egress-ux-and-dynamic-subscription-alias-design.md` 和实施计划 `docs/superpowers/plans/2026-09-01-egress-ux-and-dynamic-subscription-alias.md`。
