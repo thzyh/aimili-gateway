@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
-import { APIError, apiFetch, type MixedSourcePolicyPayload, type SettingsSummaryPayload } from '../api/client'
+import { APIError, apiFetch, type MixedSourcePolicyPayload, type SettingsSummaryPayload, type UpdateKind, type UpdateResultPayload, type UpdateSummaryPayload, type UpdateVersionPayload } from '../api/client'
 import AppShell from '../components/AppShell.vue'
 import UiNotice from '../components/UiNotice.vue'
 import type { NoticeKind, UiNoticeData } from '../components/errorMessages'
@@ -13,6 +13,11 @@ const cidrs = ref('')
 const notice = ref<UiNoticeData | null>(null)
 const loading = ref(true)
 const saving = ref(false)
+const updates = ref<UpdateSummaryPayload | null>(null)
+const updateNotice = ref<UiNoticeData | null>(null)
+const updatePassword = ref('')
+const pendingUpdate = ref<UpdateVersionPayload | null>(null)
+const updating = ref(false)
 let noticeSequence = 0
 
 const accountLabel = computed(() => ({
@@ -25,20 +30,121 @@ const policyApplyLabel = computed(() => ({
 
 onMounted(async () => {
   try {
-    const [loadedSummary, loadedPolicy] = await Promise.all([
+    const [loadedSummary, loadedPolicy, loadedUpdates] = await Promise.all([
       apiFetch<SettingsSummaryPayload>('/api/v1/settings/summary'),
       apiFetch<MixedSourcePolicyPayload>('/api/v1/settings/mixed-source-policy'),
+      apiFetch<UpdateSummaryPayload>('/api/v1/system/updates').catch(() => null),
     ])
     summary.value = loadedSummary
     policy.value = loadedPolicy
     enabled.value = loadedPolicy.enabled
     cidrs.value = loadedPolicy.cidrs.join('\n')
+    updates.value = loadedUpdates
   } catch (error) {
     notice.value = makeNotice('error', '高级设置读取失败', messageFor(error, '高级设置暂时不可用'))
   } finally {
     loading.value = false
   }
 })
+
+const availableUI = computed(() => updates.value?.available.find(item => item.kind === 'ui' && item.compatible) ?? null)
+const availableGateway = computed(() => updates.value?.available.find(item => item.kind === 'gateway' && item.compatible) ?? null)
+
+function requestUpdate(candidate: UpdateVersionPayload | null): void {
+  if (!candidate || updating.value) return
+  pendingUpdate.value = candidate
+  updatePassword.value = ''
+}
+
+function cancelUpdate(): void {
+  if (updating.value) return
+  pendingUpdate.value = null
+  updatePassword.value = ''
+}
+
+async function confirmUpdate(): Promise<void> {
+  const candidate = pendingUpdate.value
+  if (!candidate || updatePassword.value.length === 0) return
+  updating.value = true
+  const password = updatePassword.value
+  updatePassword.value = ''
+  const runId = newRunID()
+  const subject = updateSubject(candidate.kind)
+  updateNotice.value = makeUpdateNotice('progress', `${subject}正在开始`, candidate.kind === 'ui' ? '正在校验并切换界面资源，节点不会中断。' : '控制面会短暂重启，代理节点继续运行。')
+  try {
+    const submitted = await apiFetch<UpdateResultPayload>(`/api/v1/system/updates/${candidate.kind}/${candidate.version}/apply`, {
+      method: 'POST', body: JSON.stringify({ password, runId }),
+    })
+    pendingUpdate.value = null
+    await pollUpdate(submitted.runId, candidate.kind)
+  } catch (error) {
+    updateNotice.value = makeUpdateNotice('error', `${subject}未开始`, messageForUpdate(error, '请求未能提交，现有版本保持不变。'))
+  } finally {
+    updating.value = false
+  }
+}
+
+async function pollUpdate(runId: string, kind: UpdateKind): Promise<void> {
+  const delays = [0, 1000, 2000, 4000, 8000, 10000]
+  let lastError: unknown
+  for (const delay of delays) {
+    if (delay > 0) await wait(delay)
+    try {
+      const result = await apiFetch<UpdateResultPayload>(`/api/v1/system/updates/${runId}`)
+      if (!terminalUpdateState(result.state)) {
+        updateNotice.value = makeUpdateNotice('progress', `${updateSubject(kind)}进行中`, updateProgressMessage(result.state, kind))
+        continue
+      }
+      updateNotice.value = noticeForUpdate(result)
+      if (result.state === 'success' || result.state === 'rolled_back') updates.value = await apiFetch<UpdateSummaryPayload>('/api/v1/system/updates')
+      return
+    } catch (error) {
+      lastError = error
+    }
+  }
+  updateNotice.value = makeUpdateNotice('error', `${updateSubject(kind)}状态未确认`, messageForUpdate(lastError, '连接暂未恢复，请稍后刷新；系统不会自动创建第二次更新。'))
+}
+
+function noticeForUpdate(result: UpdateResultPayload): UiNoticeData {
+  const subject = updateSubject(result.kind)
+  if (result.state === 'success') return makeUpdateNotice('success', `${subject}成功`, result.kind === 'ui' ? '新界面已生效，Gateway 和代理节点均未重启。' : 'Gateway 控制面已恢复，代理节点继续运行。')
+  if (result.state === 'rolled_back') return makeUpdateNotice('error', `${subject}已自动回滚`, '新版本未通过健康检查，已恢复上一版。')
+  if (result.state === 'repair_required') return makeUpdateNotice('error', `${subject}需要受限修复`, '自动回滚未能完整确认，请使用服务器上的固定回滚入口。')
+  return makeUpdateNotice('error', `${subject}失败`, messageForUpdateCode(result.errorCode))
+}
+
+function makeUpdateNotice(kind: NoticeKind, title: string, message: string): UiNoticeData {
+  noticeSequence += 1
+  return { id: `update-notice-${noticeSequence}`, kind, title, message }
+}
+
+function updateSubject(kind: UpdateKind): string { return kind === 'ui' ? '界面更新' : 'Gateway 控制面更新' }
+function terminalUpdateState(state: UpdateResultPayload['state']): boolean { return ['success', 'failed', 'rolled_back', 'repair_required'].includes(state) }
+function updateProgressMessage(state: UpdateResultPayload['state'], kind: UpdateKind): string {
+  if (state === 'downloading') return '正在从固定可信来源下载签名文件。'
+  if (state === 'validating') return '正在复验签名、摘要和兼容性。'
+  if (state === 'switching') return kind === 'ui' ? '正在原子切换界面版本。' : '正在替换并重启 Gateway 控制面。'
+  if (state === 'verifying') return '正在执行健康检查与数据面不变门。'
+  return '更新请求已提交，正在等待处理。'
+}
+function messageForUpdateCode(code?: string): string {
+  const messages: Record<string, string> = {
+    download_failed: '下载失败，现有版本未改变。', invalid_signature: '签名验证失败，现有版本未改变。',
+    invalid_payload: '文件摘要不一致，现有版本未改变。', disk_full: 'VPS 可用空间不足，更新未开始。',
+    install_disabled: '后端替换尚未开放，本次只允许安全检查。', operation_busy: '当前有其他维护事务，请稍后重试。',
+  }
+  return messages[code ?? ''] ?? '更新未完成，现有版本或自动回滚结果已由服务端保留。'
+}
+function messageForUpdate(error: unknown, fallback: string): string {
+  if (error instanceof APIError) return messageForUpdateCode(error.message)
+  return fallback
+}
+function wait(milliseconds: number): Promise<void> { return new Promise(resolve => setTimeout(resolve, milliseconds)) }
+function newRunID(): string {
+  const bytes = new Uint8Array(32)
+  globalThis.crypto.getRandomValues(bytes)
+  return Array.from(bytes, value => value.toString(16).padStart(2, '0')).join('')
+}
 
 async function savePolicy(): Promise<void> {
   const values = cidrs.value.split(/[\s,]+/).map(value => value.trim()).filter(Boolean)
@@ -140,6 +246,7 @@ function messageFor(error: unknown, fallback: string): string {
     </header>
 
     <UiNotice v-if="notice" :key="notice.id" data-policy-notice class="policy-notice" :notice="notice" @close="notice=null" />
+    <UiNotice v-if="updateNotice" :key="updateNotice.id" data-update-notice class="policy-notice" :notice="updateNotice" @close="updateNotice=null" />
     <div v-if="loading" class="loading-panel">正在读取设置…</div>
     <div v-else class="settings-layout">
       <section class="panel policy-panel">
@@ -177,10 +284,20 @@ function messageFor(error: unknown, fallback: string): string {
         </div>
         <p class="boundary-note">统一账户使用同一用户名和密码；原后台仍签发各自会话。服务端自动代登录不是覆盖全部页面的真正 SSO。</p>
       </section>
+
+      <section class="services-section update-section">
+        <div class="section-title"><p class="section-kicker">SIGNED UPDATES</p><h2>安全更新</h2><p>只接受固定可信来源、有效签名且兼容的版本。</p></div>
+        <div class="update-grid">
+          <article class="update-card"><strong>界面资源</strong><span>当前：{{ updates?.currentUi ? updates.currentUi.slice(0, 12) : '内嵌兜底' }}</span><p>仅更新界面，不影响节点，也不重启 Gateway。</p><button data-ui-update :disabled="!availableUI || updating" type="button" @click="requestUpdate(availableUI)">{{ availableUI ? `更新到 ${availableUI.version.slice(0, 12)}` : '暂无可用更新' }}</button></article>
+          <article class="update-card"><strong>Gateway 控制面</strong><span>当前：{{ updates?.currentGateway ?? '未知' }}</span><p>控制面将短暂重启，代理节点继续运行。</p><button data-gateway-update :disabled="!availableGateway || updating" type="button" @click="requestUpdate(availableGateway)">{{ availableGateway ? `更新到 ${availableGateway.version}` : '暂无可用更新' }}</button></article>
+        </div>
+        <form v-if="pendingUpdate" class="reauth-panel" @submit.prevent="confirmUpdate"><label>当前 Gateway 密码<input v-model="updatePassword" data-update-password type="password" autocomplete="current-password"></label><p>密码只用于本次重新认证，不会写入更新请求或日志。</p><div><button class="secondary" type="button" :disabled="updating" @click="cancelUpdate">取消</button><button data-update-confirm type="button" :disabled="updating || !updatePassword" @click="confirmUpdate">{{ updating ? '正在提交' : '确认更新' }}</button></div></form>
+      </section>
     </div>
   </AppShell>
 </template>
 
 <style scoped>
 .settings-header{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;margin-bottom:20px}.eyebrow,.section-kicker{margin:0 0 6px;color:var(--accent);font-size:10px;font-weight:850;letter-spacing:.16em}.settings-header h1{margin:0;font-size:30px;letter-spacing:-.03em}.settings-header>div>p:last-child,.section-title>p:last-child{margin:8px 0 0;color:var(--muted-text);font-size:14px}.account-chip{padding:7px 10px;border:1px solid var(--border);border-radius:999px;background:var(--panel);color:var(--muted-text);font-size:12px;font-weight:750}.account-chip.synced{border-color:color-mix(in srgb,var(--healthy) 28%,var(--border));color:var(--healthy);background:color-mix(in srgb,var(--healthy) 8%,var(--panel))}.policy-notice,.loading-panel{margin:0 0 16px}.loading-panel{padding:11px 13px;border:1px solid var(--border);border-radius:10px;background:var(--panel);color:var(--muted-text);font-size:13px}.settings-layout{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(260px,.75fr);gap:16px}.panel,.services-section{border:1px solid var(--border);border-radius:14px;background:var(--panel);box-shadow:var(--shadow-soft)}.policy-panel{padding:20px}.panel-heading{display:flex;justify-content:space-between;gap:20px}.panel h2,.section-title h2{margin:0;font-size:18px}.panel-heading p:last-child{margin:6px 0 0;color:var(--muted-text);font-size:13px}.switch{display:flex;align-items:center;gap:8px;align-self:flex-start;cursor:pointer}.switch input{position:absolute;opacity:0;pointer-events:none}.switch span{position:relative;width:38px;height:22px;border-radius:999px;background:var(--muted-bg);box-shadow:inset 0 0 0 1px var(--border);transition:.2s}.switch span::after{content:"";position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:var(--panel);box-shadow:0 1px 3px rgba(0,0,0,.18);transition:.2s}.switch input:checked+span{background:var(--accent);box-shadow:none}.switch input:checked+span::after{transform:translateX(16px);background:#fff}.switch b{min-width:42px;font-size:12px}.risk-note{display:grid;gap:4px;margin-top:18px;padding:12px;border:1px solid color-mix(in srgb,var(--warning) 35%,var(--border));border-radius:10px;background:color-mix(in srgb,var(--warning) 8%,var(--panel));font-size:12px}.risk-note strong{color:var(--warning)}.risk-note span{color:var(--muted-text);line-height:1.55}.policy-form{display:grid;gap:14px;margin-top:18px}.field{display:grid;gap:7px;font-size:12px;font-weight:750}.field textarea{width:100%;resize:vertical;padding:11px 12px;border:1px solid var(--border);border-radius:9px;background:var(--input);color:var(--text);font:13px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace}.field small{color:var(--muted-text);font-weight:500}.form-footer{display:flex;align-items:center;justify-content:space-between;gap:12px}.apply-state{color:var(--muted-text);font-size:12px}.apply-state[data-apply-status=applied]{color:var(--healthy);font-weight:750}.apply-state[data-apply-status=failed],.apply-state[data-apply-status=repair_required]{color:var(--danger);font-weight:750}.policy-actions{display:flex;gap:8px}.capacity-panel{padding:20px}.capacity-value{display:grid;gap:2px;margin:20px 0}.capacity-value strong{font-size:32px;letter-spacing:-.05em}.capacity-value span{color:var(--muted-text);font-size:12px}.capacity-panel dl{display:grid;gap:8px;margin:0}.capacity-panel dl div{display:flex;justify-content:space-between;padding:9px 0;border-top:1px solid var(--border-soft);font-size:13px}.capacity-panel dt{color:var(--muted-text)}.capacity-panel dd{margin:0;font-weight:800}.capacity-help{margin:14px 0 0;color:var(--muted-text);font-size:12px;line-height:1.6}.services-section{grid-column:1/-1;padding:20px}.section-title{margin-bottom:14px}.service-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.service-card{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:12px;padding:14px;border:1px solid var(--border);border-radius:11px;color:var(--text);text-decoration:none;transition:.15s}.service-card:hover{border-color:color-mix(in srgb,var(--accent) 35%,var(--border));background:var(--hover);transform:translateY(-1px)}.service-icon{display:grid;place-items:center;width:36px;height:36px;border-radius:10px;background:var(--accent-soft);color:var(--accent);font-weight:850}.service-icon.xui{font-size:11px}.service-card span:nth-child(2){display:grid;gap:4px}.service-card strong{font-size:14px}.service-card small{color:var(--muted-text);font-size:12px}.service-card>b{color:var(--muted-text)}.boundary-note{margin:14px 0 0;color:var(--muted-text);font-size:11px;line-height:1.55}@media(max-width:820px){.settings-layout{grid-template-columns:1fr}.services-section{grid-column:auto}.service-grid{grid-template-columns:1fr}}@media(max-width:560px){.settings-header,.panel-heading{align-items:flex-start;flex-direction:column}.account-chip{align-self:flex-start}.service-card{padding:12px}.form-footer{align-items:stretch;flex-direction:column}.policy-actions{flex-direction:column}.form-footer button{width:100%}}
+.update-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.update-card{display:grid;gap:8px;padding:14px;border:1px solid var(--border);border-radius:11px}.update-card>span,.update-card>p{color:var(--muted-text);font-size:12px}.update-card>p{margin:0;line-height:1.5}.update-card>button{justify-self:start}.reauth-panel{display:grid;gap:10px;margin-top:14px;padding:14px;border:1px solid var(--border);border-radius:11px;background:var(--subtle)}.reauth-panel label{display:grid;gap:6px;font-size:12px;font-weight:750}.reauth-panel input{max-width:360px;padding:9px 10px;border:1px solid var(--border);border-radius:8px;background:var(--input);color:var(--text)}.reauth-panel p{margin:0;color:var(--muted-text);font-size:11px}.reauth-panel>div{display:flex;gap:8px}@media(max-width:650px){.update-grid{grid-template-columns:1fr}}
 </style>

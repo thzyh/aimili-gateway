@@ -102,6 +102,7 @@ it('explains why the current network source cannot be identified', async () => {
   mocks.apiFetch.mockImplementation((path: string) => {
     if (path === '/api/v1/settings/summary') return Promise.resolve({ accountSyncStatus: 'synced', candidateCount: 24, onlineCount: 1, maxOnline: 1 })
     if (path === '/api/v1/settings/mixed-source-policy') return Promise.resolve({ enabled: false, cidrs: [], applyStatus: 'applied' })
+	if (path === '/api/v1/system/updates') return Promise.resolve({ currentGateway: 'v1.2.2', currentUi: 'a'.repeat(64), available: [] })
     if (path === '/api/v1/settings/mixed-source-policy/authorize-current') return Promise.reject(new APIError(403, 'client_forwarded_for_missing'))
     return Promise.resolve(undefined)
   })
@@ -116,6 +117,83 @@ it('explains why the current network source cannot be identified', async () => {
   expect(notice.text()).toContain('当前网络授权失败')
   await notice.get('[aria-label="关闭提示"]').trigger('click')
   expect(wrapper.find('[data-policy-notice]').exists()).toBe(false)
+})
+
+it('distinguishes no-restart UI updates from control-plane restart', async () => {
+	mocks.apiFetch.mockImplementation((path: string) => {
+		if (path === '/api/v1/settings/summary') return Promise.resolve({ accountSyncStatus: 'synced', candidateCount: 24, onlineCount: 1, maxOnline: 1 })
+		if (path === '/api/v1/settings/mixed-source-policy') return Promise.resolve({ enabled: false, cidrs: [], applyStatus: 'applied' })
+		if (path === '/api/v1/system/updates') return Promise.resolve({
+			currentGateway: 'v1.2.2', currentUi: 'a'.repeat(64),
+			available: [{ kind: 'ui', version: 'b'.repeat(64), compatible: true }, { kind: 'gateway', version: 'v1.2.3', compatible: true }],
+		})
+		return Promise.resolve(undefined)
+	})
+	const wrapper = mount(SettingsView)
+	await flushPromises()
+	expect(wrapper.text()).toContain('仅更新界面，不影响节点')
+	expect(wrapper.text()).toContain('控制面将短暂重启，代理节点继续运行')
+})
+
+it('requires password reauthentication and submits only a closed version plus run id', async () => {
+	mocks.apiFetch.mockImplementation((path: string, options?: { method?: string }) => {
+		if (path === '/api/v1/settings/summary') return Promise.resolve({ accountSyncStatus: 'synced', candidateCount: 24, onlineCount: 1, maxOnline: 1 })
+		if (path === '/api/v1/settings/mixed-source-policy') return Promise.resolve({ enabled: false, cidrs: [], applyStatus: 'applied' })
+		if (path === '/api/v1/system/updates') return Promise.resolve({ currentGateway: 'v1.2.2', available: [{ kind: 'gateway', version: 'v1.2.3', compatible: true }] })
+		if (path === '/api/v1/system/updates/gateway/v1.2.3/apply' && options?.method === 'POST') return Promise.resolve({ runId: 'c'.repeat(64), kind: 'gateway', version: 'v1.2.3', state: 'pending' })
+		if (path === '/api/v1/system/updates/' + 'c'.repeat(64)) return Promise.resolve({ runId: 'c'.repeat(64), kind: 'gateway', version: 'v1.2.3', state: 'success' })
+		return Promise.resolve(undefined)
+	})
+	const wrapper = mount(SettingsView)
+	await flushPromises()
+	await wrapper.get('[data-gateway-update]').trigger('click')
+	expect(wrapper.find('[data-update-password]').exists()).toBe(true)
+	await wrapper.get('[data-update-password]').setValue('test-password')
+	await wrapper.get('[data-update-confirm]').trigger('click')
+	await flushPromises()
+	const call = mocks.apiFetch.mock.calls.find(([path]) => path === '/api/v1/system/updates/gateway/v1.2.3/apply')
+	expect(call?.[1]).toMatchObject({ method: 'POST' })
+	const body = JSON.parse(call?.[1].body)
+	expect(Object.keys(body).sort()).toEqual(['password', 'runId'])
+	expect(body.password).toBe('test-password')
+	expect(body.runId).toMatch(/^[0-9a-f]{64}$/)
+})
+
+it('retries transient polling errors for the original run and shows a closable notice', async () => {
+	let statusReads = 0
+	mocks.apiFetch.mockImplementation((path: string, options?: { method?: string }) => {
+		if (path === '/api/v1/settings/summary') return Promise.resolve({ accountSyncStatus: 'synced', candidateCount: 24, onlineCount: 1, maxOnline: 1 })
+		if (path === '/api/v1/settings/mixed-source-policy') return Promise.resolve({ enabled: false, cidrs: [], applyStatus: 'applied' })
+		if (path === '/api/v1/system/updates') return Promise.resolve({ currentGateway: 'v1.2.2', available: [{ kind: 'gateway', version: 'v1.2.3', compatible: true }] })
+		if (path === '/api/v1/system/updates/gateway/v1.2.3/apply' && options?.method === 'POST') return Promise.resolve({ runId: 'd'.repeat(64), kind: 'gateway', version: 'v1.2.3', state: 'pending' })
+		if (path === '/api/v1/system/updates/' + 'd'.repeat(64)) {
+			statusReads += 1
+			return statusReads === 1 ? Promise.reject(new TypeError('temporary disconnect')) : Promise.resolve({ runId: 'd'.repeat(64), kind: 'gateway', version: 'v1.2.3', state: 'success' })
+		}
+		return Promise.resolve(undefined)
+	})
+	const wrapper = mount(SettingsView)
+	await flushPromises()
+	await wrapper.get('[data-gateway-update]').trigger('click')
+	await wrapper.get('[data-update-password]').setValue('test-password')
+	await wrapper.get('[data-update-confirm]').trigger('click')
+	await new Promise(resolve => setTimeout(resolve, 1100))
+	await flushPromises()
+	expect(statusReads).toBe(2)
+	expect(wrapper.get('[data-update-notice]').text()).toContain('Gateway 控制面更新成功')
+	expect(wrapper.get('[data-update-notice]').text()).not.toContain('temporary disconnect')
+	await wrapper.get('[data-update-notice] [aria-label="关闭提示"]').trigger('click')
+	expect(wrapper.find('[data-update-notice]').exists()).toBe(false)
+})
+
+it('renders repair-required updates in Chinese without exposing the internal error code', async () => {
+  const wrapper = mount(SettingsView)
+  await flushPromises()
+  const exposed = wrapper.vm as unknown as { updateNotice: unknown; noticeForUpdate: (result: unknown) => unknown }
+  exposed.updateNotice = exposed.noticeForUpdate({ runId: 'e'.repeat(64), kind: 'gateway', version: 'v1.2.3', state: 'repair_required', errorCode: 'internal_secret_detail' })
+  await wrapper.vm.$nextTick()
+  expect(wrapper.get('[data-update-notice]').text()).toContain('需要受限修复')
+  expect(wrapper.get('[data-update-notice]').text()).not.toContain('internal_secret_detail')
 })
 
 it('re-reads the effective policy and uses the shared success notice after saving', async () => {
