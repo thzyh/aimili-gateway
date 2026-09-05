@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -120,6 +121,9 @@ func Install(ctx context.Context, cfg Config) (Result, error) {
 	if err := os.WriteFile(filepath.Join(temporary, "manifest.json"), manifestBody, 0o644); err != nil {
 		return Result{}, &codedError{code: "install_failed", err: err}
 	}
+	if err := makeReleaseReadable(temporary); err != nil {
+		return Result{}, &codedError{code: "install_failed", err: err}
+	}
 	finalPath := filepath.Join(releasesRoot, manifest.Version)
 	if err := os.Rename(temporary, finalPath); err != nil {
 		return Result{}, &codedError{code: "install_failed", err: err}
@@ -158,6 +162,25 @@ func Install(ctx context.Context, cfg Config) (Result, error) {
 		return Result{}, &codedError{code: "cleanup_failed", err: err}
 	}
 	return Result{Version: manifest.Version, PreviousVersion: oldCurrent, State: "success"}, nil
+}
+
+func makeReleaseReadable(releasePath string) error {
+	return filepath.WalkDir(releasePath, func(current string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return errors.New("release contains a link")
+		}
+		if entry.IsDir() {
+			return os.Chmod(current, 0o755)
+		}
+		info, err := entry.Info()
+		if err != nil || !info.Mode().IsRegular() {
+			return errors.New("release contains a non-regular file")
+		}
+		return os.Chmod(current, 0o644)
+	})
 }
 
 func validateStaging(directory string) error {
