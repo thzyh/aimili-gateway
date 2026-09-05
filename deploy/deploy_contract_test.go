@@ -44,6 +44,18 @@ func TestSystemdUnitIsUnprivilegedAndHardened(t *testing.T) {
 	}
 }
 
+func TestExternalUIStageABackupPreservesConfigurationOwnership(t *testing.T) {
+	script := readAsset(t, "../scripts/deploy-external-ui-stage-a-remote.sh")
+	for _, required := range []string{
+		`cp --preserve=mode,ownership,timestamps "$CONFIG" "$BACKUP/config.json"`,
+		`cp --preserve=mode,ownership,timestamps "$BACKUP/config.json" "$CONFIG"`,
+	} {
+		if !strings.Contains(script, required) {
+			t.Fatalf("Stage A configuration rollback does not preserve metadata: missing %q", required)
+		}
+	}
+}
+
 func TestProtocolTransactionOneshotIsRootOnlyAndPathActivated(t *testing.T) {
 	pathUnit := readAsset(t, "systemd/aimili-xui-protocol-transaction.path")
 	timerUnit := readAsset(t, "systemd/aimili-xui-protocol-transaction.timer")

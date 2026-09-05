@@ -72,6 +72,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		if code == "" {
 			code = "operation_failed"
 		}
+		if detail := healthDetail(err); detail != "" {
+			code += ":" + detail
+		}
 		fmt.Fprintln(stderr, code)
 		return 1
 	}
@@ -80,6 +83,22 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+type healthError struct {
+	detail string
+	err    error
+}
+
+func (e *healthError) Error() string { return e.detail }
+func (e *healthError) Unwrap() error { return e.err }
+
+func healthDetail(err error) string {
+	var health *healthError
+	if errors.As(err, &health) {
+		return health.detail
+	}
+	return ""
 }
 
 func validateLoopbackURL(raw string) error {
@@ -101,16 +120,19 @@ func gatewayHealthCheck(base string) func(context.Context, string) error {
 	client := &http.Client{Timeout: 10 * time.Second}
 	return func(ctx context.Context, version string) error {
 		manifest, err := fetch(ctx, client, base+"/manifest.json")
-		if err != nil || !strings.Contains(string(manifest), `"version":"`+version+`"`) {
-			return errors.New("served UI manifest does not match release")
+		if err != nil {
+			return &healthError{detail: "manifest_unavailable", err: err}
+		}
+		if !strings.Contains(string(manifest), `"version":"`+version+`"`) {
+			return &healthError{detail: "manifest_version_mismatch"}
 		}
 		index, err := fetch(ctx, client, base+"/")
 		if err != nil {
-			return err
+			return &healthError{detail: "index_unavailable", err: err}
 		}
 		for _, match := range assetPattern.FindAllSubmatch(index, -1) {
 			if _, err := fetch(ctx, client, base+string(match[1])); err != nil {
-				return err
+				return &healthError{detail: "entry_asset_unavailable", err: err}
 			}
 		}
 		return nil

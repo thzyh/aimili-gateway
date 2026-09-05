@@ -41,14 +41,14 @@ PY
 install -d -m 0700 -o root -g root "$BACKUP"
 install -m 0755 "$GATEWAY" "$BACKUP/aimili-gateway"
 install -m 0644 "$UNIT" "$BACKUP/aimili-gateway.service"
-install -m 0600 "$CONFIG" "$BACKUP/config.json"
+cp --preserve=mode,ownership,timestamps "$CONFIG" "$BACKUP/config.json"
 
 rollback() {
     local status=$?
     trap - ERR
     install -m 0755 "$BACKUP/aimili-gateway" "$GATEWAY"
     install -m 0644 "$BACKUP/aimili-gateway.service" "$UNIT"
-    install -m 0600 "$BACKUP/config.json" "$CONFIG"
+    cp --preserve=mode,ownership,timestamps "$BACKUP/config.json" "$CONFIG"
     systemctl daemon-reload
     systemctl restart aimili-gateway.service
     systemctl is-active --quiet aimili-gateway.service
