@@ -8,7 +8,9 @@ Aimili Gateway 是 AimiliVPN 与 3x-ui 的轻量统一控制台项目。统一�
 
 截至 2026-09-05，主连接安全切换、每出口独立协议、混合协议订阅、动态中文别名、受管资源恢复、节点国家规范化和刷新通知持久关闭均已完成本地实现并部署生产。用户已确认当前 v2rayN 测试正常；生产只读检查为四服务 active、4 个 OpenVPN、1 个 Xray、四条协议状态 ready，根分区使用率 51%。
 
-Gateway 与 AimiliVPN 的最新本地提交尚未推送 GitHub。纯 UI 外部静态资源免重启发布和后端一键安全升级目前尚未实现；在此之前 UI 仍随 `go:embed` 打入 Gateway 二进制并按现有安全部署流程发布。
+Gateway 与 AimiliVPN 的最新本地提交尚未推送 GitHub。纯 UI 外部静态资源免重启发布正在按正式设计分阶段启用，内嵌 UI 仍作为安全兜底；后端一键安全升级尚未完成，在此之前后端仍按现有安全部署流程发布。
+
+外部 UI Stage A 使用 `scripts/build-ui-release.ps1` 生成 `manifest.json`、`manifest.sig` 和 `ui.tar.gz`，由离线 `aimili-gateway-update-install` 校验并原子切换 `current`/`previous`。首次启用需要随 Gateway 二进制部署并只重启 Gateway；启用后日常签名 UI 发布和回退不重启 Gateway，也不触碰 AimiliVPN、x-ui/Xray 或 Caddy。
 
 两层发布机制的正式设计草案已写入 `docs/superpowers/specs/2026-09-05-zero-downtime-ui-and-safe-self-update-design.md`，当前等待用户审核，尚未进入实现。
 
