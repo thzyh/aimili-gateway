@@ -10,7 +10,7 @@ import (
 
 func TestHandlerServesIndexWithoutCaching(t *testing.T) {
 	response := httptest.NewRecorder()
-	Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
+	Handler(Options{}).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d", response.Code)
 	}
@@ -28,7 +28,7 @@ func TestHandlerCachesHashedAssetsImmutably(t *testing.T) {
 		t.Fatal("hashed asset missing")
 	}
 	response := httptest.NewRecorder()
-	Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/"+asset, nil))
+	Handler(Options{}).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/"+asset, nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d", response.Code)
 	}
@@ -53,7 +53,7 @@ func firstHashedAsset(t *testing.T) string {
 
 func TestHandlerFallsBackToIndexForSPARoute(t *testing.T) {
 	response := httptest.NewRecorder()
-	Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/login", nil))
+	Handler(Options{}).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/login", nil))
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `<div id="app"></div>`) {
 		t.Fatal("SPA route did not receive index page")
 	}

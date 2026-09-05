@@ -15,9 +15,19 @@ var files embed.FS
 
 var distribution = mustDistribution()
 
-func Handler() http.Handler {
-	fileServer := http.FileServer(http.FS(distribution))
+type Options struct {
+	ExternalRoot string
+	APIVersion   string
+	resolvePath  func(string) (string, error)
+}
+
+func Handler(options Options) http.Handler {
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		activeDistribution := distribution
+		if external, _, err := openCurrentWithResolver(options.ExternalRoot, options.APIVersion, options.resolvePath); err == nil {
+			activeDistribution = external
+		}
+		fileServer := http.FileServer(http.FS(activeDistribution))
 		if request.Method != http.MethodGet && request.Method != http.MethodHead {
 			response.WriteHeader(http.StatusMethodNotAllowed)
 			return
@@ -26,12 +36,16 @@ func Handler() http.Handler {
 		if requestedPath == "." || requestedPath == "" {
 			requestedPath = "index.html"
 		}
-		if _, err := fs.Stat(distribution, requestedPath); err != nil {
+		if _, err := fs.Stat(activeDistribution, requestedPath); err != nil {
+			if path.Ext(requestedPath) != "" || strings.HasPrefix(requestedPath, "assets/") {
+				http.NotFound(response, request)
+				return
+			}
 			requestedPath = "index.html"
 		}
 		if requestedPath == "index.html" {
 			response.Header().Set("Cache-Control", "no-cache")
-			contents, err := fs.ReadFile(distribution, "index.html")
+			contents, err := fs.ReadFile(activeDistribution, "index.html")
 			if err != nil {
 				response.WriteHeader(http.StatusInternalServerError)
 				return
