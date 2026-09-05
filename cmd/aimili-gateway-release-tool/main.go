@@ -6,6 +6,8 @@ import (
 	"compress/gzip"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"debug/buildinfo"
+	"debug/elf"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -267,6 +269,9 @@ func buildGatewayBundle(binaryPath string, privateKey ed25519.PrivateKey, versio
 	if err != nil || !info.Mode().IsRegular() {
 		return gatewayBundle{}, errors.New("Gateway binary is invalid")
 	}
+	if err := verifyLinuxAMD64Gateway(binaryPath); err != nil {
+		return gatewayBundle{}, err
+	}
 	binary, err := os.ReadFile(binaryPath)
 	if err != nil || len(binary) == 0 {
 		return gatewayBundle{}, errors.New("Gateway binary is unavailable")
@@ -286,6 +291,34 @@ func buildGatewayBundle(binaryPath string, privateKey ed25519.PrivateKey, versio
 		return gatewayBundle{}, err
 	}
 	return gatewayBundle{Manifest: manifest, Signature: signature, Binary: binary}, nil
+}
+
+func verifyLinuxAMD64Gateway(binaryPath string) error {
+	binary, err := elf.Open(binaryPath)
+	if err != nil {
+		return errors.New("Gateway binary is not ELF")
+	}
+	defer binary.Close()
+	if binary.Class != elf.ELFCLASS64 || binary.Machine != elf.EM_X86_64 {
+		return errors.New("Gateway binary is not linux amd64")
+	}
+	info, err := buildinfo.ReadFile(binaryPath)
+	if err != nil {
+		return errors.New("Gateway binary build information is invalid")
+	}
+	var goos, goarch string
+	for _, setting := range info.Settings {
+		switch setting.Key {
+		case "GOOS":
+			goos = setting.Value
+		case "GOARCH":
+			goarch = setting.Value
+		}
+	}
+	if goos != "linux" || goarch != "amd64" {
+		return errors.New("Gateway binary is not linux amd64")
+	}
+	return nil
 }
 
 func ensureEmptyOutput(directory string) error {

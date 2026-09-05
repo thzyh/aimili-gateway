@@ -8,8 +8,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/thzyh/aimili-gateway/internal/releaseverify"
@@ -95,10 +97,7 @@ func TestRunKeygenCreatesMatchingKeysWithoutOverwrite(t *testing.T) {
 
 func TestRunGatewayWritesVerifiableLinuxAMD64ReleaseAssets(t *testing.T) {
 	directory := t.TempDir()
-	binary := filepath.Join(directory, "gateway-input")
-	if err := os.WriteFile(binary, []byte("gateway binary"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	binary := buildGatewayBinary(t, "linux", "amd64")
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -135,22 +134,51 @@ func TestRunGatewayWritesVerifiableLinuxAMD64ReleaseAssets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	digest := sha256.Sum256([]byte("gateway binary"))
+	digest := sha256.Sum256(releasedBinary)
 	if manifest.SchemaVersion != 1 || manifest.Kind != "gateway" || manifest.Platform != "linux-amd64" || manifest.APIVersion != "v1" ||
 		manifest.ImpactClass != "control-plane-only" || manifest.Binary.Path != "aimili-gateway" || manifest.Binary.SHA256 != hex.EncodeToString(digest[:]) ||
-		manifest.Binary.Bytes != int64(len("gateway binary")) || manifest.Version != "v1.2.3" || manifest.Commit != "abc1234" ||
+		manifest.Binary.Bytes != int64(len(releasedBinary)) || manifest.Version != "v1.2.3" || manifest.Commit != "abc1234" ||
 		manifest.BuiltAt != "2026-09-05T00:00:00Z" || manifest.MinDatabaseSchema != 11 || manifest.MaxDatabaseSchema != 13 {
 		encoded, _ := json.Marshal(manifest)
 		t.Fatalf("gateway manifest = %s", encoded)
 	}
 }
 
-func TestRunGatewayRejectsInvalidMetadataAndUnsafePaths(t *testing.T) {
+func TestRunGatewayRejectsNonLinuxAMD64BinaryInputs(t *testing.T) {
 	directory := t.TempDir()
-	binary := filepath.Join(directory, "gateway-input")
-	if err := os.WriteFile(binary, []byte("gateway binary"), 0o700); err != nil {
+	plainFile := filepath.Join(directory, "plain-input")
+	if err := os.WriteFile(plainFile, []byte("not an executable"), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privatePath := filepath.Join(directory, "signing.key")
+	if err := os.WriteFile(privatePath, []byte(hex.EncodeToString(privateKey)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, binary := range map[string]string{
+		"plain file":  plainFile,
+		"linux arm64": buildGatewayBinary(t, "linux", "arm64"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			output := filepath.Join(directory, strings.ReplaceAll(name, " ", "-"))
+			code := run([]string{
+				"gateway", "--binary", binary, "--private-key", privatePath, "--out", output,
+				"--version", "v1.2.3", "--commit", "abc1234", "--built-at", "2026-09-05T00:00:00Z",
+				"--min-database-schema", "11", "--max-database-schema", "13",
+			}, &bytes.Buffer{}, &bytes.Buffer{})
+			if code == 0 {
+				t.Fatal("non-linux-amd64 binary accepted")
+			}
+		})
+	}
+}
+
+func TestRunGatewayRejectsInvalidMetadataAndUnsafePaths(t *testing.T) {
+	directory := t.TempDir()
+	binary := buildGatewayBinary(t, "linux", "amd64")
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -207,4 +235,20 @@ func mustRead(t *testing.T, filename string) []byte {
 		t.Fatal(err)
 	}
 	return body
+}
+
+func buildGatewayBinary(t *testing.T, goos, goarch string) string {
+	t.Helper()
+	directory := t.TempDir()
+	source := filepath.Join(directory, "main.go")
+	if err := os.WriteFile(source, []byte("package main\nfunc main() {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	binary := filepath.Join(directory, "aimili-gateway")
+	command := exec.Command("go", "build", "-o", binary, source)
+	command.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS="+goos, "GOARCH="+goarch)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("build %s/%s: %v\n%s", goos, goarch, err, output)
+	}
+	return binary
 }

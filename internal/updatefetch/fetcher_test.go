@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"io"
@@ -156,5 +157,24 @@ func TestReadPublicKeyAcceptsLowercaseHexKeygenFormat(t *testing.T) {
 	actual, err := readPublicKey(filename)
 	if err != nil || !bytes.Equal(actual, publicKey) {
 		t.Fatalf("key=%x err=%v", actual, err)
+	}
+}
+
+func TestReadPublicKeyRejectsNonCanonicalKeygenFormat(t *testing.T) {
+	publicKey := ed25519.PublicKey(bytes.Repeat([]byte{0xab}, ed25519.PublicKeySize))
+	for name, body := range map[string]string{
+		"uppercase hex":  strings.ToUpper(hex.EncodeToString(publicKey)),
+		"mixed case hex": strings.Replace(hex.EncodeToString(publicKey), "ab", "aB", 1),
+		"base64":         base64.StdEncoding.EncodeToString(publicKey),
+	} {
+		t.Run(name, func(t *testing.T) {
+			filename := filepath.Join(t.TempDir(), "release.pub")
+			if err := os.WriteFile(filename, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := readPublicKey(filename); err == nil {
+				t.Fatal("non-canonical public key accepted")
+			}
+		})
 	}
 }

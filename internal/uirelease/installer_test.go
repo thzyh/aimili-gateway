@@ -8,6 +8,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -177,6 +179,25 @@ func TestAvailableBytesReturnsCapacityForExistingDirectory(t *testing.T) {
 	}
 	if available == 0 {
 		t.Fatal("available byte count is zero")
+	}
+}
+
+func TestReadPublicKeyRejectsNonCanonicalKeygenFormat(t *testing.T) {
+	publicKey := ed25519.PublicKey(bytes.Repeat([]byte{0xab}, ed25519.PublicKeySize))
+	for name, body := range map[string]string{
+		"uppercase hex":  strings.ToUpper(hex.EncodeToString(publicKey)),
+		"mixed case hex": strings.Replace(hex.EncodeToString(publicKey), "ab", "aB", 1),
+		"base64":         base64.StdEncoding.EncodeToString(publicKey),
+	} {
+		t.Run(name, func(t *testing.T) {
+			filename := filepath.Join(t.TempDir(), "release.pub")
+			if err := os.WriteFile(filename, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := readPublicKey(filename); err == nil {
+				t.Fatal("non-canonical public key accepted")
+			}
+		})
 	}
 }
 
