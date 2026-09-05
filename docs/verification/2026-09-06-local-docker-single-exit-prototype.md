@@ -44,7 +44,7 @@ Gateway 保存设计和逐文件计划：
 
 2026-09-06 本轮最新结果：
 
-- `AIMILI_DOCKER_INTEGRATION=1` 的 AimiliVPN 全量测试：175 项通过，0 失败，运行容器集成测试未跳过。
+- `AIMILI_DOCKER_INTEGRATION=1` 的 AimiliVPN 最终全量测试：174 项通过，0 失败，运行容器集成测试未跳过。
 - `docker compose ... config --quiet`：通过。
 - `python -m py_compile deploy/docker-single-exit/entrypoint.py`：通过；生成的单个缓存文件已按准确路径清理。
 - `git diff --check`：通过。
@@ -80,6 +80,7 @@ AimiliVPN 本地提交：
 - `820911f`：Docker 停止状态探测修复。
 - `4f46bde`：运行验证与脚本兼容性修复。
 - `a49b015`：用户文档。
+- `183420e`：复杂度审查移除只供测试调用的生产脚本接口，净减少 20 行。
 
 Gateway 本地文档提交：
 
