@@ -3,11 +3,146 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/thzyh/aimili-gateway/internal/gatewayupdate"
 )
+
+func TestDatabaseBusyCheckIgnoresOnlySafeOrphanedEgressOperations(t *testing.T) {
+	now := time.Now().UTC()
+	tests := []struct {
+		name  string
+		setup func(*testing.T, *sql.DB)
+		want  error
+	}{
+		{
+			name: "ignores an old unreferenced operation when its mode is ready",
+			setup: func(t *testing.T, database *sql.DB) {
+				insertMode(t, database, "agw-main", "ready", "completed-operation")
+				insertOperation(t, database, "orphaned-operation", "agw-main", now.Add(-72*time.Hour).UnixMilli())
+			},
+		},
+		{
+			name: "blocks a recent unreferenced operation",
+			setup: func(t *testing.T, database *sql.DB) {
+				insertMode(t, database, "agw-main", "ready", "completed-operation")
+				insertOperation(t, database, "recent-operation", "agw-main", now.Add(-14*time.Minute).UnixMilli())
+			},
+			want: gatewayupdate.ErrOperationBusy,
+		},
+		{
+			name: "blocks an old operation referenced by its mode",
+			setup: func(t *testing.T, database *sql.DB) {
+				insertMode(t, database, "agw-main", "ready", "current-operation")
+				insertOperation(t, database, "current-operation", "agw-main", now.Add(-72*time.Hour).UnixMilli())
+			},
+			want: gatewayupdate.ErrOperationBusy,
+		},
+	}
+	for _, state := range []string{"switching", "subscription_pending", "rolling_back", "repair_required"} {
+		tests = append(tests, struct {
+			name  string
+			setup func(*testing.T, *sql.DB)
+			want  error
+		}{
+			name: "blocks mode in " + state + " state",
+			setup: func(t *testing.T, database *sql.DB) {
+				insertMode(t, database, "agw-main", state, "")
+			},
+			want: gatewayupdate.ErrOperationBusy,
+		})
+	}
+	for _, blocker := range []struct {
+		name  string
+		setup func(*testing.T, *sql.DB)
+	}{
+		{
+			name: "a running proxy operation",
+			setup: func(t *testing.T, database *sql.DB) {
+				mustExec(t, database, `INSERT INTO proxy_operations(result) VALUES ('running')`)
+			},
+		},
+		{
+			name: "a pending mixed source policy",
+			setup: func(t *testing.T, database *sql.DB) {
+				mustExec(t, database, `INSERT INTO mixed_source_policy(apply_status) VALUES ('pending')`)
+			},
+		},
+		{
+			name: "an applying mixed source policy",
+			setup: func(t *testing.T, database *sql.DB) {
+				mustExec(t, database, `INSERT INTO mixed_source_policy(apply_status) VALUES ('applying')`)
+			},
+		},
+	} {
+		tests = append(tests, struct {
+			name  string
+			setup func(*testing.T, *sql.DB)
+			want  error
+		}{
+			name:  "blocks " + blocker.name,
+			setup: blocker.setup,
+			want:  gatewayupdate.ErrOperationBusy,
+		})
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			databasePath := filepath.Join(t.TempDir(), "gateway.db")
+			database := createBusyCheckDatabase(t, databasePath)
+			test.setup(t, database)
+			if err := database.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			err := databaseBusyCheck(databasePath)(context.Background())
+			if !errors.Is(err, test.want) || (test.want == nil && err != nil) {
+				t.Fatalf("databaseBusyCheck() error = %v, want %v", err, test.want)
+			}
+		})
+	}
+}
+
+func createBusyCheckDatabase(t *testing.T, databasePath string) *sql.DB {
+	t.Helper()
+	database, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`CREATE TABLE egress_protocol_modes (egress_id TEXT PRIMARY KEY, state TEXT NOT NULL, last_operation_id TEXT NOT NULL)`,
+		`CREATE TABLE egress_operations (operation_id TEXT PRIMARY KEY, egress_id TEXT NOT NULL, started_at INTEGER NOT NULL, completed_at INTEGER NOT NULL)`,
+		`CREATE TABLE proxy_operations (result TEXT NOT NULL)`,
+		`CREATE TABLE mixed_source_policy (apply_status TEXT NOT NULL)`,
+	} {
+		mustExec(t, database, statement)
+	}
+	return database
+}
+
+func insertMode(t *testing.T, database *sql.DB, egressID, state, lastOperationID string) {
+	t.Helper()
+	mustExec(t, database, `INSERT INTO egress_protocol_modes(egress_id, state, last_operation_id) VALUES (?, ?, ?)`, egressID, state, lastOperationID)
+}
+
+func insertOperation(t *testing.T, database *sql.DB, operationID, egressID string, startedAt int64) {
+	t.Helper()
+	mustExec(t, database, `INSERT INTO egress_operations(operation_id, egress_id, started_at, completed_at) VALUES (?, ?, ?, 0)`, operationID, egressID, startedAt)
+}
+
+func mustExec(t *testing.T, database *sql.DB, statement string, args ...any) {
+	t.Helper()
+	if _, err := database.Exec(statement, args...); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestRunRejectsIncompleteUIInstallArguments(t *testing.T) {
 	var stdout, stderr bytes.Buffer

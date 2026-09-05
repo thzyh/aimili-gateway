@@ -211,14 +211,33 @@ func databaseBusyCheck(databasePath string) func(context.Context) error {
 			return err
 		}
 		defer database.Close()
-		queries := []string{
-			`SELECT EXISTS(SELECT 1 FROM egress_operations WHERE completed_at = 0)`,
-			`SELECT EXISTS(SELECT 1 FROM proxy_operations WHERE result = 'running')`,
-			`SELECT EXISTS(SELECT 1 FROM mixed_source_policy WHERE apply_status IN ('pending', 'applying'))`,
+		queries := []struct {
+			statement string
+			args      []any
+		}{
+			{
+				statement: `SELECT EXISTS(
+					SELECT 1 FROM egress_protocol_modes WHERE state <> 'ready'
+					UNION ALL
+					SELECT 1 FROM egress_operations AS operation
+					WHERE operation.completed_at = 0
+					AND (
+						operation.started_at >= ?
+						OR NOT EXISTS(
+							SELECT 1 FROM egress_protocol_modes AS mode
+							WHERE mode.egress_id = operation.egress_id
+							AND mode.state = 'ready'
+							AND mode.last_operation_id <> operation.operation_id
+						)
+					))`,
+				args: []any{time.Now().UTC().Add(-15 * time.Minute).UnixMilli()},
+			},
+			{statement: `SELECT EXISTS(SELECT 1 FROM proxy_operations WHERE result = 'running')`},
+			{statement: `SELECT EXISTS(SELECT 1 FROM mixed_source_policy WHERE apply_status IN ('pending', 'applying'))`},
 		}
 		for _, query := range queries {
 			var busy bool
-			if err := database.QueryRowContext(ctx, query).Scan(&busy); err != nil {
+			if err := database.QueryRowContext(ctx, query.statement, query.args...).Scan(&busy); err != nil {
 				return err
 			}
 			if busy {
