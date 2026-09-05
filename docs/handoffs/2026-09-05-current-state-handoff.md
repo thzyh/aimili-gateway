@@ -34,7 +34,7 @@
 
 | 仓库 | 最新业务代码基线 | 工作区 | 本地相对跟踪分支 |
 | --- | --- | --- | --- |
-| Aimili Gateway | `43b63a4` | 已跟踪文件干净；保留既有未跟踪构建、缓存和 `.deploy-assets/` | ahead 5，其中 4 个业务代码提交、1 个本文档提交 |
+| Aimili Gateway | `43b63a4` | 已跟踪文件干净；保留既有未跟踪构建、缓存和 `.deploy-assets/` | ahead 6，其中 4 个业务代码提交、2 个文档提交 |
 | AimiliVPN | `88be2fb` | 干净 | ahead 2 |
 | 3x-ui 补丁与部署 | `5dbe6f0` | 干净；该功能分支没有远程 | 不适用 |
 
@@ -77,7 +77,7 @@ AimiliVPN 尚未推送的两个最新提交：
 
 ## 6. 当前未实现或未执行
 
-- Gateway 的“外部静态资源免重启发布”与“后端一键安全升级”目前只是架构建议，尚未设计、编码或部署。
+- Gateway 的“外部静态资源免重启发布”与“后端一键安全升级”正式设计草案已写入 `docs/superpowers/specs/2026-09-05-zero-downtime-ui-and-safe-self-update-design.md`，等待用户审核；尚未制定实施计划、编码或部署。
 - Gateway 与 AimiliVPN 最新本地提交尚未推送 GitHub。
 - 本次文档整理没有创建新备份、删除文件、部署服务或修改生产数据库。
 

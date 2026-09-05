@@ -8,7 +8,9 @@ Aimili Gateway 是 AimiliVPN 与 3x-ui 的轻量统一控制台项目。统一�
 
 截至 2026-09-05，主连接安全切换、每出口独立协议、混合协议订阅、动态中文别名、受管资源恢复、节点国家规范化和刷新通知持久关闭均已完成本地实现并部署生产。用户已确认当前 v2rayN 测试正常；生产只读检查为四服务 active、4 个 OpenVPN、1 个 Xray、四条协议状态 ready，根分区使用率 51%。
 
-Gateway 与 AimiliVPN 的最新本地提交尚未推送 GitHub。纯 UI 外部静态资源免重启发布和后端一键安全升级目前仅为架构建议，尚未设计或实现；在此之前 UI 仍随 `go:embed` 打入 Gateway 二进制并按现有安全部署流程发布。
+Gateway 与 AimiliVPN 的最新本地提交尚未推送 GitHub。纯 UI 外部静态资源免重启发布和后端一键安全升级目前尚未实现；在此之前 UI 仍随 `go:embed` 打入 Gateway 二进制并按现有安全部署流程发布。
+
+两层发布机制的正式设计草案已写入 `docs/superpowers/specs/2026-09-05-zero-downtime-ui-and-safe-self-update-design.md`，当前等待用户审核，尚未进入实现。
 
 以下段落是项目历史演进，用于理解设计来源，不代表当前生产快照。
 
@@ -25,6 +27,7 @@ Gateway 只管理 `agw-` 命名空间；不接管非受管 3x-ui/Xray 资源，�
 ## 重要文件
 
 - `docs/handoffs/2026-09-05-current-state-handoff.md`：当前本地路径、Git、生产摘要、最新修复与未完成事项。
+- `docs/superpowers/specs/2026-09-05-zero-downtime-ui-and-safe-self-update-design.md`：外部 UI 原子切换、内嵌兜底与后端一键安全升级设计草案。
 - `docs/superpowers/specs/2026-08-25-country-proxy-console-design.md`：当前后续设计，定义国家代理目录、VLESS＋mixed 成对编排、容量、安全、统一高级设置和真实出口验收。
 - `docs/superpowers/specs/2026-08-26-online-proxy-pools-design.md`：V1-C 正式设计，定义每候选出口实例、在线双协议资源池、紧凑前端和阶梯容量门槛。
 - `docs/superpowers/specs/2026-08-27-advanced-settings-unified-credentials-design.md`：已批准的 V1-D 正式设计，定义高级设置、三账户同步、服务端自动代登录、SOCKS5H 来源开关和状态简化。
