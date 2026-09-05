@@ -1,6 +1,14 @@
 # Aimili Gateway 当前状态交接
 
-日期：2026-09-05（Asia/Shanghai）。状态：当前权威入口。
+日期：2026-09-06（Asia/Shanghai）。状态：当前权威入口。
+
+## 2026-09-06 本机 Docker 单出口原型
+
+AimiliVPN 单出口数据面原型已在 Windows Docker Desktop 实际运行并通过真实出口验证。容器使用专用 bridge/volume、只读根文件系统、`CAP_NET_ADMIN` 和 `/dev/net/tun`，只向 Windows 回环发布 `17928` 代理与 `18787` 管理页；`tun0`、单 OpenVPN、代理出口与宿主直连出口差异均已验证。
+
+启动和验证安全门确认 v2rayN PID、系统代理、Windows 默认路由及现用代理 HTTP 204 健康不变。没有连接 ny 或读取任何生产资产。原型当前保持运行，等待用户执行 `aimili-vpngate/deploy/docker-single-exit/show-access.ps1` 后自行验收。
+
+本阶段尚未容器化 Gateway、3x-ui/Xray、订阅和四出口协议事务。完整事实和本地提交见 `docs/verification/2026-09-06-local-docker-single-exit-prototype.md`；不能把单出口原型表述为完整本机 Docker 部署。
 
 ## 当前任务与阻断
 
