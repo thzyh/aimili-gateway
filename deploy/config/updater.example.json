@@ -1,0 +1,12 @@
+{
+  "manifestOrigin": "https://updates.example.invalid/aimili-gateway",
+  "redirectHosts": [
+    "updates.example.invalid"
+  ],
+  "channels": [
+    "stable"
+  ],
+  "publicKeyFile": "/etc/aimili-gateway/release-ed25519.pub",
+  "stagingRoot": "/var/lib/aimili-gateway-update/staging",
+  "maxAssetBytes": 67108864
+}

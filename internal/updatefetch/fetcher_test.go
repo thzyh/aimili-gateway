@@ -1,0 +1,142 @@
+package updatefetch
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/thzyh/aimili-gateway/internal/updatetxn"
+)
+
+func TestFetcherUsesOnlyConfiguredOriginAndExactAssetNames(t *testing.T) {
+	var mu sync.Mutex
+	var paths []string
+	server := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		mu.Lock()
+		paths = append(paths, request.URL.EscapedPath())
+		mu.Unlock()
+		_, _ = io.WriteString(response, "fixture")
+	}))
+	defer server.Close()
+	fetcher := newTestFetcher(t, server)
+	result, err := fetcher.Fetch(context.Background(), gatewayRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"/stable/gateway/v1.2.3/manifest.json",
+		"/stable/gateway/v1.2.3/manifest.sig",
+		"/stable/gateway/v1.2.3/aimili-gateway",
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if strings.Join(paths, "\n") != strings.Join(want, "\n") || result.StagingDir == "" {
+		t.Fatalf("paths=%q result=%#v", paths, result)
+	}
+}
+
+func TestFetcherRejectsRedirectOutsideAllowlist(t *testing.T) {
+	target := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer target.Close()
+	targetURL := strings.Replace(target.URL, "127.0.0.1", "localhost", 1)
+	origin := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		http.Redirect(response, request, targetURL+"/stolen", http.StatusFound)
+	}))
+	defer origin.Close()
+	fetcher := newTestFetcher(t, origin)
+	if _, err := fetcher.Fetch(context.Background(), gatewayRequest()); ErrorCode(err) != "blocked_redirect" {
+		t.Fatalf("redirect error = %v", err)
+	}
+}
+
+func TestFetcherRequiresHTTPSWithoutQueryOrCredentials(t *testing.T) {
+	for name, origin := range map[string]string{
+		"http":        "http://updates.example.test/releases",
+		"query":       "https://updates.example.test/releases?token=secret",
+		"credentials": "https://user:pass@updates.example.test/releases",
+	} {
+		t.Run(name, func(t *testing.T) {
+			config := Config{ManifestOrigin: origin, RedirectHosts: []string{"updates.example.test"}, Channels: []string{"stable"}, PublicKeyFile: "fixture.pub", StagingRoot: t.TempDir(), MaxAssetBytes: 1024}
+			if err := config.Validate(); err == nil {
+				t.Fatalf("origin %q accepted", origin)
+			}
+		})
+	}
+}
+
+func TestFetcherChecksFreeSpaceBeforeAnyRequest(t *testing.T) {
+	hits := 0
+	server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits++ }))
+	defer server.Close()
+	fetcher := newTestFetcher(t, server)
+	fetcher.AvailableBytes = func(string) (uint64, error) { return 1, nil }
+	if _, err := fetcher.Fetch(context.Background(), gatewayRequest()); ErrorCode(err) != "disk_full" {
+		t.Fatalf("disk error = %v", err)
+	}
+	if hits != 0 {
+		t.Fatalf("HTTP requests before disk gate = %d", hits)
+	}
+}
+
+func TestFetcherNeverLogsCredentialOrCompleteURL(t *testing.T) {
+	const credential = "Bearer secret-fixture"
+	server := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("Authorization") != credential {
+			http.Error(response, "missing credential", http.StatusUnauthorized)
+			return
+		}
+		_, _ = io.WriteString(response, "fixture")
+	}))
+	defer server.Close()
+	fetcher := newTestFetcher(t, server)
+	credentialFile := filepath.Join(t.TempDir(), "credential")
+	if err := os.WriteFile(credentialFile, []byte(credential+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fetcher.Config.CredentialFile = credentialFile
+	var logs bytes.Buffer
+	fetcher.Log = func(message string) { logs.WriteString(message) }
+	if _, err := fetcher.Fetch(context.Background(), gatewayRequest()); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(logs.String(), credential) || strings.Contains(logs.String(), server.URL+"/") {
+		t.Fatalf("sensitive fetch log = %q", logs.String())
+	}
+}
+
+func newTestFetcher(t *testing.T, server *httptest.Server) *Fetcher {
+	t.Helper()
+	host := strings.Split(strings.TrimPrefix(server.URL, "https://"), ":")[0]
+	return &Fetcher{
+		Config: Config{
+			ManifestOrigin: server.URL,
+			RedirectHosts:  []string{host},
+			Channels:       []string{"stable"},
+			PublicKeyFile:  "fixture.pub",
+			StagingRoot:    t.TempDir(),
+			MaxAssetBytes:  1024,
+		},
+		Client:         server.Client(),
+		AvailableBytes: func(string) (uint64, error) { return 1 << 30, nil },
+		Verify:         func(updatetxn.Kind, []byte, []byte, []byte) error { return nil },
+	}
+}
+
+func gatewayRequest() updatetxn.Request {
+	return updatetxn.Request{RunID: strings.Repeat("a", 64), Kind: updatetxn.KindGateway, Version: "v1.2.3", Action: updatetxn.ActionApply}
+}
+
+func TestErrorCodeUnwrapsFetcherErrors(t *testing.T) {
+	err := &codedError{code: "fixture", err: errors.New("cause")}
+	if ErrorCode(err) != "fixture" || !errors.Is(err, errors.Unwrap(err)) {
+		t.Fatalf("coded error = %v", err)
+	}
+}

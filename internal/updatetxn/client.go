@@ -38,7 +38,7 @@ func NewRunID() (string, error) {
 }
 
 func (c *Client) Submit(ctx context.Context, request Request) (Result, error) {
-	if err := validateRequest(request); err != nil {
+	if err := ValidateRequest(request); err != nil {
 		return Result{}, err
 	}
 	if err := ctx.Err(); err != nil {
@@ -89,7 +89,7 @@ func (c *Client) Get(ctx context.Context, runID string) (Result, error) {
 	if err := readTrustedJSON(filepath.Join(c.RequestDir, runID+".json"), nil, &request); err != nil {
 		return Result{}, err
 	}
-	if err := validateRequest(request); err != nil || request.RunID != runID {
+	if err := ValidateRequest(request); err != nil || request.RunID != runID {
 		return Result{}, ErrInvalidRequest
 	}
 	return pendingResult(request), nil
@@ -123,7 +123,7 @@ func (c *Client) resolveExistingLease(ctx context.Context, leasePath string, req
 	return Result{}, true, ErrUpdateBusy
 }
 
-func validateRequest(request Request) error {
+func ValidateRequest(request Request) error {
 	if !hexIdentifier.MatchString(request.RunID) || (request.Kind != KindUI && request.Kind != KindGateway) ||
 		(request.Action != ActionApply && request.Action != ActionRollback) {
 		return ErrInvalidRequest
