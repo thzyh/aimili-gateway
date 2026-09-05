@@ -102,7 +102,7 @@ it('explains why the current network source cannot be identified', async () => {
   mocks.apiFetch.mockImplementation((path: string) => {
     if (path === '/api/v1/settings/summary') return Promise.resolve({ accountSyncStatus: 'synced', candidateCount: 24, onlineCount: 1, maxOnline: 1 })
     if (path === '/api/v1/settings/mixed-source-policy') return Promise.resolve({ enabled: false, cidrs: [], applyStatus: 'applied' })
-	if (path === '/api/v1/system/updates') return Promise.resolve({ currentGateway: 'v1.2.2', currentUi: 'a'.repeat(64), available: [] })
+	if (path === '/api/v1/system/updates') return Promise.resolve({ enabled: true, currentGateway: 'v1.2.2', currentUi: 'a'.repeat(64), available: [] })
     if (path === '/api/v1/settings/mixed-source-policy/authorize-current') return Promise.reject(new APIError(403, 'client_forwarded_for_missing'))
     return Promise.resolve(undefined)
   })
@@ -124,7 +124,7 @@ it('distinguishes no-restart UI updates from control-plane restart', async () =>
 		if (path === '/api/v1/settings/summary') return Promise.resolve({ accountSyncStatus: 'synced', candidateCount: 24, onlineCount: 1, maxOnline: 1 })
 		if (path === '/api/v1/settings/mixed-source-policy') return Promise.resolve({ enabled: false, cidrs: [], applyStatus: 'applied' })
 		if (path === '/api/v1/system/updates') return Promise.resolve({
-			currentGateway: 'v1.2.2', currentUi: 'a'.repeat(64),
+			enabled: true, currentGateway: 'v1.2.2', currentUi: 'a'.repeat(64),
 			available: [{ kind: 'ui', version: 'b'.repeat(64), compatible: true }, { kind: 'gateway', version: 'v1.2.3', compatible: true }],
 		})
 		return Promise.resolve(undefined)
@@ -140,7 +140,7 @@ it('requires password reauthentication and submits only a closed version plus ru
 	mocks.apiFetch.mockImplementation((path: string, options?: { method?: string; body?: string }) => {
 		if (path === '/api/v1/settings/summary') return Promise.resolve({ accountSyncStatus: 'synced', candidateCount: 24, onlineCount: 1, maxOnline: 1 })
 		if (path === '/api/v1/settings/mixed-source-policy') return Promise.resolve({ enabled: false, cidrs: [], applyStatus: 'applied' })
-		if (path === '/api/v1/system/updates') return Promise.resolve({ currentGateway: 'v1.2.2', available: [{ kind: 'gateway', version: 'v1.2.3', compatible: true }] })
+		if (path === '/api/v1/system/updates') return Promise.resolve({ enabled: true, currentGateway: 'v1.2.2', available: [{ kind: 'gateway', version: 'v1.2.3', compatible: true }] })
 		if (path === '/api/v1/system/updates/gateway/v1.2.3/apply' && options?.method === 'POST') {
 			submittedRunId = JSON.parse(options.body as string).runId
 			return Promise.resolve({ runId: submittedRunId, kind: 'gateway', version: 'v1.2.3', state: 'pending' })
@@ -169,7 +169,7 @@ it('retries transient polling errors for the original run and shows a closable n
 	mocks.apiFetch.mockImplementation((path: string, options?: { method?: string; body?: string }) => {
 		if (path === '/api/v1/settings/summary') return Promise.resolve({ accountSyncStatus: 'synced', candidateCount: 24, onlineCount: 1, maxOnline: 1 })
 		if (path === '/api/v1/settings/mixed-source-policy') return Promise.resolve({ enabled: false, cidrs: [], applyStatus: 'applied' })
-		if (path === '/api/v1/system/updates') return Promise.resolve({ currentGateway: 'v1.2.2', available: [{ kind: 'gateway', version: 'v1.2.3', compatible: true }] })
+		if (path === '/api/v1/system/updates') return Promise.resolve({ enabled: true, currentGateway: 'v1.2.2', available: [{ kind: 'gateway', version: 'v1.2.3', compatible: true }] })
 		if (path === '/api/v1/system/updates/gateway/v1.2.3/apply' && options?.method === 'POST') {
 			submittedRunId = JSON.parse(options.body as string).runId
 			return Promise.resolve({ runId: submittedRunId, kind: 'gateway', version: 'v1.2.3', state: 'pending' })
@@ -209,7 +209,7 @@ it('reauthenticates before starting a Gateway rollback and follows its run id', 
   mocks.apiFetch.mockImplementation((path: string, options?: { method?: string; body?: string }) => {
     if (path === '/api/v1/settings/summary') return Promise.resolve({ accountSyncStatus: 'synced', candidateCount: 24, onlineCount: 1, maxOnline: 1 })
     if (path === '/api/v1/settings/mixed-source-policy') return Promise.resolve({ enabled: false, cidrs: [], applyStatus: 'applied' })
-    if (path === '/api/v1/system/updates') return Promise.resolve({ currentGateway: 'v1.2.3', available: [] })
+    if (path === '/api/v1/system/updates') return Promise.resolve({ enabled: true, currentGateway: 'v1.2.3', available: [] })
     if (path === '/api/v1/system/updates/gateway/rollback' && options?.method === 'POST') {
       submittedRunId = JSON.parse(options.body as string).runId
       return Promise.resolve({ runId: submittedRunId, kind: 'gateway', state: 'pending' })
@@ -231,7 +231,7 @@ it('reauthenticates before starting a Gateway rollback and follows its run id', 
   expect(JSON.parse(call?.[1].body)).toMatchObject({ password: 'test-password', runId: expect.stringMatching(/^[0-9a-f]{64}$/) })
   expect(mocks.apiFetch).toHaveBeenCalledWith(`/api/v1/system/updates/${submittedRunId}`)
   const notice = wrapper.get('[data-update-notice]')
-  expect(notice.text()).toContain('Gateway 控制面更新已回滚')
+  expect(notice.text()).toContain('Gateway 控制面已回滚')
   await notice.get('[aria-label="关闭提示"]').trigger('click')
   expect(wrapper.find('[data-update-notice]').exists()).toBe(false)
 })
@@ -241,7 +241,7 @@ it('continues polling the generated run id when an update POST response is lost'
   mocks.apiFetch.mockImplementation((path: string, options?: { method?: string; body?: string }) => {
     if (path === '/api/v1/settings/summary') return Promise.resolve({ accountSyncStatus: 'synced', candidateCount: 24, onlineCount: 1, maxOnline: 1 })
     if (path === '/api/v1/settings/mixed-source-policy') return Promise.resolve({ enabled: false, cidrs: [], applyStatus: 'applied' })
-    if (path === '/api/v1/system/updates') return Promise.resolve({ currentGateway: 'v1.2.2', available: [{ kind: 'gateway', version: 'v1.2.3', compatible: true }] })
+    if (path === '/api/v1/system/updates') return Promise.resolve({ enabled: true, currentGateway: 'v1.2.2', available: [{ kind: 'gateway', version: 'v1.2.3', compatible: true }] })
     if (path === '/api/v1/system/updates/gateway/v1.2.3/apply' && options?.method === 'POST') {
       submittedRunId = JSON.parse(options.body ?? '{}').runId
       return Promise.reject(new TypeError('response lost after submit'))
@@ -258,8 +258,53 @@ it('continues polling the generated run id when an update POST response is lost'
   await flushPromises()
 
   expect(submittedRunId).toMatch(/^[0-9a-f]{64}$/)
+  expect(mocks.apiFetch.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(1)
   expect(mocks.apiFetch).toHaveBeenCalledWith(`/api/v1/system/updates/${submittedRunId}`)
   expect(wrapper.get('[data-update-notice]').text()).toContain('Gateway 控制面更新成功')
+})
+
+it('disables every update mutation when capability is unavailable', async () => {
+  mocks.apiFetch.mockImplementation((path: string) => {
+    if (path === '/api/v1/settings/summary') return Promise.resolve({ accountSyncStatus: 'synced' })
+    if (path === '/api/v1/settings/mixed-source-policy') return Promise.resolve({ enabled: false, cidrs: [], applyStatus: 'applied' })
+    if (path === '/api/v1/system/updates') return Promise.reject(new APIError(503, 'updates_disabled'))
+    return Promise.resolve(undefined)
+  })
+  const wrapper = mount(SettingsView)
+  await flushPromises()
+  for (const selector of ['[data-ui-update]', '[data-ui-rollback]', '[data-gateway-update]', '[data-gateway-rollback]']) {
+    expect(wrapper.get(selector).attributes('disabled')).toBeDefined()
+    await wrapper.get(selector).trigger('click')
+  }
+  expect(wrapper.find('[data-update-password]').exists()).toBe(false)
+  expect(mocks.apiFetch.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(0)
+})
+
+it('shows UI rollback semantics instead of new UI applied', async () => {
+  let runId = ''
+  mocks.apiFetch.mockImplementation((path: string, options?: { method?: string; body?: string }) => {
+    if (path === '/api/v1/settings/summary') return Promise.resolve({ accountSyncStatus: 'synced' })
+    if (path === '/api/v1/settings/mixed-source-policy') return Promise.resolve({ enabled: false, cidrs: [], applyStatus: 'applied' })
+    if (path === '/api/v1/system/updates') return Promise.resolve({ enabled: true, currentGateway: 'v1.2.3', available: [] })
+    if (path === '/api/v1/system/updates/ui/rollback' && options?.method === 'POST') {
+      runId = JSON.parse(options.body ?? '{}').runId
+      return Promise.resolve({ runId, kind: 'ui', state: 'pending' })
+    }
+    if (path === `/api/v1/system/updates/${runId}`) return Promise.resolve({ runId, kind: 'ui', state: 'rolled_back' })
+    return Promise.resolve(undefined)
+  })
+  const wrapper = mount(SettingsView)
+  await flushPromises()
+  await wrapper.get('[data-ui-rollback]').trigger('click')
+  await wrapper.get('[data-update-password]').setValue('test-password')
+  await wrapper.get('[data-update-confirm]').trigger('click')
+  await flushPromises()
+  const notice = wrapper.get('[data-update-notice]')
+  expect(notice.text()).toContain('界面已回滚')
+  expect(notice.text()).not.toContain('新界面已生效')
+  expect(mocks.apiFetch.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(1)
+  await notice.get('[aria-label="关闭提示"]').trigger('click')
+  expect(wrapper.find('[data-update-notice]').exists()).toBe(false)
 })
 
 it('keeps the confirmed terminal notice when refreshing versions fails', async () => {
@@ -273,7 +318,7 @@ it('keeps the confirmed terminal notice when refreshing versions fails', async (
       if (path === '/api/v1/system/updates') {
         updateListReads += 1
         return updateListReads === 1
-          ? Promise.resolve({ currentGateway: 'v1.2.2', available: [{ kind: 'gateway', version: 'v1.2.3', compatible: true }] })
+          ? Promise.resolve({ enabled: true, currentGateway: 'v1.2.2', available: [{ kind: 'gateway', version: 'v1.2.3', compatible: true }] })
           : Promise.reject(new TypeError('list refresh disconnected'))
       }
       if (path === '/api/v1/system/updates/gateway/v1.2.3/apply' && options?.method === 'POST') {
@@ -303,7 +348,7 @@ it('offers only compatible versions returned by the backend without URL or path 
     if (path === '/api/v1/settings/summary') return Promise.resolve({ accountSyncStatus: 'synced', candidateCount: 24, onlineCount: 1, maxOnline: 1 })
     if (path === '/api/v1/settings/mixed-source-policy') return Promise.resolve({ enabled: false, cidrs: [], applyStatus: 'applied' })
     if (path === '/api/v1/system/updates') return Promise.resolve({
-      currentGateway: 'v1.2.2',
+      enabled: true, currentGateway: 'v1.2.2',
       available: [{ kind: 'gateway', version: 'v1.2.3', compatible: true }, { kind: 'gateway', version: 'https://untrusted.test/update', compatible: false }],
     })
     return Promise.resolve(undefined)

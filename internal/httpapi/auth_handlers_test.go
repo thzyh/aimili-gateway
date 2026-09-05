@@ -192,12 +192,13 @@ func TestLoginThrottlesAfterFiveFailures(t *testing.T) {
 }
 
 type authTestEnvironment struct {
-	database *store.Store
-	server   *httptest.Server
-	client   *http.Client
-	baseURL  *url.URL
-	origin   string
-	clock    *authTestClock
+	databasePath string
+	database     *store.Store
+	server       *httptest.Server
+	client       *http.Client
+	baseURL      *url.URL
+	origin       string
+	clock        *authTestClock
 }
 
 func newAuthTestEnvironment(t *testing.T) *authTestEnvironment {
@@ -211,7 +212,8 @@ func newAuthTestEnvironmentWithAdmin(t *testing.T, initializeAdmin bool) *authTe
 func newAuthTestEnvironmentConfigured(t *testing.T, initializeAdmin bool, configure func(*Dependencies)) *authTestEnvironment {
 	t.Helper()
 	ctx := context.Background()
-	database, err := store.Open(ctx, filepath.Join(t.TempDir(), "gateway.db"))
+	databasePath := filepath.Join(t.TempDir(), "gateway.db")
+	database, err := store.Open(ctx, databasePath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,12 +264,13 @@ func newAuthTestEnvironmentConfigured(t *testing.T, initializeAdmin bool, config
 		t.Fatal(err)
 	}
 	environment := &authTestEnvironment{
-		database: database,
-		server:   server,
-		client:   client,
-		baseURL:  baseURL,
-		origin:   origin,
-		clock:    clock,
+		databasePath: databasePath,
+		database:     database,
+		server:       server,
+		client:       client,
+		baseURL:      baseURL,
+		origin:       origin,
+		clock:        clock,
 	}
 	t.Cleanup(func() {
 		server.Close()

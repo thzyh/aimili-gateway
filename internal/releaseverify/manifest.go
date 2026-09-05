@@ -116,6 +116,9 @@ func ParseGateway(body []byte, apiVersion, platform string) (GatewayManifest, er
 	if manifest.ImpactClass != "control-plane-only" {
 		return GatewayManifest{}, &codedError{code: "manual_staged_deploy_required", err: errors.New("Gateway release has runtime impact")}
 	}
+	if manifest.UICompatibility != nil {
+		return GatewayManifest{}, &codedError{code: "unsupported_ui_compatibility", err: errors.New("UI compatibility declarations are not supported")}
+	}
 	if manifest.SchemaVersion != 1 || manifest.Kind != "gateway" || manifest.APIVersion != apiVersion || manifest.Platform != platform ||
 		!validVersion(manifest.Version) || strings.TrimSpace(manifest.Commit) == "" || manifest.Binary.Path != "aimili-gateway" ||
 		!validDigest(manifest.Binary.SHA256) || manifest.Binary.Bytes < 1 || manifest.MinDatabaseSchema < 1 ||
@@ -176,9 +179,33 @@ func validVersion(value string) bool {
 		if part == "" || (len(part) > 1 && part[0] == '0') {
 			return false
 		}
+		for _, digit := range part {
+			if digit < '0' || digit > '9' {
+				return false
+			}
+		}
 		if _, err := strconv.ParseUint(part, 10, 64); err != nil {
 			return false
 		}
 	}
 	return true
+}
+
+// CompareVersions accepts only the same canonical release version grammar as manifests.
+func CompareVersions(left, right string) (int, error) {
+	if !validVersion(left) || !validVersion(right) {
+		return 0, errors.New("non-canonical version")
+	}
+	l, r := strings.Split(left[1:], "."), strings.Split(right[1:], ".")
+	for i := range l {
+		lv, _ := strconv.ParseUint(l[i], 10, 64)
+		rv, _ := strconv.ParseUint(r[i], 10, 64)
+		if lv < rv {
+			return -1, nil
+		}
+		if lv > rv {
+			return 1, nil
+		}
+	}
+	return 0, nil
 }

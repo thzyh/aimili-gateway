@@ -57,6 +57,9 @@ type Snapshot struct {
 }
 
 type Config struct {
+	StateDir          string
+	Request           updatetxn.Request
+	Fault             func(string) error
 	RunID             string
 	StagingDir        string
 	BinaryPath        string
@@ -71,7 +74,8 @@ type Config struct {
 	Runner            Runner
 	Probe             Probe
 	BusyCheck         func(context.Context) error
-	ShadowCheck       func(context.Context, string, releaseverify.GatewayManifest) error
+	ShadowCheck       func(context.Context, []byte, releaseverify.GatewayManifest) error
+	ReadVersion       func(context.Context, string, string) (buildinfo.Info, error)
 	AvailableBytes    func(string) (uint64, error)
 	Now               func() time.Time
 }
@@ -98,13 +102,16 @@ func DryRun(ctx context.Context, config Config) (Result, error) {
 }
 
 func Install(ctx context.Context, config Config) (Result, error) {
+	if !config.AllowInstall {
+		err := &codedError{code: "install_disabled", err: errors.New("Gateway installation is disabled")}
+		return failedResult(config, "", updatetxn.StateFailed, ErrorCode(err)), err
+	}
+	if recovered, exists, err := Recover(ctx, config); exists || err != nil {
+		return recovered, err
+	}
 	release, err := preflight(ctx, config)
 	if err != nil {
 		return failedResult(config, "", updatetxn.StateFailed, ErrorCode(err)), err
-	}
-	if !config.AllowInstall {
-		err := &codedError{code: "install_disabled", err: errors.New("Gateway installation is disabled")}
-		return failedResult(config, release.manifest.Version, updatetxn.StateFailed, ErrorCode(err)), err
 	}
 	if config.Runner == nil || config.Probe == nil {
 		err := &codedError{code: "invalid_config", err: errors.New("runner and probe are required")}
@@ -115,46 +122,18 @@ func Install(ctx context.Context, config Config) (Result, error) {
 		err = &codedError{code: "preflight_probe_failed", err: err}
 		return failedResult(config, release.manifest.Version, updatetxn.StateFailed, ErrorCode(err)), err
 	}
-	currentInfo, err := os.Stat(config.BinaryPath)
-	if err != nil || !currentInfo.Mode().IsRegular() {
-		err = &codedError{code: "current_binary_invalid", err: errors.New("current Gateway binary is unavailable")}
-		return failedResult(config, release.manifest.Version, updatetxn.StateFailed, ErrorCode(err)), err
-	}
-	if err := copyAndReplace(config.BinaryPath, config.PreviousPath, currentInfo.Mode().Perm()); err != nil {
-		err = &codedError{code: "previous_failed", err: err}
-		return failedResult(config, release.manifest.Version, updatetxn.StateFailed, ErrorCode(err)), err
-	}
-	candidatePath := config.BinaryPath + ".candidate-" + config.RunID
-	if err := writeCandidate(candidatePath, release.binary, currentInfo.Mode().Perm()); err != nil {
-		err = &codedError{code: "candidate_failed", err: err}
-		return failedResult(config, release.manifest.Version, updatetxn.StateFailed, ErrorCode(err)), err
-	}
-	if err := config.Runner.Stop(ctx, gatewayService); err != nil {
-		_ = os.Remove(candidatePath)
-		err = &codedError{code: "stop_failed", err: err}
-		return failedResult(config, release.manifest.Version, updatetxn.StateFailed, ErrorCode(err)), err
-	}
-	if err := replacePath(candidatePath, config.BinaryPath); err != nil {
-		return rollbackAfterFailure(ctx, config, baseline, release.manifest.Version, "switch_failed", err)
-	}
-	if err := config.Runner.Start(ctx, gatewayService); err != nil {
-		return rollbackAfterFailure(ctx, config, baseline, release.manifest.Version, "start_failed", err)
-	}
-	active, err := config.Runner.IsActive(ctx, gatewayService)
-	if err != nil || !active {
-		if err == nil {
-			err = errors.New("Gateway service is inactive")
-		}
-		return rollbackAfterFailure(ctx, config, baseline, release.manifest.Version, "start_failed", err)
-	}
-	if err := config.Probe.Verify(ctx, baseline); err != nil {
-		return rollbackAfterFailure(ctx, config, baseline, release.manifest.Version, "health_check_failed", err)
-	}
-	_ = os.RemoveAll(config.StagingDir)
-	return finishedResult(config, release.manifest.Version, updatetxn.StateSuccess, ""), nil
+	return switchRelease(ctx, config, baseline, release.manifest.Version, release.binary)
 }
 
 func Rollback(ctx context.Context, config Config) (Result, error) {
+	if recovered, exists, err := Recover(ctx, config); exists || err != nil {
+		return recovered, err
+	}
+	if config.BusyCheck != nil {
+		if err := config.BusyCheck(ctx); err != nil {
+			return failedResult(config, "", updatetxn.StateFailed, "operation_busy"), &codedError{code: "operation_busy", err: err}
+		}
+	}
 	if config.Runner == nil || config.Probe == nil {
 		err := &codedError{code: "invalid_config", err: errors.New("runner and probe are required")}
 		return failedResult(config, "", updatetxn.StateFailed, ErrorCode(err)), err
@@ -168,30 +147,8 @@ func Rollback(ctx context.Context, config Config) (Result, error) {
 		err = &codedError{code: "previous_missing", err: err}
 		return failedResult(config, "", updatetxn.StateFailed, ErrorCode(err)), err
 	}
-	current, err := os.ReadFile(config.BinaryPath)
-	if err != nil {
-		return failedResult(config, "", updatetxn.StateFailed, "current_binary_invalid"), err
-	}
-	mode := os.FileMode(0o755)
-	if info, statErr := os.Stat(config.BinaryPath); statErr == nil {
-		mode = info.Mode().Perm()
-	}
-	if err := config.Runner.Stop(ctx, gatewayService); err != nil {
-		return failedResult(config, "", updatetxn.StateFailed, "stop_failed"), err
-	}
-	if err := writeAndReplace(config.BinaryPath, previous, mode); err != nil {
-		return failedResult(config, "", updatetxn.StateRepairRequired, "repair_required"), &codedError{code: "repair_required", err: err}
-	}
-	if err := writeAndReplace(config.PreviousPath, current, mode); err != nil {
-		return failedResult(config, "", updatetxn.StateRepairRequired, "repair_required"), &codedError{code: "repair_required", err: err}
-	}
-	if err := config.Runner.Start(ctx, gatewayService); err != nil {
-		return failedResult(config, "", updatetxn.StateRepairRequired, "repair_required"), &codedError{code: "repair_required", err: err}
-	}
-	if err := config.Probe.Verify(ctx, baseline); err != nil {
-		return failedResult(config, "", updatetxn.StateRepairRequired, "repair_required"), &codedError{code: "repair_required", err: err}
-	}
-	return finishedResult(config, "", updatetxn.StateRolledBack, ""), nil
+	config.Request = updatetxn.Request{RunID: config.RunID, Kind: updatetxn.KindGateway, Action: updatetxn.ActionRollback}
+	return switchRelease(ctx, config, baseline, "", previous)
 }
 
 func preflight(ctx context.Context, config Config) (verifiedRelease, error) {
@@ -215,6 +172,9 @@ func preflight(ctx context.Context, config Config) (verifiedRelease, error) {
 	if err != nil {
 		return verifiedRelease{}, err
 	}
+	if config.Request.RunID != config.RunID || config.Request.Kind != updatetxn.KindGateway || config.Request.Action != updatetxn.ActionApply || config.Request.Version != manifest.Version {
+		return verifiedRelease{}, &codedError{code: "request_manifest_mismatch", err: errors.New("signed release differs from request")}
+	}
 	availableBytes := config.AvailableBytes
 	if availableBytes == nil {
 		availableBytes = gatewayAvailableBytes
@@ -229,17 +189,51 @@ func preflight(ctx context.Context, config Config) (verifiedRelease, error) {
 	}
 	shadowCheck := config.ShadowCheck
 	if shadowCheck == nil {
-		shadowCheck = func(ctx context.Context, candidate string, manifest releaseverify.GatewayManifest) error {
+		shadowCheck = func(ctx context.Context, candidate []byte, manifest releaseverify.GatewayManifest) error {
 			return defaultShadowCheck(ctx, candidate, config.ConfigPath, manifest)
 		}
 	}
-	if err := shadowCheck(ctx, filepath.Join(config.StagingDir, "aimili-gateway"), manifest); err != nil {
+	if err := shadowCheck(ctx, bytes.Clone(assets["aimili-gateway"]), manifest); err != nil {
 		return verifiedRelease{}, &codedError{code: "shadow_check_failed", err: err}
+	}
+	readVersion := config.ReadVersion
+	if readVersion == nil {
+		readVersion = currentBuildInfo
+	}
+	current, err := readVersion(ctx, config.BinaryPath, config.ConfigPath)
+	comparison, versionErr := releaseverify.CompareVersions(manifest.Version, current.Version)
+	if err != nil || versionErr != nil || current.Commit == "" || current.Platform != config.Platform || current.APIVersion != config.APIVersion {
+		if err == nil {
+			err = errors.New("current build identity is not compatible")
+		}
+		return verifiedRelease{}, &codedError{code: "current_version_unavailable", err: err}
+	}
+	if comparison <= 0 {
+		return verifiedRelease{}, &codedError{code: "version_not_newer", err: errors.New("ordinary apply requires a newer version")}
 	}
 	return verifiedRelease{manifest: manifest, binary: assets["aimili-gateway"]}, nil
 }
 
+func currentBuildInfo(ctx context.Context, binary, configPath string) (buildinfo.Info, error) {
+	body, err := runCandidate(ctx, binary, configPath, "version", "--json")
+	if err != nil {
+		return buildinfo.Info{}, err
+	}
+	var info buildinfo.Info
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&info); err != nil {
+		return info, err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return info, errors.New("trailing version data")
+	}
+	return info, nil
+}
+
 func rollbackAfterFailure(ctx context.Context, config Config, baseline Snapshot, version, failureCode string, cause error) (Result, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
 	failedPath := config.BinaryPath + ".failed-" + config.RunID
 	if current, err := os.ReadFile(config.BinaryPath); err == nil {
 		_ = writeAndReplace(failedPath, current, 0o700)
@@ -249,7 +243,9 @@ func rollbackAfterFailure(ctx context.Context, config Config, baseline Snapshot,
 		err := &codedError{code: "repair_required", err: previousErr}
 		return failedResult(config, version, updatetxn.StateRepairRequired, "repair_required"), err
 	}
-	_ = config.Runner.Stop(ctx, gatewayService)
+	if err := config.Runner.Stop(ctx, gatewayService); err != nil {
+		return failedResult(config, version, updatetxn.StateRepairRequired, "repair_required"), &codedError{code: "repair_required", err: err}
+	}
 	if err := writeAndReplace(config.BinaryPath, previous, 0o755); err != nil {
 		err = &codedError{code: "repair_required", err: err}
 		return failedResult(config, version, updatetxn.StateRepairRequired, "repair_required"), err
@@ -257,6 +253,9 @@ func rollbackAfterFailure(ctx context.Context, config Config, baseline Snapshot,
 	if err := config.Runner.Start(ctx, gatewayService); err != nil {
 		err = &codedError{code: "repair_required", err: err}
 		return failedResult(config, version, updatetxn.StateRepairRequired, "repair_required"), err
+	}
+	if err := waitReadiness(ctx, config.Probe); err != nil {
+		return failedResult(config, version, updatetxn.StateRepairRequired, "repair_required"), &codedError{code: "repair_required", err: err}
 	}
 	active, err := config.Runner.IsActive(ctx, gatewayService)
 	if err != nil || !active {
@@ -271,16 +270,20 @@ func rollbackAfterFailure(ctx context.Context, config Config, baseline Snapshot,
 		return failedResult(config, version, updatetxn.StateRepairRequired, "repair_required"), err
 	}
 	_ = os.Remove(failedPath)
-	_ = os.RemoveAll(config.StagingDir)
 	_ = cause
 	return finishedResult(config, version, updatetxn.StateRolledBack, failureCode), nil
 }
 
-func defaultShadowCheck(ctx context.Context, stagingBinary, configPath string, manifest releaseverify.GatewayManifest) error {
-	body, err := os.ReadFile(stagingBinary)
-	if err != nil {
-		return err
+func waitReadiness(ctx context.Context, probe Probe) error {
+	if waiter, ok := probe.(interface{ WaitReady(context.Context) error }); ok {
+		readyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		return waiter.WaitReady(readyCtx)
 	}
+	return nil
+}
+
+func defaultShadowCheck(ctx context.Context, body []byte, configPath string, manifest releaseverify.GatewayManifest) error {
 	temporary, err := os.CreateTemp("", "aimili-gateway-shadow-*")
 	if err != nil {
 		return err

@@ -71,7 +71,7 @@ export interface XUISettingsPayload { managedPublicCount: number; managedVlessCo
 export type UpdateKind = 'ui' | 'gateway'
 export type UpdateState = 'pending' | 'downloading' | 'validating' | 'switching' | 'verifying' | 'rolled_back' | 'success' | 'failed' | 'repair_required'
 export interface UpdateVersionPayload { kind: UpdateKind; version: string; compatible: boolean }
-export interface UpdateSummaryPayload { currentGateway: string; currentUi?: string; available: UpdateVersionPayload[] }
+export interface UpdateSummaryPayload { enabled: boolean; currentGateway: string; currentUi?: string; available: UpdateVersionPayload[] }
 export interface UpdateResultPayload { runId: string; kind: UpdateKind; version?: string; state: UpdateState; errorCode?: string }
 
 export function idempotencyHeaders(): HeadersInit {

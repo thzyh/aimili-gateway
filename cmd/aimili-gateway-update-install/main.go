@@ -32,7 +32,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runInstallSpool(args[1:], stdout, stderr)
 	}
 	if strings.HasPrefix(command, "gateway-") {
-		return runGatewayCommand(command, args[1:], stdout, stderr)
+		return runDirectCommand(command, args[1:], stdout, stderr)
+	}
+	if command == "ui-install" || command == "ui-rollback" {
+		return runDirectCommand(command, args[1:], stdout, stderr)
 	}
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
 	flags.SetOutput(stderr)

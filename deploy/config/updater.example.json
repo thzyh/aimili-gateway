@@ -15,6 +15,7 @@
   "previousPath": "/usr/local/bin/aimili-gateway.previous",
   "gatewayConfigPath": "/etc/aimili-gateway/config.json",
   "databasePath": "/var/lib/aimili-gateway/aimili-gateway.db",
+  "xuiDatabasePath": "/etc/x-ui/x-ui.db",
   "healthUrl": "http://127.0.0.1:9080/healthz",
   "uiRoot": "/var/lib/aimili-gateway/ui",
   "allowGatewayInstall": false,

@@ -12,6 +12,10 @@ import (
 
 const maxStateBytes = 32 << 10
 
+func ReadTrustedStateFile(path string, trustedUID *uint32, target any) error {
+	return readTrustedJSON(path, trustedUID, target)
+}
+
 func ReadRequestFile(path string) (Request, error) {
 	var request Request
 	if err := readTrustedJSON(path, nil, &request); err != nil {
@@ -61,12 +65,12 @@ func writeAtomicJSONMode(path string, value any, mode os.FileMode) error {
 	if err := temporary.Close(); err != nil {
 		return err
 	}
-	if _, err := os.Lstat(path); err == nil {
-		return os.ErrExist
-	} else if !errors.Is(err, os.ErrNotExist) {
+	// Link publishes the complete file only if the destination does not exist.
+	// Unlike Lstat+Rename, this cannot overwrite a concurrently acquired lease.
+	if err := os.Link(temporaryPath, path); err != nil {
 		return err
 	}
-	if err := os.Rename(temporaryPath, path); err != nil {
+	if err := os.Remove(temporaryPath); err != nil {
 		return err
 	}
 	return syncDirectory(directory)

@@ -114,23 +114,47 @@ func fixedSystemctl(ctx context.Context, action, service string) error {
 }
 
 type productionProbe struct {
-	databasePath string
-	healthURL    string
+	databasePath    string
+	xuiDatabasePath string
+	healthURL       string
+	serviceState    func(context.Context, string) ([]byte, error)
+	countProcesses  func() ([2]int, error)
 }
 
 func (p *productionProbe) Capture(ctx context.Context) (gatewayupdate.Snapshot, error) {
-	fingerprint, err := dataPlaneFingerprint(ctx, p.databasePath)
+	fingerprint, err := p.fingerprint(ctx)
 	return gatewayupdate.Snapshot{Fingerprint: fingerprint}, err
 }
 
 func (p *productionProbe) Verify(ctx context.Context, before gatewayupdate.Snapshot) error {
-	after, err := dataPlaneFingerprint(ctx, p.databasePath)
+	after, err := p.fingerprint(ctx)
 	if err != nil {
 		return err
 	}
 	if after != before.Fingerprint {
 		return errors.New("data-plane invariant changed")
 	}
+	return p.WaitReady(ctx)
+}
+
+func (p *productionProbe) WaitReady(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if err := p.healthOnce(ctx); err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func (p *productionProbe) healthOnce(ctx context.Context) error {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, p.healthURL, nil)
 	if err != nil {
 		return err
@@ -148,20 +172,50 @@ func (p *productionProbe) Verify(ctx context.Context, before gatewayupdate.Snaps
 }
 
 func dataPlaneFingerprint(ctx context.Context, databasePath string) (string, error) {
+	return (&productionProbe{databasePath: databasePath}).fingerprint(ctx)
+}
+
+func (p *productionProbe) fingerprint(ctx context.Context) (string, error) {
+	readService := p.serviceState
+	if readService == nil {
+		readService = func(ctx context.Context, service string) ([]byte, error) {
+			return exec.CommandContext(ctx, "systemctl", "show", "--property=MainPID", "--property=ActiveState", service).Output()
+		}
+	}
 	hash := sha256.New()
-	for _, service := range []string{"aimilivpn.service", "x-ui.service", "caddy.service"} {
-		output, err := exec.CommandContext(ctx, "systemctl", "show", "--property=MainPID", "--value", service).Output()
+	for _, service := range []string{"aimili-gateway.service", "aimilivpn.service", "x-ui.service", "caddy.service"} {
+		output, err := readService(ctx, service)
 		if err != nil {
 			return "", err
 		}
-		fmt.Fprintf(hash, "service=%s,pid=%s\n", service, strings.TrimSpace(string(output)))
+		fields := map[string]string{}
+		for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+			key, value, ok := strings.Cut(line, "=")
+			if ok {
+				fields[key] = value
+			}
+		}
+		pid, parseErr := strconv.ParseInt(fields["MainPID"], 10, 64)
+		if fields["ActiveState"] != "active" || parseErr != nil || pid <= 0 {
+			return "", errors.New("required service is not active with a valid PID")
+		}
+		if service != "aimili-gateway.service" {
+			fmt.Fprintf(hash, "service=%s,pid=%d\n", service, pid)
+		}
 	}
-	counts, err := processCounts()
+	count := p.countProcesses
+	if count == nil {
+		count = processCounts
+	}
+	counts, err := count()
 	if err != nil {
 		return "", err
 	}
+	if counts[0] != 4 || counts[1] != 1 {
+		return "", errors.New("required process inventory is unavailable")
+	}
 	fmt.Fprintf(hash, "openvpn=%d,xray=%d\n", counts[0], counts[1])
-	database, err := openReadOnlyDatabase(databasePath)
+	database, err := openReadOnlyDatabase(p.databasePath)
 	if err != nil {
 		return "", err
 	}
@@ -169,6 +223,22 @@ func dataPlaneFingerprint(ctx context.Context, databasePath string) (string, err
 	var quickCheck string
 	if err := database.QueryRowContext(ctx, `PRAGMA quick_check`).Scan(&quickCheck); err != nil || quickCheck != "ok" {
 		return "", errors.New("Gateway database quick check failed")
+	}
+	for _, gate := range []struct {
+		query string
+		want  int
+	}{
+		{`SELECT count(*) FROM egress_protocol_modes`, 4},
+		{`SELECT count(*) FROM egress_protocol_modes WHERE state='ready' AND active_mode=desired_mode`, 4},
+		{`SELECT count(*) FROM proxy_groups`, 3},
+		{`SELECT count(*) FROM proxy_groups WHERE status='ready' AND public_port BETWEEN 20000 AND 20002 AND mixed_port=public_port+10000`, 3},
+		{`SELECT count(DISTINCT public_port) FROM proxy_groups`, 3},
+		{`SELECT count(*) FROM main_egress WHERE resource_name='agw-main' AND enabled=1 AND public_port=8443 AND mixed_port=31000`, 1},
+	} {
+		var got int
+		if err := database.QueryRowContext(ctx, gate.query).Scan(&got); err != nil || got != gate.want {
+			return "", errors.New("Gateway logical inventory is not ready")
+		}
 	}
 	queries := []string{
 		`SELECT egress_id, active_mode, desired_mode, state FROM egress_protocol_modes ORDER BY egress_id`,
@@ -201,7 +271,57 @@ func dataPlaneFingerprint(ctx context.Context, databasePath string) (string, err
 			return "", err
 		}
 	}
+	if p.xuiDatabasePath == "" {
+		return "", errors.New("x-ui database path is required")
+	}
+	xui, err := openReadOnlyDatabase(p.xuiDatabasePath)
+	if err != nil {
+		return "", err
+	}
+	defer xui.Close()
+	if err := xui.QueryRowContext(ctx, `PRAGMA quick_check`).Scan(&quickCheck); err != nil || quickCheck != "ok" {
+		return "", errors.New("x-ui database quick check failed")
+	}
+	// Hash configuration only, excluding live traffic/last-seen counters. The
+	// entire ordered inbound set covers managed and unmanaged resources alike.
+	for _, query := range []string{
+		`SELECT id, tag, remark, protocol, port, enable, settings, stream_settings, sniffing FROM inbounds ORDER BY id`,
+		`SELECT key,value FROM settings ORDER BY key`,
+		`SELECT client_id,inbound_id,alias_override FROM client_inbounds ORDER BY client_id,inbound_id`,
+		`SELECT count(*) FROM client_inbounds WHERE alias_override <> ''`,
+	} {
+		if err := hashRows(ctx, xui, hash, query); err != nil {
+			return "", err
+		}
+	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func hashRows(ctx context.Context, db *sql.DB, output io.Writer, query string) error {
+	rows, err := db.QueryContext(ctx, query)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	columns, err := rows.Columns()
+	if err != nil {
+		return err
+	}
+	encoder := json.NewEncoder(output)
+	for rows.Next() {
+		values := make([]any, len(columns))
+		pointers := make([]any, len(columns))
+		for i := range values {
+			pointers[i] = &values[i]
+		}
+		if err := rows.Scan(pointers...); err != nil {
+			return err
+		}
+		if err := encoder.Encode(values); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
 }
 
 func databaseBusyCheck(databasePath string) func(context.Context) error {

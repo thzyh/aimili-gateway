@@ -2,7 +2,9 @@ package httpapi
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
@@ -12,6 +14,7 @@ import (
 )
 
 var updateRunIDPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+var ErrUpdatesDisabled = errors.New("updates_disabled")
 
 type UpdateVersion struct {
 	Kind       string `json:"kind"`
@@ -20,6 +23,7 @@ type UpdateVersion struct {
 }
 
 type UpdateSummary struct {
+	Enabled        bool            `json:"enabled"`
 	CurrentGateway string          `json:"currentGateway"`
 	CurrentUI      string          `json:"currentUi,omitempty"`
 	Available      []UpdateVersion `json:"available"`
@@ -61,6 +65,10 @@ func (s *server) handleListUpdates(response http.ResponseWriter, request *http.R
 	}
 	summary, err := s.updates.List(request.Context())
 	if err != nil {
+		if errors.Is(err, ErrUpdatesDisabled) {
+			writeAPIError(response, http.StatusServiceUnavailable, "updates_disabled")
+			return
+		}
 		writeAPIError(response, http.StatusServiceUnavailable, "updates_unavailable")
 		return
 	}
@@ -86,6 +94,21 @@ func (s *server) handleRollbackUpdate(response http.ResponseWriter, request *htt
 }
 
 func (s *server) handleUpdateMutation(response http.ResponseWriter, request *http.Request, update UpdateRequest, requireAvailable bool) {
+	accepted := false
+	defer func() {
+		// Only validated public identifiers enter audit metadata. No password,
+		// URL, signature, local path or internal error text is retained.
+		runFingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(update.RunID)))
+		action := "update." + update.Action + "." + update.Kind
+		if update.Version != "" {
+			action += "." + update.Version
+		}
+		result, code := store.AuditDenied, "request_rejected"
+		if accepted {
+			result, code = store.AuditSuccess, ""
+		}
+		_ = s.store.AppendAudit(request.Context(), store.AuditEvent{Action: action, ResourceType: "gateway_update", ResourceFingerprint: runFingerprint, Result: result, ErrorCode: code, CreatedAt: s.now()})
+	}()
 	if !s.requireOrigin(request) {
 		writeAPIError(response, http.StatusForbidden, "forbidden")
 		return
@@ -107,6 +130,7 @@ func (s *server) handleUpdateMutation(response http.ResponseWriter, request *htt
 		writeAPIError(response, http.StatusBadRequest, "invalid_request")
 		return
 	}
+	update.RunID = input.RunID
 	valid, err := s.verifyPasswordOnly(request, input.Password)
 	input.Password = ""
 	if err != nil {
@@ -117,12 +141,12 @@ func (s *server) handleUpdateMutation(response http.ResponseWriter, request *htt
 		writeAPIError(response, http.StatusForbidden, "reauthentication_failed")
 		return
 	}
+	summary, listErr := s.updates.List(request.Context())
+	if listErr != nil || !summary.Enabled {
+		writeAPIError(response, http.StatusServiceUnavailable, "updates_disabled")
+		return
+	}
 	if requireAvailable {
-		summary, err := s.updates.List(request.Context())
-		if err != nil {
-			writeAPIError(response, http.StatusServiceUnavailable, "updates_unavailable")
-			return
-		}
 		found := false
 		for _, available := range summary.Available {
 			if available.Kind == update.Kind && available.Version == update.Version && available.Compatible {
@@ -138,10 +162,15 @@ func (s *server) handleUpdateMutation(response http.ResponseWriter, request *htt
 	update.RunID = input.RunID
 	result, err := s.updates.Submit(request.Context(), update)
 	if err != nil {
+		if errors.Is(err, ErrUpdatesDisabled) {
+			writeAPIError(response, http.StatusServiceUnavailable, "updates_disabled")
+			return
+		}
 		writeAPIError(response, http.StatusConflict, "update_busy")
 		return
 	}
 	writeJSON(response, http.StatusAccepted, result)
+	accepted = true
 }
 
 func (s *server) handleUpdateStatus(response http.ResponseWriter, request *http.Request) {
@@ -159,6 +188,10 @@ func (s *server) handleUpdateStatus(response http.ResponseWriter, request *http.
 	}
 	result, err := s.updates.Get(request.Context(), runID)
 	if err != nil {
+		if errors.Is(err, ErrUpdatesDisabled) {
+			writeAPIError(response, http.StatusServiceUnavailable, "updates_disabled")
+			return
+		}
 		writeAPIError(response, http.StatusNotFound, "update_not_found")
 		return
 	}
@@ -192,7 +225,7 @@ func safeUpdateVersion(kind, version string) bool {
 		return false
 	}
 	for _, part := range parts {
-		if part == "" {
+		if part == "" || len(part) > 1 && part[0] == '0' {
 			return false
 		}
 		for _, character := range part {

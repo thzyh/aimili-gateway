@@ -19,7 +19,7 @@ ProtectControlGroups=true
 ProtectKernelLogs=true
 ProtectKernelModules=true
 ProtectKernelTunables=true
-ProtectProc=invisible
+ProtectProc=default
 ProcSubset=pid
 RestrictNamespaces=true
 RestrictRealtime=true
@@ -36,10 +36,12 @@ SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
 ReadOnlyPaths=/etc/aimili-gateway
 ReadOnlyPaths=/var/lib/aimili-gateway/aimili-gateway.db
-ReadOnlyPaths=/var/lib/aimili-gateway/update-spool/requests
+ReadOnlyPaths=/etc/x-ui/x-ui.db
+ReadWritePaths=/var/lib/aimili-gateway/update-spool/requests
 ReadWritePaths=/usr/local/bin
 ReadWritePaths=/var/lib/aimili-gateway/update-spool/results
 ReadWritePaths=/var/lib/aimili-gateway-update
+ReadWritePaths=/var/lib/aimili-gateway/ui
 
 [Install]
 WantedBy=multi-user.target

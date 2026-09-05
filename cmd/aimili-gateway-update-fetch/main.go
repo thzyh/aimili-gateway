@@ -95,10 +95,7 @@ func runSpool(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			continue
 		}
-		if _, err := os.Stat(filepath.Join(config.ResultDir, request.RunID+".json")); err == nil {
-			continue
-		}
-		if _, err := os.Stat(filepath.Join(config.StagingRoot, request.RunID)); err == nil {
+		if _, err := os.Lstat(filepath.Join(config.StagingRoot, request.RunID, "download.complete")); err == nil {
 			continue
 		}
 		if request.Action == updatetxn.ActionRollback {
@@ -126,7 +123,7 @@ func runSpool(args []string, stdout, stderr io.Writer) int {
 
 func writeFetchMarker(stagingRoot, runID, errorCode string, rollback bool) error {
 	directory := filepath.Join(stagingRoot, runID)
-	if err := os.Mkdir(directory, 0o700); err != nil {
+	if err := os.Mkdir(directory, 0o700); err != nil && !os.IsExist(err) {
 		return err
 	}
 	body, err := json.Marshal(struct {

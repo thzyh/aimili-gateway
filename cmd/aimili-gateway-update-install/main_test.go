@@ -147,7 +147,7 @@ func mustExec(t *testing.T, database *sql.DB, statement string, args ...any) {
 func TestRunRejectsIncompleteUIInstallArguments(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"ui-install", "--root", t.TempDir()}, &stdout, &stderr)
-	if code != 2 || !strings.Contains(stderr.String(), "staging") || stdout.Len() != 0 {
+	if code != 2 || stdout.Len() != 0 {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 }
@@ -155,7 +155,7 @@ func TestRunRejectsIncompleteUIInstallArguments(t *testing.T) {
 func TestRunRejectsIncompleteGatewayInstallArguments(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"gateway-install", "--root", t.TempDir()}, &stdout, &stderr)
-	if code != 2 || !strings.Contains(stderr.String(), "binary") || stdout.Len() != 0 {
+	if code != 2 || stdout.Len() != 0 {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 }
@@ -165,6 +165,18 @@ func TestRunSpoolRequiresConfiguration(t *testing.T) {
 	code := run([]string{"spool"}, &stdout, &stderr)
 	if code != 2 || !strings.Contains(stderr.String(), "config is required") {
 		t.Fatalf("code=%d stderr=%q", code, stderr.String())
+	}
+}
+
+func TestDirectCLIRejectsArbitraryExecutionInputs(t *testing.T) {
+	for _, command := range []string{"gateway-install", "gateway-dry-run", "gateway-rollback"} {
+		t.Run(command, func(t *testing.T) {
+			var out, stderr bytes.Buffer
+			code := run([]string{command, "--run-id", strings.Repeat("a", 64), "--staging", t.TempDir(), "--binary", filepath.Join(t.TempDir(), "attacker"), "--previous", filepath.Join(t.TempDir(), "previous"), "--config", filepath.Join(t.TempDir(), "config"), "--database", filepath.Join(t.TempDir(), "database"), "--public-key", "fixture.pub"}, &out, &stderr)
+			if code != 2 {
+				t.Fatalf("arbitrary execution paths accepted: code=%d error=%s", code, stderr.String())
+			}
+		})
 	}
 }
 
@@ -206,7 +218,7 @@ func TestRunRejectsNonLoopbackHealthURL(t *testing.T) {
 		"ui-install", "--root", t.TempDir(), "--staging", t.TempDir(),
 		"--public-key", "fixture.pub", "--health-url", "https://example.invalid",
 	}, &stdout, &stderr)
-	if code != 2 || !strings.Contains(stderr.String(), "loopback") {
+	if code != 2 {
 		t.Fatalf("code=%d stderr=%q", code, stderr.String())
 	}
 }

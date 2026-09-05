@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -72,6 +73,54 @@ func TestUpdateApplyIsIdempotentByRunID(t *testing.T) {
 	}
 }
 
+func TestRollbackRequiresAvailableCapabilityBeforeSubmit(t *testing.T) {
+	manager := &fakeUpdateManager{}
+	environment := newAuthTestEnvironmentConfigured(t, true, func(deps *Dependencies) { deps.Updates = manager })
+	assertResponseStatus(t, environment.login(t), http.StatusNoContent)
+	session := environment.session(t)
+	response := environment.request(t, http.MethodPost, "/api/v1/system/updates/ui/rollback", map[string]string{"password": "local-only-test-password", "runId": strings.Repeat("a", 64)}, environment.origin, session.CSRFToken)
+	assertResponseStatus(t, response, http.StatusServiceUnavailable)
+	if manager.submitCalls != 0 {
+		t.Fatal("disabled rollback wrote a request")
+	}
+}
+
+func TestUpdateMutationAuditUsesClosedRedactedFields(t *testing.T) {
+	manager := &fakeUpdateManager{summary: updateSummaryFixture()}
+	environment := newAuthTestEnvironmentConfigured(t, true, func(d *Dependencies) { d.Updates = manager })
+	assertResponseStatus(t, environment.login(t), http.StatusNoContent)
+	session := environment.session(t)
+	runID := strings.Repeat("a", 64)
+	for _, password := range []string{"wrong-secret-value", "local-only-test-password"} {
+		response := environment.request(t, http.MethodPost, "/api/v1/system/updates/gateway/v1.2.3/apply", map[string]string{"password": password, "runId": runID}, environment.origin, session.CSRFToken)
+		response.Body.Close()
+	}
+	db, err := sql.Open("sqlite", environment.databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	rows, err := db.Query(`SELECT action,resource_type,resource_fingerprint,result,error_code FROM audit_events WHERE resource_type='gateway_update' ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		var action, kind, fingerprint, result, code string
+		if err := rows.Scan(&action, &kind, &fingerprint, &result, &code); err != nil {
+			t.Fatal(err)
+		}
+		if action != "update.apply.gateway.v1.2.3" || len(fingerprint) != 64 || fingerprint == runID || (result != "denied" && result != "success") || (code != "request_rejected" && code != "") {
+			t.Fatalf("audit outside closed fields: %q %q %q %q %q", action, kind, fingerprint, result, code)
+		}
+		count++
+	}
+	if count != 2 {
+		t.Fatalf("missing accepted/rejected update audits: %d", count)
+	}
+}
+
 type fakeUpdateManager struct {
 	summary     UpdateSummary
 	result      UpdateResult
@@ -92,6 +141,7 @@ func (m *fakeUpdateManager) Get(context.Context, string) (UpdateResult, error) {
 
 func updateSummaryFixture() UpdateSummary {
 	return UpdateSummary{
+		Enabled:        true,
 		CurrentGateway: "v1.2.2",
 		Available:      []UpdateVersion{{Kind: "gateway", Version: "v1.2.3", Compatible: true}},
 	}

@@ -49,7 +49,7 @@ type Fetcher struct {
 	Config         Config
 	Client         *http.Client
 	AvailableBytes func(string) (uint64, error)
-	Verify         func(updatetxn.Kind, []byte, []byte, []byte) error
+	Verify         func(updatetxn.Request, []byte, []byte, []byte) error
 	Log            func(string)
 }
 
@@ -59,6 +59,9 @@ func (f *Fetcher) Fetch(ctx context.Context, request updatetxn.Request) (Preflig
 	}
 	if err := updatetxn.ValidateRequest(request); err != nil || request.Action != updatetxn.ActionApply {
 		return PreflightResult{}, &codedError{code: "invalid_request", err: updatetxn.ErrInvalidRequest}
+	}
+	if downloaded, err := Downloaded(f.Config.StagingRoot, request); err == nil {
+		return downloaded, nil
 	}
 	available := f.AvailableBytes
 	if available == nil {
@@ -117,7 +120,7 @@ func (f *Fetcher) Fetch(ctx context.Context, request updatetxn.Request) (Preflig
 	if verify == nil {
 		verify = f.verifyRelease
 	}
-	if err := verify(request.Kind, assets[0], assets[1], assets[2]); err != nil {
+	if err := verify(request, assets[0], assets[1], assets[2]); err != nil {
 		return PreflightResult{}, err
 	}
 	result := PreflightResult{RunID: request.RunID, Kind: request.Kind, Version: request.Version, StagingDir: staging, State: updatetxn.StateValidating}
@@ -129,6 +132,26 @@ func (f *Fetcher) Fetch(ctx context.Context, request updatetxn.Request) (Preflig
 		return PreflightResult{}, &codedError{code: "staging_failed", err: err}
 	}
 	keep = true
+	return result, nil
+}
+
+func Downloaded(root string, request updatetxn.Request) (PreflightResult, error) {
+	if updatetxn.ValidateRequest(request) != nil {
+		return PreflightResult{}, updatetxn.ErrInvalidRequest
+	}
+	staging := filepath.Join(root, request.RunID)
+	var result PreflightResult
+	var trusted *uint32
+	if uid := os.Geteuid(); uid >= 0 {
+		v := uint32(uid)
+		trusted = &v
+	}
+	if err := updatetxn.ReadTrustedStateFile(filepath.Join(staging, "download.complete"), trusted, &result); err != nil {
+		return result, err
+	}
+	if result.RunID != request.RunID || result.Kind != request.Kind || result.Version != request.Version || result.State != updatetxn.StateValidating || result.StagingDir != staging {
+		return result, updatetxn.ErrInvalidRequest
+	}
 	return result, nil
 }
 
@@ -169,15 +192,23 @@ func (f *Fetcher) secureClient(originHost string) *http.Client {
 	return client
 }
 
-func (f *Fetcher) verifyRelease(kind updatetxn.Kind, manifest, signature, payload []byte) error {
+func (f *Fetcher) verifyRelease(request updatetxn.Request, manifest, signature, payload []byte) error {
 	publicKey, err := readPublicKey(f.Config.PublicKeyFile)
 	if err != nil {
 		return &codedError{code: "public_key_invalid", err: err}
 	}
-	if kind == updatetxn.KindUI {
-		_, err = releaseverify.VerifyUI(manifest, signature, payload, publicKey, "v1")
+	var kind, version string
+	if request.Kind == updatetxn.KindUI {
+		var verified releaseverify.UIManifest
+		verified, err = releaseverify.VerifyUI(manifest, signature, payload, publicKey, "v1")
+		kind, version = verified.Kind, verified.Version
 	} else {
-		_, err = releaseverify.VerifyGateway(manifest, signature, payload, publicKey, "v1", "linux-amd64")
+		var verified releaseverify.GatewayManifest
+		verified, err = releaseverify.VerifyGateway(manifest, signature, payload, publicKey, "v1", "linux-amd64")
+		kind, version = verified.Kind, verified.Version
+	}
+	if err == nil && (kind != string(request.Kind) || version != request.Version) {
+		return &codedError{code: "request_manifest_mismatch", err: errors.New("signed release differs from request")}
 	}
 	return err
 }

@@ -31,6 +31,7 @@ type Config struct {
 	PreviousPath        string   `json:"previousPath,omitempty"`
 	GatewayConfigPath   string   `json:"gatewayConfigPath,omitempty"`
 	DatabasePath        string   `json:"databasePath,omitempty"`
+	XUIDatabasePath     string   `json:"xuiDatabasePath,omitempty"`
 	HealthURL           string   `json:"healthUrl,omitempty"`
 	UIRoot              string   `json:"uiRoot,omitempty"`
 	AllowGatewayInstall bool     `json:"allowGatewayInstall"`
@@ -63,6 +64,9 @@ func LoadConfig(filename string) (Config, error) {
 func (c Config) ValidateSpool() error {
 	if err := c.Validate(); err != nil {
 		return err
+	}
+	if c.XUIDatabasePath != "/etc/x-ui/x-ui.db" {
+		return errors.New("xuiDatabasePath must use the fixed read-only database")
 	}
 	for name, value := range map[string]string{
 		"requestDir": c.RequestDir, "resultDir": c.ResultDir, "binaryPath": c.BinaryPath,

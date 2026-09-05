@@ -25,8 +25,11 @@ type Client struct {
 }
 
 type leaseRecord struct {
-	RunID string `json:"runId"`
-	Kind  Kind   `json:"kind"`
+	RunID   string `json:"runId"`
+	Kind    Kind   `json:"kind"`
+	Version string `json:"version,omitempty"`
+	Action  Action `json:"action"`
+	DryRun  bool   `json:"dryRun"`
 }
 
 func NewRunID() (string, error) {
@@ -47,11 +50,16 @@ func (c *Client) Submit(ctx context.Context, request Request) (Result, error) {
 	if request.RequestedAt.IsZero() {
 		request.RequestedAt = c.now()
 	}
+	release, err := AcquireFileLock(filepath.Join(c.RequestDir, ".submit.lock"), nil)
+	if err != nil {
+		return Result{}, err
+	}
+	defer release()
 	leasePath := filepath.Join(c.RequestDir, ".update.lease")
 	if result, handled, err := c.resolveExistingLease(ctx, leasePath, request); handled || err != nil {
 		return result, err
 	}
-	if err := writeAtomicJSON(leasePath, leaseRecord{RunID: request.RunID, Kind: request.Kind}); err != nil {
+	if err := writeAtomicJSON(leasePath, leaseRecord{RunID: request.RunID, Kind: request.Kind, Version: request.Version, Action: request.Action, DryRun: request.DryRun}); err != nil {
 		if errors.Is(err, os.ErrExist) {
 			if result, handled, resolveErr := c.resolveExistingLease(ctx, leasePath, request); handled || resolveErr != nil {
 				return result, resolveErr
@@ -103,6 +111,12 @@ func (c *Client) resolveExistingLease(ctx context.Context, leasePath string, req
 		return Result{}, true, ErrUpdateBusy
 	}
 	if lease.RunID == request.RunID {
+		if lease.Kind != request.Kind || lease.Version != request.Version || lease.Action != request.Action || lease.DryRun != request.DryRun {
+			return Result{}, true, ErrRunConflict
+		}
+		if result, err := c.Get(ctx, request.RunID); err == nil && result.State.Terminal() {
+			return result, true, nil
+		}
 		var existing Request
 		if err := readTrustedJSON(filepath.Join(c.RequestDir, request.RunID+".json"), nil, &existing); err != nil {
 			return Result{}, true, ErrUpdateBusy
@@ -114,7 +128,7 @@ func (c *Client) resolveExistingLease(ctx context.Context, leasePath string, req
 		return result, true, err
 	}
 	result, err := c.Get(ctx, lease.RunID)
-	if err == nil && result.State.Terminal() {
+	if err == nil && result.State.Terminal() && result.State != StateRepairRequired {
 		if removeErr := os.Remove(leasePath); removeErr != nil {
 			return Result{}, true, removeErr
 		}

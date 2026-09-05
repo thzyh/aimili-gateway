@@ -44,12 +44,27 @@ fi
 
 INSTALL_BACKUP="/var/lib/aimili-gateway-update/install-backup"
 [[ "$INSTALL_BACKUP" == /var/lib/aimili-gateway-update/install-backup ]]
+DIRECTORY_METADATA=()
+for directory in /etc/aimili-gateway /var/lib/aimili-gateway /var/lib/aimili-gateway/update-spool /var/lib/aimili-gateway/update-spool/requests /var/lib/aimili-gateway/update-spool/results /var/lib/aimili-gateway-update /var/lib/aimili-gateway-update/staging; do
+    if [[ -d "$directory" && ! -L "$directory" ]]; then
+        DIRECTORY_METADATA+=("$(stat -c '%u %g %a' -- "$directory") $directory")
+    fi
+done
 install -d -m 0700 -o root -g root /var/lib/aimili-gateway-update
 if [[ -e "$INSTALL_BACKUP" ]]; then
     find "$INSTALL_BACKUP" -mindepth 1 -delete
     rmdir "$INSTALL_BACKUP"
 fi
 install -d -m 0700 -o root -g root "$INSTALL_BACKUP"
+printf '%s\n' "${DIRECTORY_METADATA[@]}" > "$INSTALL_BACKUP/directory-metadata"
+
+restore_directory_metadata() {
+    while read -r owner group mode directory; do
+        [[ -n "$directory" && -d "$directory" && ! -L "$directory" ]] || continue
+        chown "$owner:$group" -- "$directory"
+        chmod "$mode" -- "$directory"
+    done < "$INSTALL_BACKUP/directory-metadata"
+}
 
 backup_one() {
 	local target="$1"
@@ -84,6 +99,7 @@ restore_on_error() {
 		target="${saved#"$INSTALL_BACKUP/rootfs"}"
         cp -a -- "$saved" "$target"
 	done < <(find "$INSTALL_BACKUP/rootfs" -type f -print 2>/dev/null)
+    restore_directory_metadata
     systemctl daemon-reload || true
     exit "$status"
 }
@@ -93,12 +109,13 @@ if ! id -u aimili-gateway-updater >/dev/null 2>&1; then
     useradd --system --home-dir /var/lib/aimili-gateway-update --shell /usr/sbin/nologin aimili-gateway-updater
 fi
 UPDATER_UID="$(id -u aimili-gateway-updater)"
-install -d -m 0710 -o aimili-gateway -g aimili-gateway /var/lib/aimili-gateway
-install -d -m 0750 -o root -g aimili-gateway /var/lib/aimili-gateway/update-spool
-install -d -m 0750 -o aimili-gateway -g aimili-gateway /var/lib/aimili-gateway/update-spool/requests
+install -d -m 0711 -o aimili-gateway -g aimili-gateway /var/lib/aimili-gateway
+install -d -m 0711 -o root -g aimili-gateway-updater /var/lib/aimili-gateway/update-spool
+install -d -m 2750 -o aimili-gateway -g aimili-gateway-updater /var/lib/aimili-gateway/update-spool/requests
 install -d -m 0750 -o root -g aimili-gateway /var/lib/aimili-gateway/update-spool/results
+install -d -m 0710 -o root -g aimili-gateway-updater /var/lib/aimili-gateway-update
 install -d -m 0700 -o aimili-gateway-updater -g aimili-gateway-updater /var/lib/aimili-gateway-update/staging
-install -d -m 0750 -o root -g aimili-gateway-updater /etc/aimili-gateway
+install -d -m 0751 -o root -g aimili-gateway /etc/aimili-gateway
 
 install -o root -g root -m 0755 "$ASSET_ROOT/aimili-gateway-update-fetch" /usr/local/bin/aimili-gateway-update-fetch
 install -o root -g root -m 0755 "$ASSET_ROOT/aimili-gateway-update-install" /usr/local/bin/aimili-gateway-update-install

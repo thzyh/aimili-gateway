@@ -114,7 +114,7 @@ func TestGatewayUpdaterSeparatesNetworkFetcherFromRootInstaller(t *testing.T) {
 	for _, required := range []string{
 		"User=aimili-gateway-updater",
 		"Group=aimili-gateway-updater",
-		"SupplementaryGroups=aimili-gateway",
+		"Group=aimili-gateway-updater",
 		"ExecStart=/usr/local/bin/aimili-gateway-update-fetch spool --config /etc/aimili-gateway/updater.json",
 		"NoNewPrivileges=true",
 		"ProtectSystem=strict",
@@ -171,16 +171,16 @@ func TestGatewayUpdateFetcherCanTraverseOnlyTheRequestSpool(t *testing.T) {
 	for asset, required := range map[string][]string{
 		"gateway": {
 			"StateDirectory=aimili-gateway",
-			"StateDirectoryMode=0710",
+			"StateDirectoryMode=0711",
 		},
 		"fetcher": {
-			"SupplementaryGroups=aimili-gateway",
+			"Group=aimili-gateway-updater",
 			"ReadOnlyPaths=/var/lib/aimili-gateway/update-spool/requests",
 		},
 		"deployment": {
-			"install -d -m 0710 -o aimili-gateway -g aimili-gateway /var/lib/aimili-gateway",
-			"install -d -m 0750 -o root -g aimili-gateway /var/lib/aimili-gateway/update-spool",
-			"install -d -m 0750 -o aimili-gateway -g aimili-gateway /var/lib/aimili-gateway/update-spool/requests",
+			"install -d -m 0711 -o aimili-gateway -g aimili-gateway /var/lib/aimili-gateway",
+			"install -d -m 0711 -o root -g aimili-gateway-updater /var/lib/aimili-gateway/update-spool",
+			"install -d -m 2750 -o aimili-gateway -g aimili-gateway-updater /var/lib/aimili-gateway/update-spool/requests",
 		},
 	} {
 		contents := map[string]string{"gateway": gateway, "fetcher": fetcher, "deployment": deployment}[asset]
@@ -254,8 +254,8 @@ func TestGatewayUpdaterDeploymentIsChecksummedDisabledAndDataPlaneSafe(t *testin
 		"useradd --system",
 		"/var/lib/aimili-gateway/update-spool/requests",
 		"/var/lib/aimili-gateway/update-spool/results",
-		"install -d -m 0750 -o root -g aimili-gateway /var/lib/aimili-gateway/update-spool",
-		"install -d -m 0750 -o aimili-gateway -g aimili-gateway /var/lib/aimili-gateway/update-spool/requests",
+		"install -d -m 0711 -o root -g aimili-gateway-updater /var/lib/aimili-gateway/update-spool",
+		"install -d -m 2750 -o aimili-gateway -g aimili-gateway-updater /var/lib/aimili-gateway/update-spool/requests",
 		"install -d -m 0750 -o root -g aimili-gateway /var/lib/aimili-gateway/update-spool/results",
 		"/var/lib/aimili-gateway-update/staging",
 	} {

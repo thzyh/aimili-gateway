@@ -2,20 +2,15 @@
 set -euo pipefail
 
 action="${1:-}"
+run_id="$(/usr/bin/od -An -N32 -tx1 /dev/urandom | /usr/bin/tr -d ' \n')"
 case "$action" in
   gateway-rollback)
-    run_id="$(/usr/bin/od -An -N32 -tx1 /dev/urandom | /usr/bin/tr -d ' \n')"
     exec /usr/local/bin/aimili-gateway-update-install gateway-rollback \
-      --run-id "$run_id" \
-      --binary /usr/local/bin/aimili-gateway \
-      --previous /usr/local/bin/aimili-gateway.previous \
-      --config /etc/aimili-gateway/config.json \
-      --database /var/lib/aimili-gateway/aimili-gateway.db
+      --run-id "$run_id"
     ;;
   ui-rollback)
     exec /usr/local/bin/aimili-gateway-update-install ui-rollback \
-      --root /var/lib/aimili-gateway/ui \
-      --health-url http://127.0.0.1:9080
+      --run-id "$run_id"
     ;;
   *)
     echo "usage: aimili-gateway-update-rollback <gateway-rollback|ui-rollback>" >&2

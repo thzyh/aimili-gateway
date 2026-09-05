@@ -137,7 +137,7 @@ func TestRollbackSwapsCurrentAndPrevious(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.State != "success" || pointers.values["current"] != previous || pointers.values["previous"] != current {
+	if result.State != "rolled_back" || pointers.values["current"] != previous || pointers.values["previous"] != current {
 		t.Fatalf("rollback result=%#v pointers=%#v", result, pointers.values)
 	}
 }

@@ -50,6 +50,8 @@ type Config struct {
 	ExternalUIRoot         string   `json:"externalUiRoot"`
 	UpdateRequestDir       string   `json:"updateRequestDir"`
 	UpdateResultDir        string   `json:"updateResultDir"`
+	UpdateEnabled          bool     `json:"updateEnabled"`
+	UpdateCatalogFile      string   `json:"updateCatalogFile"`
 
 	localTest bool
 }
@@ -192,6 +194,9 @@ func (c Config) Validate() error {
 	}
 	if value := strings.TrimSpace(c.ExternalUIRoot); value != "" && !filepath.IsAbs(value) && !pathpkg.IsAbs(filepath.ToSlash(value)) {
 		return errors.New("externalUiRoot must be an absolute path")
+	}
+	if c.UpdateEnabled && (c.UpdateCatalogFile != "/etc/aimili-gateway/update-catalog.json" || c.UpdateRequestDir == "") {
+		return errors.New("enabled updater requires fixed trusted catalog and spool")
 	}
 	if (strings.TrimSpace(c.UpdateRequestDir) == "") != (strings.TrimSpace(c.UpdateResultDir) == "") {
 		return errors.New("updateRequestDir and updateResultDir must be configured together")

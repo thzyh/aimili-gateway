@@ -50,8 +50,9 @@ onMounted(async () => {
   }
 })
 
-const availableUI = computed(() => updates.value?.available.find(item => item.kind === 'ui' && item.compatible) ?? null)
-const availableGateway = computed(() => updates.value?.available.find(item => item.kind === 'gateway' && item.compatible) ?? null)
+const updatesEnabled = computed(() => updates.value?.enabled === true)
+const availableUI = computed(() => updatesEnabled.value ? updates.value?.available.find(item => item.kind === 'ui' && item.compatible) ?? null : null)
+const availableGateway = computed(() => updatesEnabled.value ? updates.value?.available.find(item => item.kind === 'gateway' && item.compatible) ?? null : null)
 
 function requestUpdate(candidate: UpdateVersionPayload | null): void {
   if (!candidate || updating.value || activeUpdate.value) return
@@ -60,7 +61,7 @@ function requestUpdate(candidate: UpdateVersionPayload | null): void {
 }
 
 function requestRollback(kind: UpdateKind): void {
-  if (updating.value || activeUpdate.value) return
+  if (!updatesEnabled.value || updating.value || activeUpdate.value) return
   pendingUpdate.value = { action: 'rollback', kind }
   updatePassword.value = ''
 }
@@ -146,7 +147,7 @@ function noticeForUpdate(result: UpdateResultPayload, action: UpdateAction = 'ap
   const subject = updateSubject(result.kind)
   if (result.state === 'success') return makeUpdateNotice('success', `${subject}成功`, result.kind === 'ui' ? '新界面已生效，Gateway 和代理节点均未重启。' : 'Gateway 控制面已恢复，代理节点继续运行。')
   if (result.state === 'rolled_back') return action === 'rollback'
-    ? makeUpdateNotice('success', `${subject}已回滚`, '已恢复上一版。')
+    ? makeUpdateNotice('success', result.kind === 'ui' ? '界面已回滚' : 'Gateway 控制面已回滚', '已恢复上一版。')
     : makeUpdateNotice('error', `${subject}已自动回滚`, '新版本未通过健康检查，已恢复上一版。')
   if (result.state === 'repair_required') return makeUpdateNotice('error', `${subject}需要受限修复`, '自动回滚未能完整确认，请使用服务器上的固定回滚入口。')
   return makeUpdateNotice('error', `${subject}失败`, messageForUpdateCode(result.errorCode))
@@ -170,7 +171,7 @@ function messageForUpdateCode(code?: string): string {
   const messages: Record<string, string> = {
     download_failed: '下载失败，现有版本未改变。', invalid_signature: '签名验证失败，现有版本未改变。',
     invalid_payload: '文件摘要不一致，现有版本未改变。', disk_full: 'VPS 可用空间不足，更新未开始。',
-    install_disabled: '后端替换尚未开放，本次只允许安全检查。', operation_busy: '当前有其他维护事务，请稍后重试。',
+    install_disabled: '后端替换尚未开放，本次只允许安全检查。', operation_busy: '当前有其他维护事务，请稍后重试。', updates_disabled: '安全更新尚未开放，请等待可信发布来源配置完成。',
   }
   return messages[code ?? ''] ?? '更新未完成，现有版本或自动回滚结果已由服务端保留。'
 }
@@ -179,7 +180,7 @@ function messageForUpdate(error: unknown, fallback: string): string {
   return fallback
 }
 function isDefiniteUpdateRejection(error: unknown): error is APIError {
-  return error instanceof APIError && error.status >= 400 && error.status < 500
+  return error instanceof APIError && ((error.status >= 400 && error.status < 500) || error.message === 'updates_disabled')
 }
 function wait(milliseconds: number): Promise<void> { return new Promise(resolve => setTimeout(resolve, milliseconds)) }
 function newRunID(): string {
@@ -330,8 +331,8 @@ function messageFor(error: unknown, fallback: string): string {
       <section class="services-section update-section">
         <div class="section-title"><p class="section-kicker">SIGNED UPDATES</p><h2>安全更新</h2><p>只接受固定可信来源、有效签名且兼容的版本。</p></div>
         <div class="update-grid">
-          <article class="update-card"><strong>界面资源</strong><span>当前：{{ updates?.currentUi ? updates.currentUi.slice(0, 12) : '内嵌兜底' }}</span><p>仅更新界面，不影响节点，也不重启 Gateway。</p><div class="update-actions"><button data-ui-update :disabled="!availableUI || updating || !!activeUpdate" type="button" @click="requestUpdate(availableUI)">{{ availableUI ? `更新到 ${availableUI.version.slice(0, 12)}` : '暂无可用更新' }}</button><button data-ui-rollback class="secondary" :disabled="updating || !!activeUpdate" type="button" @click="requestRollback('ui')">回滚上一版</button></div></article>
-          <article class="update-card"><strong>Gateway 控制面</strong><span>当前：{{ updates?.currentGateway ?? '未知' }}</span><p>控制面将短暂重启，代理节点继续运行。</p><div class="update-actions"><button data-gateway-update :disabled="!availableGateway || updating || !!activeUpdate" type="button" @click="requestUpdate(availableGateway)">{{ availableGateway ? `更新到 ${availableGateway.version}` : '暂无可用更新' }}</button><button data-gateway-rollback class="secondary" :disabled="updating || !!activeUpdate" type="button" @click="requestRollback('gateway')">回滚上一版</button></div></article>
+          <article class="update-card"><strong>界面资源</strong><span>当前：{{ updates?.currentUi ? updates.currentUi.slice(0, 12) : '内嵌兜底' }}</span><p>仅更新界面，不影响节点，也不重启 Gateway。</p><div class="update-actions"><button data-ui-update :disabled="!availableUI || updating || !!activeUpdate" type="button" @click="requestUpdate(availableUI)">{{ availableUI ? `更新到 ${availableUI.version.slice(0, 12)}` : '暂无可用更新' }}</button><button data-ui-rollback class="secondary" :disabled="!updatesEnabled || updating || !!activeUpdate" type="button" @click="requestRollback('ui')">回滚上一版</button></div></article>
+          <article class="update-card"><strong>Gateway 控制面</strong><span>当前：{{ updates?.currentGateway ?? '未知' }}</span><p>控制面将短暂重启，代理节点继续运行。</p><div class="update-actions"><button data-gateway-update :disabled="!availableGateway || updating || !!activeUpdate" type="button" @click="requestUpdate(availableGateway)">{{ availableGateway ? `更新到 ${availableGateway.version}` : '暂无可用更新' }}</button><button data-gateway-rollback class="secondary" :disabled="!updatesEnabled || updating || !!activeUpdate" type="button" @click="requestRollback('gateway')">回滚上一版</button></div></article>
         </div>
         <form v-if="pendingUpdate" class="reauth-panel" @submit.prevent="confirmUpdate"><label>当前 Gateway 密码<input v-model="updatePassword" data-update-password type="password" autocomplete="current-password"></label><p>密码仅随本次重新认证请求发送，不会保存或写入日志。</p><div><button class="secondary" type="button" :disabled="updating" @click="cancelUpdate">取消</button><button data-update-confirm type="button" :disabled="updating || !updatePassword" @click="confirmUpdate">{{ updating ? '正在提交' : '确认' + (pendingUpdate.action === 'rollback' ? '回滚' : '更新') }}</button></div></form>
         <div v-else-if="activeUpdate" class="reauth-panel"><p>本次请求的响应尚未确认；将继续查询原事务，不会创建新的更新或回滚请求。</p><button data-update-resume type="button" :disabled="updating" @click="resumeUpdate">继续查询</button></div>

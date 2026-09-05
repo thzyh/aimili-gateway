@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/thzyh/aimili-gateway/internal/releaseverify"
+	"github.com/thzyh/aimili-gateway/internal/updatetxn"
 )
 
 const minimumUIReserve = 64 << 20
@@ -29,6 +30,9 @@ type PointerStore interface {
 }
 
 type Config struct {
+	StateDir       string
+	Request        updatetxn.Request
+	Fault          func(string) error
 	StagingDir     string
 	Root           string
 	PublicKeyFile  string
@@ -64,6 +68,9 @@ func Install(ctx context.Context, cfg Config) (Result, error) {
 	if cfg.Pointers == nil {
 		cfg.Pointers = osPointers{}
 	}
+	if result, exists, err := recoverUI(cfg); exists || err != nil {
+		return result, err
+	}
 	if err := validateStaging(cfg.StagingDir); err != nil {
 		return Result{}, &codedError{code: "invalid_staging", err: err}
 	}
@@ -89,6 +96,9 @@ func Install(ctx context.Context, cfg Config) (Result, error) {
 			return Result{}, &codedError{code: "invalid_archive", err: err}
 		}
 		return Result{}, err
+	}
+	if cfg.StateDir != "" && (updatetxn.ValidateRequest(cfg.Request) != nil || cfg.Request.Kind != updatetxn.KindUI || cfg.Request.Action != updatetxn.ActionApply || cfg.Request.Version != manifest.Version) {
+		return Result{}, &codedError{code: "request_manifest_mismatch", err: errors.New("signed UI release differs from request")}
 	}
 	if cfg.AvailableBytes == nil {
 		return Result{}, &codedError{code: "disk_check_failed", err: errors.New("available space provider is required")}
@@ -139,6 +149,9 @@ func Install(ctx context.Context, cfg Config) (Result, error) {
 		_ = os.RemoveAll(finalPath)
 		return Result{}, &codedError{code: "pointer_failed", err: previousErr}
 	}
+	if cfg.StateDir != "" {
+		return journalSwitch(ctx, cfg, oldCurrent, oldPrevious, manifest.Version)
+	}
 	if oldCurrent != "" {
 		if err := cfg.Pointers.Set(cfg.Root, "previous", oldCurrent); err != nil {
 			_ = os.RemoveAll(finalPath)
@@ -188,6 +201,9 @@ func validateStaging(directory string) error {
 	if err != nil {
 		return err
 	}
+	if len(entries) == 4 && entries[0].Name() == "download.complete" && entries[0].Type().IsRegular() {
+		entries = entries[1:]
+	}
 	wanted := []string{"manifest.json", "manifest.sig", "ui.tar.gz"}
 	if len(entries) != len(wanted) {
 		return errors.New("staging must contain exactly three release assets")
@@ -204,6 +220,9 @@ func Rollback(ctx context.Context, cfg Config) (Result, error) {
 	if cfg.Pointers == nil {
 		cfg.Pointers = osPointers{}
 	}
+	if result, exists, err := recoverUI(cfg); exists || err != nil {
+		return result, err
+	}
 	current, err := cfg.Pointers.Get(cfg.Root, "current")
 	if err != nil {
 		return Result{}, &codedError{code: "rollback_unavailable", err: err}
@@ -217,6 +236,9 @@ func Rollback(ctx context.Context, cfg Config) (Result, error) {
 		if statErr != nil || !info.IsDir() {
 			return Result{}, &codedError{code: "rollback_unavailable", err: errors.New("release directory is unavailable")}
 		}
+	}
+	if cfg.StateDir != "" {
+		return journalSwitch(ctx, cfg, current, previous, previous)
 	}
 	if err := cfg.Pointers.Set(cfg.Root, "current", previous); err != nil {
 		return Result{}, &codedError{code: "pointer_failed", err: err}
@@ -235,7 +257,7 @@ func Rollback(ctx context.Context, cfg Config) (Result, error) {
 	if err := removeOlderReleases(filepath.Join(cfg.Root, "releases"), previous, current); err != nil {
 		return Result{}, &codedError{code: "cleanup_failed", err: err}
 	}
-	return Result{Version: previous, PreviousVersion: current, State: "success"}, nil
+	return Result{Version: previous, PreviousVersion: current, State: "rolled_back"}, nil
 }
 
 func readRegular(filename string, maximum int64) ([]byte, error) {

@@ -3,9 +3,11 @@ package updatetxn
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -74,6 +76,35 @@ func TestLeaseRejectsConcurrentUIAndGatewayTransactions(t *testing.T) {
 	}
 }
 
+func TestConcurrentBarrierAcceptsExactlyOneRun(t *testing.T) {
+	for round := 0; round < 30; round++ {
+		client := newTestClient(t)
+		start := make(chan struct{})
+		results := make(chan error, 24)
+		var ready sync.WaitGroup
+		ready.Add(24)
+		for i := 0; i < 24; i++ {
+			go func(i int) {
+				ready.Done()
+				<-start
+				_, err := client.Submit(context.Background(), Request{RunID: fmt.Sprintf("%064x", i+1), Kind: KindGateway, Version: "v1.2.3", Action: ActionApply})
+				results <- err
+			}(i)
+		}
+		ready.Wait()
+		close(start)
+		accepted := 0
+		for i := 0; i < 24; i++ {
+			if err := <-results; err == nil {
+				accepted++
+			}
+		}
+		if accepted != 1 {
+			t.Fatalf("round %d accepted %d different runs", round, accepted)
+		}
+	}
+}
+
 func TestGetRejectsSymlinkAndHardLinkedResult(t *testing.T) {
 	for name, arrange := range map[string]func(t *testing.T, target, result string){
 		"symlink": func(t *testing.T, target, result string) {
@@ -121,6 +152,25 @@ func TestWriteTerminalResultIsAtomicAndReadable(t *testing.T) {
 	}
 	if got.RunID != want.RunID || got.Kind != want.Kind || got.Version != want.Version || got.State != want.State || got.FinishedAt == nil || !got.FinishedAt.Equal(finished) {
 		t.Fatalf("result=%#v want=%#v", got, want)
+	}
+}
+
+func TestCompletedRemovedRequestStillHasIdempotentResult(t *testing.T) {
+	client := newTestClient(t)
+	request := Request{RunID: strings.Repeat("a", 64), Kind: KindGateway, Version: "v1.2.3", Action: ActionApply}
+	if _, err := client.Submit(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	finished := time.Now().UTC()
+	if err := WriteResultFile(client.ResultDir, Result{RunID: request.RunID, Kind: request.Kind, Version: request.Version, State: StateSuccess, FinishedAt: &finished}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(client.RequestDir, request.RunID+".json")); err != nil {
+		t.Fatal(err)
+	}
+	result, err := client.Submit(context.Background(), request)
+	if err != nil || result.State != StateSuccess {
+		t.Fatalf("consumed request lost idempotency: %+v %v", result, err)
 	}
 }
 

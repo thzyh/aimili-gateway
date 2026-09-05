@@ -47,6 +47,21 @@ func TestFetcherUsesOnlyConfiguredOriginAndExactAssetNames(t *testing.T) {
 	}
 }
 
+func TestDownloadedRequestDoesNotDownloadTwice(t *testing.T) {
+	hits := 0
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits++; _, _ = io.WriteString(w, "fixture") }))
+	defer server.Close()
+	fetcher := newTestFetcher(t, server)
+	first, err := fetcher.Fetch(context.Background(), gatewayRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := fetcher.Fetch(context.Background(), gatewayRequest())
+	if err != nil || first != second || hits != 3 {
+		t.Fatalf("download was not idempotent: err=%v hits=%d", err, hits)
+	}
+}
+
 func TestFetcherRejectsRedirectOutsideAllowlist(t *testing.T) {
 	target := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	defer target.Close()
@@ -130,7 +145,7 @@ func newTestFetcher(t *testing.T, server *httptest.Server) *Fetcher {
 		},
 		Client:         server.Client(),
 		AvailableBytes: func(string) (uint64, error) { return 1 << 30, nil },
-		Verify:         func(updatetxn.Kind, []byte, []byte, []byte) error { return nil },
+		Verify:         func(updatetxn.Request, []byte, []byte, []byte) error { return nil },
 	}
 }
 

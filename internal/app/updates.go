@@ -7,31 +7,66 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/thzyh/aimili-gateway/internal/buildinfo"
+	"github.com/thzyh/aimili-gateway/internal/config"
 	"github.com/thzyh/aimili-gateway/internal/httpapi"
 	"github.com/thzyh/aimili-gateway/internal/updatetxn"
 )
 
 type updateManager struct {
-	client *updatetxn.Client
-	uiRoot string
+	client      *updatetxn.Client
+	uiRoot      string
+	catalogPath string
 }
 
-func newUpdateManager(requestDir, resultDir, uiRoot string) httpapi.UpdateManager {
-	if requestDir == "" || resultDir == "" {
+func newUpdateManager(cfg config.Config) httpapi.UpdateManager {
+	if !cfg.UpdateEnabled || cfg.UpdateRequestDir == "" || cfg.UpdateResultDir == "" {
 		return nil
 	}
-	client := &updatetxn.Client{RequestDir: requestDir, ResultDir: resultDir}
+	client := &updatetxn.Client{RequestDir: cfg.UpdateRequestDir, ResultDir: cfg.UpdateResultDir}
 	if runtime.GOOS != "windows" {
 		trustedResultUID := uint32(0)
 		client.TrustedResultUID = &trustedResultUID
 	}
-	return &updateManager{client: client, uiRoot: uiRoot}
+	manager := &updateManager{client: client, uiRoot: cfg.ExternalUIRoot, catalogPath: cfg.UpdateCatalogFile}
+	if _, err := manager.catalog(); err != nil {
+		return nil
+	}
+	return manager
+}
+
+type updateCatalog struct {
+	Capability bool                    `json:"capability"`
+	ExpiresAt  time.Time               `json:"expiresAt"`
+	Available  []httpapi.UpdateVersion `json:"available"`
+}
+
+func (m *updateManager) catalog() (updateCatalog, error) {
+	var catalog updateCatalog
+	if err := updatetxn.ReadTrustedStateFile(m.catalogPath, m.client.TrustedResultUID, &catalog); err != nil {
+		return catalog, httpapi.ErrUpdatesDisabled
+	}
+	if !catalog.Capability || !catalog.ExpiresAt.After(time.Now()) || len(catalog.Available) == 0 || len(catalog.Available) > 64 {
+		return catalog, httpapi.ErrUpdatesDisabled
+	}
+	for _, v := range catalog.Available {
+		if updatetxn.ValidateRequest(updatetxn.Request{RunID: strings.Repeat("a", 64), Kind: updatetxn.Kind(v.Kind), Version: v.Version, Action: updatetxn.ActionApply}) != nil {
+			return catalog, httpapi.ErrUpdatesDisabled
+		}
+	}
+	return catalog, nil
 }
 
 func (m *updateManager) List(context.Context) (httpapi.UpdateSummary, error) {
 	summary := httpapi.UpdateSummary{CurrentGateway: buildinfo.Current().Version, Available: []httpapi.UpdateVersion{}}
+	catalog, err := m.catalog()
+	if err != nil {
+		return summary, err
+	}
+	summary.Enabled = true
+	summary.Available = catalog.Available
 	if m.uiRoot == "" {
 		return summary, nil
 	}
@@ -45,6 +80,21 @@ func (m *updateManager) List(context.Context) (httpapi.UpdateSummary, error) {
 }
 
 func (m *updateManager) Submit(ctx context.Context, request httpapi.UpdateRequest) (httpapi.UpdateResult, error) {
+	catalog, err := m.catalog()
+	if err != nil {
+		return httpapi.UpdateResult{}, err
+	}
+	if request.Action == "apply" {
+		found := false
+		for _, v := range catalog.Available {
+			if v.Kind == request.Kind && v.Version == request.Version && v.Compatible {
+				found = true
+			}
+		}
+		if !found {
+			return httpapi.UpdateResult{}, httpapi.ErrUpdatesDisabled
+		}
+	}
 	transaction := updatetxn.Request{
 		RunID: request.RunID, Kind: updatetxn.Kind(request.Kind), Version: request.Version, Action: updatetxn.Action(request.Action),
 	}
@@ -53,6 +103,9 @@ func (m *updateManager) Submit(ctx context.Context, request httpapi.UpdateReques
 }
 
 func (m *updateManager) Get(ctx context.Context, runID string) (httpapi.UpdateResult, error) {
+	if _, err := m.catalog(); err != nil {
+		return httpapi.UpdateResult{}, err
+	}
 	result, err := m.client.Get(ctx, runID)
 	return publicUpdateResult(result), err
 }
