@@ -16,7 +16,10 @@ const saving = ref(false)
 const updates = ref<UpdateSummaryPayload | null>(null)
 const updateNotice = ref<UiNoticeData | null>(null)
 const updatePassword = ref('')
-const pendingUpdate = ref<UpdateVersionPayload | null>(null)
+type UpdateAction = 'apply' | 'rollback'
+type PendingUpdate = { action: 'apply'; candidate: UpdateVersionPayload } | { action: 'rollback'; kind: UpdateKind }
+const pendingUpdate = ref<PendingUpdate | null>(null)
+const activeUpdate = ref<{ runId: string; kind: UpdateKind; action: UpdateAction } | null>(null)
 const updating = ref(false)
 let noticeSequence = 0
 
@@ -51,8 +54,14 @@ const availableUI = computed(() => updates.value?.available.find(item => item.ki
 const availableGateway = computed(() => updates.value?.available.find(item => item.kind === 'gateway' && item.compatible) ?? null)
 
 function requestUpdate(candidate: UpdateVersionPayload | null): void {
-  if (!candidate || updating.value) return
-  pendingUpdate.value = candidate
+  if (!candidate || updating.value || activeUpdate.value) return
+  pendingUpdate.value = { action: 'apply', candidate }
+  updatePassword.value = ''
+}
+
+function requestRollback(kind: UpdateKind): void {
+  if (updating.value || activeUpdate.value) return
+  pendingUpdate.value = { action: 'rollback', kind }
   updatePassword.value = ''
 }
 
@@ -63,28 +72,51 @@ function cancelUpdate(): void {
 }
 
 async function confirmUpdate(): Promise<void> {
-  const candidate = pendingUpdate.value
-  if (!candidate || updatePassword.value.length === 0) return
+  const request = pendingUpdate.value
+  if (!request || updatePassword.value.length === 0) return
   updating.value = true
   const password = updatePassword.value
   updatePassword.value = ''
   const runId = newRunID()
-  const subject = updateSubject(candidate.kind)
-  updateNotice.value = makeUpdateNotice('progress', `${subject}正在开始`, candidate.kind === 'ui' ? '正在校验并切换界面资源，节点不会中断。' : '控制面会短暂重启，代理节点继续运行。')
+  const kind = request.action === 'apply' ? request.candidate.kind : request.kind
+  const subject = updateSubject(kind)
+  const actionLabel = request.action === 'apply' ? '更新' : '回滚'
+  const endpoint = request.action === 'apply'
+    ? `/api/v1/system/updates/${kind}/${request.candidate.version}/apply`
+    : `/api/v1/system/updates/${kind}/rollback`
+  activeUpdate.value = { runId, kind, action: request.action }
+  updateNotice.value = makeUpdateNotice('progress', `${subject}正在${actionLabel}`, kind === 'ui' ? '正在校验并切换界面资源，节点不会中断。' : '控制面会短暂重启，代理节点继续运行。')
   try {
-    const submitted = await apiFetch<UpdateResultPayload>(`/api/v1/system/updates/${candidate.kind}/${candidate.version}/apply`, {
+    await apiFetch<UpdateResultPayload>(endpoint, {
       method: 'POST', body: JSON.stringify({ password, runId }),
     })
     pendingUpdate.value = null
-    await pollUpdate(submitted.runId, candidate.kind)
+    await pollUpdate(runId, kind, request.action)
   } catch (error) {
-    updateNotice.value = makeUpdateNotice('error', `${subject}未开始`, messageForUpdate(error, '请求未能提交，现有版本保持不变。'))
+    pendingUpdate.value = null
+    if (isDefiniteUpdateRejection(error)) {
+      activeUpdate.value = null
+      updateNotice.value = makeUpdateNotice('error', `${subject}${actionLabel}未开始`, messageForUpdate(error, '请求未被受理，现有版本保持不变。'))
+    } else {
+      await pollUpdate(runId, kind, request.action)
+    }
   } finally {
     updating.value = false
   }
 }
 
-async function pollUpdate(runId: string, kind: UpdateKind): Promise<void> {
+async function resumeUpdate(): Promise<void> {
+  const update = activeUpdate.value
+  if (!update || updating.value) return
+  updating.value = true
+  try {
+    await pollUpdate(update.runId, update.kind, update.action)
+  } finally {
+    updating.value = false
+  }
+}
+
+async function pollUpdate(runId: string, kind: UpdateKind, action: UpdateAction): Promise<void> {
   const delays = [0, 1000, 2000, 4000, 8000, 10000]
   let lastError: unknown
   for (const delay of delays) {
@@ -95,8 +127,13 @@ async function pollUpdate(runId: string, kind: UpdateKind): Promise<void> {
         updateNotice.value = makeUpdateNotice('progress', `${updateSubject(kind)}进行中`, updateProgressMessage(result.state, kind))
         continue
       }
-      updateNotice.value = noticeForUpdate(result)
-      if (result.state === 'success' || result.state === 'rolled_back') updates.value = await apiFetch<UpdateSummaryPayload>('/api/v1/system/updates')
+      updateNotice.value = noticeForUpdate(result, action)
+      activeUpdate.value = null
+      try {
+        updates.value = await apiFetch<UpdateSummaryPayload>('/api/v1/system/updates')
+      } catch {
+        // 已确认的终态是权威结果；列表刷新失败只保留该结果。
+      }
       return
     } catch (error) {
       lastError = error
@@ -105,10 +142,12 @@ async function pollUpdate(runId: string, kind: UpdateKind): Promise<void> {
   updateNotice.value = makeUpdateNotice('error', `${updateSubject(kind)}状态未确认`, messageForUpdate(lastError, '连接暂未恢复，请稍后刷新；系统不会自动创建第二次更新。'))
 }
 
-function noticeForUpdate(result: UpdateResultPayload): UiNoticeData {
+function noticeForUpdate(result: UpdateResultPayload, action: UpdateAction = 'apply'): UiNoticeData {
   const subject = updateSubject(result.kind)
   if (result.state === 'success') return makeUpdateNotice('success', `${subject}成功`, result.kind === 'ui' ? '新界面已生效，Gateway 和代理节点均未重启。' : 'Gateway 控制面已恢复，代理节点继续运行。')
-  if (result.state === 'rolled_back') return makeUpdateNotice('error', `${subject}已自动回滚`, '新版本未通过健康检查，已恢复上一版。')
+  if (result.state === 'rolled_back') return action === 'rollback'
+    ? makeUpdateNotice('success', `${subject}已回滚`, '已恢复上一版。')
+    : makeUpdateNotice('error', `${subject}已自动回滚`, '新版本未通过健康检查，已恢复上一版。')
   if (result.state === 'repair_required') return makeUpdateNotice('error', `${subject}需要受限修复`, '自动回滚未能完整确认，请使用服务器上的固定回滚入口。')
   return makeUpdateNotice('error', `${subject}失败`, messageForUpdateCode(result.errorCode))
 }
@@ -138,6 +177,9 @@ function messageForUpdateCode(code?: string): string {
 function messageForUpdate(error: unknown, fallback: string): string {
   if (error instanceof APIError) return messageForUpdateCode(error.message)
   return fallback
+}
+function isDefiniteUpdateRejection(error: unknown): error is APIError {
+  return error instanceof APIError && error.status >= 400 && error.status < 500
 }
 function wait(milliseconds: number): Promise<void> { return new Promise(resolve => setTimeout(resolve, milliseconds)) }
 function newRunID(): string {
@@ -288,10 +330,11 @@ function messageFor(error: unknown, fallback: string): string {
       <section class="services-section update-section">
         <div class="section-title"><p class="section-kicker">SIGNED UPDATES</p><h2>安全更新</h2><p>只接受固定可信来源、有效签名且兼容的版本。</p></div>
         <div class="update-grid">
-          <article class="update-card"><strong>界面资源</strong><span>当前：{{ updates?.currentUi ? updates.currentUi.slice(0, 12) : '内嵌兜底' }}</span><p>仅更新界面，不影响节点，也不重启 Gateway。</p><button data-ui-update :disabled="!availableUI || updating" type="button" @click="requestUpdate(availableUI)">{{ availableUI ? `更新到 ${availableUI.version.slice(0, 12)}` : '暂无可用更新' }}</button></article>
-          <article class="update-card"><strong>Gateway 控制面</strong><span>当前：{{ updates?.currentGateway ?? '未知' }}</span><p>控制面将短暂重启，代理节点继续运行。</p><button data-gateway-update :disabled="!availableGateway || updating" type="button" @click="requestUpdate(availableGateway)">{{ availableGateway ? `更新到 ${availableGateway.version}` : '暂无可用更新' }}</button></article>
+          <article class="update-card"><strong>界面资源</strong><span>当前：{{ updates?.currentUi ? updates.currentUi.slice(0, 12) : '内嵌兜底' }}</span><p>仅更新界面，不影响节点，也不重启 Gateway。</p><div class="update-actions"><button data-ui-update :disabled="!availableUI || updating || !!activeUpdate" type="button" @click="requestUpdate(availableUI)">{{ availableUI ? `更新到 ${availableUI.version.slice(0, 12)}` : '暂无可用更新' }}</button><button data-ui-rollback class="secondary" :disabled="updating || !!activeUpdate" type="button" @click="requestRollback('ui')">回滚上一版</button></div></article>
+          <article class="update-card"><strong>Gateway 控制面</strong><span>当前：{{ updates?.currentGateway ?? '未知' }}</span><p>控制面将短暂重启，代理节点继续运行。</p><div class="update-actions"><button data-gateway-update :disabled="!availableGateway || updating || !!activeUpdate" type="button" @click="requestUpdate(availableGateway)">{{ availableGateway ? `更新到 ${availableGateway.version}` : '暂无可用更新' }}</button><button data-gateway-rollback class="secondary" :disabled="updating || !!activeUpdate" type="button" @click="requestRollback('gateway')">回滚上一版</button></div></article>
         </div>
-        <form v-if="pendingUpdate" class="reauth-panel" @submit.prevent="confirmUpdate"><label>当前 Gateway 密码<input v-model="updatePassword" data-update-password type="password" autocomplete="current-password"></label><p>密码只用于本次重新认证，不会写入更新请求或日志。</p><div><button class="secondary" type="button" :disabled="updating" @click="cancelUpdate">取消</button><button data-update-confirm type="button" :disabled="updating || !updatePassword" @click="confirmUpdate">{{ updating ? '正在提交' : '确认更新' }}</button></div></form>
+        <form v-if="pendingUpdate" class="reauth-panel" @submit.prevent="confirmUpdate"><label>当前 Gateway 密码<input v-model="updatePassword" data-update-password type="password" autocomplete="current-password"></label><p>密码仅随本次重新认证请求发送，不会保存或写入日志。</p><div><button class="secondary" type="button" :disabled="updating" @click="cancelUpdate">取消</button><button data-update-confirm type="button" :disabled="updating || !updatePassword" @click="confirmUpdate">{{ updating ? '正在提交' : '确认' + (pendingUpdate.action === 'rollback' ? '回滚' : '更新') }}</button></div></form>
+        <div v-else-if="activeUpdate" class="reauth-panel"><p>本次请求的响应尚未确认；将继续查询原事务，不会创建新的更新或回滚请求。</p><button data-update-resume type="button" :disabled="updating" @click="resumeUpdate">继续查询</button></div>
       </section>
     </div>
   </AppShell>
@@ -299,5 +342,5 @@ function messageFor(error: unknown, fallback: string): string {
 
 <style scoped>
 .settings-header{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;margin-bottom:20px}.eyebrow,.section-kicker{margin:0 0 6px;color:var(--accent);font-size:10px;font-weight:850;letter-spacing:.16em}.settings-header h1{margin:0;font-size:30px;letter-spacing:-.03em}.settings-header>div>p:last-child,.section-title>p:last-child{margin:8px 0 0;color:var(--muted-text);font-size:14px}.account-chip{padding:7px 10px;border:1px solid var(--border);border-radius:999px;background:var(--panel);color:var(--muted-text);font-size:12px;font-weight:750}.account-chip.synced{border-color:color-mix(in srgb,var(--healthy) 28%,var(--border));color:var(--healthy);background:color-mix(in srgb,var(--healthy) 8%,var(--panel))}.policy-notice,.loading-panel{margin:0 0 16px}.loading-panel{padding:11px 13px;border:1px solid var(--border);border-radius:10px;background:var(--panel);color:var(--muted-text);font-size:13px}.settings-layout{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(260px,.75fr);gap:16px}.panel,.services-section{border:1px solid var(--border);border-radius:14px;background:var(--panel);box-shadow:var(--shadow-soft)}.policy-panel{padding:20px}.panel-heading{display:flex;justify-content:space-between;gap:20px}.panel h2,.section-title h2{margin:0;font-size:18px}.panel-heading p:last-child{margin:6px 0 0;color:var(--muted-text);font-size:13px}.switch{display:flex;align-items:center;gap:8px;align-self:flex-start;cursor:pointer}.switch input{position:absolute;opacity:0;pointer-events:none}.switch span{position:relative;width:38px;height:22px;border-radius:999px;background:var(--muted-bg);box-shadow:inset 0 0 0 1px var(--border);transition:.2s}.switch span::after{content:"";position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:var(--panel);box-shadow:0 1px 3px rgba(0,0,0,.18);transition:.2s}.switch input:checked+span{background:var(--accent);box-shadow:none}.switch input:checked+span::after{transform:translateX(16px);background:#fff}.switch b{min-width:42px;font-size:12px}.risk-note{display:grid;gap:4px;margin-top:18px;padding:12px;border:1px solid color-mix(in srgb,var(--warning) 35%,var(--border));border-radius:10px;background:color-mix(in srgb,var(--warning) 8%,var(--panel));font-size:12px}.risk-note strong{color:var(--warning)}.risk-note span{color:var(--muted-text);line-height:1.55}.policy-form{display:grid;gap:14px;margin-top:18px}.field{display:grid;gap:7px;font-size:12px;font-weight:750}.field textarea{width:100%;resize:vertical;padding:11px 12px;border:1px solid var(--border);border-radius:9px;background:var(--input);color:var(--text);font:13px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace}.field small{color:var(--muted-text);font-weight:500}.form-footer{display:flex;align-items:center;justify-content:space-between;gap:12px}.apply-state{color:var(--muted-text);font-size:12px}.apply-state[data-apply-status=applied]{color:var(--healthy);font-weight:750}.apply-state[data-apply-status=failed],.apply-state[data-apply-status=repair_required]{color:var(--danger);font-weight:750}.policy-actions{display:flex;gap:8px}.capacity-panel{padding:20px}.capacity-value{display:grid;gap:2px;margin:20px 0}.capacity-value strong{font-size:32px;letter-spacing:-.05em}.capacity-value span{color:var(--muted-text);font-size:12px}.capacity-panel dl{display:grid;gap:8px;margin:0}.capacity-panel dl div{display:flex;justify-content:space-between;padding:9px 0;border-top:1px solid var(--border-soft);font-size:13px}.capacity-panel dt{color:var(--muted-text)}.capacity-panel dd{margin:0;font-weight:800}.capacity-help{margin:14px 0 0;color:var(--muted-text);font-size:12px;line-height:1.6}.services-section{grid-column:1/-1;padding:20px}.section-title{margin-bottom:14px}.service-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.service-card{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:12px;padding:14px;border:1px solid var(--border);border-radius:11px;color:var(--text);text-decoration:none;transition:.15s}.service-card:hover{border-color:color-mix(in srgb,var(--accent) 35%,var(--border));background:var(--hover);transform:translateY(-1px)}.service-icon{display:grid;place-items:center;width:36px;height:36px;border-radius:10px;background:var(--accent-soft);color:var(--accent);font-weight:850}.service-icon.xui{font-size:11px}.service-card span:nth-child(2){display:grid;gap:4px}.service-card strong{font-size:14px}.service-card small{color:var(--muted-text);font-size:12px}.service-card>b{color:var(--muted-text)}.boundary-note{margin:14px 0 0;color:var(--muted-text);font-size:11px;line-height:1.55}@media(max-width:820px){.settings-layout{grid-template-columns:1fr}.services-section{grid-column:auto}.service-grid{grid-template-columns:1fr}}@media(max-width:560px){.settings-header,.panel-heading{align-items:flex-start;flex-direction:column}.account-chip{align-self:flex-start}.service-card{padding:12px}.form-footer{align-items:stretch;flex-direction:column}.policy-actions{flex-direction:column}.form-footer button{width:100%}}
-.update-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.update-card{display:grid;gap:8px;padding:14px;border:1px solid var(--border);border-radius:11px}.update-card>span,.update-card>p{color:var(--muted-text);font-size:12px}.update-card>p{margin:0;line-height:1.5}.update-card>button{justify-self:start}.reauth-panel{display:grid;gap:10px;margin-top:14px;padding:14px;border:1px solid var(--border);border-radius:11px;background:var(--subtle)}.reauth-panel label{display:grid;gap:6px;font-size:12px;font-weight:750}.reauth-panel input{max-width:360px;padding:9px 10px;border:1px solid var(--border);border-radius:8px;background:var(--input);color:var(--text)}.reauth-panel p{margin:0;color:var(--muted-text);font-size:11px}.reauth-panel>div{display:flex;gap:8px}@media(max-width:650px){.update-grid{grid-template-columns:1fr}}
+.update-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.update-card{display:grid;gap:8px;padding:14px;border:1px solid var(--border);border-radius:11px}.update-card>span,.update-card>p{color:var(--muted-text);font-size:12px}.update-card>p{margin:0;line-height:1.5}.update-actions{display:flex;flex-wrap:wrap;gap:8px}.reauth-panel{display:grid;gap:10px;margin-top:14px;padding:14px;border:1px solid var(--border);border-radius:11px;background:var(--subtle)}.reauth-panel label{display:grid;gap:6px;font-size:12px;font-weight:750}.reauth-panel input{max-width:360px;padding:9px 10px;border:1px solid var(--border);border-radius:8px;background:var(--input);color:var(--text)}.reauth-panel p{margin:0;color:var(--muted-text);font-size:11px}.reauth-panel>div{display:flex;gap:8px}@media(max-width:650px){.update-grid{grid-template-columns:1fr}}
 </style>
