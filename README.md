@@ -8,11 +8,13 @@ Aimili Gateway 是 AimiliVPN 与 3x-ui 的轻量统一控制台项目。统一�
 
 截至 2026-09-05，主连接安全切换、每出口独立协议、混合协议订阅、动态中文别名、受管资源恢复、节点国家规范化和刷新通知持久关闭均已完成本地实现并部署生产。用户已确认当前 v2rayN 测试正常；生产只读检查为四服务 active、4 个 OpenVPN、1 个 Xray、四条协议状态 ready，根分区使用率 51%。
 
-Gateway 与 AimiliVPN 的最新本地提交尚未推送 GitHub。纯 UI 外部静态资源免重启发布正在按正式设计分阶段启用，内嵌 UI 仍作为安全兜底；后端一键安全升级尚未完成，在此之前后端仍按现有安全部署流程发布。
+Gateway 与 AimiliVPN 的最新本地提交尚未推送 GitHub。纯 UI 外部静态资源免重启发布、回退与恢复均已通过生产验证，内嵌 UI 仍作为安全兜底。最新 Gateway 代码已部署为 `v1.0.0`；后端更新器的只读预检通过，但真实升级被生产会话索引完整性问题阻断，尚未完成后端升级/回滚验收。
 
 外部 UI Stage A 使用 `scripts/build-ui-release.ps1` 生成 `manifest.json`、`manifest.sig` 和 `ui.tar.gz`，由离线 `aimili-gateway-update-install` 校验并原子切换 `current`/`previous`。首次启用需要随 Gateway 二进制部署并只重启 Gateway；启用后日常签名 UI 发布和回退不重启 Gateway，也不触碰 AimiliVPN、x-ui/Xray 或 Caddy。
 
-两层发布机制的正式设计已写入 `docs/superpowers/specs/2026-09-05-zero-downtime-ui-and-safe-self-update-design.md`。外部 UI Stage A 已实现并通过生产免重启切换/回滚验证；低权限 fetcher、网页更新入口和后端安全自更新仍按实施计划推进。
+两层发布机制的正式设计已写入 `docs/superpowers/specs/2026-09-05-zero-downtime-ui-and-safe-self-update-design.md`。低权限 fetcher、固定受限 installer、持久恢复和网页更新入口已实现；生产保持网页更新禁用，尚无已验证的 HTTPS 发布源/catalog。当前阻断、私有副本上的修复验证和下一步授权边界详见最新验证记录。
+
+后端更新的逐文件实施计划是 `docs/superpowers/plans/2026-09-05-safe-gateway-self-update.md`，当前验证入口是 `docs/verification/2026-09-05-safe-gateway-self-update.md`。网页更新必须具有已验证的发布来源与可用版本，未配置时保持禁用。普通 UI 发布只切换静态资源；后端发布会短暂重启 Gateway 控制台，代理数据面需通过部署前后检查。
 
 以下段落是项目历史演进，用于理解设计来源，不代表当前生产快照。
 
@@ -29,7 +31,10 @@ Gateway 只管理 `agw-` 命名空间；不接管非受管 3x-ui/Xray 资源，�
 ## 重要文件
 
 - `docs/handoffs/2026-09-05-current-state-handoff.md`：当前本地路径、Git、生产摘要、最新修复与未完成事项。
-- `docs/superpowers/specs/2026-09-05-zero-downtime-ui-and-safe-self-update-design.md`：外部 UI 原子切换、内嵌兜底与后端一键安全升级设计草案。
+- `AGENTS.md`：项目指导与变更分级，规定 UI、Gateway 和运行时修改的开发、验证及生产边界。
+- `docs/superpowers/specs/2026-09-05-zero-downtime-ui-and-safe-self-update-design.md`：已批准的外部 UI 原子切换、内嵌兜底与后端一键安全升级设计。
+- `docs/superpowers/plans/2026-09-05-safe-gateway-self-update.md`：后端安全更新逐文件实施计划。
+- `docs/verification/2026-09-05-safe-gateway-self-update.md`：本轮更新器实现、Linux 验证、部署与剩余限制。
 - `docs/superpowers/specs/2026-08-25-country-proxy-console-design.md`：当前后续设计，定义国家代理目录、VLESS＋mixed 成对编排、容量、安全、统一高级设置和真实出口验收。
 - `docs/superpowers/specs/2026-08-26-online-proxy-pools-design.md`：V1-C 正式设计，定义每候选出口实例、在线双协议资源池、紧凑前端和阶梯容量门槛。
 - `docs/superpowers/specs/2026-08-27-advanced-settings-unified-credentials-design.md`：已批准的 V1-D 正式设计，定义高级设置、三账户同步、服务端自动代登录、SOCKS5H 来源开关和状态简化。
