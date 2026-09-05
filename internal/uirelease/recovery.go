@@ -13,7 +13,7 @@ import (
 func journalSwitch(ctx context.Context, cfg Config, current, previous, target string) (Result, error) {
 	j := updatetxn.Journal{Request: cfg.Request, OldDigest: current, NewDigest: target, OldPrevious: previous, Baseline: "ui-pointers-v1", Phase: "prepared"}
 	if err := updatetxn.WriteJournal(cfg.StateDir, j); err != nil {
-		return Result{}, err
+		return Result{State: "repair_required"}, &codedError{code: "repair_required", err: err}
 	}
 	if err := uiCheckpoint(cfg, &j, "prepared", "before_switch"); err != nil {
 		return Result{}, err
@@ -62,10 +62,12 @@ func recoverUI(cfg Config) (Result, bool, error) {
 	current, currentErr := cfg.Pointers.Get(cfg.Root, "current")
 	previous, previousErr := cfg.Pointers.Get(cfg.Root, "previous")
 	if currentErr != nil && !errors.Is(currentErr, os.ErrNotExist) {
-		return Result{}, true, currentErr
+		result, repairErr := uiRepair(cfg, j, currentErr)
+		return result, true, repairErr
 	}
 	if previousErr != nil && !errors.Is(previousErr, os.ErrNotExist) {
-		return Result{}, true, previousErr
+		result, repairErr := uiRepair(cfg, j, previousErr)
+		return result, true, repairErr
 	}
 	if (current != j.OldDigest && current != j.NewDigest) || (previous != j.OldPrevious && previous != j.OldDigest) {
 		result, err := uiRepair(cfg, j, errors.New("UI pointer identity unknown"))
@@ -92,13 +94,19 @@ func recoverUI(cfg Config) (Result, bool, error) {
 		return result, true, err
 	}
 	// Before current was switched, keep the old version; never replay apply.
+	if previous != j.OldPrevious {
+		if err := setPointer(cfg, "previous", j.OldPrevious); err != nil {
+			result, repairErr := uiRepair(cfg, j, err)
+			return result, true, repairErr
+		}
+	}
 	if cfg.HealthCheck != nil {
 		if err := cfg.HealthCheck(ctx, current); err != nil {
 			result, repairErr := uiRepair(cfg, j, err)
 			return result, true, repairErr
 		}
 	}
-	result, err := uiTerminal(cfg, j, current, previous, updatetxn.StateRolledBack, "")
+	result, err := uiTerminal(cfg, j, current, j.OldPrevious, updatetxn.StateRolledBack, "")
 	return result, true, err
 }
 
@@ -136,7 +144,7 @@ func uiTerminal(cfg Config, j updatetxn.Journal, current, previous string, state
 func uiCheckpoint(cfg Config, j *updatetxn.Journal, phase, fault string) error {
 	j.Phase = phase
 	if err := updatetxn.WriteJournal(cfg.StateDir, *j); err != nil {
-		return err
+		return &codedError{code: "repair_required", err: err}
 	}
 	if cfg.Fault != nil {
 		return cfg.Fault(fault)

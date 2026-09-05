@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -180,5 +181,74 @@ func TestUIRollbackSpoolPublishesRolledBackAndConsumesRequest(t *testing.T) {
 	}
 	if files, _ := filepath.Glob(filepath.Join(cfg.RequestDir, "*.json")); len(files) != 0 {
 		t.Fatal("UI rollback request remains")
+	}
+}
+
+func TestUIRecoveryBeforeCurrentSwitchPreservesOriginalPreviousThroughCleanup(t *testing.T) {
+	for _, action := range []updatetxn.Action{updatetxn.ActionApply, updatetxn.ActionRollback} {
+		t.Run(string(action), func(t *testing.T) {
+			root, cfg, request := spoolFixture(t)
+			request.Kind = updatetxn.KindUI
+			request.Action = action
+			request.Version = strings.Repeat("c", 64)
+			if action == updatetxn.ActionRollback {
+				request.Version = ""
+			}
+			body, err := json.Marshal(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(cfg.RequestDir, request.RunID+".json"), body, 0640); err != nil {
+				t.Fatal(err)
+			}
+			cfg.UIRoot = filepath.Join(root, "ui")
+			old, oldPrevious, newVersion := strings.Repeat("a", 64), strings.Repeat("b", 64), strings.Repeat("c", 64)
+			for _, v := range []string{old, oldPrevious, newVersion} {
+				if err := os.MkdirAll(filepath.Join(cfg.UIRoot, "releases", v), 0755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// The interruption happened after previous=A, but before current=C/B.
+			for _, name := range []string{"current", "previous"} {
+				if err := os.Symlink(filepath.Join("releases", old), filepath.Join(cfg.UIRoot, name)); err != nil {
+					t.Skipf("symlink unavailable: %v", err)
+				}
+			}
+			target := newVersion
+			if action == updatetxn.ActionRollback {
+				target = oldPrevious
+			}
+			journal := updatetxn.Journal{Request: request, OldDigest: old, OldPrevious: oldPrevious, NewDigest: target, Baseline: "ui-pointers-v1", Phase: "stopped"}
+			if err := updatetxn.WriteJournal(root, journal); err != nil {
+				t.Fatal(err)
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/manifest.json" {
+					fmt.Fprintf(w, `{"version":"%s"}`, old)
+				} else {
+					fmt.Fprint(w, "ok")
+				}
+			}))
+			defer server.Close()
+			cfg.HealthURL = server.URL + "/healthz"
+			base := updatetxn.Result{RunID: request.RunID, Kind: request.Kind, Version: request.Version}
+			result := processUIRequestAt(context.Background(), root, base, request, filepath.Join(cfg.StagingRoot, request.RunID), cfg)
+			if result.State != updatetxn.StateRolledBack {
+				t.Fatalf("recovery returned %+v", result)
+			}
+			var out, stderr bytes.Buffer
+			if finishRequest(root, cfg, request, result, &out, &stderr) != 0 {
+				t.Fatal(stderr.String())
+			}
+			for name, want := range map[string]string{"current": old, "previous": oldPrevious} {
+				got, err := os.Readlink(filepath.Join(cfg.UIRoot, name))
+				if err != nil || filepath.Base(got) != want {
+					t.Errorf("%s=%q err=%v want=%q", name, got, err, want)
+				}
+				if _, err := os.Stat(filepath.Join(cfg.UIRoot, "releases", want)); err != nil {
+					t.Errorf("cleanup deleted original release %s: %v", name, err)
+				}
+			}
+		})
 	}
 }

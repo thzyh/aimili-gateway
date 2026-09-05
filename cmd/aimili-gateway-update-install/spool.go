@@ -122,6 +122,14 @@ func finishRequest(stateRoot string, config updatefetch.Config, request updatetx
 		fmt.Fprintln(stderr, "repair_required")
 		return 1
 	}
+	if request.Kind == updatetxn.KindUI {
+		journal, journalErr := updatetxn.ReadJournal(stateRoot)
+		if !errors.Is(journalErr, os.ErrNotExist) && (journalErr != nil || journal.Request != request ||
+			(result.State != updatetxn.StateRepairRequired && (journal.Phase != "terminal" || journal.State != result.State ||
+				(result.State != updatetxn.StateSuccess && result.State != updatetxn.StateRolledBack)))) {
+			result.State, result.ErrorCode = updatetxn.StateRepairRequired, "repair_required"
+		}
+	}
 	if result.FinishedAt == nil {
 		finished := time.Now().UTC()
 		result.FinishedAt = &finished

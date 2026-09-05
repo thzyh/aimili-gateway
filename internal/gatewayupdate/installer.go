@@ -444,6 +444,10 @@ func writeCandidate(destination string, body []byte, mode os.FileMode) error {
 		file.Close()
 		return err
 	}
+	if err := file.Chmod(mode); err != nil {
+		file.Close()
+		return err
+	}
 	if err := file.Sync(); err != nil {
 		file.Close()
 		return err

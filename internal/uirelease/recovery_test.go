@@ -72,8 +72,12 @@ func TestUIInterruptedSwitchNeverReapplies(t *testing.T) {
 				if err != nil || (result.State != "success" && result.State != "rolled_back") {
 					t.Fatalf("recovery replayed apply: %+v %v", result, err)
 				}
-				if phase != "before_switch" && p.values["previous"] != strings.Repeat("a", 64) {
-					t.Fatal("previous overwritten during recovery")
+				wantPrevious := strings.Repeat("a", 64)
+				if phase == "before_switch" || phase == "after_previous" {
+					wantPrevious = strings.Repeat("b", 64)
+				}
+				if p.values["previous"] != wantPrevious {
+					t.Fatalf("recovered previous=%q want=%q", p.values["previous"], wantPrevious)
 				}
 			})
 		}
