@@ -14,8 +14,11 @@ readonly INSTALLER=/usr/local/bin/aimili-gateway-update-install
 readonly PUBLIC_KEY=/etc/aimili-gateway/ui-release.pub
 readonly DB=/var/lib/aimili-gateway/aimili-gateway.db
 
-for asset in aimili-gateway aimili-gateway-update-install aimili-gateway.service ui-release.pub manifest.json manifest.sig ui.tar.gz SHA256SUMS; do
+for asset in aimili-gateway aimili-gateway-update-install aimili-gateway.service ui-release.pub SHA256SUMS; do
     [[ -f "$STAGE/$asset" && ! -L "$STAGE/$asset" ]] || { printf '缺少普通文件：%s\n' "$asset" >&2; exit 1; }
+done
+for asset in manifest.json manifest.sig ui.tar.gz; do
+    [[ -f "$STAGE/ui/$asset" && ! -L "$STAGE/ui/$asset" ]] || { printf '缺少普通文件：ui/%s\n' "$asset" >&2; exit 1; }
 done
 (cd "$STAGE" && sha256sum -c SHA256SUMS)
 [[ ! -e "$BACKUP" ]] || { printf '%s\n' '本轮唯一备份目录已经存在，拒绝覆盖。' >&2; exit 1; }
@@ -88,7 +91,7 @@ for _ in $(seq 1 20); do
     sleep 1
 done
 curl --fail --silent --show-error --max-time 5 http://127.0.0.1:9080/healthz >/dev/null
-"$INSTALLER" ui-install --root "$UI_ROOT" --staging "$STAGE" --public-key "$PUBLIC_KEY" --health-url http://127.0.0.1:9080
+"$INSTALLER" ui-install --root "$UI_ROOT" --staging "$STAGE/ui" --public-key "$PUBLIC_KEY" --health-url http://127.0.0.1:9080
 curl --fail --silent --show-error --max-time 5 http://127.0.0.1:9080/manifest.json >/dev/null
 systemctl is-active --quiet aimili-gateway.service aimilivpn.service x-ui.service caddy.service
 [[ "$(systemctl show aimilivpn.service -p MainPID --value)" == "$BEFORE_AIMILI_PID" ]]

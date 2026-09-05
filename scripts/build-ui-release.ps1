@@ -20,7 +20,7 @@ $builtAt = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
 Push-Location $projectRoot
 try {
     go run ./cmd/aimili-gateway-release-tool ui `
-        --dist (Join-Path $projectRoot 'web/dist') `
+        --dist (Join-Path $projectRoot 'internal/webassets/dist') `
         --private-key $keyPath `
         --out $outputPath `
         --commit $commit `
