@@ -47,7 +47,7 @@ func (c *Client) Submit(ctx context.Context, request Request) (Result, error) {
 	if request.RequestedAt.IsZero() {
 		request.RequestedAt = c.now()
 	}
-	leasePath := filepath.Join(filepath.Dir(c.RequestDir), "update.lease")
+	leasePath := filepath.Join(c.RequestDir, ".update.lease")
 	if result, handled, err := c.resolveExistingLease(ctx, leasePath, request); handled || err != nil {
 		return result, err
 	}
@@ -61,7 +61,7 @@ func (c *Client) Submit(ctx context.Context, request Request) (Result, error) {
 		return Result{}, err
 	}
 	requestPath := filepath.Join(c.RequestDir, request.RunID+".json")
-	if err := writeAtomicJSON(requestPath, request); err != nil {
+	if err := writeAtomicJSONMode(requestPath, request, 0o640); err != nil {
 		_ = os.Remove(leasePath)
 		return Result{}, err
 	}

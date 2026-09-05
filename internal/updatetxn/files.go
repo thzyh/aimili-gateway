@@ -30,10 +30,14 @@ func WriteResultFile(resultDir string, result Result) error {
 	if err := validateResult(result, result.RunID); err != nil {
 		return err
 	}
-	return writeAtomicJSON(filepath.Join(resultDir, result.RunID+".json"), result)
+	return writeAtomicJSONMode(filepath.Join(resultDir, result.RunID+".json"), result, 0o640)
 }
 
 func writeAtomicJSON(path string, value any) error {
+	return writeAtomicJSONMode(path, value, 0o600)
+}
+
+func writeAtomicJSONMode(path string, value any, mode os.FileMode) error {
 	directory := filepath.Dir(path)
 	temporary, err := os.CreateTemp(directory, ".update-*.tmp")
 	if err != nil {
@@ -41,7 +45,7 @@ func writeAtomicJSON(path string, value any) error {
 	}
 	temporaryPath := temporary.Name()
 	defer os.Remove(temporaryPath)
-	if err := temporary.Chmod(0o600); err != nil {
+	if err := temporary.Chmod(mode); err != nil {
 		temporary.Close()
 		return err
 	}

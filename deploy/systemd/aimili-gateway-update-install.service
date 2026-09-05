@@ -6,7 +6,7 @@ ConditionPathExists=/etc/aimili-gateway/updater-enabled
 [Service]
 Type=oneshot
 User=root
-Group=root
+Group=aimili-gateway
 ExecStart=/usr/local/bin/aimili-gateway-update-install spool --config /etc/aimili-gateway/updater.json
 UMask=0077
 NoNewPrivileges=true

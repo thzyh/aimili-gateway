@@ -114,6 +114,7 @@ func TestGatewayUpdaterSeparatesNetworkFetcherFromRootInstaller(t *testing.T) {
 	for _, required := range []string{
 		"User=aimili-gateway-updater",
 		"Group=aimili-gateway-updater",
+		"SupplementaryGroups=aimili-gateway",
 		"ExecStart=/usr/local/bin/aimili-gateway-update-fetch spool --config /etc/aimili-gateway/updater.json",
 		"NoNewPrivileges=true",
 		"ProtectSystem=strict",
@@ -142,6 +143,7 @@ func TestGatewayUpdaterSeparatesNetworkFetcherFromRootInstaller(t *testing.T) {
 	}
 	for _, required := range []string{
 		"User=root",
+		"Group=aimili-gateway",
 		"ExecStart=/usr/local/bin/aimili-gateway-update-install spool --config /etc/aimili-gateway/updater.json",
 		"IPAddressDeny=any",
 		"RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",
@@ -202,6 +204,9 @@ func TestGatewayUpdaterDeploymentIsChecksummedDisabledAndDataPlaneSafe(t *testin
 		"useradd --system",
 		"/var/lib/aimili-gateway/update-spool/requests",
 		"/var/lib/aimili-gateway/update-spool/results",
+		"install -d -m 0750 -o root -g aimili-gateway /var/lib/aimili-gateway/update-spool",
+		"install -d -m 0750 -o aimili-gateway -g aimili-gateway /var/lib/aimili-gateway/update-spool/requests",
+		"install -d -m 0750 -o root -g aimili-gateway /var/lib/aimili-gateway/update-spool/results",
 		"/var/lib/aimili-gateway-update/staging",
 	} {
 		if !strings.Contains(script, required) {

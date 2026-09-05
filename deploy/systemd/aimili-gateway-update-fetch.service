@@ -8,6 +8,7 @@ ConditionPathExists=/etc/aimili-gateway/updater-enabled
 Type=oneshot
 User=aimili-gateway-updater
 Group=aimili-gateway-updater
+SupplementaryGroups=aimili-gateway
 ExecStart=/usr/local/bin/aimili-gateway-update-fetch spool --config /etc/aimili-gateway/updater.json
 Environment=AIMILI_UPDATE_CREDENTIAL_FILE=%d/release-download
 LoadCredential=release-download:/etc/aimili-gateway/release-download.credential

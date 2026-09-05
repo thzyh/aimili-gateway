@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/thzyh/aimili-gateway/internal/buildinfo"
@@ -21,7 +22,12 @@ func newUpdateManager(requestDir, resultDir, uiRoot string) httpapi.UpdateManage
 	if requestDir == "" || resultDir == "" {
 		return nil
 	}
-	return &updateManager{client: &updatetxn.Client{RequestDir: requestDir, ResultDir: resultDir}, uiRoot: uiRoot}
+	client := &updatetxn.Client{RequestDir: requestDir, ResultDir: resultDir}
+	if runtime.GOOS != "windows" {
+		trustedResultUID := uint32(0)
+		client.TrustedResultUID = &trustedResultUID
+	}
+	return &updateManager{client: client, uiRoot: uiRoot}
 }
 
 func (m *updateManager) List(context.Context) (httpapi.UpdateSummary, error) {

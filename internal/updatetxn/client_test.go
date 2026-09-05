@@ -38,7 +38,7 @@ func TestSubmitSameRunIsIdempotentAndDifferentRequestConflicts(t *testing.T) {
 		t.Fatal(err)
 	}
 	var storedLease leaseRecord
-	leasePath := filepath.Join(filepath.Dir(client.RequestDir), "update.lease")
+	leasePath := filepath.Join(client.RequestDir, ".update.lease")
 	if err := readTrustedJSON(leasePath, nil, &storedLease); err != nil {
 		t.Fatalf("read stored lease: %v", err)
 	}
