@@ -49,6 +49,35 @@ func TestParseUIRejectsUnknownFieldsAndUnsortedFiles(t *testing.T) {
 	}
 }
 
+func TestVerifyGatewayAcceptsControlPlaneOnlyLinuxAMD64(t *testing.T) {
+	manifest, signature, binary, publicKey := signedGatewayFixture(t, "control-plane-only")
+	parsed, err := VerifyGateway(manifest, signature, binary, publicKey, "v1", "linux-amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Kind != "gateway" || parsed.Version != "v1.2.3" || parsed.MinDatabaseSchema != 11 || parsed.MaxDatabaseSchema != 11 {
+		t.Fatalf("verified manifest = %#v", parsed)
+	}
+}
+
+func TestVerifyGatewayRejectsRuntimeImpact(t *testing.T) {
+	manifest, signature, binary, publicKey := signedGatewayFixture(t, "runtime")
+	if _, err := VerifyGateway(manifest, signature, binary, publicKey, "v1", "linux-amd64"); ErrorCode(err) != "manual_staged_deploy_required" {
+		t.Fatalf("runtime impact error = %v", err)
+	}
+}
+
+func TestVerifyGatewayRejectsWrongPlatformAndChangedBinary(t *testing.T) {
+	manifest, signature, binary, publicKey := signedGatewayFixture(t, "control-plane-only")
+	if _, err := VerifyGateway(manifest, signature, binary, publicKey, "v1", "linux-arm64"); ErrorCode(err) != "incompatible_manifest" {
+		t.Fatalf("platform error = %v", err)
+	}
+	binary = append(binary, 'x')
+	if _, err := VerifyGateway(manifest, signature, binary, publicKey, "v1", "linux-amd64"); ErrorCode(err) != "invalid_payload" {
+		t.Fatalf("changed binary error = %v", err)
+	}
+}
+
 func signedUIFixture(t *testing.T) ([]byte, []byte, []byte, ed25519.PublicKey) {
 	t.Helper()
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
@@ -72,4 +101,31 @@ func signedUIFixture(t *testing.T) ([]byte, []byte, []byte, ed25519.PublicKey) {
 		t.Fatal(err)
 	}
 	return manifest, ed25519.Sign(privateKey, manifest), archive, publicKey
+}
+
+func signedGatewayFixture(t *testing.T, impactClass string) ([]byte, []byte, []byte, ed25519.PublicKey) {
+	t.Helper()
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary := []byte("gateway binary fixture")
+	digest := sha256.Sum256(binary)
+	manifest, err := json.Marshal(GatewayManifest{
+		SchemaVersion:     1,
+		Kind:              "gateway",
+		Version:           "v1.2.3",
+		Commit:            "abc1234",
+		BuiltAt:           "2026-09-05T00:00:00Z",
+		Platform:          "linux-amd64",
+		APIVersion:        "v1",
+		ImpactClass:       impactClass,
+		Binary:            File{Path: "aimili-gateway", SHA256: fmt.Sprintf("%x", digest), Bytes: int64(len(binary))},
+		MinDatabaseSchema: 11,
+		MaxDatabaseSchema: 11,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return manifest, ed25519.Sign(privateKey, manifest), binary, publicKey
 }

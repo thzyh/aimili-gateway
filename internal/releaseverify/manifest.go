@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -34,6 +35,26 @@ type UIManifest struct {
 	APIVersion    string  `json:"apiVersion"`
 	Archive       Payload `json:"archive"`
 	Files         []File  `json:"files"`
+}
+
+type UICompatibility struct {
+	Min string `json:"min"`
+	Max string `json:"max"`
+}
+
+type GatewayManifest struct {
+	SchemaVersion     int              `json:"schemaVersion"`
+	Kind              string           `json:"kind"`
+	Version           string           `json:"version"`
+	Commit            string           `json:"commit"`
+	BuiltAt           string           `json:"builtAt"`
+	Platform          string           `json:"platform"`
+	APIVersion        string           `json:"apiVersion"`
+	ImpactClass       string           `json:"impactClass"`
+	Binary            File             `json:"binary"`
+	MinDatabaseSchema int              `json:"minDatabaseSchema"`
+	MaxDatabaseSchema int              `json:"maxDatabaseSchema"`
+	UICompatibility   *UICompatibility `json:"uiCompatibility,omitempty"`
 }
 
 type codedError struct {
@@ -63,6 +84,46 @@ func VerifyUI(manifestBody, signature, archive []byte, publicKey ed25519.PublicK
 	digest := sha256.Sum256(archive)
 	if int64(len(archive)) != manifest.Archive.Bytes || fmt.Sprintf("%x", digest) != manifest.Archive.SHA256 {
 		return UIManifest{}, &codedError{code: "invalid_payload", err: errors.New("UI archive does not match manifest")}
+	}
+	return manifest, nil
+}
+
+func VerifyGateway(manifestBody, signature, binary []byte, publicKey ed25519.PublicKey, apiVersion, platform string) (GatewayManifest, error) {
+	if len(publicKey) != ed25519.PublicKeySize || len(signature) != ed25519.SignatureSize || !ed25519.Verify(publicKey, manifestBody, signature) {
+		return GatewayManifest{}, &codedError{code: "invalid_signature", err: errors.New("Gateway manifest signature is invalid")}
+	}
+	manifest, err := ParseGateway(manifestBody, apiVersion, platform)
+	if err != nil {
+		return GatewayManifest{}, err
+	}
+	digest := sha256.Sum256(binary)
+	if int64(len(binary)) != manifest.Binary.Bytes || fmt.Sprintf("%x", digest) != manifest.Binary.SHA256 {
+		return GatewayManifest{}, &codedError{code: "invalid_payload", err: errors.New("Gateway binary does not match manifest")}
+	}
+	return manifest, nil
+}
+
+func ParseGateway(body []byte, apiVersion, platform string) (GatewayManifest, error) {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	var manifest GatewayManifest
+	if err := decoder.Decode(&manifest); err != nil {
+		return GatewayManifest{}, &codedError{code: "invalid_manifest", err: err}
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return GatewayManifest{}, &codedError{code: "invalid_manifest", err: errors.New("manifest contains trailing data")}
+	}
+	if manifest.ImpactClass != "control-plane-only" {
+		return GatewayManifest{}, &codedError{code: "manual_staged_deploy_required", err: errors.New("Gateway release has runtime impact")}
+	}
+	if manifest.SchemaVersion != 1 || manifest.Kind != "gateway" || manifest.APIVersion != apiVersion || manifest.Platform != platform ||
+		!validVersion(manifest.Version) || strings.TrimSpace(manifest.Commit) == "" || manifest.Binary.Path != "aimili-gateway" ||
+		!validDigest(manifest.Binary.SHA256) || manifest.Binary.Bytes < 1 || manifest.MinDatabaseSchema < 1 ||
+		manifest.MaxDatabaseSchema < manifest.MinDatabaseSchema {
+		return GatewayManifest{}, &codedError{code: "incompatible_manifest", err: errors.New("Gateway manifest metadata is incompatible")}
+	}
+	if _, err := time.Parse(time.RFC3339, manifest.BuiltAt); err != nil {
+		return GatewayManifest{}, &codedError{code: "invalid_manifest", err: errors.New("Gateway build time is invalid")}
 	}
 	return manifest, nil
 }
@@ -104,4 +165,20 @@ func validDigest(value string) bool {
 	}
 	_, err := hex.DecodeString(value)
 	return err == nil
+}
+
+func validVersion(value string) bool {
+	parts := strings.Split(strings.TrimPrefix(value, "v"), ".")
+	if !strings.HasPrefix(value, "v") || len(parts) != 3 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" || (len(part) > 1 && part[0] == '0') {
+			return false
+		}
+		if _, err := strconv.ParseUint(part, 10, 64); err != nil {
+			return false
+		}
+	}
+	return true
 }
