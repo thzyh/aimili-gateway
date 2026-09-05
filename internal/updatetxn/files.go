@@ -12,6 +12,27 @@ import (
 
 const maxStateBytes = 32 << 10
 
+func ReadRequestFile(path string) (Request, error) {
+	var request Request
+	if err := readTrustedJSON(path, nil, &request); err != nil {
+		return Request{}, err
+	}
+	if err := ValidateRequest(request); err != nil {
+		return Request{}, err
+	}
+	return request, nil
+}
+
+func WriteResultFile(resultDir string, result Result) error {
+	if !hexIdentifier.MatchString(result.RunID) || !result.State.Terminal() || result.FinishedAt == nil {
+		return ErrInvalidRequest
+	}
+	if err := validateResult(result, result.RunID); err != nil {
+		return err
+	}
+	return writeAtomicJSON(filepath.Join(resultDir, result.RunID+".json"), result)
+}
+
 func writeAtomicJSON(path string, value any) error {
 	directory := filepath.Dir(path)
 	temporary, err := os.CreateTemp(directory, ".update-*.tmp")

@@ -28,6 +28,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	command := args[0]
+	if command == "spool" {
+		return runInstallSpool(args[1:], stdout, stderr)
+	}
 	if strings.HasPrefix(command, "gateway-") {
 		return runGatewayCommand(command, args[1:], stdout, stderr)
 	}

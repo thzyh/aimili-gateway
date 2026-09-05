@@ -103,6 +103,27 @@ func TestGetRejectsSymlinkAndHardLinkedResult(t *testing.T) {
 	}
 }
 
+func TestWriteTerminalResultIsAtomicAndReadable(t *testing.T) {
+	client := newTestClient(t)
+	runID := strings.Repeat("a", 64)
+	request := Request{RunID: runID, Kind: KindGateway, Version: "v1.2.3", Action: ActionApply}
+	if _, err := client.Submit(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	finished := time.Date(2026, 9, 5, 0, 1, 0, 0, time.UTC)
+	want := Result{RunID: runID, Kind: KindGateway, Version: "v1.2.3", State: StateSuccess, FinishedAt: &finished}
+	if err := WriteResultFile(client.ResultDir, want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := client.Get(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.RunID != want.RunID || got.Kind != want.Kind || got.Version != want.Version || got.State != want.State || got.FinishedAt == nil || !got.FinishedAt.Equal(finished) {
+		t.Fatalf("result=%#v want=%#v", got, want)
+	}
+}
+
 func newTestClient(t *testing.T) *Client {
 	t.Helper()
 	root := t.TempDir()

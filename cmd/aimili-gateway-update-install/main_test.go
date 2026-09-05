@@ -25,6 +25,14 @@ func TestRunRejectsIncompleteGatewayInstallArguments(t *testing.T) {
 	}
 }
 
+func TestRunSpoolRequiresConfiguration(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"spool"}, &stdout, &stderr)
+	if code != 2 || !strings.Contains(stderr.String(), "config is required") {
+		t.Fatalf("code=%d stderr=%q", code, stderr.String())
+	}
+}
+
 func TestGatewayHealthCheckReportsManifestVersionMismatchSafely(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("Content-Type", "application/json")

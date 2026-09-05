@@ -1,14 +1,14 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/thzyh/aimili-gateway/internal/updatefetch"
@@ -18,8 +18,15 @@ import (
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
 
 func run(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 || args[0] != "fetch" {
-		fmt.Fprintln(stderr, "usage: aimili-gateway-update-fetch fetch --config FILE --request FILE")
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, "usage: aimili-gateway-update-fetch <fetch|spool>")
+		return 2
+	}
+	if args[0] == "spool" {
+		return runSpool(args[1:], stdout, stderr)
+	}
+	if args[0] != "fetch" {
+		fmt.Fprintln(stderr, "unknown command")
 		return 2
 	}
 	flags := flag.NewFlagSet("fetch", flag.ContinueOnError)
@@ -37,7 +44,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "invalid_config")
 		return 1
 	}
-	request, err := readRequest(*requestPath)
+	request, err := updatetxn.ReadRequestFile(*requestPath)
 	if err != nil {
 		fmt.Fprintln(stderr, "invalid_request")
 		return 1
@@ -60,22 +67,75 @@ func run(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func readRequest(filename string) (updatetxn.Request, error) {
-	body, err := os.ReadFile(filename)
-	if err != nil || len(body) > 32<<10 {
-		return updatetxn.Request{}, errors.New("request unavailable")
+func runSpool(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("spool", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	configPath := flags.String("config", "", "updater configuration")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *configPath == "" {
+		if err == nil {
+			fmt.Fprintln(stderr, "config is required")
+		}
+		return 2
 	}
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.DisallowUnknownFields()
-	var request updatetxn.Request
-	if err := decoder.Decode(&request); err != nil {
-		return updatetxn.Request{}, err
+	config, err := updatefetch.LoadConfig(*configPath)
+	if err != nil || config.ValidateSpool() != nil {
+		fmt.Fprintln(stderr, "invalid_config")
+		return 1
 	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return updatetxn.Request{}, errors.New("trailing request data")
+	entries, err := os.ReadDir(config.RequestDir)
+	if err != nil {
+		fmt.Fprintln(stderr, "read_requests_failed")
+		return 1
 	}
-	if err := updatetxn.ValidateRequest(request); err != nil {
-		return updatetxn.Request{}, err
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		request, err := updatetxn.ReadRequestFile(filepath.Join(config.RequestDir, entry.Name()))
+		if err != nil {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(config.ResultDir, request.RunID+".json")); err == nil {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(config.StagingRoot, request.RunID)); err == nil {
+			continue
+		}
+		if request.Action == updatetxn.ActionRollback {
+			if err := writeFetchMarker(config.StagingRoot, request.RunID, "", true); err != nil {
+				fmt.Fprintln(stderr, "staging_failed")
+				return 1
+			}
+			return 0
+		}
+		_, fetchErr := (&updatefetch.Fetcher{Config: config}).Fetch(context.Background(), request)
+		if fetchErr != nil {
+			code := updatefetch.ErrorCode(fetchErr)
+			if code == "" {
+				code = "fetch_failed"
+			}
+			if err := writeFetchMarker(config.StagingRoot, request.RunID, code, false); err != nil {
+				fmt.Fprintln(stderr, "staging_failed")
+				return 1
+			}
+		}
+		return 0
 	}
-	return request, nil
+	return 0
+}
+
+func writeFetchMarker(stagingRoot, runID, errorCode string, rollback bool) error {
+	directory := filepath.Join(stagingRoot, runID)
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		return err
+	}
+	body, err := json.Marshal(struct {
+		RunID     string `json:"runId"`
+		ErrorCode string `json:"errorCode,omitempty"`
+		Rollback  bool   `json:"rollback,omitempty"`
+	}{RunID: runID, ErrorCode: errorCode, Rollback: rollback})
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(directory, "download.complete"), body, 0o600)
 }

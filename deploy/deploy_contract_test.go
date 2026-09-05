@@ -98,6 +98,123 @@ func TestProtocolTransactionOneshotIsRootOnlyAndPathActivated(t *testing.T) {
 	}
 }
 
+func TestGatewayUpdaterSeparatesNetworkFetcherFromRootInstaller(t *testing.T) {
+	fetchPath := readAsset(t, "systemd/aimili-gateway-update-fetch.path")
+	fetchService := readAsset(t, "systemd/aimili-gateway-update-fetch.service")
+	installPath := readAsset(t, "systemd/aimili-gateway-update-install.path")
+	installService := readAsset(t, "systemd/aimili-gateway-update-install.service")
+	for _, required := range []string{
+		"PathExistsGlob=/var/lib/aimili-gateway/update-spool/requests/*.json",
+		"Unit=aimili-gateway-update-fetch.service",
+	} {
+		if !strings.Contains(fetchPath, required) {
+			t.Fatalf("fetch path unit missing %q", required)
+		}
+	}
+	for _, required := range []string{
+		"User=aimili-gateway-updater",
+		"Group=aimili-gateway-updater",
+		"ExecStart=/usr/local/bin/aimili-gateway-update-fetch spool --config /etc/aimili-gateway/updater.json",
+		"NoNewPrivileges=true",
+		"ProtectSystem=strict",
+		"RestrictAddressFamilies=AF_INET AF_INET6",
+		"ReadOnlyPaths=/etc/aimili-gateway",
+		"ReadOnlyPaths=/var/lib/aimili-gateway/update-spool/requests",
+		"ReadWritePaths=/var/lib/aimili-gateway-update/staging",
+		"LoadCredential=release-download:/etc/aimili-gateway/release-download.credential",
+	} {
+		if !strings.Contains(fetchService, required) {
+			t.Fatalf("fetch service missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"User=root", "systemctl", "/bin/sh", "curl", "wget", "CAP_DAC_OVERRIDE"} {
+		if strings.Contains(fetchService, forbidden) {
+			t.Fatalf("fetch service contains forbidden capability %q", forbidden)
+		}
+	}
+	for _, required := range []string{
+		"PathExistsGlob=/var/lib/aimili-gateway-update/staging/*/download.complete",
+		"Unit=aimili-gateway-update-install.service",
+	} {
+		if !strings.Contains(installPath, required) {
+			t.Fatalf("install path unit missing %q", required)
+		}
+	}
+	for _, required := range []string{
+		"User=root",
+		"ExecStart=/usr/local/bin/aimili-gateway-update-install spool --config /etc/aimili-gateway/updater.json",
+		"IPAddressDeny=any",
+		"RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",
+		"IPAddressAllow=localhost",
+		"ReadOnlyPaths=/etc/aimili-gateway",
+		"ReadOnlyPaths=/var/lib/aimili-gateway/aimili-gateway.db",
+		"ReadWritePaths=/var/lib/aimili-gateway/update-spool/results",
+		"ReadWritePaths=/var/lib/aimili-gateway-update",
+	} {
+		if !strings.Contains(installService, required) {
+			t.Fatalf("install service missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"/bin/sh", "curl", "wget", "aimilivpn.service", "x-ui.service", "caddy.service", "ReadWritePaths=/etc/aimili-gateway", "ReadWritePaths=/var/lib/aimili-gateway/aimili-gateway.db"} {
+		if strings.Contains(installService, forbidden) {
+			t.Fatalf("install service contains forbidden behavior %q", forbidden)
+		}
+	}
+}
+
+func TestGatewayServiceCanOnlySubmitAndReadUpdaterState(t *testing.T) {
+	unit := readAsset(t, "systemd/aimili-gateway.service")
+	for _, required := range []string{
+		"ReadWritePaths=/var/lib/aimili-gateway/update-spool/requests",
+		"ReadOnlyPaths=/var/lib/aimili-gateway/update-spool/results",
+	} {
+		if !strings.Contains(unit, required) {
+			t.Fatalf("Gateway updater spool permission missing %q", required)
+		}
+	}
+}
+
+func TestGatewayUpdaterRollbackWrapperAcceptsNoArbitraryPathOrCommand(t *testing.T) {
+	script := readAsset(t, "bin/aimili-gateway-update-rollback")
+	for _, required := range []string{"set -euo pipefail", "gateway-rollback", "ui-rollback"} {
+		if !strings.Contains(script, required) {
+			t.Fatalf("rollback wrapper missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"eval ", "bash -c", "sh -c", "$@", "curl", "wget"} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("rollback wrapper contains unsafe behavior %q", forbidden)
+		}
+	}
+}
+
+func TestGatewayUpdaterDeploymentIsChecksummedDisabledAndDataPlaneSafe(t *testing.T) {
+	script := readAsset(t, "../scripts/deploy-gateway-updater-remote.sh")
+	for _, required := range []string{
+		"set -euo pipefail",
+		"realpath",
+		"sha256sum -c",
+		"allowGatewayInstall",
+		"install-backup",
+		"systemd-analyze verify",
+		"aimili-gateway-update-fetch.path",
+		"aimili-gateway-update-install.path",
+		"useradd --system",
+		"/var/lib/aimili-gateway/update-spool/requests",
+		"/var/lib/aimili-gateway/update-spool/results",
+		"/var/lib/aimili-gateway-update/staging",
+	} {
+		if !strings.Contains(script, required) {
+			t.Fatalf("updater deployment missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"systemctl restart aimilivpn", "systemctl restart x-ui", "systemctl restart caddy", "curl ", "wget ", "rm -rf /var/backups"} {
+		if strings.Contains(script, forbidden) {
+			t.Fatalf("updater deployment contains unsafe behavior %q", forbidden)
+		}
+	}
+}
+
 func TestExampleConfigUsesOnlyLoopbackAndPlaceholders(t *testing.T) {
 	contents := readAsset(t, "config/config.example.json")
 	var config struct {

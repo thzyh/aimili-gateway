@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -17,13 +18,23 @@ import (
 var channelPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
 
 type Config struct {
-	ManifestOrigin string   `json:"manifestOrigin"`
-	RedirectHosts  []string `json:"redirectHosts"`
-	Channels       []string `json:"channels"`
-	PublicKeyFile  string   `json:"publicKeyFile"`
-	CredentialFile string   `json:"credentialFile,omitempty"`
-	StagingRoot    string   `json:"stagingRoot"`
-	MaxAssetBytes  int64    `json:"maxAssetBytes"`
+	ManifestOrigin      string   `json:"manifestOrigin"`
+	RedirectHosts       []string `json:"redirectHosts"`
+	Channels            []string `json:"channels"`
+	PublicKeyFile       string   `json:"publicKeyFile"`
+	CredentialFile      string   `json:"credentialFile,omitempty"`
+	StagingRoot         string   `json:"stagingRoot"`
+	MaxAssetBytes       int64    `json:"maxAssetBytes"`
+	RequestDir          string   `json:"requestDir,omitempty"`
+	ResultDir           string   `json:"resultDir,omitempty"`
+	BinaryPath          string   `json:"binaryPath,omitempty"`
+	PreviousPath        string   `json:"previousPath,omitempty"`
+	GatewayConfigPath   string   `json:"gatewayConfigPath,omitempty"`
+	DatabasePath        string   `json:"databasePath,omitempty"`
+	HealthURL           string   `json:"healthUrl,omitempty"`
+	UIRoot              string   `json:"uiRoot,omitempty"`
+	AllowGatewayInstall bool     `json:"allowGatewayInstall"`
+	FetcherUID          uint32   `json:"fetcherUid,omitempty"`
 }
 
 func LoadConfig(filename string) (Config, error) {
@@ -43,7 +54,29 @@ func LoadConfig(filename string) (Config, error) {
 	if err := config.Validate(); err != nil {
 		return Config{}, err
 	}
+	if credential := os.Getenv("AIMILI_UPDATE_CREDENTIAL_FILE"); credential != "" {
+		config.CredentialFile = credential
+	}
 	return config, nil
+}
+
+func (c Config) ValidateSpool() error {
+	if err := c.Validate(); err != nil {
+		return err
+	}
+	for name, value := range map[string]string{
+		"requestDir": c.RequestDir, "resultDir": c.ResultDir, "binaryPath": c.BinaryPath,
+		"previousPath": c.PreviousPath, "gatewayConfigPath": c.GatewayConfigPath,
+		"databasePath": c.DatabasePath, "healthUrl": c.HealthURL, "uiRoot": c.UIRoot,
+	} {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("%s is required", name)
+		}
+	}
+	if path.Clean(filepath.ToSlash(c.RequestDir)) == path.Clean(filepath.ToSlash(c.ResultDir)) {
+		return errors.New("requestDir and resultDir must differ")
+	}
+	return nil
 }
 
 func (c Config) Validate() error {

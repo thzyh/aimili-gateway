@@ -1,0 +1,45 @@
+[Unit]
+Description=Install a verified Aimili Gateway release without network access
+After=aimili-gateway-update-fetch.service
+ConditionPathExists=/etc/aimili-gateway/updater-enabled
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/local/bin/aimili-gateway-update-install spool --config /etc/aimili-gateway/updater.json
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=CAP_DAC_OVERRIDE
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ReadOnlyPaths=/etc/aimili-gateway
+ReadOnlyPaths=/var/lib/aimili-gateway/aimili-gateway.db
+ReadOnlyPaths=/var/lib/aimili-gateway/update-spool/requests
+ReadWritePaths=/usr/local/bin
+ReadWritePaths=/var/lib/aimili-gateway/update-spool/results
+ReadWritePaths=/var/lib/aimili-gateway-update
+
+[Install]
+WantedBy=multi-user.target

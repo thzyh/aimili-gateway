@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+action="${1:-}"
+case "$action" in
+  gateway-rollback)
+    run_id="$(/usr/bin/od -An -N32 -tx1 /dev/urandom | /usr/bin/tr -d ' \n')"
+    exec /usr/local/bin/aimili-gateway-update-install gateway-rollback \
+      --run-id "$run_id" \
+      --binary /usr/local/bin/aimili-gateway \
+      --previous /usr/local/bin/aimili-gateway.previous \
+      --config /etc/aimili-gateway/config.json \
+      --database /var/lib/aimili-gateway/aimili-gateway.db
+    ;;
+  ui-rollback)
+    exec /usr/local/bin/aimili-gateway-update-install ui-rollback \
+      --root /var/lib/aimili-gateway/ui \
+      --health-url http://127.0.0.1:9080
+    ;;
+  *)
+    echo "usage: aimili-gateway-update-rollback <gateway-rollback|ui-rollback>" >&2
+    exit 2
+    ;;
+esac
