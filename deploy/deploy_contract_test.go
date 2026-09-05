@@ -104,7 +104,7 @@ func TestGatewayUpdaterSeparatesNetworkFetcherFromRootInstaller(t *testing.T) {
 	installPath := readAsset(t, "systemd/aimili-gateway-update-install.path")
 	installService := readAsset(t, "systemd/aimili-gateway-update-install.service")
 	for _, required := range []string{
-		"PathExistsGlob=/var/lib/aimili-gateway/update-spool/requests/*.json",
+		"PathChanged=/var/lib/aimili-gateway/update-spool/requests",
 		"Unit=aimili-gateway-update-fetch.service",
 	} {
 		if !strings.Contains(fetchPath, required) {

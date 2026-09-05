@@ -41,7 +41,19 @@ func writeAtomicJSON(path string, value any) error {
 	return writeAtomicJSONMode(path, value, 0o600)
 }
 
-func writeAtomicJSONMode(path string, value any, mode os.FileMode) error {
+func writeAtomicJSONMode(path string, value any, mode os.FileMode, owner ...int) error {
+	body, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	uid := -1
+	if len(owner) > 0 {
+		uid = owner[0]
+	}
+	return publishOwnedFile(path, append(body, '\n'), mode, uid)
+}
+
+func publishOwnedFile(path string, body []byte, mode os.FileMode, uid int) error {
 	directory := filepath.Dir(path)
 	temporary, err := os.CreateTemp(directory, ".update-*.tmp")
 	if err != nil {
@@ -53,8 +65,13 @@ func writeAtomicJSONMode(path string, value any, mode os.FileMode) error {
 		temporary.Close()
 		return err
 	}
-	encoder := json.NewEncoder(temporary)
-	if err := encoder.Encode(value); err != nil {
+	if uid >= 0 {
+		if err := temporary.Chown(uid, -1); err != nil {
+			temporary.Close()
+			return err
+		}
+	}
+	if _, err := temporary.Write(body); err != nil {
 		temporary.Close()
 		return err
 	}
@@ -65,15 +82,38 @@ func writeAtomicJSONMode(path string, value any, mode os.FileMode) error {
 	if err := temporary.Close(); err != nil {
 		return err
 	}
-	// Link publishes the complete file only if the destination does not exist.
-	// Unlike Lstat+Rename, this cannot overwrite a concurrently acquired lease.
-	if err := os.Link(temporaryPath, path); err != nil {
-		return err
-	}
-	if err := os.Remove(temporaryPath); err != nil {
+	// Publish without replacement and without a transient second hard link.
+	// A crash cannot leave a visible result that fails the single-link gate.
+	if err := publishExclusive(temporaryPath, path); err != nil {
 		return err
 	}
 	return syncDirectory(directory)
+}
+
+func requestDirectoryOwner(directory string) (int, error) {
+	if os.Geteuid() != 0 {
+		return -1, nil
+	}
+	info, err := os.Lstat(directory)
+	if err != nil {
+		return -1, err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return -1, ErrUntrustedResult
+	}
+	file, err := os.Open(directory)
+	if err != nil {
+		return -1, err
+	}
+	defer file.Close()
+	uid, _, supported, err := openedFileMetadata(file, info)
+	if err != nil {
+		return -1, err
+	}
+	if !supported {
+		return -1, ErrUntrustedResult
+	}
+	return int(uid), nil
 }
 
 func readTrustedJSON(path string, trustedUID *uint32, target any) error {

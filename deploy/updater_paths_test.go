@@ -68,3 +68,10 @@ func TestInstallerUIWriteAndDirectoryMetadataRecoveryContract(t *testing.T) {
 		}
 	}
 }
+
+func TestFetchPathHasNoPersistentTriggerWhileInstallerIsRunning(t *testing.T) {
+	unit := readAsset(t, "systemd/aimili-gateway-update-fetch.path")
+	if strings.Contains(unit, "PathExistsGlob=") || !strings.Contains(unit, "PathChanged=/var/lib/aimili-gateway/update-spool/requests\n") {
+		t.Fatal("existing request continuously retriggers fetch while installer owns the run")
+	}
+}

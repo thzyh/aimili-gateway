@@ -1,7 +1,6 @@
 [Unit]
 Description=Install a verified Aimili Gateway release without network access
 After=aimili-gateway-update-fetch.service
-ConditionPathExists=/etc/aimili-gateway/updater-enabled
 
 [Service]
 Type=oneshot

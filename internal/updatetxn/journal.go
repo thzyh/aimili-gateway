@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
 const InstallerStateRoot = "/var/lib/aimili-gateway-update"
@@ -34,7 +35,7 @@ func privateStateDirectory(root string) (string, error) {
 		return "", err
 	}
 	info, err := os.Lstat(dir)
-	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || insecurePermissions(info) {
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || insecurePermissions(info) || (runtime.GOOS != "windows" && info.Mode().Perm() != 0700) {
 		return "", ErrUntrustedResult
 	}
 	return dir, nil
@@ -59,7 +60,21 @@ func currentUID() *uint32 {
 
 func ReadJournal(root string) (Journal, error) {
 	var journal Journal
+	dirInfo, dirErr := os.Lstat(filepath.Join(root, "journal"))
+	if dirErr != nil {
+		return journal, dirErr
+	}
+	if !dirInfo.IsDir() || dirInfo.Mode()&os.ModeSymlink != 0 || (runtime.GOOS != "windows" && dirInfo.Mode().Perm() != 0700) {
+		return journal, ErrUntrustedResult
+	}
 	path := filepath.Join(root, "journal", "active.json")
+	info, err := os.Lstat(path)
+	if err != nil {
+		return journal, err
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0600 {
+		return journal, ErrUntrustedResult
+	}
 	if err := readTrustedJSON(path, currentUID(), &journal); err != nil {
 		return journal, err
 	}

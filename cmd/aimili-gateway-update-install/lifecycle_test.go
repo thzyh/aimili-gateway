@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -123,5 +125,60 @@ func TestMalformedDownloadedMarkerFailsClosed(t *testing.T) {
 	}
 	if got := stagedFetchError(file); got != "fetch_failed" {
 		t.Fatalf("malformed marker accepted: %q", got)
+	}
+}
+
+func TestRepairTerminalStopsPathUnitWithoutDeletingDiagnostics(t *testing.T) {
+	root, cfg, request := spoolFixture(t)
+	now := time.Now()
+	result := updatetxn.Result{RunID: request.RunID, Kind: request.Kind, Version: request.Version, State: updatetxn.StateRepairRequired, FinishedAt: &now}
+	var out, stderr bytes.Buffer
+	if code := finishRequest(root, cfg, request, result, &out, &stderr); code != 0 {
+		t.Fatal(stderr.String())
+	}
+	if paths, _ := filepath.Glob(filepath.Join(cfg.StagingRoot, "*", "download.complete")); len(paths) != 0 {
+		t.Fatalf("repair terminal keeps triggering install.path: %v", paths)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.StagingRoot, request.RunID)); err != nil {
+		t.Fatal("repair diagnostics removed")
+	}
+}
+
+func TestUIRollbackSpoolPublishesRolledBackAndConsumesRequest(t *testing.T) {
+	root, cfg, request := spoolFixture(t)
+	request.Kind = updatetxn.KindUI
+	request.Action = updatetxn.ActionRollback
+	request.Version = ""
+	cfg.UIRoot = filepath.Join(root, "ui")
+	current, previous := strings.Repeat("b", 64), strings.Repeat("c", 64)
+	for _, v := range []string{current, previous} {
+		if err := os.MkdirAll(filepath.Join(cfg.UIRoot, "releases", v), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, v := range map[string]string{"current": current, "previous": previous} {
+		if err := os.Symlink(filepath.Join("releases", v), filepath.Join(cfg.UIRoot, name)); err != nil {
+			t.Skipf("symlink unavailable: %v", err)
+		}
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/manifest.json" {
+			fmt.Fprintf(w, `{"version":"%s"}`, previous)
+		} else {
+			fmt.Fprint(w, "ok")
+		}
+	}))
+	defer server.Close()
+	cfg.HealthURL = server.URL + "/healthz"
+	result := processStagedRequestAt(root, request, filepath.Join(cfg.StagingRoot, request.RunID), cfg)
+	if result.State != updatetxn.StateRolledBack {
+		t.Fatalf("UI spool returned %+v", result)
+	}
+	var out, stderr bytes.Buffer
+	if finishRequest(root, cfg, request, result, &out, &stderr) != 0 {
+		t.Fatal(stderr.String())
+	}
+	if files, _ := filepath.Glob(filepath.Join(cfg.RequestDir, "*.json")); len(files) != 0 {
+		t.Fatal("UI rollback request remains")
 	}
 }

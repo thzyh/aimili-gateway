@@ -57,3 +57,37 @@ func TestSignedManifestMustMatchRequestedVersion(t *testing.T) {
 		})
 	}
 }
+
+func TestInstallerSpoolConfigRejectsNonFixedTargets(t *testing.T) {
+	body, err := os.ReadFile("../../deploy/config/updater.example.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg Config
+	if err := json.Unmarshal(body, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.ValidateSpool(); err != nil {
+		t.Fatal("example rejected", err)
+	}
+	for _, field := range []string{"binary", "staging", "config", "ui", "health"} {
+		t.Run(field, func(t *testing.T) {
+			bad := cfg
+			switch field {
+			case "binary":
+				bad.BinaryPath = "/tmp/arbitrary"
+			case "staging":
+				bad.StagingRoot = "/tmp/staging"
+			case "config":
+				bad.GatewayConfigPath = "/tmp/config"
+			case "ui":
+				bad.UIRoot = "/tmp/ui"
+			case "health":
+				bad.HealthURL = "http://evil.invalid/healthz"
+			}
+			if err := bad.ValidateSpool(); err == nil {
+				t.Fatal("non-fixed root execution target accepted")
+			}
+		})
+	}
+}

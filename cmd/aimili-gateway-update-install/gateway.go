@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,71 +21,6 @@ import (
 	"github.com/thzyh/aimili-gateway/internal/gatewayupdate"
 	_ "modernc.org/sqlite"
 )
-
-func runGatewayCommand(command string, args []string, stdout, stderr io.Writer) int {
-	flags := flag.NewFlagSet(command, flag.ContinueOnError)
-	flags.SetOutput(stderr)
-	runID := flags.String("run-id", "", "update run identifier")
-	staging := flags.String("staging", "", "release staging directory")
-	binary := flags.String("binary", "", "Gateway binary")
-	previous := flags.String("previous", "", "single previous Gateway binary")
-	configPath := flags.String("config", "", "Gateway configuration")
-	database := flags.String("database", "", "Gateway database")
-	publicKey := flags.String("public-key", "", "Ed25519 public key")
-	healthURL := flags.String("health-url", "http://127.0.0.1:9080/healthz", "Gateway loopback health URL")
-	allowInstall := flags.Bool("allow-install", false, "allow a control-plane-only replacement")
-	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
-		return 2
-	}
-	if *runID == "" || *binary == "" || *previous == "" || *configPath == "" || *database == "" {
-		fmt.Fprintln(stderr, "run-id, binary, previous, config and database are required")
-		return 2
-	}
-	if command != "gateway-rollback" && (*staging == "" || *publicKey == "") {
-		fmt.Fprintln(stderr, "staging and public-key are required")
-		return 2
-	}
-	if command != "gateway-dry-run" && command != "gateway-install" && command != "gateway-rollback" {
-		fmt.Fprintln(stderr, "unknown command")
-		return 2
-	}
-	if err := validateGatewayHealthURL(*healthURL); err != nil {
-		fmt.Fprintln(stderr, "health-url must be a fixed loopback URL")
-		return 2
-	}
-	probe := &productionProbe{databasePath: *database, healthURL: *healthURL}
-	config := gatewayupdate.Config{
-		RunID: *runID, StagingDir: *staging, BinaryPath: *binary, PreviousPath: *previous,
-		ConfigPath: *configPath, DatabasePath: *database, PublicKeyFile: *publicKey,
-		APIVersion: "v1", Platform: "linux-amd64", AllowInstall: *allowInstall,
-		Runner: systemdRunner{}, Probe: probe, BusyCheck: databaseBusyCheck(*database),
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	var result gatewayupdate.Result
-	var err error
-	switch command {
-	case "gateway-dry-run":
-		result, err = gatewayupdate.DryRun(ctx, config)
-	case "gateway-install":
-		result, err = gatewayupdate.Install(ctx, config)
-	case "gateway-rollback":
-		result, err = gatewayupdate.Rollback(ctx, config)
-	}
-	if encodeErr := json.NewEncoder(stdout).Encode(result); encodeErr != nil {
-		fmt.Fprintln(stderr, "encode_result_failed")
-		return 1
-	}
-	if err != nil {
-		code := gatewayupdate.ErrorCode(err)
-		if code == "" {
-			code = "operation_failed"
-		}
-		fmt.Fprintln(stderr, code)
-		return 1
-	}
-	return 0
-}
 
 type systemdRunner struct{}
 
@@ -285,9 +219,9 @@ func (p *productionProbe) fingerprint(ctx context.Context) (string, error) {
 	// Hash configuration only, excluding live traffic/last-seen counters. The
 	// entire ordered inbound set covers managed and unmanaged resources alike.
 	for _, query := range []string{
-		`SELECT id, tag, remark, protocol, port, enable, settings, stream_settings, sniffing FROM inbounds ORDER BY id`,
+		`SELECT id,user_id,remark,sub_sort_index,enable,expiry_time,listen,port,protocol,settings,stream_settings,tag,sniffing,node_id,share_addr_strategy,share_addr,origin_node_guid,disable_flow FROM inbounds ORDER BY id`,
 		`SELECT key,value FROM settings ORDER BY key`,
-		`SELECT client_id,inbound_id,alias_override FROM client_inbounds ORDER BY client_id,inbound_id`,
+		`SELECT client_id,inbound_id,flow_override,alias_override FROM client_inbounds ORDER BY client_id,inbound_id`,
 		`SELECT count(*) FROM client_inbounds WHERE alias_override <> ''`,
 	} {
 		if err := hashRows(ctx, xui, hash, query); err != nil {

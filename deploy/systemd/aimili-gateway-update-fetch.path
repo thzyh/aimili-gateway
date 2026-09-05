@@ -2,7 +2,7 @@
 Description=Watch for bounded Aimili Gateway update requests
 
 [Path]
-PathExistsGlob=/var/lib/aimili-gateway/update-spool/requests/*.json
+PathChanged=/var/lib/aimili-gateway/update-spool/requests
 Unit=aimili-gateway-update-fetch.service
 
 [Install]

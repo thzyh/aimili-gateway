@@ -57,3 +57,27 @@ func TestUpdateSpoolFilesUseGatewayReadableModes(t *testing.T) {
 		t.Errorf("result mode = %04o, want 0640", got)
 	}
 }
+
+func TestJournalRejectsNonPrivateMetadata(t *testing.T) {
+	for _, target := range []string{"file", "directory"} {
+		t.Run(target, func(t *testing.T) {
+			root := t.TempDir()
+			j := Journal{Request: Request{RunID: strings.Repeat("a", 64), Kind: KindGateway, Action: ActionApply, Version: "v1.2.3"}, NewDigest: strings.Repeat("b", 64), OldDigest: strings.Repeat("c", 64), Baseline: "baseline", Phase: "prepared"}
+			if err := WriteJournal(root, j); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(root, "journal", "active.json")
+			mode := os.FileMode(0644)
+			if target == "directory" {
+				path = filepath.Join(root, "journal")
+				mode = 0755
+			}
+			if err := os.Chmod(path, mode); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ReadJournal(root); !errors.Is(err, ErrUntrustedResult) {
+				t.Fatalf("non-private %s accepted: %v", target, err)
+			}
+		})
+	}
+}

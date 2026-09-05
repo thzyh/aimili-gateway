@@ -48,6 +48,10 @@ func runInstaller(config updatefetch.Config, direct *updatetxn.Request, stdout, 
 		fmt.Fprintln(stderr, "root_required")
 		return 1
 	}
+	if !inInstallerService() {
+		fmt.Fprintln(stderr, "installer_service_required")
+		return 1
+	}
 	return runInstallerAt(updatetxn.InstallerStateRoot, config, direct, stdout, stderr)
 }
 
@@ -153,6 +157,12 @@ func finishRequest(stateRoot string, config updatefetch.Config, request updatetx
 				fmt.Fprintln(stderr, "cleanup_failed")
 				return 1
 			}
+		}
+	} else {
+		staging := filepath.Join(config.StagingRoot, request.RunID)
+		if err := os.Rename(filepath.Join(staging, "download.complete"), filepath.Join(staging, "download.consumed")); err != nil && !os.IsNotExist(err) {
+			fmt.Fprintln(stderr, "cleanup_failed")
+			return 1
 		}
 	}
 	if err := updatetxn.PruneResults(config.ResultDir, config.RequestDir, request.RunID, 64); err != nil {

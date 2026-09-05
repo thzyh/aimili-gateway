@@ -121,6 +121,37 @@ func TestUpdateMutationAuditUsesClosedRedactedFields(t *testing.T) {
 	}
 }
 
+func TestUIRollbackAPIHasDedicatedRolledBackResult(t *testing.T) {
+	runID := strings.Repeat("b", 64)
+	manager := &fakeUpdateManager{summary: updateSummaryFixture(), result: UpdateResult{RunID: runID, Kind: "ui", State: "rolled_back"}}
+	env := newAuthTestEnvironmentConfigured(t, true, func(d *Dependencies) { d.Updates = manager })
+	assertResponseStatus(t, env.login(t), http.StatusNoContent)
+	session := env.session(t)
+	response := env.request(t, http.MethodPost, "/api/v1/system/updates/ui/rollback", map[string]string{"password": "local-only-test-password", "runId": runID}, env.origin, session.CSRFToken)
+	assertResponseStatus(t, response, http.StatusAccepted)
+	if manager.lastRequest.Kind != "ui" || manager.lastRequest.Action != "rollback" || manager.lastRequest.Version != "" {
+		t.Fatalf("UI rollback misrouted: %+v", manager.lastRequest)
+	}
+	result := decodeUpdateResult(t, env.request(t, http.MethodGet, "/api/v1/system/updates/"+runID, nil, "", ""))
+	if result.State != "rolled_back" || result.Kind != "ui" {
+		t.Fatalf("rollback state lost: %+v", result)
+	}
+}
+
+func TestDisabledAPIRejectsAllRoutesWithoutSpool(t *testing.T) {
+	env := newAuthTestEnvironment(t)
+	assertResponseStatus(t, env.login(t), http.StatusNoContent)
+	session := env.session(t)
+	for _, route := range []struct{ method, path string }{{http.MethodGet, "/api/v1/system/updates"}, {http.MethodGet, "/api/v1/system/updates/" + strings.Repeat("a", 64)}, {http.MethodPost, "/api/v1/system/updates/ui/rollback"}, {http.MethodPost, "/api/v1/system/updates/gateway/rollback"}, {http.MethodPost, "/api/v1/system/updates/gateway/v1.2.3/apply"}} {
+		response := env.request(t, route.method, route.path, map[string]string{"password": "local-only-test-password", "runId": strings.Repeat("a", 64)}, env.origin, session.CSRFToken)
+		body, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		if response.StatusCode != 503 || !strings.Contains(string(body), "updates_disabled") {
+			t.Fatalf("disabled route %s: %d %s", route.path, response.StatusCode, body)
+		}
+	}
+}
+
 type fakeUpdateManager struct {
 	summary     UpdateSummary
 	result      UpdateResult

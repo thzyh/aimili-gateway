@@ -50,7 +50,19 @@ func (c *Client) Submit(ctx context.Context, request Request) (Result, error) {
 	if request.RequestedAt.IsZero() {
 		request.RequestedAt = c.now()
 	}
-	release, err := AcquireFileLock(filepath.Join(c.RequestDir, ".submit.lock"), nil)
+	owner, err := requestDirectoryOwner(c.RequestDir)
+	if err != nil {
+		return Result{}, err
+	}
+	lockPath := filepath.Join(c.RequestDir, ".submit.lock")
+	if _, err := os.Lstat(lockPath); errors.Is(err, os.ErrNotExist) {
+		if err := publishOwnedFile(lockPath, nil, 0600, owner); err != nil && !errors.Is(err, os.ErrExist) {
+			return Result{}, err
+		}
+	} else if err != nil {
+		return Result{}, err
+	}
+	release, err := AcquireFileLock(lockPath, nil)
 	if err != nil {
 		return Result{}, err
 	}
@@ -59,7 +71,7 @@ func (c *Client) Submit(ctx context.Context, request Request) (Result, error) {
 	if result, handled, err := c.resolveExistingLease(ctx, leasePath, request); handled || err != nil {
 		return result, err
 	}
-	if err := writeAtomicJSON(leasePath, leaseRecord{RunID: request.RunID, Kind: request.Kind, Version: request.Version, Action: request.Action, DryRun: request.DryRun}); err != nil {
+	if err := writeAtomicJSONMode(leasePath, leaseRecord{RunID: request.RunID, Kind: request.Kind, Version: request.Version, Action: request.Action, DryRun: request.DryRun}, 0600, owner); err != nil {
 		if errors.Is(err, os.ErrExist) {
 			if result, handled, resolveErr := c.resolveExistingLease(ctx, leasePath, request); handled || resolveErr != nil {
 				return result, resolveErr
@@ -69,7 +81,7 @@ func (c *Client) Submit(ctx context.Context, request Request) (Result, error) {
 		return Result{}, err
 	}
 	requestPath := filepath.Join(c.RequestDir, request.RunID+".json")
-	if err := writeAtomicJSONMode(requestPath, request, 0o640); err != nil {
+	if err := writeAtomicJSONMode(requestPath, request, 0o640, owner); err != nil {
 		_ = os.Remove(leasePath)
 		return Result{}, err
 	}

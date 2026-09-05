@@ -61,6 +61,10 @@ func invariantProbeFixture(t *testing.T) (*productionProbe, *sql.DB, *sql.DB) {
 	for _, q := range []string{`CREATE TABLE inbounds(id INTEGER,tag TEXT,remark TEXT,protocol TEXT,port INTEGER,enable INTEGER,settings TEXT,stream_settings TEXT,sniffing TEXT)`, `CREATE TABLE settings(key TEXT,value TEXT)`, `CREATE TABLE client_inbounds(client_id INTEGER,inbound_id INTEGER,alias_override TEXT)`, `INSERT INTO inbounds VALUES(1,'agw-main','main','vless',8443,1,'{}','{}','{}'),(2,'unmanaged','other','vless',443,1,'{}','{}','{}')`, `INSERT INTO settings VALUES('xrayTemplateConfig','{}')`, `INSERT INTO client_inbounds VALUES(1,1,'主连接_日本')`} {
 		mustExec(t, x, q)
 	}
+	for _, column := range []string{"user_id INTEGER", "sub_sort_index INTEGER", "expiry_time INTEGER DEFAULT 0", "listen TEXT", "node_id INTEGER", "share_addr_strategy TEXT", "share_addr TEXT", "origin_node_guid TEXT", "disable_flow INTEGER"} {
+		mustExec(t, x, `ALTER TABLE inbounds ADD COLUMN `+column)
+	}
+	mustExec(t, x, `ALTER TABLE client_inbounds ADD COLUMN flow_override TEXT DEFAULT ''`)
 	return &productionProbe{databasePath: gp, xuiDatabasePath: xp, serviceState: func(context.Context, string) ([]byte, error) { return []byte("ActiveState=active\nMainPID=123\n"), nil }, countProcesses: func() ([2]int, error) { return [2]int{4, 1}, nil }}, g, x
 }
 
@@ -99,6 +103,30 @@ func TestProbeRejectsUnsafeBaselineAndDetectsResourceDrift(t *testing.T) {
 				}
 			} else if err == nil {
 				t.Fatal("unsafe baseline accepted")
+			}
+		})
+	}
+}
+
+func TestProbeFingerprintIncludesInboundExpiryAndClientFlow(t *testing.T) {
+	for _, field := range []string{"expiry_time", "flow_override"} {
+		t.Run(field, func(t *testing.T) {
+			p, _, x := invariantProbeFixture(t)
+			before, err := p.Capture(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if field == "expiry_time" {
+				mustExec(t, x, `UPDATE inbounds SET expiry_time=123 WHERE tag='unmanaged'`)
+			} else {
+				mustExec(t, x, `UPDATE client_inbounds SET flow_override='changed'`)
+			}
+			after, err := p.Capture(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if before.Fingerprint == after.Fingerprint {
+				t.Fatal("resource configuration field drift invisible")
 			}
 		})
 	}

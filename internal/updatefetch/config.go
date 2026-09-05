@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"os"
 	"path"
-	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -65,20 +64,22 @@ func (c Config) ValidateSpool() error {
 	if err := c.Validate(); err != nil {
 		return err
 	}
-	if c.XUIDatabasePath != "/etc/x-ui/x-ui.db" {
-		return errors.New("xuiDatabasePath must use the fixed read-only database")
-	}
-	for name, value := range map[string]string{
-		"requestDir": c.RequestDir, "resultDir": c.ResultDir, "binaryPath": c.BinaryPath,
-		"previousPath": c.PreviousPath, "gatewayConfigPath": c.GatewayConfigPath,
-		"databasePath": c.DatabasePath, "healthUrl": c.HealthURL, "uiRoot": c.UIRoot,
+	for _, pair := range [][2]string{
+		{c.XUIDatabasePath, "/etc/x-ui/x-ui.db"},
+		{c.RequestDir, "/var/lib/aimili-gateway/update-spool/requests"},
+		{c.ResultDir, "/var/lib/aimili-gateway/update-spool/results"},
+		{c.StagingRoot, "/var/lib/aimili-gateway-update/staging"},
+		{c.BinaryPath, "/usr/local/bin/aimili-gateway"},
+		{c.PreviousPath, "/usr/local/bin/aimili-gateway.previous"},
+		{c.GatewayConfigPath, "/etc/aimili-gateway/config.json"},
+		{c.PublicKeyFile, "/etc/aimili-gateway/release-ed25519.pub"},
+		{c.DatabasePath, "/var/lib/aimili-gateway/aimili-gateway.db"},
+		{c.UIRoot, "/var/lib/aimili-gateway/ui"},
+		{c.HealthURL, "http://127.0.0.1:9080/healthz"},
 	} {
-		if strings.TrimSpace(value) == "" {
-			return fmt.Errorf("%s is required", name)
+		if pair[0] != pair[1] {
+			return errors.New("installer spool requires fixed execution targets")
 		}
-	}
-	if path.Clean(filepath.ToSlash(c.RequestDir)) == path.Clean(filepath.ToSlash(c.ResultDir)) {
-		return errors.New("requestDir and resultDir must differ")
 	}
 	return nil
 }

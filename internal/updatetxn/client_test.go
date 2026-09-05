@@ -174,6 +174,48 @@ func TestCompletedRemovedRequestStillHasIdempotentResult(t *testing.T) {
 	}
 }
 
+func TestPublicationIsAlwaysAnUnlinkedCompleteFile(t *testing.T) {
+	dir := t.TempDir()
+	for round := 0; round < 100; round++ {
+		path := filepath.Join(dir, fmt.Sprintf("%d.json", round))
+		start, done := make(chan struct{}), make(chan struct{})
+		problems := make(chan error, 4)
+		var ready sync.WaitGroup
+		ready.Add(4)
+		for i := 0; i < 4; i++ {
+			go func() {
+				ready.Done()
+				<-start
+				for {
+					var value map[string]string
+					err := readTrustedJSON(path, nil, &value)
+					if errors.Is(err, ErrUntrustedResult) {
+						problems <- err
+						return
+					}
+					select {
+					case <-done:
+						problems <- nil
+						return
+					default:
+					}
+				}
+			}()
+		}
+		ready.Wait()
+		close(start)
+		if err := writeAtomicJSON(path, map[string]string{"state": "complete"}); err != nil {
+			t.Fatal(err)
+		}
+		close(done)
+		for i := 0; i < 4; i++ {
+			if err := <-problems; err != nil {
+				t.Fatalf("published file temporarily violated trusted-file contract: %v", err)
+			}
+		}
+	}
+}
+
 func newTestClient(t *testing.T) *Client {
 	t.Helper()
 	root := t.TempDir()
