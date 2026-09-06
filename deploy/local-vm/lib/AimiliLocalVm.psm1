@@ -347,7 +347,7 @@ function Get-AimiliNativeManifest {
 
 function Assert-AimiliNativeStatusContract {
     param([Parameter(Mandatory)]$Status)
-    foreach ($name in @('nativeServices', 'nativeEnabled', 'expected', 'actual', 'nativeReady')) {
+    foreach ($name in @('nativeServices', 'nativeEnabled', 'expected', 'actual', 'listeners', 'mainChecks', 'slotChecks', 'databaseReadable', 'evidenceSchema', 'subscriptionExitSet', 'protocolIsolation', 'hostSafety', 'nativeReady')) {
         if (-not $Status.PSObject.Properties[$name]) { throw "native_status_field_missing:$name" }
     }
     foreach ($name in @('openvpn', 'xray', 'logicalExits', 'exitSlots')) {

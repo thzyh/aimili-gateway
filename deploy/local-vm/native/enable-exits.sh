@@ -62,12 +62,13 @@ PY
     device="${fields[0]:-}"
     port="${fields[1]:-0}"
     route_table=$((table_base + slot))
-    if [[ "$device" =~ ^[A-Za-z0-9_.:-]+$ ]] &&
-       ip link show "$device" >/dev/null 2>&1 &&
-       [[ -n "$(ip route show table "$route_table" 2>/dev/null)" ]] &&
-       ss -lntH 2>/dev/null | awk -v port="$port" '{ address=$4; sub(/^.*:/,"",address); if (address == port) found=1 } END { exit(found ? 0 : 1) }' &&
+    link_state="$(ip -o link show dev "$device" 2>/dev/null || true)"
+    route_state="$(ip route show table "$route_table" 2>/dev/null || true)"
+    if [[ "$device" =~ ^[A-Za-z0-9_.:-]+$ && "$link_state" =~ \<[^\>]*UP[^\>]*\> ]] &&
+       awk -v device="$device" '$1 == "default" { for (i=2; i<=NF; i++) if ($i == "dev" && $(i+1) == device) found=1 } END { exit(found ? 0 : 1) }' <<< "$route_state" &&
+       ss -lntH 2>/dev/null | awk -v port="$port" '{ address=$4; if (address ~ ":" port "$") { if (address ~ "^127\\.0\\.0\\.1:" port "$" || address == "[::1]:" port) found=1; else bad=1 } } END { exit(found && !bad ? 0 : 1) }' &&
        exit_ip="$(curl -fsS --socks5-hostname "127.0.0.1:$port" --max-time 10 http://api.ipify.org 2>/dev/null)" &&
-       [[ -n "$exit_ip" && ${#exit_ip} -le 64 ]]; then
+       python3 -c 'import ipaddress,sys; ipaddress.ip_address(sys.argv[1])' "$exit_ip" >/dev/null 2>&1; then
       printf 'exit_slot_ready slot=%s\n' "$slot"
       exit 0
     fi

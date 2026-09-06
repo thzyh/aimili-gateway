@@ -9,58 +9,83 @@ trap 'rm -rf -- "$fixture"' EXIT
 fake_bin="$fixture/bin"
 mkdir -p "$fake_bin"
 systemctl_log="$fixture/systemctl.log"
+installer_log="$fixture/installer.log"
 env_file="$fixture/aimilivpn.default"
+data_marker="$fixture/existing-data"
+printf '%s\n' preserved > "$data_marker"
+printf '%s\n' 'OTHER_SETTING=preserved' 'MULTI_EXIT_SLOTS=1' 'MAX_EXIT_SLOTS=2' > "$env_file"
 cat > "$fixture/os-release" <<'EOF'
 ID=ubuntu
 VERSION_ID=24.04
 EOF
+cat > "$fixture/unsupported-os-release" <<'EOF'
+ID=debian
+VERSION_ID=12
+EOF
 
 cat > "$fake_bin/systemctl" <<'SH'
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$SYSTEMCTL_LOG"
+if [[ "${1:-}" == is-active ]]; then printf '%s\n' active; exit 0; fi
 if [[ "${1:-}" == restart ]]; then
   grep -qx 'MULTI_EXIT_SLOTS=3' "$AIMILI_ENV_FILE"
   grep -qx 'MAX_EXIT_SLOTS=16' "$AIMILI_ENV_FILE"
 fi
 SH
-chmod 0700 "$fake_bin/systemctl"
-
 cat > "$fake_bin/ip" <<'SH'
-#!/usr/bin/env bash
+#!/bin/bash
 exit 0
 SH
-chmod 0700 "$fake_bin/ip"
+cat > "$fake_bin/pgrep" <<'SH'
+#!/bin/bash
+printf '%s\n' 4
+SH
+cat > "$fake_bin/df" <<'SH'
+#!/bin/bash
+printf '%s\n' 'Filesystem 1048576-blocks Used Available Capacity Mounted on' 'fixture 4096 1024 3072 25% /'
+SH
+chmod 0700 "$fake_bin"/*
+for command_name in bash python3 curl awk dirname mktemp rm install chmod sed touch grep; do
+  ln -s "$(command -v "$command_name")" "$fake_bin/$command_name"
+done
 
 cat > "$fixture/network-preflight.sh" <<'SH'
-#!/usr/bin/env bash
+#!/bin/bash
 printf '%s\n' '{"gatewayReachable":true,"publicTcp443":true,"dnsResolution":true,"httpsReachable":true,"ufwOutgoingAllowed":true,"failureBoundary":"none"}'
 SH
 chmod 0700 "$fixture/network-preflight.sh"
 
 cat > "$fixture/installer.sh" <<'SH'
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
+printf '%s\n' invocation >> "$INSTALLER_LOG"
 printf '%s\n' 'sensitive-canary-stdout'
 printf '%s\n' 'sensitive-canary-stderr' >&2
 install -m 0700 /bin/true "$FAKE_BIN/openvpn"
 SH
 chmod 0700 "$fixture/installer.sh"
 
-output="$({
-  PATH="$fake_bin:/usr/bin:/bin" \
-  FAKE_BIN="$fake_bin" \
-  SYSTEMCTL_LOG="$systemctl_log" \
-  AIMILI_NETWORK_PROBE="$fixture/network-preflight.sh" \
-  AIMILI_OS_RELEASE="$fixture/os-release" \
-  AIMILI_ENV_FILE="$env_file" \
-  bash "$script" --apply --source-commit edd08172a2ce132f2e1525d7e00b047a56883ff9 --installer "$fixture/installer.sh"
-} 2>&1)"
+common_env=(PATH="$fake_bin" FAKE_BIN="$fake_bin" SYSTEMCTL_LOG="$systemctl_log" INSTALLER_LOG="$installer_log" AIMILI_NETWORK_PROBE="$fixture/network-preflight.sh" AIMILI_OS_RELEASE="$fixture/os-release" AIMILI_TUN_PATH=/dev/null AIMILI_DISK_PATH="$fixture" AIMILI_ENV_FILE="$env_file")
 
-[[ "$output" == 'aimilivpn_apply_ok' ]] || { printf 'unexpected installer wrapper output: %s\n' "$output" >&2; exit 1; }
-! grep -q 'sensitive-canary' <<< "$output" || { printf 'installer credentials escaped wrapper output\n' >&2; exit 1; }
-grep -qx 'daemon-reload' "$systemctl_log"
-grep -qx 'enable aimilivpn.service' "$systemctl_log"
-grep -qx 'restart aimilivpn.service' "$systemctl_log"
+check_output="$(env "${common_env[@]}" bash "$script" --check --slot-count 3)"
+python3 - "$check_output" <<'PY'
+import json, sys
+r = json.loads(sys.argv[1])
+assert r == {'mode':'check','os':'ubuntu-24.04','osSupported':True,'tunPresent':True,'pythonPresent':True,'diskFreeMiB':3072,'serviceStatus':'active','openvpnCount':4,'expectedOpenvpn':4,'openvpnMatchesExpected':True}, r
+PY
+if env "${common_env[@]}" AIMILI_OS_RELEASE="$fixture/unsupported-os-release" bash "$script" --check >/dev/null 2>&1; then echo 'unsupported OS was accepted' >&2; exit 1; fi
+if env "${common_env[@]}" AIMILI_TUN_PATH="$fixture/missing-tun" bash "$script" --check >/dev/null 2>&1; then echo 'missing TUN was accepted' >&2; exit 1; fi
 
-printf '%s\n' 'PASS AimiliVPN installer apply fixture'
+for _ in 1 2; do
+  output="$(env "${common_env[@]}" bash "$script" --apply --source-commit edd08172a2ce132f2e1525d7e00b047a56883ff9 --installer "$fixture/installer.sh" 2>&1)"
+  [[ "$output" == 'aimilivpn_apply_ok' ]] || { printf 'unexpected installer wrapper output: %s\n' "$output" >&2; exit 1; }
+  ! grep -q 'sensitive-canary' <<< "$output" || { echo 'installer credentials escaped wrapper output' >&2; exit 1; }
+done
+[[ "$(grep -c '^invocation$' "$installer_log")" -eq 2 ]]
+grep -qx preserved "$data_marker"
+grep -qx 'OTHER_SETTING=preserved' "$env_file"
+[[ "$(grep -c '^MULTI_EXIT_SLOTS=3$' "$env_file")" -eq 1 ]]
+[[ "$(grep -c '^MAX_EXIT_SLOTS=16$' "$env_file")" -eq 1 ]]
+[[ "$(grep -c '^restart aimilivpn.service$' "$systemctl_log")" -eq 2 ]]
+printf '%s\n' 'PASS AimiliVPN installer check and idempotent apply fixture'

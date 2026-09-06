@@ -52,8 +52,27 @@ try {
         nativeEnabled = [pscustomobject]@{ aimilivpn = 'disabled'; xui = 'disabled'; gateway = 'disabled'; caddy = 'disabled' }
         expected = [pscustomobject]@{ openvpn = 4; xray = 1; logicalExits = 4; exitSlots = 3 }
         actual = [pscustomobject]@{ openvpn = 0; xray = 0; logicalExits = 0; exitSlots = 0 }
+        listeners = [pscustomobject]@{}
+        mainChecks = [pscustomobject]@{ tun = $false; route = $false; listener = $false; egress = $false }
+        slotChecks = @()
+        databaseReadable = $false
+        evidenceSchema = $false
+        subscriptionExitSet = $false
+        protocolIsolation = $false
+        hostSafety = $false
         nativeReady = $false
     })
+    $shallowRejected = $false
+    try {
+        Assert-AimiliNativeStatusContract -Status ([pscustomobject]@{
+            nativeServices = [pscustomobject]@{ aimilivpn = 'active'; xui = 'active'; gateway = 'active'; caddy = 'active' }
+            nativeEnabled = [pscustomobject]@{ aimilivpn = 'enabled'; xui = 'enabled'; gateway = 'enabled'; caddy = 'enabled' }
+            expected = [pscustomobject]@{ openvpn = 4; xray = 1; logicalExits = 4; exitSlots = 3 }
+            actual = [pscustomobject]@{ openvpn = 4; xray = 1; logicalExits = 4; exitSlots = 3 }
+            nativeReady = $true
+        })
+    } catch { $shallowRejected = $_.Exception.Message -match 'native_status_field_missing' }
+    Assert-True $shallowRejected 'native status contract accepted shallow readiness without data-plane and evidence fields'
 } finally {
     foreach ($fixture in @($manifestPath, $manifestExtraScalePath)) {
         if (Test-Path -LiteralPath $fixture) { Remove-Item -LiteralPath $fixture -Force }

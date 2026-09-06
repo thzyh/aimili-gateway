@@ -17,6 +17,14 @@ $report = [ordered]@{
     nativeEnabled = [ordered]@{ aimilivpn = 'unknown'; xui = 'unknown'; gateway = 'unknown'; caddy = 'unknown' }
     expected = $manifest.expected
     actual = [ordered]@{ openvpn = 0; xray = 0; logicalExits = 0; exitSlots = 0 }
+    listeners = [ordered]@{}
+    mainChecks = [ordered]@{ tun = $false; route = $false; listener = $false; egress = $false }
+    slotChecks = @()
+    databaseReadable = $false
+    evidenceSchema = $false
+    subscriptionExitSet = $false
+    protocolIsolation = $false
+    hostSafety = $false
     nativeReady = $false
 }
 if ($running) {
@@ -28,45 +36,33 @@ if ($running) {
         & ssh.exe -i $keyPath -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$knownHosts" "aimili@$($state.guestAddress)" true 2>$null
         $report.sshReachable = $LASTEXITCODE -eq 0
         if ($report.sshReachable) {
-            $probeCommand = @(
-                'printf "svc_aimilivpn=%s\n" "$(systemctl is-active aimilivpn.service 2>/dev/null || true)"',
-                'printf "enabled_aimilivpn=%s\n" "$(systemctl is-enabled aimilivpn.service 2>/dev/null || true)"',
-                'printf "svc_xui=%s\n" "$(systemctl is-active x-ui.service 2>/dev/null || true)"',
-                'printf "enabled_xui=%s\n" "$(systemctl is-enabled x-ui.service 2>/dev/null || true)"',
-                'printf "svc_gateway=%s\n" "$(systemctl is-active aimili-gateway.service 2>/dev/null || true)"',
-                'printf "enabled_gateway=%s\n" "$(systemctl is-enabled aimili-gateway.service 2>/dev/null || true)"',
-                'printf "svc_caddy=%s\n" "$(systemctl is-active caddy.service 2>/dev/null || true)"',
-                'printf "enabled_caddy=%s\n" "$(systemctl is-enabled caddy.service 2>/dev/null || true)"',
-                'printf "openvpn=%s\n" "$(pgrep -cx openvpn 2>/dev/null || true)"',
-                'printf "xray=%s\n" "$(pgrep -fc ''(^|/)(xray-linux-amd64|xray)([[:space:]]|$)'' 2>/dev/null || true)"',
-                'printf "slots=%s\n" "$(python3 -c ''import json; p="/opt/aimilivpn/vpngate_data/slots.json"; d=json.load(open(p)) if __import__("os").path.exists(p) else {}; slots=d.get("slots", []) if isinstance(d,dict) else []; print(sum(1 for s in slots if isinstance(s,dict) and str(s.get("status","")).lower() in ("ready","up")))'' 2>/dev/null || true)"'
-            ) -join '; '
-            $probe = @(& ssh.exe -i $keyPath -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$knownHosts" "aimili@$($state.guestAddress)" $probeCommand 2>$null)
-            if ($LASTEXITCODE -eq 0) {
-                $values = @{}
-                foreach ($line in $probe) {
-                    if ([string]$line -match '^([^=]+)=(.*)$') { $values[$Matches[1]] = $Matches[2] }
+            $verifyPath = Join-Path $PSScriptRoot 'native\verify-native.sh'
+            $verifySource = Get-Content -LiteralPath $verifyPath -Raw
+            $probe = @($verifySource | & ssh.exe -i $keyPath -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$knownHosts" "aimili@$($state.guestAddress)" 'bash -s -- --json --manifest /etc/aimili-local/deployment.json --evidence /var/lib/aimili-local/verification/native-evidence.json' 2>$null)
+            if ($probe.Count -gt 0) {
+                try {
+                    $deep = $probe[-1] | ConvertFrom-Json
+                    $report.nativeServices.aimilivpn = if ($deep.nativeServices.aimilivpn) { 'active' } else { 'inactive' }
+                    $report.nativeServices.xui = if ($deep.nativeServices.'x-ui') { 'active' } else { 'inactive' }
+                    $report.nativeServices.gateway = if ($deep.nativeServices.'aimili-gateway') { 'active' } else { 'inactive' }
+                    $report.nativeServices.caddy = if ($deep.nativeServices.caddy) { 'active' } else { 'inactive' }
+                    $report.nativeEnabled.aimilivpn = if ($deep.nativeEnabled.aimilivpn) { 'enabled' } else { 'disabled' }
+                    $report.nativeEnabled.xui = if ($deep.nativeEnabled.'x-ui') { 'enabled' } else { 'disabled' }
+                    $report.nativeEnabled.gateway = if ($deep.nativeEnabled.'aimili-gateway') { 'enabled' } else { 'disabled' }
+                    $report.nativeEnabled.caddy = if ($deep.nativeEnabled.caddy) { 'enabled' } else { 'disabled' }
+                    $report.actual = $deep.actual
+                    $report.listeners = $deep.listeners
+                    $report.mainChecks = $deep.mainChecks
+                    $report.slotChecks = @($deep.slotChecks)
+                    $report.databaseReadable = [bool]$deep.databaseReadable
+                    $report.evidenceSchema = [bool]$deep.evidenceSchema
+                    $report.subscriptionExitSet = [bool]$deep.subscriptionExitSet
+                    $report.protocolIsolation = [bool]$deep.protocolIsolation
+                    $report.hostSafety = [bool]$deep.hostSafety
+                    $report.nativeReady = [bool]$deep.nativeReady
+                } catch {
+                    $report.nativeReady = $false
                 }
-                $report.nativeServices.aimilivpn = if ($values.ContainsKey('svc_aimilivpn')) { $values.svc_aimilivpn } else { 'unknown' }
-                $report.nativeServices.xui = if ($values.ContainsKey('svc_xui')) { $values.svc_xui } else { 'unknown' }
-                $report.nativeServices.gateway = if ($values.ContainsKey('svc_gateway')) { $values.svc_gateway } else { 'unknown' }
-                $report.nativeServices.caddy = if ($values.ContainsKey('svc_caddy')) { $values.svc_caddy } else { 'unknown' }
-                $report.nativeEnabled.aimilivpn = if ($values.ContainsKey('enabled_aimilivpn')) { $values.enabled_aimilivpn } else { 'unknown' }
-                $report.nativeEnabled.xui = if ($values.ContainsKey('enabled_xui')) { $values.enabled_xui } else { 'unknown' }
-                $report.nativeEnabled.gateway = if ($values.ContainsKey('enabled_gateway')) { $values.enabled_gateway } else { 'unknown' }
-                $report.nativeEnabled.caddy = if ($values.ContainsKey('enabled_caddy')) { $values.enabled_caddy } else { 'unknown' }
-                $report.actual.openvpn = if ($values.ContainsKey('openvpn')) { [int]$values.openvpn } else { 0 }
-                $report.actual.xray = if ($values.ContainsKey('xray')) { [int]$values.xray } else { 0 }
-                $report.actual.exitSlots = if ($values.ContainsKey('slots')) { [int]$values.slots } else { 0 }
-                $report.actual.logicalExits = if ($report.actual.openvpn -gt 0) { 1 + $report.actual.exitSlots } else { 0 }
-                $report.nativeReady = ($report.nativeServices.Values -notcontains 'unknown' -and
-                    @($report.nativeServices.Values | Where-Object { $_ -ne 'active' }).Count -eq 0 -and
-                    $report.nativeEnabled.Values -notcontains 'unknown' -and
-                    @($report.nativeEnabled.Values | Where-Object { $_ -ne 'enabled' }).Count -eq 0 -and
-                    $report.actual.openvpn -eq $report.expected.openvpn -and
-                    $report.actual.xray -eq $report.expected.xray -and
-                    $report.actual.logicalExits -eq $report.expected.logicalExits -and
-                    $report.actual.exitSlots -eq $report.expected.exitSlots)
             }
         }
     }

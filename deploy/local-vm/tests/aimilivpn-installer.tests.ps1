@@ -10,7 +10,8 @@ foreach ($token in @('--check', '--apply', '--installer', 'local_installer', 'MU
 }
 if ($source -match 'docker|ssh ny|v2rayN') { throw 'AimiliVPN installer contains an out-of-scope integration' }
 if ($source -match 'for command in[^\r\n]*openvpn') { throw 'AimiliVPN installer requires OpenVPN before the installer can install it' }
-if ($source -notmatch 'openvpn_present=') { throw 'AimiliVPN installer does not report the pre-install OpenVPN state' }
+if ($source -match 'for command in[^\r\n]*git') { throw 'AimiliVPN wrapper requires git before the upstream installer can bootstrap it' }
+if ($source -notmatch 'openvpn_count=') { throw 'AimiliVPN installer does not report the pre-install OpenVPN process count' }
 if ($source -notmatch 'command -v openvpn[^\r\n]+openvpn_missing_after_install') { throw 'AimiliVPN installer does not verify OpenVPN after installation' }
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..\..')
 Push-Location $repoRoot

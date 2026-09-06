@@ -11,9 +11,9 @@ foreach ($name in @('enable-exits.sh', 'verify-native.sh')) {
 }
 $statusPath = Join-Path $PSScriptRoot '..\status.ps1'
 $statusSource = Get-Content -LiteralPath $statusPath -Raw
-if ($statusSource -notmatch 'get\("slots",\s*\[\]\)') { throw 'native status does not count the top-level slots array' }
-if ($statusSource -notmatch 'ready.+up') { throw 'native status does not restrict slot counts to ready/up states' }
-if ($statusSource -notmatch 'xray-linux-amd64') { throw 'native status does not identify the deployed Xray process name' }
+if ($statusSource -notmatch 'verify-native\.sh') { throw 'native status does not reuse deep native verification' }
+if ($statusSource -notmatch 'subscriptionExitSet|protocolIsolation|hostSafety') { throw 'native status omits deep verification evidence fields' }
+if ($statusSource -match '\$report\.nativeReady\s*=\s*\(\$report\.nativeServices') { throw 'native status still computes shallow readiness from services and counts' }
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..\..')
 Push-Location $repoRoot
 try {
