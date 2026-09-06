@@ -14,6 +14,8 @@ VM 本轮检查为运行中且 SSH 可达，2 vCPU、约 2 GiB 内存、约 1 Gi
 
 下一步：按 architectural brainstorming 审核原生部署设计，然后制定逐文件计划。既有 Task 3 VM 基础修改与未跟踪构建资产保留，status.ps1 的旧状态字段待新设计批准后以行为测试驱动替换。最终浏览器、订阅及 v2rayN 验收由用户执行，当前均未执行。两个仓库不推送。
 
+原生部署开发已开始。`deploy/local-vm/native/deployment.json` 当前清单声明主连接＋3 个出口、期望 4 个 OpenVPN、期望 1 个 Xray；状态脚本按清单与运行时实际值比较，不把这些数字写成永久上限。VM 网络预检最新第一失败边界为 `upstream_tcp`：局域网网关可达、UFW 出站允许，但公共 TCP 443 被拒绝，DNS/HTTPS 因此尚未通过。未修改网络配置，未安装业务。
+
 ## 2026-09-06 出口3候选耗尽恢复
 
 用户复测证明提交 `f52db98` 的 `check → rotate` 分支已真实执行，但三次 rotate 都在约一秒内返回409且没有产生OpenVPN拨号日志。只读核对定位到第一处失败边界：AimiliVPN槽位2已是 `pending`，`tun122`、原候选身份和pin均不存在；槽位约束仍为 `JP + residential`，当时本地20个节点中符合该约束的候选为0。国家目录同时记录42至43个JP官方候选，因此不是协议参数、3x-ui、Gateway DB或日本无官方节点，而是恢复操作没有在本地候选耗尽时补充该槽位国家。
