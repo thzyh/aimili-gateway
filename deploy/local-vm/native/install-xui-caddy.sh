@@ -17,7 +17,7 @@ done
 . /etc/os-release
 [[ "${ID:-}" == ubuntu && "${VERSION_ID:-}" == '24.04' ]] || { printf 'unsupported_ubuntu\n' >&2; exit 3; }
 [[ "$(uname -m)" == x86_64 ]] || { printf 'unsupported_architecture\n' >&2; exit 3; }
-for command in curl sha256sum tar systemctl ss; do
+for command in curl sha256sum systemctl; do
   command -v "$command" >/dev/null 2>&1 || { printf 'dependency_missing:%s\n' "$command" >&2; exit 3; }
 done
 free_kb="$(df -Pk / | awk 'NR==2 {print $4}')"

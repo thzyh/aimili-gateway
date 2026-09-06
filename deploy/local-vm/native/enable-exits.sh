@@ -12,6 +12,8 @@ while [[ $# -gt 0 ]]; do
 done
 [[ "$slot" =~ ^[0-9]+$ && "$slot" -gt 0 ]] || { printf 'slot_invalid\n' >&2; exit 2; }
 [[ -s "$manifest" ]] || { printf 'manifest_missing\n' >&2; exit 3; }
+max_slots="$(python3 -c 'import json,sys; print(int(json.load(open(sys.argv[1]))["expected"]["exitSlots"]))' "$manifest")"
+[[ "$slot" -le "$max_slots" ]] || { printf 'slot_not_declared\n' >&2; exit 2; }
 for command in python3 curl; do command -v "$command" >/dev/null 2>&1 || { printf 'dependency_missing:%s\n' "$command" >&2; exit 3; }; done
 auth_file=/opt/aimilivpn/vpngate_data/ui_auth.json
 slots_file=/opt/aimilivpn/vpngate_data/slots.json

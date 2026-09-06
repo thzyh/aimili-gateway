@@ -17,6 +17,7 @@ while [[ $# -gt 0 ]]; do
 done
 [[ "$component" =~ ^[a-z0-9-]{1,40}$ && "$run_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || { printf 'backup_identity_invalid\n' >&2; exit 2; }
 [[ "$source_dir" = /* && -e "$source_dir" && "$backup_root" = /* ]] || { printf 'backup_path_invalid\n' >&2; exit 2; }
+case "$source_dir" in /etc/aimili-local/*|/etc/aimili-gateway/*|/etc/systemd/system/aimili-*|/var/lib/aimili-gateway/*|/var/lib/aimili-local/*|/usr/local/bin/aimili-*) ;; *) printf 'backup_source_not_allowlisted\n' >&2; exit 2 ;; esac
 install -d -m 0700 "$backup_root/$run_id"
 dest="$backup_root/$run_id/$component"
 tmp="$backup_root/$run_id/.${component}.tmp.$$"

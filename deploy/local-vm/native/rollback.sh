@@ -17,6 +17,7 @@ while [[ $# -gt 0 ]]; do
 done
 [[ "$component" =~ ^[a-z0-9-]{1,40}$ && "$run_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || { printf 'rollback_identity_invalid\n' >&2; exit 2; }
 [[ "$backup_root" = /* && "$target_dir" = /* ]] || { printf 'rollback_path_invalid\n' >&2; exit 2; }
+case "$target_dir" in /etc/aimili-local/*|/etc/aimili-gateway/*|/etc/systemd/system/aimili-*|/var/lib/aimili-gateway/*|/var/lib/aimili-local/*|/usr/local/bin/aimili-*) ;; *) printf 'rollback_target_not_allowlisted\n' >&2; exit 2 ;; esac
 source_dir="$backup_root/$run_id/$component"
 [[ -d "$source_dir" ]] || { printf 'rollback_backup_missing\n' >&2; exit 3; }
 previous="${target_dir}.previous"
