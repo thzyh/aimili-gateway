@@ -30,6 +30,14 @@ table_base="${AIMILI_SLOT_TABLE_BASE:-200}"
 secret="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["secret_path"])' "$auth_file")"
 [[ "$secret" =~ ^[A-Za-z0-9._~/-]+$ ]] || { printf 'aimilivpn_auth_invalid\n' >&2; exit 3; }
 
+link_has_up_flag() {
+  local state="$1" flags
+  [[ "$state" == *'<'*'>'* ]] || return 1
+  flags="${state#*<}"
+  flags="${flags%%>*}"
+  [[ ",$flags," == *,UP,* ]]
+}
+
 response="$({
   printf 'url = "http://127.0.0.1:8787/%s/api/start_slot"\n' "$secret"
   printf 'request = "POST"\n'
@@ -64,7 +72,7 @@ PY
     route_table=$((table_base + slot))
     link_state="$(ip -o link show dev "$device" 2>/dev/null || true)"
     route_state="$(ip route show table "$route_table" 2>/dev/null || true)"
-    if [[ "$device" =~ ^[A-Za-z0-9_.:-]+$ && "$link_state" =~ \<[^\>]*UP[^\>]*\> ]] &&
+    if [[ "$device" =~ ^[A-Za-z0-9_.:-]+$ ]] && link_has_up_flag "$link_state" &&
        awk -v device="$device" '$1 == "default" { for (i=2; i<=NF; i++) if ($i == "dev" && $(i+1) == device) found=1 } END { exit(found ? 0 : 1) }' <<< "$route_state" &&
        ss -lntH 2>/dev/null | awk -v port="$port" '{ address=$4; if (address ~ ":" port "$") { if (address ~ "^127\\.0\\.0\\.1:" port "$" || address == "[::1]:" port) found=1; else bad=1 } } END { exit(found && !bad ? 0 : 1) }' &&
        exit_ip="$(curl -fsS --socks5-hostname "127.0.0.1:$port" --max-time 10 http://api.ipify.org 2>/dev/null)" &&

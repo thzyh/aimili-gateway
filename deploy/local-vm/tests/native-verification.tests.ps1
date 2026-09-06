@@ -14,6 +14,23 @@ $statusSource = Get-Content -LiteralPath $statusPath -Raw
 if ($statusSource -notmatch 'verify-native\.sh') { throw 'native status does not reuse deep native verification' }
 if ($statusSource -notmatch 'subscriptionExitSet|protocolIsolation|hostSafety') { throw 'native status omits deep verification evidence fields' }
 if ($statusSource -match '\$report\.nativeReady\s*=\s*\(\$report\.nativeServices') { throw 'native status still computes shallow readiness from services and counts' }
+$parseErrors = $null
+$statusAst = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $statusPath), [ref]$null, [ref]$parseErrors)
+if ($parseErrors.Count -gt 0) { throw 'native status does not parse' }
+$remoteCommands = @($statusAst.FindAll({
+    param($node)
+    $node -is [System.Management.Automation.Language.CommandAst] -and
+        $node.GetCommandName() -eq 'ssh.exe' -and
+        (($node.CommandElements | ForEach-Object { $_.Extent.Text }) -join ' ') -match 'verify-native|bash -s'
+}, $true))
+if ($remoteCommands.Count -ne 1) { throw 'native status verifier SSH command was not captured exactly once' }
+$capturedRemoteCommand = ($remoteCommands[0].CommandElements | ForEach-Object { $_.Extent.Text }) -join ' '
+if ($capturedRemoteCommand -notmatch "'sudo -n bash -s -- --json --manifest /etc/aimili-local/deployment\.json --evidence /var/lib/aimili-local/verification/native-evidence\.json'") {
+    throw 'native status verifier SSH command does not use non-interactive sudo'
+}
+if ($statusSource -notmatch '\$probeExitCode\s*=\s*\$LASTEXITCODE' -or $statusSource -notmatch '\$probeExitCode\s*-eq\s*0') {
+    throw 'native status does not fail closed on verifier SSH failure'
+}
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..\..')
 Push-Location $repoRoot
 try {

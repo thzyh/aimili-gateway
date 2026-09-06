@@ -46,7 +46,12 @@ cat > "$fake_bin/ip" <<'SH'
 #!/usr/bin/env bash
 if [[ "$*" == *'link show'* ]]; then
   device="${@: -1}"
-  if [[ "$device" == "${DOWN_DEVICE:-}" ]]; then echo "1: $device: <POINTOPOINT> mtu 1500 state DOWN"; else echo "1: $device: <POINTOPOINT,UP,LOWER_UP> mtu 1500 state UNKNOWN"; fi
+  if [[ "$device" == "${DOWN_DEVICE:-}" ]]; then
+    flags="${DOWN_LINK_FLAGS:-POINTOPOINT,LOWER_UP}"
+  else
+    flags="${LINK_FLAGS:-POINTOPOINT,UP,LOWER_UP}"
+  fi
+  echo "1: $device: <$flags> mtu 1500 state UNKNOWN"
   exit 0
 fi
 if [[ "${1:-}" == route && "${2:-}" == show && "${3:-}" == table ]]; then
@@ -78,7 +83,8 @@ assert all(r['nativeEnabled'].values()) and all(r['listeners'].values()), r
 assert all(s['ready'] and s['tun'] and s['route'] and s['listener'] and s['egress'] for s in r['slotChecks']), r
 PY
 
-env "${common_env[@]}" bash "$enable" --slot 0 --manifest "$fixture/deployment.json"
+env "${common_env[@]}" LINK_FLAGS='POINTOPOINT,UP,LOWER_UP' bash "$enable" --slot 0 --manifest "$fixture/deployment.json"
+env "${common_env[@]}" LINK_FLAGS='UP' bash "$enable" --slot 0 --manifest "$fixture/deployment.json"
 if env "${common_env[@]}" bash "$enable" --slot 3 --manifest "$fixture/deployment.json" 2>/dev/null; then echo 'undeclared slot accepted' >&2; exit 1; fi
 ! grep -q 'fixture-secret-never-print' "$fixture/curl.args.log" || { echo 'secret exposed in argv' >&2; exit 1; }
 
@@ -94,6 +100,8 @@ expect_verify_failure NON_LOOPBACK_PORT=17929
 expect_verify_failure FAIL_EGRESS_PORT=17929
 expect_verify_failure NON_IP_EGRESS_PORT=17929
 expect_enable_failure DOWN_DEVICE=tun121
+expect_enable_failure DOWN_DEVICE=tun121 DOWN_LINK_FLAGS=POINTOPOINT,LOWER_UP
+expect_enable_failure DOWN_DEVICE=tun121 DOWN_LINK_FLAGS=SETUP
 expect_enable_failure WRONG_ROUTE_TABLE=201
 expect_enable_failure FAIL_LISTENER_PORT=17929
 expect_enable_failure NON_LOOPBACK_PORT=17929
