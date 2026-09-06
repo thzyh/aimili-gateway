@@ -4,7 +4,7 @@
 
 ## 目标
 
-在当前 Windows 电脑上交付一套与 ny 生产完全隔离的 Aimili Gateway 本地环境。Ubuntu Server 虚拟机通过 VMware 真桥接获得独立局域网出口，并使用第二张 host-only 网卡提供只对 Windows 主机开放的稳定管理地址。虚拟机内使用 Docker Compose 运行 Aimili Gateway、AimiliVPN、定制 3x-ui/Xray 和 Caddy，并支持主连接、出口1、出口2、出口3共四个逻辑出口。
+在当前 Windows 电脑上交付一套与 ny 生产完全隔离的 Aimili Gateway 本地环境。Ubuntu Server 虚拟机通过 VMware 真桥接获得独立局域网地址，虚拟机内使用 Docker Compose 运行 Aimili Gateway、AimiliVPN、定制 3x-ui/Xray 和 Caddy，并支持主连接、出口1、出口2、出口3共四个逻辑出口。
 
 现有 Linux VPS 原生 systemd 部署继续保留，不改成容器部署；本地 Docker 与 VPS 原生部署共享业务代码和行为合约，但分别使用独立部署入口、数据、密钥和验证记录。
 
@@ -49,7 +49,7 @@
 | 内存 | 2048 MiB | 当前主机可用内存有限，拒绝直接分配4–6 GiB |
 | swap | 虚拟机内1 GiB | 仅吸收更新或数据库检查时的短暂峰值 |
 | 系统盘 | D盘24 GiB动态增长 | 不预占24 GiB，设定明确容量上限 |
-| 网络 | 1张桥接网卡加1张host-only网卡 | 桥接负责外连，host-only负责稳定且不向局域网开放的管理入口 |
+| 网络 | 1张桥接网卡 | 独立局域网身份，不修改Windows虚拟网卡或默认路由 |
 | 图形 | 无桌面环境 | 降低常驻内存和维护面 |
 
 虚拟机启动脚本必须先读取主机总内存、可用内存和运行中的同名 VM。可用内存低于 3.5 GiB 时拒绝自动启动并只给出原因，不结束 v2rayN、Docker Desktop或其他用户程序。虚拟机运行后不自动扩容；任何超过2 GiB内存或2 vCPU的变更都需要重新评估主机余量。
@@ -70,16 +70,14 @@
 
 采用现有 VMware Workstation，不启用新的 Hyper-V 管理组件，不要求 Windows 重启。虚拟机目录固定在 `D:\VirtualMachines\AimiliGatewayLocal`，仓库只保存可审查的创建脚本和校验清单，不提交虚拟磁盘、ISO、OVA、生成的密钥或运行数据库。
 
-第一张虚拟网卡使用 bridged/VMnet0，并承担虚拟机默认路由和所有OpenVPN外连。自动化必须确认当前桥接出口是物理以太网，不能桥接到 `singbox_tun`、`vEthernet (WSL)`、VMnet1或VMnet8。桥接地址由局域网DHCP分配并脱敏记录；不猜测静态地址，不修改路由器。
-
-第二张虚拟网卡使用现有host-only/VMnet1，仅用于Windows主机访问Gateway、订阅和本地协议端口。它没有默认路由，不承担OpenVPN外连，也不向其他局域网设备开放。安装脚本从VMnet1当前子网中选择并核对未占用的固定地址，随后把Docker发布端口绑定到该地址；地址只写入本地忽略文件和运行配置，不写入公共文档。
+虚拟网卡使用 bridged/VMnet0，并承担虚拟机默认路由、OpenVPN外连和来自Windows主机的管理连接。自动化必须确认当前桥接出口是物理以太网，不能桥接到 `singbox_tun`、`vEthernet (WSL)`、VMnet1或VMnet8。桥接地址由局域网DHCP分配并写入本地忽略状态文件；不猜测静态地址，不修改Windows网卡或路由器。若用户以后需要固定入口，只建议在路由器中设置DHCP保留，不由本任务自动修改。
 
 Windows 到虚拟机的数据流为：
 
 ```text
 Windows 浏览器或用户主动配置的 v2rayN 节点
-  -> VMware VMnet1 host-only 网络
-  -> Ubuntu VM 稳定管理地址
+  -> 物理局域网
+  -> Ubuntu VM 桥接地址
   -> Docker 发布端口
   -> 共享 Linux 网络命名空间
   -> Gateway / Caddy / 3x-ui / AimiliVPN
@@ -88,7 +86,7 @@ Windows 浏览器或用户主动配置的 v2rayN 节点
   -> 公网
 ```
 
-虚拟机的 OpenVPN 外连从第一张桥接网卡直接进入物理局域网，管理请求通过第二张host-only网卡进入，两条路径不得互换。验收必须证明OpenVPN外连没有进入Windows的v2rayN代理连接表；若仍被接管，则停止在单出口阶段，不启用其余三个出口。
+虚拟机的 OpenVPN 外连从桥接网卡直接进入物理局域网。验收必须证明这些连接没有进入Windows的v2rayN代理连接表；若仍被接管，则停止在单出口阶段，不启用其余三个出口。
 
 ## 容器网络与组件边界
 
@@ -138,9 +136,9 @@ Gateway、AimiliVPN与定制3x-ui镜像在 Windows Docker Desktop 中按受限�
 
 ## 本地访问与安全边界
 
-初次验收只允许Windows主机通过VMnet1 host-only地址访问。Docker发布端口和Linux防火墙都绑定该host-only地址；桥接网卡不监听管理页、订阅和本地协议端口。不允许 `0.0.0.0/0` 或 `::/0` 来源规则，也不配置路由器端口转发。
+初次验收只允许当前Windows物理地址访问。Docker端口发布在VM桥接地址上，Linux防火墙逐端口限制来源为创建时记录的Windows地址；其他局域网设备不得访问。不允许 `0.0.0.0/0` 或 `::/0` 来源规则，也不配置路由器端口转发。
 
-Gateway要求精确HTTPS origin。本地Caddy使用仅服务于host-only地址的内部CA证书，初始化时固定Gateway的 `publicOrigin`。自动化只导出CA公钥证书和SHA256指纹，不自动写入Windows信任库。浏览器和v2rayN需要无警告订阅时，由用户审阅指纹后显式运行单独的“信任本地CA”脚本；该脚本只能写当前Windows用户的证书库，并提供精确撤销命令。未取得这项单独确认前，完整栈仍可完成服务端和命令行TLS验证，但不能宣称v2rayN订阅验收通过。
+Gateway要求精确HTTPS origin。本地Caddy使用仅服务于VM桥接地址的内部CA证书，初始化时固定Gateway的 `publicOrigin`。自动化只导出CA公钥证书和SHA256指纹，不自动写入Windows信任库。浏览器和v2rayN需要无警告订阅时，由用户审阅指纹后显式运行单独的“信任本地CA”脚本；该脚本只能写当前Windows用户的证书库，并提供精确撤销命令。未取得这项单独确认前，完整栈仍可完成服务端和命令行TLS验证，但不能宣称v2rayN订阅验收通过。
 
 由于来源策略测试依赖浏览器实际来源地址，本地部署必须把桥接地址和反向代理转发头纳入单独验证。来源限制默认关闭；只有确认Gateway识别到Windows主机来源且四个mixed入站可以事务回滚后，才允许用户启用。
 
@@ -178,7 +176,7 @@ UI继续使用Gateway已实现的版本化外部静态资源和原子软链接�
 
 完整目标跨越虚拟机基础设施、容器运行时、Gateway/3x-ui集成和多出口数据面，不作为一个不可回退的大步骤实施。批准本设计后按以下四个独立计划推进，每个计划都交付可运行检查点：
 
-1. **VM基础与安全门**：创建受限资源的Ubuntu VM，完成双网卡、SSH、Docker和宿主不变性验证；不启动Aimili业务。
+1. **VM基础与安全门**：创建受限资源的Ubuntu VM，完成物理桥接、来源受限SSH、Docker和宿主不变性验证；不启动Aimili业务。
 2. **镜像与单出口完整栈**：建立本地镜像打包/导入、网络锚点和持久卷，先运行Gateway、AimiliVPN主连接、3x-ui/Xray和Caddy；不启用普通出口槽位。
 3. **三个出口阶梯启用**：逐个加入出口1、出口2、出口3，验证策略路由、mixed、公网协议、订阅和单Xray。
 4. **运维与用户验收**：实现current/previous、唯一数据库备份、停止/恢复、可选本地CA信任和脱敏验收报告，由用户执行浏览器及v2rayN最终验收。
@@ -190,7 +188,7 @@ UI继续使用Gateway已实现的版本化外部静态资源和原子软链接�
 实现必须使用TDD并覆盖：
 
 1. VM资源不超过2 vCPU、2048 MiB和24 GiB动态磁盘；低内存时拒绝启动。
-2. VMX使用一张桥接网卡和一张host-only网卡；默认路由只经过物理桥接网卡，管理端口只绑定host-only地址。
+2. VMX只使用一张物理桥接网卡；默认路由经过该网卡，SSH和管理端口只允许当前Windows物理地址访问。
 3. Compose不含privileged、host network、Docker socket和生产路径挂载。
 4. 只有AimiliVPN获得NET_ADMIN和TUN设备，其他服务共享稳定网络命名空间。
 5. 所有镜像和volume均使用本地专用命名，不包含ny地址、生产路径或生产凭据。

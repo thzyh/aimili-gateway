@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 在不修改 v2rayN、Windows 路由和 ny 生产的前提下，创建一台受限为2 vCPU、2048 MiB内存、24 GiB动态磁盘的Ubuntu Server VMware虚拟机，完成桥接/host-only双网卡、SSH和Docker运行时验证。
+**Goal:** 在不修改 v2rayN、Windows 路由和 ny 生产的前提下，创建一台受限为2 vCPU、2048 MiB内存、24 GiB动态磁盘的Ubuntu Server VMware虚拟机，完成物理桥接、来源受限SSH和Docker运行时验证。
 
-**Architecture:** Windows脚本只编排现有VMware CLI，使用固定摘要的Ubuntu 24.04 cloud OVA和cloud-init公钥登录。桥接网卡承担默认路由，VMnet1 host-only网卡承担管理连接；本阶段只安装Docker，不导入Aimili业务镜像。
+**Architecture:** Windows脚本只编排现有VMware CLI，使用固定摘要的Ubuntu 24.04 cloud OVA和cloud-init公钥登录。单张桥接网卡承担默认路由和管理连接，Linux防火墙把SSH限制到当前Windows物理地址；本阶段只安装Docker，不导入Aimili业务镜像。
 
 **Tech Stack:** PowerShell 5.1+、VMware Workstation 16.1、Ubuntu Server 24.04 cloud image、cloud-init、OpenSSH、Docker Engine、Docker Compose v2
 
@@ -36,7 +36,7 @@
 - Produces: `Get-AimiliHostFacts -> pscustomobject`
 - Produces: `Get-AimiliHostSafetySnapshot -> pscustomobject`
 - Produces: `Assert-AimiliHostSafetyUnchanged -Before <object> -After <object>`
-- Produces: `New-AimiliVmPlan -Facts <object> -ManagementPlan <object> -> pscustomobject`，供脚本与测试共同消费。
+- Produces: `New-AimiliVmPlan -Facts <object> -BridgePlan <object> -> pscustomobject`，供脚本与测试共同消费。
 - Produces: `host-preflight.ps1 [-AsJson]`，成功退出0，资源或虚拟化不满足时退出2。
 
 - [ ] **Step 1: 写资源门和宿主不变性失败测试**
@@ -142,7 +142,7 @@
 
   Commit message: `feat: pin local VM Ubuntu image`
 
-### Task 3: 幂等创建双网卡VM与cloud-init SSH
+### Task 3: 幂等创建桥接VM与cloud-init SSH
 
 **Files:**
 - Create: `deploy/local-vm/create-vm.ps1`
@@ -151,14 +151,14 @@
 - Modify: `deploy/local-vm/tests/run.ps1`
 
 **Interfaces:**
-- Produces: `Get-AimiliHostOnlyNetworkPlan -> pscustomobject`，返回VMnet1内未占用管理地址、前缀和宿主地址。
-- Produces: `New-AimiliCloudInitPayload -PublicKey <string> -WanMac <string> -ManagementMac <string> -ManagementCIDR <string> -> pscustomobject`。
+- Produces: `Get-AimiliPhysicalBridgePlan -> pscustomobject`，返回唯一物理桥接适配器和Windows来源地址。
+- Produces: `New-AimiliCloudInitPayload -PublicKey <string> -WanMac <string> -AllowedSource <string> -> pscustomobject`。
 - Produces: `create-vm.ps1 [-PlanOnly]`；PlanOnly只输出脱敏VM计划，正式模式创建或验证 `D:\VirtualMachines\AimiliGatewayLocal\AimiliGatewayLocal.vmx`。
 - Produces: 当前用户专用SSH私钥和known_hosts，位于 `%LOCALAPPDATA%\AimiliGateway\vmware-local`。
 
 - [ ] **Step 1: 写VM计划和cloud-init失败测试**
 
-  直接调用 `New-AimiliVmPlan` 和 `New-AimiliCloudInitPayload`：断言计划为2 CPU、2048 MiB、24 GiB；存在bridged和hostonly两张网卡；host-only没有默认网关；cloud-init只含fixture公钥、禁用root和密码SSH。调用 `create-vm.ps1 -PlanOnly` 并断言退出0、没有创建VM目录，也没有改变宿主安全快照。
+  直接调用 `New-AimiliVmPlan` 和 `New-AimiliCloudInitPayload`：断言计划为2 CPU、2048 MiB、24 GiB且只有一张bridged网卡；cloud-init只含fixture公钥、禁用root和密码SSH，并把SSH来源限制为fixture地址。调用 `create-vm.ps1 -PlanOnly` 并断言退出0、没有创建VM目录，也没有改变宿主安全快照。
 
 - [ ] **Step 2: 运行测试并确认RED**
 
@@ -166,9 +166,9 @@
 
   Expected: FAIL，原因是VM创建脚本和新增模块函数不存在。
 
-- [ ] **Step 3: 实现双网卡和cloud-init生成**
+- [ ] **Step 3: 实现桥接网卡和cloud-init生成**
 
-  脚本执行顺序：真实主机预检；确认同名VM未运行；使用 `ovftool.exe --diskMode=thin` 导入已校验OVA；用 `vmware-vdiskmanager.exe -x 24GB` 扩展唯一系统VMDK；生成两个本地管理的VMware MAC；生成仅含公钥用户的cloud-init metadata/userdata；写入VMX的 `guestinfo.metadata`、`guestinfo.userdata` 及base64编码标记。
+  脚本执行顺序：真实主机预检；确认同名VM未运行；生成一个本地管理的VMware MAC和仅含公钥用户的cloud-init user-data；使用OVA已经声明的 `instance-id`、`hostname`、`public-keys`、base64 `user-data` 属性调用 `ovftool.exe --diskMode=thin` 导入已校验OVA；用 `vmware-vdiskmanager.exe -x 24GB` 扩展唯一系统VMDK；随后在VMX中固定资源和桥接网卡。不得依赖未声明的私有guestinfo属性。
 
   VMX必须包含：
 
@@ -177,11 +177,9 @@
   numvcpus = "2"
   ethernet0.connectionType = "bridged"
   ethernet0.vnet = "VMnet0"
-  ethernet1.connectionType = "hostonly"
-  ethernet1.vnet = "VMnet1"
   ```
 
-  cloud-init网络按两个固定MAC匹配：桥接网卡启用DHCP并提供默认路由；host-only网卡使用派生CIDR且不设置gateway。SSH只接受生成的Ed25519公钥，`ssh_pwauth: false`、`disable_root: true`。
+  cloud-init让桥接网卡使用DHCP和默认路由，并用UFW只允许创建时记录的Windows物理地址访问SSH。SSH只接受生成的Ed25519公钥，`ssh_pwauth: false`、`disable_root: true`。
 
 - [ ] **Step 4: 运行测试、创建VM并验证SSH**
 
@@ -189,7 +187,7 @@
 
   Run: `pwsh -NoProfile -File deploy/local-vm/create-vm.ps1`
 
-  Expected: VM以nogui启动；SSH通过host-only地址连接；`nproc=2`、内存约2 GiB、根磁盘约24 GiB；默认路由只在桥接网卡；业务容器数为0。
+  Expected: VM以nogui启动；脚本从VMware Tools获取桥接DHCP地址并通过来源受限SSH连接；`nproc=2`、内存约2 GiB、根磁盘约24 GiB；业务容器数为0。
 
 - [ ] **Step 5: 提交本地Git**
 
@@ -259,7 +257,7 @@
 
 - [ ] **Step 1: 写生命周期失败测试并列出文档验收项**
 
-  对不存在VM和已停止VM分别运行 `stop-vm.ps1 -WhatIf`，断言返回幂等soft-stop计划且磁盘/密钥仍存在；真实软停止后重新启动并验证数据不变。README由本任务人工复核资源限制、启动门、双网卡、无生产依赖、默认保留数据和后续阶段，不为人类文档增加字符串测试。
+  对不存在VM和已停止VM分别运行 `stop-vm.ps1 -WhatIf`，断言返回幂等soft-stop计划且磁盘/密钥仍存在；真实软停止后重新启动并验证数据不变。README由本任务人工复核资源限制、启动门、物理桥接、来源受限SSH、无生产依赖、默认保留数据和后续阶段，不为人类文档增加字符串测试。
 
 - [ ] **Step 2: 运行测试并确认RED**
 
@@ -303,7 +301,7 @@
 
 - [ ] **Step 2: 验证VM网络角色**
 
-  通过host-only SSH读取脱敏网卡/路由：默认路由只经桥接网卡；host-only网卡没有默认路由；Windows到管理地址可达。
+  通过桥接SSH读取脱敏网卡/路由：默认路由经唯一桥接网卡；SSH只允许创建时记录的Windows来源地址；Windows到管理地址可达。
 
 - [ ] **Step 3: 验证没有越界副作用**
 
