@@ -40,9 +40,9 @@ if ($running) {
             $verifySource = Get-Content -LiteralPath $verifyPath -Raw
             $probe = @($verifySource | & ssh.exe -i $keyPath -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$knownHosts" "aimili@$($state.guestAddress)" 'sudo -n bash -s -- --json --manifest /etc/aimili-local/deployment.json --evidence /var/lib/aimili-local/verification/native-evidence.json' 2>$null)
             $probeExitCode = $LASTEXITCODE
-            if ($probeExitCode -eq 0 -and $probe.Count -gt 0) {
+            $deep = ConvertFrom-AimiliNativeVerifierProbe -Output $probe -ExitCode $probeExitCode
+            if ($null -ne $deep) {
                 try {
-                    $deep = $probe[-1] | ConvertFrom-Json
                     $report.nativeServices.aimilivpn = if ($deep.nativeServices.aimilivpn) { 'active' } else { 'inactive' }
                     $report.nativeServices.xui = if ($deep.nativeServices.'x-ui') { 'active' } else { 'inactive' }
                     $report.nativeServices.gateway = if ($deep.nativeServices.'aimili-gateway') { 'active' } else { 'inactive' }

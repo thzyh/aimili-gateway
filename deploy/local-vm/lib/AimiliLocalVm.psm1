@@ -363,6 +363,51 @@ function Assert-AimiliNativeStatusContract {
     return $true
 }
 
+function ConvertFrom-AimiliNativeVerifierProbe {
+    param(
+        [AllowEmptyCollection()][string[]]$Output,
+        [int]$ExitCode
+    )
+
+    if ($ExitCode -notin @(0, 1)) { return $null }
+    $lines = @($Output | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+    if ($lines.Count -ne 1) { return $null }
+    try {
+        $status = $lines[0] | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        return $null
+    }
+    if ($null -eq $status -or $status -isnot [psobject]) { return $null }
+
+    foreach ($name in @('nativeServices', 'nativeEnabled', 'expected', 'actual', 'listeners', 'mainChecks', 'slotChecks', 'databaseReadable', 'evidenceSchema', 'subscriptionExitSet', 'protocolIsolation', 'hostSafety', 'nativeReady')) {
+        if (-not $status.PSObject.Properties[$name]) { return $null }
+    }
+    foreach ($name in @('openvpn', 'xray', 'logicalExits', 'exitSlots')) {
+        foreach ($section in @('expected', 'actual')) {
+            $value = $status.$section.$name
+            if ($null -eq $value -or [int]$value -lt 0 -or [int]$value -ne [double]$value) { return $null }
+        }
+    }
+    foreach ($service in @('aimilivpn', 'x-ui', 'aimili-gateway', 'caddy')) {
+        if (-not $status.nativeServices.PSObject.Properties[$service] -or $status.nativeServices.$service -isnot [bool]) { return $null }
+        if (-not $status.nativeEnabled.PSObject.Properties[$service] -or $status.nativeEnabled.$service -isnot [bool]) { return $null }
+    }
+    foreach ($check in @('tun', 'route', 'listener', 'egress')) {
+        if (-not $status.mainChecks.PSObject.Properties[$check] -or $status.mainChecks.$check -isnot [bool]) { return $null }
+    }
+    foreach ($name in @('databaseReadable', 'evidenceSchema', 'subscriptionExitSet', 'protocolIsolation', 'hostSafety', 'nativeReady')) {
+        if ($status.$name -isnot [bool]) { return $null }
+    }
+    foreach ($slot in @($status.slotChecks)) {
+        foreach ($name in @('slot', 'ready', 'tun', 'route', 'listener', 'egress')) {
+            if (-not $slot.PSObject.Properties[$name]) { return $null }
+        }
+        if ($slot.ready -isnot [bool] -or $slot.tun -isnot [bool] -or $slot.route -isnot [bool] -or $slot.listener -isnot [bool] -or $slot.egress -isnot [bool]) { return $null }
+    }
+    if ($ExitCode -eq 1) { $status.nativeReady = $false }
+    return $status
+}
+
 Export-ModuleMember -Function @(
     'Get-AimiliHostFacts',
     'Test-AimiliHostCapacity',
@@ -379,5 +424,6 @@ Export-ModuleMember -Function @(
     'New-AimiliVmwareMac',
     'Set-AimiliVmxValues',
     'Get-AimiliNativeManifest',
-    'Assert-AimiliNativeStatusContract'
+    'Assert-AimiliNativeStatusContract',
+    'ConvertFrom-AimiliNativeVerifierProbe'
 )

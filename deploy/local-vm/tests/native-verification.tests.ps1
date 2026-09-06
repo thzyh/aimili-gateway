@@ -28,9 +28,37 @@ $capturedRemoteCommand = ($remoteCommands[0].CommandElements | ForEach-Object { 
 if ($capturedRemoteCommand -notmatch "'sudo -n bash -s -- --json --manifest /etc/aimili-local/deployment\.json --evidence /var/lib/aimili-local/verification/native-evidence\.json'") {
     throw 'native status verifier SSH command does not use non-interactive sudo'
 }
-if ($statusSource -notmatch '\$probeExitCode\s*=\s*\$LASTEXITCODE' -or $statusSource -notmatch '\$probeExitCode\s*-eq\s*0') {
-    throw 'native status does not fail closed on verifier SSH failure'
+$modulePath = Join-Path $PSScriptRoot '..\lib\AimiliLocalVm.psm1'
+Import-Module $modulePath -Force
+$diagnosticJson = [ordered]@{
+    nativeServices = [ordered]@{ aimilivpn = $true; 'x-ui' = $true; 'aimili-gateway' = $false; caddy = $true }
+    nativeEnabled = [ordered]@{ aimilivpn = $true; 'x-ui' = $true; 'aimili-gateway' = $true; caddy = $true }
+    expected = [ordered]@{ openvpn = 4; xray = 1; logicalExits = 4; exitSlots = 3 }
+    actual = [ordered]@{ openvpn = 3; xray = 1; logicalExits = 3; exitSlots = 2 }
+    listeners = [ordered]@{ gateway = $false }
+    mainChecks = [ordered]@{ tun = $true; route = $true; listener = $true; egress = $true }
+    slotChecks = @([ordered]@{ slot = 0; ready = $true; tun = $true; route = $true; listener = $true; egress = $true })
+    databaseReadable = $true
+    evidenceSchema = $true
+    subscriptionExitSet = $true
+    protocolIsolation = $true
+    hostSafety = $true
+    nativeReady = $true
+} | ConvertTo-Json -Depth 8 -Compress
+$unhealthy = ConvertFrom-AimiliNativeVerifierProbe -Output @($diagnosticJson) -ExitCode 1
+if ($null -eq $unhealthy -or [int]$unhealthy.actual.openvpn -ne 3 -or [bool]$unhealthy.nativeServices.'aimili-gateway' -or [bool]$unhealthy.nativeReady) {
+    throw 'native status discarded a valid unhealthy verifier diagnostic'
 }
+if ($null -ne (ConvertFrom-AimiliNativeVerifierProbe -Output @($diagnosticJson) -ExitCode 2)) {
+    throw 'native status trusted verifier output from an SSH or sudo failure'
+}
+if ($null -ne (ConvertFrom-AimiliNativeVerifierProbe -Output @('{not-json') -ExitCode 1)) {
+    throw 'native status trusted malformed verifier JSON'
+}
+if ($null -ne (ConvertFrom-AimiliNativeVerifierProbe -Output @('{"nativeReady":false}') -ExitCode 1)) {
+    throw 'native status trusted an incomplete verifier report'
+}
+if ($statusSource -notmatch 'ConvertFrom-AimiliNativeVerifierProbe') { throw 'native status does not use the verifier probe boundary' }
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..\..')
 Push-Location $repoRoot
 try {
