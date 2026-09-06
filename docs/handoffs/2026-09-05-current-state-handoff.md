@@ -10,13 +10,15 @@ AimiliVPN 单出口数据面原型已在 Windows Docker Desktop 实际运行并�
 
 本阶段尚未容器化 Gateway、3x-ui/Xray、订阅和四出口协议事务。完整事实和本地提交见 `docs/verification/2026-09-06-local-docker-single-exit-prototype.md`；不能把单出口原型表述为完整本机 Docker 部署。
 
-## 2026-09-06 出口检测与恢复 UI 修复
+## 2026-09-06 出口3候选耗尽恢复
 
-ny 出口3的 `tun122` 消失后，AimiliVPN 对槽位2检查明确返回 `egress_check_failed`，但旧前端把“重新检测并同步”按钮错误映射为单纯 `/check`，因此只能重复报告检测失败，不能调用已有的受保护恢复事务。Gateway后端、AimiliVPN、x-ui和Caddy当时均为active；这不是Hysteria2参数或Gateway进程故障。
+用户复测证明提交 `f52db98` 的 `check → rotate` 分支已真实执行，但三次 rotate 都在约一秒内返回409且没有产生OpenVPN拨号日志。只读核对定位到第一处失败边界：AimiliVPN槽位2已是 `pending`，`tun122`、原候选身份和pin均不存在；槽位约束仍为 `JP + residential`，当时本地20个节点中符合该约束的候选为0。国家目录同时记录42至43个JP官方候选，因此不是协议参数、3x-ui、Gateway DB或日本无官方节点，而是恢复操作没有在本地候选耗尽时补充该槽位国家。
 
-本地提交 `f52db98` 修复了这处前端编排：正常出口只检测并显示可关闭的处理中、成功或失败通知；只有 `degraded` 出口且后端明确返回 `egress_check_failed` 或 `candidate_egress_failed` 时，才按 `check → rotate` 顺序在同一逻辑槽位恢复。`repair_required` 和其他错误不会盲目换节点。定向测试30项、前端全量65项、生产构建及 `git diff --check` 均通过。
+生产先通过现有受限接口补充JP候选：43个官方候选中精验8个，得到7个可用节点，其中3个为住宅；缓存由20增至25。随后既有rotate返回200，`tun122`恢复，出口3真实SOCKS5H返回204。旧的常驻check-slots helper因不认识新增 `externalUiRoot` 配置字段曾返回 `config_failed`，不是DB或槽位故障；它已原子更新为当前构建并保留唯一previous。正式helper最终连续检查三个槽位并安全同步为ready；中间一次出口3 Hysteria2公网探测瞬时 `timeout`，当时 `tun122` 和SOCKS5H始终正常，下一次完整检查通过。
 
-签名UI `d4ee05c847064514e86898c3994b42a38341646a7421ca115b1246453b623b34` 已通过固定installer免重启发布；生产清单绑定完整提交 `f52db98cce58206efdd14d3a1f2f6da0c9c842e7`，实际JS摘要与本机构建一致。用户要求自行执行页面验收，因此发布后没有代点恢复按钮：出口3仍保持 `degraded/egress_check_failed`，等待用户刷新页面后点击“重新检测并同步”。
+本地提交 `eab2e9f` 把根因处理固化到“重新检测并同步”：仅当degraded出口已确认运行时故障、首次rotate返回 `slot_rotate_failed` 时，才自动补充该出口原国家，轮询完成后在同一逻辑槽位重试rotate。不放宽国家或代理类型，不改变端口，也不影响正常检测和手动替换。TDD定向30项、前端全量65项、生产构建和 `git diff --check` 均通过。
+
+签名UI `2186f2e88858d1329a03c2210ae7d4c778476a75527aa543953b81114c5ba3fc` 已通过固定installer免重启发布；生产清单绑定完整提交 `eab2e9f116ec712b838826c5dcdd4ea54fc4dd1f`。current/previous严格保留两版，staging和active journal均为空。用户仍负责最终页面点击验收；本轮没有使用computer use。
 
 ## 当前任务与阻断
 
@@ -43,32 +45,35 @@ ny 出口3的 `tun122` 消失后，AimiliVPN 对槽位2检查明确返回 `egres
 
 Gateway最新业务提交：
 
+- `eab2e9f`：故障出口候选耗尽时自动补充原国家并重试恢复。
 - `f52db98`：故障出口受限恢复与正常检测反馈UI。
 - `2f87fce`：签名绑定、持久安装记录及恢复。
 - `4ac4787`：固定受限systemd入口、跨UID请求与队列生命周期。
 - `b0dcc39`：候选权限、UI回滚版保留和不确定状态诊断资产保留。
 
-2026-09-06本轮 `git fetch --prune origin` 后，`f52db98` 所在分支领先远程39个提交；本次文档提交另增加一个。尚未推送GitHub、尚未合并main。工作树中的既有 `.deploy-assets/`、测试缓存、Windows可执行文件、`scripts/__pycache__/` 保留未跟踪，不纳入文档提交。
+2026-09-06本轮 `git fetch --prune origin` 后，提交 `eab2e9f` 所在分支领先远程41个提交；本次文档提交会再增加一个。尚未推送GitHub、尚未合并main。工作树中的既有 `.deploy-assets/`、测试缓存、Windows可执行文件、`scripts/__pycache__/` 保留未跟踪，不纳入文档提交。
 
 AimiliVPN功能工作树本轮只读核对为 `9e0d566`、领先远程10个提交，未修改；3x-ui补丁仓库本轮未重新联网核对。需要操作它时再核对Git，不把背景记录当作最新远程同步证据。
 
 ## 生产最新状态
 
-2026-09-06 01:15 UTC：
+2026-09-06 02:03 UTC：
 
 - Gateway/AimiliVPN/x-ui/Caddy均active，四项 `NRestarts=0`；本轮UI发布没有重启任何服务。
-- 3个OpenVPN、1个Xray。`tun0`、`tun120`、`tun121`存在，`tun122`缺失；Gateway DB只读结果为槽位0/1 ready、槽位2 degraded且错误码为 `egress_check_failed`。
-- 本轮没有切换公网协议、固定公网/mixed端口或SOCKS5H来源策略；出口3等待用户通过新UI执行受限恢复和最终验收。
+- 4个OpenVPN、1个Xray；`tun0`、`tun120`、`tun121`、`tun122`均存在。主连接和三个槽位的真实SOCKS5H请求均返回204。
+- Gateway DB只读结果：主连接TH/住宅/XHTTP ready；出口1 VN/住宅/Hysteria2 ready；出口2 KR/机房/TCP Vision ready；出口3 JP/住宅/Hysteria2 ready。四项错误字段均为空。
+- 本轮只为恢复出口3执行了JP候选补充和同槽位rotate；没有切换公网协议、固定公网/mixed端口或SOCKS5H来源策略。用户仍需执行最终页面验收。
 - x-ui DB quick_check正常、资源指纹不变、4个订阅alias。Gateway DB可读，但完整性检查失败，不能表述为数据库健康。
 - 来源限制关闭，applyStatus=applied；本轮未改变SOCKS5H策略或v2rayN状态。
 - 根分区52%，可用约4.2 GiB；本轮签名UI staging已由installer清理，没有遗留上传目录。
+- check-slots新helper安装后删除了精确 `/tmp/aimili-check-slots-current-d5c8dcac` 上传副本，释放15,605,006字节；正式helper和唯一previous保留，可用于回滚。
 - 唯一 `/usr/local/bin/aimili-gateway.previous` 保留。原 `/var/backups/aimili-gateway/20260905-external-ui` 约17.64 MB暂留，待后端回滚验收后才能退休。
-- 当前UI：`d4ee05c847064514e86898c3994b42a38341646a7421ca115b1246453b623b34`；previous为 `80e689af1a5b8003bd3a3bb68e40106bf05c245d07b5215bdf6fb68926f355bf`。发布目录严格保留两版，staging为空。
-- `allowGatewayInstall=false`、fetcher marker缺失、网页updateEnabled默认false；request/staging均为空、无active journal，保留6条终态结果。
+- 当前UI：`2186f2e88858d1329a03c2210ae7d4c778476a75527aa543953b81114c5ba3fc`；previous为 `d4ee05c847064514e86898c3994b42a38341646a7421ca115b1246453b623b34`。发布目录严格保留两版，staging为空。
+- `allowGatewayInstall=false`、fetcher marker缺失、网页updateEnabled默认false；没有待处理JSON请求，staging为空、无active journal，保留8条有界终态结果。
 
 ## 恢复执行顺序
 
-1. 用户刷新Gateway页面并点击出口3“重新检测并同步”；确认绿色恢复通知、出口3 ready、`tun122`恢复，并复测对应公网节点。不要代替用户执行浏览器验收。
+1. 用户刷新Gateway页面后确认出口3已显示ready并复测对应公网节点；若以后候选再次耗尽，点击“重新检测并同步”应显示候选补充进度并自动重试。不要代替用户执行浏览器验收。
 2. 按recovering-interrupted-tasks核对本记录、本轮未提交差异及生产只读状态。
 3. 取得会话索引限定修复授权后，保留一个一致性DB恢复副本，仅重建两个会话索引；核对业务表摘要、完整integrity_check和四服务/四出口。
 4. 重新上传本地已签名后端发布包或按最终提交重建；先核对归档及逐文件摘要。解压后显式恢复上传根目录0700。
