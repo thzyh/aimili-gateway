@@ -31,6 +31,9 @@ if [[ "$mode" == '--check' ]]; then
 fi
 [[ "$EUID" -eq 0 ]] || { printf 'root_required\n' >&2; exit 3; }
 
+if ! id -u aimili-gateway >/dev/null 2>&1; then
+  useradd --system --home-dir /var/lib/aimili-gateway --shell /usr/sbin/nologin aimili-gateway
+fi
 install -d -o root -g root -m 0750 /etc/aimili-gateway /var/lib/aimili-gateway
 install -d -o aimili-gateway -g aimili-gateway -m 0700 /var/lib/aimili-gateway
 install -m 0755 "$binary" /usr/local/bin/aimili-gateway

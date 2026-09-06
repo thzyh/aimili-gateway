@@ -49,6 +49,7 @@ try {
     Assert-Equal 2 $manifestExtraScale.expected.xray 'native manifest imposed an Xray hard limit'
     Assert-AimiliNativeStatusContract -Status ([pscustomobject]@{
         nativeServices = [pscustomobject]@{ aimilivpn = 'inactive'; xui = 'inactive'; gateway = 'inactive'; caddy = 'inactive' }
+        nativeEnabled = [pscustomobject]@{ aimilivpn = 'disabled'; xui = 'disabled'; gateway = 'disabled'; caddy = 'disabled' }
         expected = [pscustomobject]@{ openvpn = 4; xray = 1; logicalExits = 4; exitSlots = 3 }
         actual = [pscustomobject]@{ openvpn = 0; xray = 0; logicalExits = 0; exitSlots = 0 }
         nativeReady = $false

@@ -347,7 +347,7 @@ function Get-AimiliNativeManifest {
 
 function Assert-AimiliNativeStatusContract {
     param([Parameter(Mandatory)]$Status)
-    foreach ($name in @('nativeServices', 'expected', 'actual', 'nativeReady')) {
+    foreach ($name in @('nativeServices', 'nativeEnabled', 'expected', 'actual', 'nativeReady')) {
         if (-not $Status.PSObject.Properties[$name]) { throw "native_status_field_missing:$name" }
     }
     foreach ($name in @('openvpn', 'xray', 'logicalExits', 'exitSlots')) {
@@ -358,6 +358,7 @@ function Assert-AimiliNativeStatusContract {
     }
     foreach ($service in @('aimilivpn', 'xui', 'gateway', 'caddy')) {
         if (-not $Status.nativeServices.PSObject.Properties[$service]) { throw "native_status_service_missing:$service" }
+        if (-not $Status.nativeEnabled.PSObject.Properties[$service]) { throw "native_status_enabled_missing:$service" }
     }
     return $true
 }

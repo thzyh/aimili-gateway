@@ -3,13 +3,16 @@ set -euo pipefail
 umask 077
 
 mode=''
+allowed_source=''
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --check|--apply) mode="$1"; shift ;;
+    --allowed-source) allowed_source="$2"; shift 2 ;;
     *) printf 'unknown argument\n' >&2; exit 2 ;;
   esac
 done
 [[ "$mode" == '--check' || "$mode" == '--apply' ]] || { printf 'mode_required\n' >&2; exit 2; }
+[[ "$allowed_source" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || { printf 'allowed_source_invalid\n' >&2; exit 3; }
 [[ -f /etc/os-release ]] || { printf 'os_release_missing\n' >&2; exit 3; }
 . /etc/os-release
 [[ "${ID:-}" == ubuntu && "${VERSION_ID:-}" == '24.04' ]] || { printf 'unsupported_ubuntu\n' >&2; exit 3; }
@@ -60,6 +63,8 @@ else
 fi
 systemctl enable --now x-ui.service >/dev/null
 install -m 0644 "$(dirname "$0")/local-caddy.Caddyfile" /etc/caddy/Caddyfile
+ufw allow from "$allowed_source" to any port 8080 proto tcp >/dev/null
+ufw --force reload >/dev/null
 systemctl enable caddy.service >/dev/null
 caddy validate --config /etc/caddy/Caddyfile >/dev/null
 systemctl restart caddy.service

@@ -14,6 +14,7 @@ $report = [ordered]@{
     vmRunning = $running
     sshReachable = $false
     nativeServices = [ordered]@{ aimilivpn = 'unknown'; xui = 'unknown'; gateway = 'unknown'; caddy = 'unknown' }
+    nativeEnabled = [ordered]@{ aimilivpn = 'unknown'; xui = 'unknown'; gateway = 'unknown'; caddy = 'unknown' }
     expected = $manifest.expected
     actual = [ordered]@{ openvpn = 0; xray = 0; logicalExits = 0; exitSlots = 0 }
     nativeReady = $false
@@ -29,9 +30,13 @@ if ($running) {
         if ($report.sshReachable) {
             $probeCommand = @(
                 'printf "svc_aimilivpn=%s\n" "$(systemctl is-active aimilivpn.service 2>/dev/null || true)"',
+                'printf "enabled_aimilivpn=%s\n" "$(systemctl is-enabled aimilivpn.service 2>/dev/null || true)"',
                 'printf "svc_xui=%s\n" "$(systemctl is-active x-ui.service 2>/dev/null || true)"',
+                'printf "enabled_xui=%s\n" "$(systemctl is-enabled x-ui.service 2>/dev/null || true)"',
                 'printf "svc_gateway=%s\n" "$(systemctl is-active aimili-gateway.service 2>/dev/null || true)"',
+                'printf "enabled_gateway=%s\n" "$(systemctl is-enabled aimili-gateway.service 2>/dev/null || true)"',
                 'printf "svc_caddy=%s\n" "$(systemctl is-active caddy.service 2>/dev/null || true)"',
+                'printf "enabled_caddy=%s\n" "$(systemctl is-enabled caddy.service 2>/dev/null || true)"',
                 'printf "openvpn=%s\n" "$(pgrep -cx openvpn 2>/dev/null || true)"',
                 'printf "xray=%s\n" "$(pgrep -cx xray 2>/dev/null || true)"',
                 'printf "logical=%s\n" "$(pgrep -cx openvpn 2>/dev/null || true)"',
@@ -47,12 +52,18 @@ if ($running) {
                 $report.nativeServices.xui = if ($values.ContainsKey('svc_xui')) { $values.svc_xui } else { 'unknown' }
                 $report.nativeServices.gateway = if ($values.ContainsKey('svc_gateway')) { $values.svc_gateway } else { 'unknown' }
                 $report.nativeServices.caddy = if ($values.ContainsKey('svc_caddy')) { $values.svc_caddy } else { 'unknown' }
+                $report.nativeEnabled.aimilivpn = if ($values.ContainsKey('enabled_aimilivpn')) { $values.enabled_aimilivpn } else { 'unknown' }
+                $report.nativeEnabled.xui = if ($values.ContainsKey('enabled_xui')) { $values.enabled_xui } else { 'unknown' }
+                $report.nativeEnabled.gateway = if ($values.ContainsKey('enabled_gateway')) { $values.enabled_gateway } else { 'unknown' }
+                $report.nativeEnabled.caddy = if ($values.ContainsKey('enabled_caddy')) { $values.enabled_caddy } else { 'unknown' }
                 $report.actual.openvpn = if ($values.ContainsKey('openvpn')) { [int]$values.openvpn } else { 0 }
                 $report.actual.xray = if ($values.ContainsKey('xray')) { [int]$values.xray } else { 0 }
                 $report.actual.logicalExits = if ($values.ContainsKey('logical')) { [int]$values.logical } else { 0 }
                 $report.actual.exitSlots = if ($values.ContainsKey('slots')) { [int]$values.slots } else { 0 }
                 $report.nativeReady = ($report.nativeServices.Values -notcontains 'unknown' -and
                     @($report.nativeServices.Values | Where-Object { $_ -ne 'active' }).Count -eq 0 -and
+                    $report.nativeEnabled.Values -notcontains 'unknown' -and
+                    @($report.nativeEnabled.Values | Where-Object { $_ -ne 'enabled' }).Count -eq 0 -and
                     $report.actual.openvpn -eq $report.expected.openvpn -and
                     $report.actual.xray -eq $report.expected.xray -and
                     $report.actual.logicalExits -eq $report.expected.logicalExits -and
