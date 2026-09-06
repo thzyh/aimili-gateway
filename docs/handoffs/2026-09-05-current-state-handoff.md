@@ -10,9 +10,17 @@ AimiliVPN 单出口数据面原型已在 Windows Docker Desktop 实际运行并�
 
 本阶段尚未容器化 Gateway、3x-ui/Xray、订阅和四出口协议事务。完整事实和本地提交见 `docs/verification/2026-09-06-local-docker-single-exit-prototype.md`；不能把单出口原型表述为完整本机 Docker 部署。
 
+## 2026-09-06 出口检测与恢复 UI 修复
+
+ny 出口3的 `tun122` 消失后，AimiliVPN 对槽位2检查明确返回 `egress_check_failed`，但旧前端把“重新检测并同步”按钮错误映射为单纯 `/check`，因此只能重复报告检测失败，不能调用已有的受保护恢复事务。Gateway后端、AimiliVPN、x-ui和Caddy当时均为active；这不是Hysteria2参数或Gateway进程故障。
+
+本地提交 `f52db98` 修复了这处前端编排：正常出口只检测并显示可关闭的处理中、成功或失败通知；只有 `degraded` 出口且后端明确返回 `egress_check_failed` 或 `candidate_egress_failed` 时，才按 `check → rotate` 顺序在同一逻辑槽位恢复。`repair_required` 和其他错误不会盲目换节点。定向测试30项、前端全量65项、生产构建及 `git diff --check` 均通过。
+
+签名UI `d4ee05c847064514e86898c3994b42a38341646a7421ca115b1246453b623b34` 已通过固定installer免重启发布；生产清单绑定完整提交 `f52db98cce58206efdd14d3a1f2f6da0c9c842e7`，实际JS摘要与本机构建一致。用户要求自行执行页面验收，因此发布后没有代点恢复按钮：出口3仍保持 `degraded/egress_check_failed`，等待用户刷新页面后点击“重新检测并同步”。
+
 ## 当前任务与阻断
 
-两层发布机制已完成本地实现与代码复审；最新源码 `b0dcc39` 已部署为Gateway `v1.0.0`。新外部UI已在生产完成免重启发布、回退和恢复。后端 `v1.0.1` 的真实升级在停止服务前被数据库完整性门拒绝，Gateway仍运行v1.0.0。
+两层发布机制已完成本地实现与代码复审；生产Gateway后端仍为 `v1.0.0/b0dcc39`，本轮只发布了绑定 `f52db98` 的外部UI，没有重启Gateway。后端 `v1.0.1` 的真实升级在停止服务前被数据库完整性门拒绝，Gateway仍运行v1.0.0。
 
 明确阻断是两个会话索引不一致：sessions表429行、索引418项；Python的旧quick_check未检出，完整integrity_check与Go校验均失败。root私有副本中仅重建 `sessions_expiry_idx` 和 `sqlite_autoindex_sessions_1` 后校验通过，所有表的数据摘要不变。生产DB未修复。
 
@@ -35,37 +43,39 @@ AimiliVPN 单出口数据面原型已在 Windows Docker Desktop 实际运行并�
 
 Gateway最新业务提交：
 
+- `f52db98`：故障出口受限恢复与正常检测反馈UI。
 - `2f87fce`：签名绑定、持久安装记录及恢复。
 - `4ac4787`：固定受限systemd入口、跨UID请求与队列生命周期。
 - `b0dcc39`：候选权限、UI回滚版保留和不确定状态诊断资产保留。
 
-2026-09-05本轮 `git fetch --prune origin` 后，代码HEAD领先远程33个提交；本次文档提交另增加一个。尚未推送GitHub、尚未合并main。工作树中的既有 `.deploy-assets/`、测试缓存、Windows可执行文件、`scripts/__pycache__/` 保留未跟踪，不纳入文档提交。
+2026-09-06本轮 `git fetch --prune origin` 后，`f52db98` 所在分支领先远程39个提交；本次文档提交另增加一个。尚未推送GitHub、尚未合并main。工作树中的既有 `.deploy-assets/`、测试缓存、Windows可执行文件、`scripts/__pycache__/` 保留未跟踪，不纳入文档提交。
 
-其他仓库本轮未更改或重新联网核对。上轮记录为AimiliVPN `88be2fb`、3x-ui补丁 `5dbe6f0`；需要操作它们时再核对Git，不把这些背景记录当成本轮远程同步证据。
+AimiliVPN功能工作树本轮只读核对为 `9e0d566`、领先远程10个提交，未修改；3x-ui补丁仓库本轮未重新联网核对。需要操作它时再核对Git，不把背景记录当作最新远程同步证据。
 
 ## 生产最新状态
 
-2026-09-05 14:06:43 UTC：
+2026-09-06 01:15 UTC：
 
-- Gateway/AimiliVPN/x-ui/Caddy均active，PID为989591/916096/916107/916125。只有Gateway在本轮bootstrap时重启。
-- 4 OpenVPN、1 Xray。主连接active/egress正常，三个槽位up/egress正常。
-- 主连接XHTTP/REALITY；出口1、出口2 TCP/Vision；出口3 Hysteria2。四条协议ready；固定公网/mixed端口不变。
+- Gateway/AimiliVPN/x-ui/Caddy均active，四项 `NRestarts=0`；本轮UI发布没有重启任何服务。
+- 3个OpenVPN、1个Xray。`tun0`、`tun120`、`tun121`存在，`tun122`缺失；Gateway DB只读结果为槽位0/1 ready、槽位2 degraded且错误码为 `egress_check_failed`。
+- 本轮没有切换公网协议、固定公网/mixed端口或SOCKS5H来源策略；出口3等待用户通过新UI执行受限恢复和最终验收。
 - x-ui DB quick_check正常、资源指纹不变、4个订阅alias。Gateway DB可读，但完整性检查失败，不能表述为数据库健康。
 - 来源限制关闭，applyStatus=applied；本轮未改变SOCKS5H策略或v2rayN状态。
-- 根分区51%，可用4,603,858,944字节；本轮清理138,117,120字节临时上传/测试/诊断资产。
+- 根分区52%，可用约4.2 GiB；本轮签名UI staging已由installer清理，没有遗留上传目录。
 - 唯一 `/usr/local/bin/aimili-gateway.previous` 保留。原 `/var/backups/aimili-gateway/20260905-external-ui` 约17.64 MB暂留，待后端回滚验收后才能退休。
-- 当前UI：`80e689af1a5b8003bd3a3bb68e40106bf05c245d07b5215bdf6fb68926f355bf`；previous为 `af05c9f205d7a51078ddf75e86c2df0443350d476074d7d974025d7550f790aa`。
+- 当前UI：`d4ee05c847064514e86898c3994b42a38341646a7421ca115b1246453b623b34`；previous为 `80e689af1a5b8003bd3a3bb68e40106bf05c245d07b5215bdf6fb68926f355bf`。发布目录严格保留两版，staging为空。
 - `allowGatewayInstall=false`、fetcher marker缺失、网页updateEnabled默认false；request/staging均为空、无active journal，保留6条终态结果。
 
 ## 恢复执行顺序
 
-1. 按recovering-interrupted-tasks核对本记录、本轮未提交差异及生产只读状态。
-2. 取得会话索引限定修复授权后，保留一个一致性DB恢复副本，仅重建两个会话索引；核对业务表摘要、完整integrity_check和四服务/四出口。
-3. 重新上传本地已签名发布包或按最终提交重建；先核对归档及逐文件摘要。解压后显式恢复上传根目录0700。
-4. 通过固定installer执行新的v1.0.1 dry-run/install，使用新的run ID，不重放已有失败结果。
-5. 验证Gateway回滚/恢复、唯一previous、数据面不变，再清理真正无用的旧回滚资产。
-6. 本轮已经完成UI发布/回滚/恢复与公网资源摘要验证，除非代码/状态变化，不从头重复。
-7. 没有可信HTTPS来源/catalog时保持网页mutation禁用，不虚构发布URL或宣称一键下载已验收。
+1. 用户刷新Gateway页面并点击出口3“重新检测并同步”；确认绿色恢复通知、出口3 ready、`tun122`恢复，并复测对应公网节点。不要代替用户执行浏览器验收。
+2. 按recovering-interrupted-tasks核对本记录、本轮未提交差异及生产只读状态。
+3. 取得会话索引限定修复授权后，保留一个一致性DB恢复副本，仅重建两个会话索引；核对业务表摘要、完整integrity_check和四服务/四出口。
+4. 重新上传本地已签名后端发布包或按最终提交重建；先核对归档及逐文件摘要。解压后显式恢复上传根目录0700。
+5. 通过固定installer执行新的v1.0.1 dry-run/install，使用新的run ID，不重放已有失败结果。
+6. 验证Gateway回滚/恢复、唯一previous、数据面不变，再清理真正无用的旧回滚资产。
+7. 本轮已经完成UI发布/回滚/恢复与公网资源摘要验证，除非代码/状态变化，不从头重复。
+8. 没有可信HTTPS来源/catalog时保持网页mutation禁用，不虚构发布URL或宣称一键下载已验收。
 
 ## 本地资产与执行入口
 
