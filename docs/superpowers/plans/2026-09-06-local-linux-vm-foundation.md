@@ -2,13 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 在不修改 v2rayN、Windows 路由和 ny 生产的前提下，创建一台受限为2 vCPU、2048 MiB内存、24 GiB动态磁盘的Ubuntu Server VMware虚拟机，完成物理桥接、来源受限SSH和Docker运行时验证。
+**Goal:** 在不修改 v2rayN、Windows 路由和 ny 生产的前提下，创建一台受限为2 vCPU、2048 MiB内存、24 GiB动态磁盘的Ubuntu Server VMware虚拟机，完成物理桥接、来源受限SSH和原生 systemd 部署前置验证。
 
-**Architecture:** Windows脚本只编排现有VMware CLI，使用固定摘要的Ubuntu 24.04 cloud OVA和cloud-init公钥登录。单张桥接网卡承担默认路由和管理连接，Linux防火墙把SSH限制到当前Windows物理地址；本阶段只安装Docker，不导入Aimili业务镜像。
+**Architecture:** Windows脚本只编排现有VMware CLI，使用固定摘要的Ubuntu 24.04 cloud OVA和cloud-init公钥登录。单张桥接网卡承担默认路由和管理连接，Linux防火墙把SSH限制到当前Windows物理地址；本阶段验证基础系统，不安装业务；原生服务部署须先完成新设计审核。
 
-**Tech Stack:** PowerShell 5.1+、VMware Workstation 16.1、Ubuntu Server 24.04 cloud image、cloud-init、OpenSSH、Docker Engine、Docker Compose v2
+**Tech Stack:** PowerShell 5.1+、VMware Workstation 16.1、Ubuntu Server 24.04 cloud image、cloud-init、OpenSSH、systemd
 
-**Spec:** `docs/superpowers/specs/2026-09-06-local-linux-vm-full-docker-design.md`
+**设计状态：** 旧容器方案已撤销，新的原生 systemd 设计待审核。本文件保留既有 VM 基础步骤，不授权后续业务部署。
 
 ## Global Constraints
 
@@ -168,7 +168,7 @@
 
 - [ ] **Step 3: 实现桥接网卡和cloud-init生成**
 
-  脚本执行顺序：真实主机预检；确认同名VM未运行；生成一个本地管理的VMware MAC和仅含公钥用户的cloud-init user-data；使用OVA已经声明的 `instance-id`、`hostname`、`public-keys`、base64 `user-data` 属性调用 `ovftool.exe --diskMode=thin` 导入已校验OVA；用 `vmware-vdiskmanager.exe -x 24GB` 扩展唯一系统VMDK；随后在VMX中固定资源和桥接网卡。不得依赖未声明的私有guestinfo属性。
+  脚本执行顺序：真实主机预检；确认同名VM未运行；生成一个本地管理的VMware MAC和仅含公钥用户的cloud-init user-data；使用OVA已经声明的 `instance-id`、`hostname`、`public-keys`、base64 `user-data` 属性调用 `ovftool.exe --diskMode=monolithicSparse` 导入已校验OVA；用 `vmware-vdiskmanager.exe -x 24GB` 扩展唯一系统VMDK；随后在VMX中固定资源和桥接网卡。`thin`只适用于VI目标，Workstation VMX目标必须使用动态增长的 `monolithicSparse`。不得依赖未声明的私有guestinfo属性。
 
   VMX必须包含：
 
@@ -193,126 +193,8 @@
 
   Commit message: `feat: provision isolated local Linux VM`
 
-### Task 4: 安装并固定Docker运行时
+### 后续阶段：等待原生设计审核
 
-**Files:**
-- Create: `deploy/local-vm/assets/install-docker.sh`
-- Create: `deploy/local-vm/provision-runtime.ps1`
-- Modify: `deploy/local-vm/status.ps1`
-- Modify: `deploy/local-vm/tests/run.ps1`
+旧容器运行时阶段已删除，不执行。后续计划在原生设计批准后逐文件补充：基础出网验证、原生服务状态、阶梯部署、唯一备份回滚、重启与四出口验证。
 
-**Interfaces:**
-- Produces: `install-docker.sh [--check]`；正式模式安装Ubuntu仓库中的 `docker.io`、`docker-compose-v2`、`ca-certificates`、`curl`、`jq`，配置有界json-file日志并hold Docker包；check模式只验证环境和打印脱敏安装计划。
-- Produces: `provision-runtime.ps1`，通过隔离SSH key上传、校验并执行脚本。
-
-- [ ] **Step 1: 写运行时安装行为失败测试**
-
-  在WSL中运行 `install-docker.sh --check`：Ubuntu Noble fixture返回计划中的五个包、日志轮转和hold列表；非Noble fixture退出2。随后在真实VM运行正式模式，断言Docker配置、hold状态、用户组和监听套接字符合预期，不通过grep源码判断成功。
-
-- [ ] **Step 2: 运行测试并确认RED**
-
-  Run: `pwsh -NoProfile -File deploy/local-vm/tests/run.ps1`
-
-  Expected: FAIL，原因是运行时安装脚本不存在。
-
-- [ ] **Step 3: 实现最小Docker安装**
-
-  Docker daemon配置固定为：
-
-  ```json
-  {
-    "log-driver": "json-file",
-    "log-opts": { "max-size": "10m", "max-file": "3" },
-    "live-restore": true
-  }
-  ```
-
-  安装后启动并enable Docker，hold实际安装的 `docker.io`、`containerd`、`runc`、`docker-compose-v2`，输出只包含版本和服务状态。
-
-- [ ] **Step 4: 运行本地与VM真实验证**
-
-  Run: `pwsh -NoProfile -File deploy/local-vm/tests/run.ps1`
-
-  Run: `wsl bash -n /mnt/d/CodexProject/Github/aimili-gateway/.worktrees/main-switch-protocol-modes/deploy/local-vm/assets/install-docker.sh`
-
-  Run: `pwsh -NoProfile -File deploy/local-vm/provision-runtime.ps1`
-
-  Expected: Docker active、Compose v2可用、`/dev/net/tun`存在、没有Aimili业务容器。
-
-- [ ] **Step 5: 提交本地Git**
-
-  Commit message: `feat: provision local VM Docker runtime`
-
-### Task 5: 安全状态、停止与文档
-
-**Files:**
-- Create: `deploy/local-vm/stop-vm.ps1`
-- Create: `deploy/local-vm/README.md`
-- Modify: `deploy/local-vm/status.ps1`
-- Modify: `deploy/local-vm/tests/run.ps1`
-
-**Interfaces:**
-- Produces: `status.ps1 [-AsJson]`，脱敏报告主机资源、VM电源、SSH、Docker、网卡角色和业务容器数。
-- Produces: `stop-vm.ps1 [-WhatIf]`，正式模式软停止并保留虚拟磁盘和密钥；WhatIf只返回目标和动作。
-
-- [ ] **Step 1: 写生命周期失败测试并列出文档验收项**
-
-  对不存在VM和已停止VM分别运行 `stop-vm.ps1 -WhatIf`，断言返回幂等soft-stop计划且磁盘/密钥仍存在；真实软停止后重新启动并验证数据不变。README由本任务人工复核资源限制、启动门、物理桥接、来源受限SSH、无生产依赖、默认保留数据和后续阶段，不为人类文档增加字符串测试。
-
-- [ ] **Step 2: 运行测试并确认RED**
-
-  Run: `pwsh -NoProfile -File deploy/local-vm/tests/run.ps1`
-
-  Expected: FAIL，原因是停止脚本和README不存在。
-
-- [ ] **Step 3: 实现脱敏状态和软停止入口**
-
-  状态脚本不得打印完整管理地址、SSH key路径或网卡MAC；只报告 `managementReachable`、`defaultRouteOnBridge`、`dockerActive` 和资源数值。停止脚本先确认VMX绝对路径严格位于设计目录，再执行soft stop；VM未运行时幂等成功。
-
-- [ ] **Step 4: 运行最终阶段验证**
-
-  Run: `pwsh -NoProfile -File deploy/local-vm/tests/run.ps1`
-
-  Run: `pwsh -NoProfile -File deploy/local-vm/status.ps1 -AsJson`
-
-  Run: `git diff --check`
-
-  Expected: 全部PASS；状态显示VM运行、2 CPU、约2 GiB、24 GiB磁盘、Docker健康、业务容器0。
-
-- [ ] **Step 5: 提交本地Git**
-
-  Commit message: `docs: document local VM foundation`
-
-### Task 6: 宿主不变性和阶段检查点
-
-**Files:**
-- Runtime only; no production files.
-- Create: `docs/verification/2026-09-06-local-linux-vm-foundation.md`
-
-**Interfaces:**
-- Consumes: Tasks 1–5全部入口。
-- Produces: 第一阶段权威验证记录，供完整Compose栈计划使用。
-
-- [ ] **Step 1: 对比宿主安全基线**
-
-  在VM创建前保存 `Get-AimiliHostSafetySnapshot`，阶段结束后重新读取并调用 `Assert-AimiliHostSafetyUnchanged`。
-
-  Expected: v2rayN PID集合、系统代理和Windows默认路由摘要完全一致。
-
-- [ ] **Step 2: 验证VM网络角色**
-
-  通过桥接SSH读取脱敏网卡/路由：默认路由经唯一桥接网卡；SSH只允许创建时记录的Windows来源地址；Windows到管理地址可达。
-
-- [ ] **Step 3: 验证没有越界副作用**
-
-  Expected: 没有Aimili业务容器、没有OpenVPN/Xray进程、没有ny连接、没有Windows新监听端口、没有修改系统代理或路由。
-
-- [ ] **Step 4: 写中文验证记录并复核**
-
-  记录宿主资源、VM资源、镜像摘要、SSH/Docker结果、未执行项、Git状态和下一阶段入口；不记录完整IP、MAC、用户名或私钥路径。
-
-- [ ] **Step 5: 提交本地Git并进入第二阶段**
-
-  Commit message: `docs: record local VM foundation verification`
-
-  完成后以该验证记录为依据，为“镜像与单出口完整栈”创建下一份实施计划，不重新扫描项目或修改ny生产。
+2026-09-06 恢复检查：VM 正在运行且 SSH 可达；2 vCPU、约 2 GiB 内存、约 24 GiB 虚拟磁盘、约 1 GiB swap。网关 ping 成功，公共 IP TCP 443/53 与 DNS 失败，UFW 默认允许出站。未安装业务，不能标记基础验证全部通过。

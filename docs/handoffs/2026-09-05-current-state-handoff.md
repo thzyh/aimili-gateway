@@ -2,13 +2,17 @@
 
 日期：2026-09-06（Asia/Shanghai）。状态：当前权威入口。
 
-## 2026-09-06 本机 Docker 单出口原型
+## 2026-09-06 本机 VMware 原生部署恢复检查
 
-AimiliVPN 单出口数据面原型已在 Windows Docker Desktop 实际运行并通过真实出口验证。容器使用专用 bridge/volume、只读根文件系统、`CAP_NET_ADMIN` 和 `/dev/net/tun`，只向 Windows 回环发布 `17928` 代理与 `18787` 管理页；`tun0`、单 OpenVPN、代理出口与宿主直连出口差异均已验证。
+当前本机目标已改为 Ubuntu VM 内原生 systemd；不保留容器第二方案。ny 保持现状，本轮未连接或读取生产资产。VM、24 GiB 动态磁盘、固定 OVA、NoCloud seed、SSH 密钥和宿主安全门继续复用。
 
-启动和验证安全门确认 v2rayN PID、系统代理、Windows 默认路由及现用代理 HTTP 204 健康不变。没有连接 ny 或读取任何生产资产。原型当前保持运行，等待用户执行 `aimili-vpngate/deploy/docker-single-exit/show-access.ps1` 后自行验收。
+精确匹配 Compose 标签和绝对配置路径后，已删除单出口原型容器、镜像、数据卷和网络；其他容器、镜像、卷、网络的 ID 集合均保持一致。卷数据约 3.558 MB，删除不可恢复；镜像逻辑大小 144,173,968 字节，约 143.7 MB 为共享层，不能视为实际释放空间。未清理共享构建缓存或压缩 Docker 虚拟磁盘。原型代码、测试、设计、计划与验证入口同步删除，历史由 Git 保留，不重写历史。
 
-本阶段尚未容器化 Gateway、3x-ui/Xray、订阅和四出口协议事务。完整事实和本地提交见 `docs/verification/2026-09-06-local-docker-single-exit-prototype.md`；不能把单出口原型表述为完整本机 Docker 部署。
+VM 本轮检查为运行中且 SSH 可达，2 vCPU、约 2 GiB 内存、约 1 GiB swap，根文件系统约 23.84 GB。唯一默认路由走 ens192；UFW active、默认允许出站、只有一条入站允许规则。VM 未安装 Docker，四项业务服务均 inactive，OpenVPN/Xray 进程数均为 0。
+
+当前失败边界：局域网网关 ping 成功，公共 IP TCP 443/53 与 DNS 均失败；尚未确认根因，没有修改网络。出网验证前禁止业务安装。宿主 v2rayN PID、系统代理和默认路由摘要在只读检查前后相同。
+
+下一步：按 architectural brainstorming 审核原生部署设计，然后制定逐文件计划。既有 Task 3 VM 基础修改与未跟踪构建资产保留，status.ps1 的旧状态字段待新设计批准后以行为测试驱动替换。最终浏览器、订阅及 v2rayN 验收由用户执行，当前均未执行。两个仓库不推送。
 
 ## 2026-09-06 出口3候选耗尽恢复
 
