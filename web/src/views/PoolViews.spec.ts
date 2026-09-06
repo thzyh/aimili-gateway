@@ -263,14 +263,28 @@ it('reports a ready exit tunnel failure without rotating it or exposing the erro
 	expect(notice.text()).not.toContain('egress_check_failed')
 })
 
-it('keeps a degraded exit retryable when recovery candidates are exhausted', async () => {
+it('supplements the degraded exit country before retrying an exhausted recovery', async () => {
+	vi.useFakeTimers()
 	const degradedRow = { ...rows[1], id: 'degraded-slot', status: 'degraded', slotNumber: 3 }
-	mocks.apiFetch.mockImplementation((path: string) => {
-		if (path === '/api/v1/proxy-groups') return Promise.resolve([degradedRow])
+	let rotateCalls = 0
+	let recoveryRefreshStarted = false
+	mocks.apiFetch.mockImplementation((path: string, init?: RequestInit) => {
+		if (path === '/api/v1/proxy-groups') return Promise.resolve([{ ...degradedRow, status: rotateCalls > 1 ? 'ready' : 'degraded' }])
 		if (path === '/api/v1/settings/aimilivpn/countries') return Promise.resolve([])
-		if (path === '/api/v1/settings/aimilivpn/refresh') return Promise.resolve({ state: 'idle', country: '', phase: '', testedCount: 0, validCount: 0 })
+		if (path === '/api/v1/settings/aimilivpn/refresh' && init?.method === 'POST') {
+			recoveryRefreshStarted = true
+			return Promise.resolve({ state: 'running', country: 'JP', phase: 'probing', testedCount: 0, validCount: 0 })
+		}
+		if (path === '/api/v1/settings/aimilivpn/refresh') return Promise.resolve(recoveryRefreshStarted
+			? { state: 'completed', country: 'JP', phase: '', testedCount: 8, validCount: 7, resultCode: 'success' }
+			: { state: 'idle', country: '', phase: '', testedCount: 0, validCount: 0 })
 		if (path === '/api/v1/proxy-groups/degraded-slot/check') return Promise.reject(new Error('egress_check_failed'))
-		if (path === '/api/v1/proxy-groups/degraded-slot/rotate') return Promise.reject(new Error('slot_rotate_failed'))
+		if (path === '/api/v1/proxy-groups/degraded-slot/rotate') {
+			rotateCalls++
+			return rotateCalls === 1
+				? Promise.reject(new Error('slot_rotate_failed'))
+				: Promise.resolve({ ...degradedRow, status: 'ready' })
+		}
 		return Promise.resolve(undefined)
 	})
 	const wrapper = mount(VpnPoolView)
@@ -278,12 +292,25 @@ it('keeps a degraded exit retryable when recovery candidates are exhausted', asy
 
 	await wrapper.get('[data-repair="degraded-slot"]').trigger('click')
 	await flushPromises()
+	await vi.advanceTimersByTimeAsync(2_000)
+	await flushPromises()
 
+	const recoveryCalls = mocks.apiFetch.mock.calls.filter(([path]) =>
+		String(path).includes('/degraded-slot/') || path === '/api/v1/settings/aimilivpn/refresh')
+	const recoverySequence = recoveryCalls.slice(-5).map(([path]) => path)
+	expect(recoverySequence).toEqual([
+		'/api/v1/proxy-groups/degraded-slot/check',
+		'/api/v1/proxy-groups/degraded-slot/rotate',
+		'/api/v1/settings/aimilivpn/refresh',
+		'/api/v1/settings/aimilivpn/refresh',
+		'/api/v1/proxy-groups/degraded-slot/rotate',
+	])
+	expect(recoveryCalls.at(-3)?.[1]).toMatchObject({ method: 'POST', body: JSON.stringify({ country: 'JP' }) })
 	const notice = wrapper.get('[data-top-notice]')
-	expect(notice.attributes('data-notice-kind')).toBe('error')
-	expect(notice.text()).toContain('当前故障状态已保留，可稍后重试')
+	expect(notice.attributes('data-notice-kind')).toBe('success')
+	expect(notice.text()).toContain('出口 3 已恢复并同步')
 	expect(notice.text()).not.toContain('slot_rotate_failed')
-	expect(wrapper.get('[data-repair="degraded-slot"]')).toBeTruthy()
+	wrapper.unmount()
 })
 
 it('keeps four runtime rows in logical order and shows only the current page port', async () => {

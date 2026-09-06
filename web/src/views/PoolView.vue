@@ -28,6 +28,9 @@ const refreshNoticeFingerprint = ref('')
 let refreshTimer: ReturnType<typeof setTimeout> | undefined
 let noticeSequence = 0
 
+const recoveryRefreshPollMilliseconds = 2_000
+const recoveryRefreshMaxPolls = 150
+
 const dismissedRefreshStorageKey = 'aimili-gateway:pool-refresh-notice-dismissed:v1'
 
 const title = computed(() => props.protocol === 'vless' ? 'VPN 节点池' : 'SOCKS5H 代理池')
@@ -240,6 +243,31 @@ function openReplacement(row: ProxyGroupPayload): void {
   replacementNotice.value = null
 }
 
+function wait(milliseconds: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, milliseconds))
+}
+
+async function replenishRecoveryCountry(row: ProxyGroupPayload, subject: string): Promise<void> {
+  const countryCode = row.countryCode.trim().toUpperCase()
+  if (!countryCode) throw new Error('no_matching_candidate')
+  const displayName = countryDisplayName(countryCode, candidateCountries.value)
+  topNotice.value = makeNotice('progress', `正在补充${subject}候选`, `当前缓存没有符合条件的候选，正在安全刷新${displayName}节点；其他出口不会中断。`)
+  let current = await apiFetch<CountryRefreshPayload>('/api/v1/settings/aimilivpn/refresh', {
+    method: 'POST', headers: idempotencyHeaders(), body: JSON.stringify({ country: countryCode }),
+  })
+  for (let poll = 0; poll < recoveryRefreshMaxPolls; poll += 1) {
+    if (current.state === 'completed') {
+      if ((!current.resultCode || current.resultCode === 'success') && (current.validCount ?? current.usableCount ?? 0) > 0) return
+      throw new Error(current.resultCode || current.errorCode || 'refresh_failed')
+    }
+    if (current.state === 'failed') throw new Error(current.resultCode || current.errorCode || 'refresh_failed')
+    topNotice.value = makeNotice('progress', `正在补充${subject}候选`, `正在精验${displayName}节点，已检测 ${current.testedCount ?? 0} 个候选；其他出口不会中断。`)
+    await wait(recoveryRefreshPollMilliseconds)
+    current = await apiFetch<CountryRefreshPayload>('/api/v1/settings/aimilivpn/refresh')
+  }
+  throw new Error('refresh_timeout')
+}
+
 function closeReplacement(): void {
   replacementCandidate.value = null
   replacementTarget.value = ''
@@ -295,7 +323,14 @@ async function checkRow(row: ProxyGroupPayload): Promise<void> {
       const runtimeFailure = ['egress_check_failed', 'candidate_egress_failed'].includes(codeFromError(error))
       if (!mayRecoverRuntime || !runtimeFailure) throw error
       topNotice.value = makeNotice('progress', `正在恢复${subject}`, '已确认运行隧道或真实出口故障，正在同一逻辑槽位安全更换候选。')
-      await apiFetch(`/api/v1/proxy-groups/${row.id}/rotate`, { method: 'POST', headers: idempotencyHeaders() })
+      try {
+        await apiFetch(`/api/v1/proxy-groups/${row.id}/rotate`, { method: 'POST', headers: idempotencyHeaders() })
+      } catch (rotateError) {
+        if (codeFromError(rotateError) !== 'slot_rotate_failed') throw rotateError
+        await replenishRecoveryCountry(row, subject)
+        topNotice.value = makeNotice('progress', `正在恢复${subject}`, '已补充当前国家候选，正在同一逻辑槽位重新建立并验证出口。')
+        await apiFetch(`/api/v1/proxy-groups/${row.id}/rotate`, { method: 'POST', headers: idempotencyHeaders() })
+      }
       recovered = true
     }
     topNotice.value = recovered
