@@ -16,6 +16,8 @@ const codeMessages: Record<string, string> = {
   upstream_unavailable: '官方节点服务暂时不可用，请稍后重试',
   candidate_dial_failed: '候选节点无法建立 VPN 连接，已从可用缓存移除',
   candidate_egress_failed: '候选节点的真实出口检测失败，已从可用缓存移除',
+  egress_check_failed: '当前出口隧道或代理不可用，请重新检测并同步',
+  slot_rotate_failed: '没有找到可恢复该出口的可用候选，当前故障状态已保留，可稍后重试',
   protocol_failed: '协议链路检测失败，请稍后重试',
   protocol_rollback_failed: '旧协议恢复事务未完成，已锁定切换以保护当前配置',
   protocol_rollback_subscription_failed: '旧协议恢复后订阅验证未通过，已锁定切换以保护当前配置',

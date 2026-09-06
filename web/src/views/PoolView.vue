@@ -282,13 +282,32 @@ async function switchProtocol(row: ProxyGroupPayload, protocolMode: ProtocolMode
 }
 
 async function checkRow(row: ProxyGroupPayload): Promise<void> {
-  busy.value = `check-${row.id}`; topNotice.value = null
+  const subject = row.egressSource === 'main' ? '主连接' : row.slotNumber ? `出口 ${row.slotNumber}` : `${row.countryName || row.countryCode}出口`
+  const mayRecoverRuntime = row.status === 'degraded' && row.egressSource !== 'main'
+  let recovered = false
+  busy.value = `check-${row.id}`
+  topNotice.value = makeNotice('progress', mayRecoverRuntime ? `正在重新检测${subject}` : `正在检测${subject}`, '正在核对真实出口、SOCKS5H 和当前公网协议。')
   try {
     const path = row.egressSource === 'main' ? '/api/v1/proxy-groups/agw-main/check' : `/api/v1/proxy-groups/${row.id}/check`
-    await apiFetch(path, { method: 'POST', ...(row.egressSource === 'main' ? { headers: idempotencyHeaders() } : {}) })
+    try {
+      await apiFetch<ProxyGroupPayload>(path, { method: 'POST', ...(row.egressSource === 'main' ? { headers: idempotencyHeaders() } : {}) })
+    } catch (error) {
+      const runtimeFailure = ['egress_check_failed', 'candidate_egress_failed'].includes(codeFromError(error))
+      if (!mayRecoverRuntime || !runtimeFailure) throw error
+      topNotice.value = makeNotice('progress', `正在恢复${subject}`, '已确认运行隧道或真实出口故障，正在同一逻辑槽位安全更换候选。')
+      await apiFetch(`/api/v1/proxy-groups/${row.id}/rotate`, { method: 'POST', headers: idempotencyHeaders() })
+      recovered = true
+    }
+    topNotice.value = recovered
+      ? makeNotice('success', `${subject} 已恢复并同步`, '已通过真实出口、SOCKS5H 和当前公网协议验证，固定端口保持不变。')
+      : row.status === 'repair_required'
+        ? makeNotice('success', `${subject} 已重新检测并同步`, '当前运行身份与代理链路已经重新核对。')
+        : makeNotice('success', `${subject} 检测成功`, '真实出口、SOCKS5H 和当前公网协议链路正常。')
     await loadGroups(false)
-  } catch (error) { topNotice.value = makeNotice('error', '检测失败', localizedError(error, '节点检测失败，请稍后重试。')) }
-  finally { busy.value = '' }
+  } catch (error) {
+    await loadGroups(false)
+    topNotice.value = makeNotice('error', mayRecoverRuntime ? `${subject} 恢复失败` : `${subject} 检测失败`, localizedError(error, '节点检测失败，当前代理数据面保持不变，请稍后重试。'))
+  } finally { busy.value = '' }
 }
 
 function refreshNoticeFor(current: CountryRefreshPayload): UiNoticeData | null {

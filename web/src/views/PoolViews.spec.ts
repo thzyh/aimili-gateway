@@ -159,6 +159,133 @@ it('offers a degraded runtime slot the same safe recheck and synchronization act
 	expect(mocks.apiFetch).toHaveBeenCalledWith('/api/v1/proxy-groups/degraded-slot/check', { method: 'POST' })
 })
 
+it('shows closable progress and success feedback when a ready exit passes detection', async () => {
+	let finishCheck!: (value: typeof rows[number]) => void
+	const pendingCheck = new Promise<typeof rows[number]>(resolve => { finishCheck = resolve })
+	mocks.apiFetch.mockImplementation((path: string) => {
+		if (path === '/api/v1/proxy-groups') return Promise.resolve(rows)
+		if (path === '/api/v1/settings/aimilivpn/countries') return Promise.resolve([])
+		if (path === '/api/v1/settings/aimilivpn/refresh') return Promise.resolve({ state: 'idle', country: '', phase: '', testedCount: 0, validCount: 0 })
+		if (path === '/api/v1/proxy-groups/jp-one/check') return pendingCheck
+		return Promise.resolve(undefined)
+	})
+	const wrapper = mount(VpnPoolView)
+	await flushPromises()
+
+	await wrapper.get('[data-check="jp-one"]').trigger('click')
+	await wrapper.vm.$nextTick()
+	let notice = wrapper.get('[data-top-notice]')
+	expect(notice.attributes('data-notice-kind')).toBe('progress')
+	expect(notice.text()).toContain('正在检测出口 1')
+
+	finishCheck(rows[1])
+	await flushPromises()
+	notice = wrapper.get('[data-top-notice]')
+	expect(notice.attributes('data-notice-kind')).toBe('success')
+	expect(notice.text()).toContain('出口 1 检测成功')
+	expect(notice.text()).toContain('链路正常')
+	await notice.get('[aria-label="关闭提示"]').trigger('click')
+	expect(wrapper.find('[data-top-notice]').exists()).toBe(false)
+})
+
+it('recovers a degraded exit only after a confirmed runtime egress failure', async () => {
+	const degradedRow = { ...rows[1], id: 'degraded-slot', status: 'degraded', slotNumber: 3 }
+	mocks.apiFetch.mockImplementation((path: string) => {
+		if (path === '/api/v1/proxy-groups') return Promise.resolve([degradedRow])
+		if (path === '/api/v1/settings/aimilivpn/countries') return Promise.resolve([])
+		if (path === '/api/v1/settings/aimilivpn/refresh') return Promise.resolve({ state: 'idle', country: '', phase: '', testedCount: 0, validCount: 0 })
+		if (path === '/api/v1/proxy-groups/degraded-slot/check') return Promise.reject(new Error('egress_check_failed'))
+		if (path === '/api/v1/proxy-groups/degraded-slot/rotate') return Promise.resolve({ ...degradedRow, status: 'ready' })
+		return Promise.resolve(undefined)
+	})
+	const wrapper = mount(VpnPoolView)
+	await flushPromises()
+
+	await wrapper.get('[data-repair="degraded-slot"]').trigger('click')
+	await flushPromises()
+
+	const mutations = mocks.apiFetch.mock.calls
+		.filter(([path]) => String(path).includes('/degraded-slot/'))
+		.map(([path]) => path)
+	expect(mutations).toEqual([
+		'/api/v1/proxy-groups/degraded-slot/check',
+		'/api/v1/proxy-groups/degraded-slot/rotate',
+	])
+	expect(mocks.apiFetch).toHaveBeenCalledWith('/api/v1/proxy-groups/degraded-slot/rotate', {
+		method: 'POST', headers: { 'Idempotency-Key': 'test-key' },
+	})
+	const notice = wrapper.get('[data-top-notice]')
+	expect(notice.attributes('data-notice-kind')).toBe('success')
+	expect(notice.text()).toContain('出口 3 已恢复并同步')
+	expect(notice.text()).not.toContain('egress_check_failed')
+})
+
+it('does not rotate a degraded exit when detection reports a non-runtime failure', async () => {
+	const degradedRow = { ...rows[1], id: 'degraded-slot', status: 'degraded', slotNumber: 3 }
+	mocks.apiFetch.mockImplementation((path: string) => {
+		if (path === '/api/v1/proxy-groups') return Promise.resolve([degradedRow])
+		if (path === '/api/v1/settings/aimilivpn/countries') return Promise.resolve([])
+		if (path === '/api/v1/settings/aimilivpn/refresh') return Promise.resolve({ state: 'idle', country: '', phase: '', testedCount: 0, validCount: 0 })
+		if (path === '/api/v1/proxy-groups/degraded-slot/check') return Promise.reject(new Error('protocol_failed'))
+		return Promise.resolve(undefined)
+	})
+	const wrapper = mount(VpnPoolView)
+	await flushPromises()
+
+	await wrapper.get('[data-repair="degraded-slot"]').trigger('click')
+	await flushPromises()
+
+	expect(mocks.apiFetch.mock.calls.some(([path]) => path === '/api/v1/proxy-groups/degraded-slot/rotate')).toBe(false)
+	const notice = wrapper.get('[data-top-notice]')
+	expect(notice.attributes('data-notice-kind')).toBe('error')
+	expect(notice.text()).toContain('协议链路检测失败')
+	expect(notice.text()).not.toContain('protocol_failed')
+})
+
+it('reports a ready exit tunnel failure without rotating it or exposing the error code', async () => {
+	mocks.apiFetch.mockImplementation((path: string) => {
+		if (path === '/api/v1/proxy-groups') return Promise.resolve(rows)
+		if (path === '/api/v1/settings/aimilivpn/countries') return Promise.resolve([])
+		if (path === '/api/v1/settings/aimilivpn/refresh') return Promise.resolve({ state: 'idle', country: '', phase: '', testedCount: 0, validCount: 0 })
+		if (path === '/api/v1/proxy-groups/jp-one/check') return Promise.reject(new Error('egress_check_failed'))
+		return Promise.resolve(undefined)
+	})
+	const wrapper = mount(VpnPoolView)
+	await flushPromises()
+
+	await wrapper.get('[data-check="jp-one"]').trigger('click')
+	await flushPromises()
+
+	expect(mocks.apiFetch.mock.calls.some(([path]) => path === '/api/v1/proxy-groups/jp-one/rotate')).toBe(false)
+	const notice = wrapper.get('[data-top-notice]')
+	expect(notice.attributes('data-notice-kind')).toBe('error')
+	expect(notice.text()).toContain('当前出口隧道或代理不可用')
+	expect(notice.text()).not.toContain('egress_check_failed')
+})
+
+it('keeps a degraded exit retryable when recovery candidates are exhausted', async () => {
+	const degradedRow = { ...rows[1], id: 'degraded-slot', status: 'degraded', slotNumber: 3 }
+	mocks.apiFetch.mockImplementation((path: string) => {
+		if (path === '/api/v1/proxy-groups') return Promise.resolve([degradedRow])
+		if (path === '/api/v1/settings/aimilivpn/countries') return Promise.resolve([])
+		if (path === '/api/v1/settings/aimilivpn/refresh') return Promise.resolve({ state: 'idle', country: '', phase: '', testedCount: 0, validCount: 0 })
+		if (path === '/api/v1/proxy-groups/degraded-slot/check') return Promise.reject(new Error('egress_check_failed'))
+		if (path === '/api/v1/proxy-groups/degraded-slot/rotate') return Promise.reject(new Error('slot_rotate_failed'))
+		return Promise.resolve(undefined)
+	})
+	const wrapper = mount(VpnPoolView)
+	await flushPromises()
+
+	await wrapper.get('[data-repair="degraded-slot"]').trigger('click')
+	await flushPromises()
+
+	const notice = wrapper.get('[data-top-notice]')
+	expect(notice.attributes('data-notice-kind')).toBe('error')
+	expect(notice.text()).toContain('当前故障状态已保留，可稍后重试')
+	expect(notice.text()).not.toContain('slot_rotate_failed')
+	expect(wrapper.get('[data-repair="degraded-slot"]')).toBeTruthy()
+})
+
 it('keeps four runtime rows in logical order and shows only the current page port', async () => {
   mocks.apiFetch.mockImplementation((path: string) => {
     if (path === '/api/v1/proxy-groups') return Promise.resolve([rows[5], rows[2], rows[1], rows[0], ...rows.slice(3, 5), ...rows.slice(6)])
