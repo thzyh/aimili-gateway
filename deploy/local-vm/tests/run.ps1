@@ -69,4 +69,30 @@ try {
 }
 Assert-True $routeChangeRejected 'default route mutation was accepted'
 
+$imageLockPath = Join-Path $PSScriptRoot '..\image-lock.json'
+if (-not (Test-Path -LiteralPath $imageLockPath -PathType Leaf)) {
+    throw 'Production image lock is missing: image-lock.json'
+}
+$imageLock = Get-Content -LiteralPath $imageLockPath -Raw | ConvertFrom-Json
+Assert-True (Test-AimiliImageLock -Lock $imageLock) 'pinned Ubuntu image lock was rejected'
+
+$rollingLock = [pscustomobject]@{
+    url = 'https://cloud-images.ubuntu.com/noble/current/ubuntu.ova'
+    fileName = 'ubuntu.ova'
+    sha256 = 'f097111f88c9e3973057e1530363e6be6d9db1446e97280f0512cf77952b12d0'
+    sizeBytes = 14
+}
+$rollingRejected = $false
+try { Test-AimiliImageLock -Lock $rollingLock | Out-Null } catch { $rollingRejected = $_.Exception.Message -match 'image_url_not_pinned' }
+Assert-True $rollingRejected 'rolling image URL was accepted'
+
+$fixturePath = Join-Path ([IO.Path]::GetTempPath()) ("aimili-image-fixture-{0}.txt" -f [guid]::NewGuid().ToString('N'))
+try {
+    [IO.File]::WriteAllText($fixturePath, 'aimili-fixture', [Text.UTF8Encoding]::new($false))
+    Assert-True (Confirm-AimiliFileDigest -Path $fixturePath -Length 14 -Sha256 'f097111f88c9e3973057e1530363e6be6d9db1446e97280f0512cf77952b12d0') 'valid fixture digest was rejected'
+    Assert-True (-not (Confirm-AimiliFileDigest -Path $fixturePath -Length 14 -Sha256 ('0' * 64))) 'invalid fixture digest was accepted'
+} finally {
+    if (Test-Path -LiteralPath $fixturePath) { Remove-Item -LiteralPath $fixturePath -Force }
+}
+
 Write-Output 'PASS local VM tests'

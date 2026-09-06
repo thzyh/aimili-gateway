@@ -101,10 +101,41 @@ function Get-AimiliLocalVmPaths {
     }
 }
 
+function Test-AimiliImageLock {
+    param([Parameter(Mandatory)]$Lock)
+
+    $url = [string]$Lock.url
+    $fileName = [string]$Lock.fileName
+    $sha256 = [string]$Lock.sha256
+    $sizeBytes = [long]$Lock.sizeBytes
+    if ($url -notmatch '^https://cloud-images\.ubuntu\.com/releases/noble/release-20260826/') { throw 'image_url_not_pinned' }
+    if ($url -match '/current/') { throw 'image_url_not_pinned' }
+    if ([IO.Path]::GetFileName($fileName) -ne $fileName -or $fileName -match '[/\\]') { throw 'image_filename_invalid' }
+    if ($sha256 -notmatch '^[0-9a-f]{64}$') { throw 'image_sha256_invalid' }
+    if ($sizeBytes -le 0) { throw 'image_size_invalid' }
+    return $true
+}
+
+function Confirm-AimiliFileDigest {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][long]$Length,
+        [Parameter(Mandatory)][string]$Sha256
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+    $item = Get-Item -LiteralPath $Path
+    if ([long]$item.Length -ne $Length) { return $false }
+    $actual = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    return $actual -eq $Sha256.ToLowerInvariant()
+}
+
 Export-ModuleMember -Function @(
     'Get-AimiliHostFacts',
     'Test-AimiliHostCapacity',
     'Get-AimiliHostSafetySnapshot',
     'Assert-AimiliHostSafetyUnchanged',
-    'Get-AimiliLocalVmPaths'
+    'Get-AimiliLocalVmPaths',
+    'Test-AimiliImageLock',
+    'Confirm-AimiliFileDigest'
 )
