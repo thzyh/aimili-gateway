@@ -254,4 +254,10 @@ if ($null -ne $planError -or $LASTEXITCODE -ne 0) {
     Assert-Equal $vmxExistedBefore (Test-Path -LiteralPath $pathsBefore.VmxPath) 'PlanOnly created or removed a VMX file'
 }
 
+$installerFixture = Join-Path $PSScriptRoot 'native-installers-fixture.tests.sh'
+if (Test-Path -LiteralPath $installerFixture -PathType Leaf) {
+    Push-Location (Resolve-Path (Join-Path $PSScriptRoot '..\..\..'))
+    try { & wsl.exe -u root -- bash 'deploy/local-vm/tests/native-installers-fixture.tests.sh' } finally { Pop-Location }
+    if ($LASTEXITCODE -ne 0) { throw "native installer fixture failed with exit code $LASTEXITCODE" }
+}
 Write-Output 'PASS local VM tests'
