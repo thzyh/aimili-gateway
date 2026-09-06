@@ -36,6 +36,7 @@
 - Produces: `Get-AimiliHostFacts -> pscustomobject`
 - Produces: `Get-AimiliHostSafetySnapshot -> pscustomobject`
 - Produces: `Assert-AimiliHostSafetyUnchanged -Before <object> -After <object>`
+- Produces: `New-AimiliVmPlan -Facts <object> -ManagementPlan <object> -> pscustomobject`，供脚本与测试共同消费。
 - Produces: `host-preflight.ps1 [-AsJson]`，成功退出0，资源或虚拟化不满足时退出2。
 
 - [ ] **Step 1: 写资源门和宿主不变性失败测试**
@@ -104,9 +105,9 @@
 - Produces: `image-lock.json`，字段为 `url`、`fileName`、`sha256`、`sizeBytes`。
 - Produces: `download-image.ps1`，幂等返回已校验OVA的绝对路径；下载中断只保留准确 `.part` 文件。
 
-- [ ] **Step 1: 写镜像锁和安全下载失败测试**
+- [ ] **Step 1: 写镜像锁和摘要校验失败测试**
 
-  增加断言：URL必须包含 `/release-20260826/`，不得包含 `/current/`；SHA256为64位小写十六进制；文件名不得含目录分隔符；下载脚本必须使用 `.part`、`Get-FileHash` 和 `Move-Item -LiteralPath`。
+  增加行为测试：调用 `Test-AimiliImageLock` 验证固定release锁；将临时fixture文件交给 `Confirm-AimiliFileDigest`，正确长度/摘要返回true，错误摘要返回false；非法文件名和 `/current/` URL被拒绝。测试不通过搜索脚本文本判断成功。
 
 - [ ] **Step 2: 运行测试并确认RED**
 
@@ -152,12 +153,12 @@
 **Interfaces:**
 - Produces: `Get-AimiliHostOnlyNetworkPlan -> pscustomobject`，返回VMnet1内未占用管理地址、前缀和宿主地址。
 - Produces: `New-AimiliCloudInitPayload -PublicKey <string> -WanMac <string> -ManagementMac <string> -ManagementCIDR <string> -> pscustomobject`。
-- Produces: `create-vm.ps1`，创建或验证 `D:\VirtualMachines\AimiliGatewayLocal\AimiliGatewayLocal.vmx`。
+- Produces: `create-vm.ps1 [-PlanOnly]`；PlanOnly只输出脱敏VM计划，正式模式创建或验证 `D:\VirtualMachines\AimiliGatewayLocal\AimiliGatewayLocal.vmx`。
 - Produces: 当前用户专用SSH私钥和known_hosts，位于 `%LOCALAPPDATA%\AimiliGateway\vmware-local`。
 
-- [ ] **Step 1: 写VM合约和cloud-init失败测试**
+- [ ] **Step 1: 写VM计划和cloud-init失败测试**
 
-  测试固定断言：VMX为2 CPU、2048 MiB；存在bridged和hostonly两张网卡；host-only网卡没有默认网关；cloud-init只含公钥登录、禁用root和密码SSH；脚本包含24GB扩盘且不含 `Remove-Item -Recurse`、`ssh ny`、生产路径或明文密码。
+  直接调用 `New-AimiliVmPlan` 和 `New-AimiliCloudInitPayload`：断言计划为2 CPU、2048 MiB、24 GiB；存在bridged和hostonly两张网卡；host-only没有默认网关；cloud-init只含fixture公钥、禁用root和密码SSH。调用 `create-vm.ps1 -PlanOnly` 并断言退出0、没有创建VM目录，也没有改变宿主安全快照。
 
 - [ ] **Step 2: 运行测试并确认RED**
 
@@ -203,12 +204,12 @@
 - Modify: `deploy/local-vm/tests/run.ps1`
 
 **Interfaces:**
-- Produces: `install-docker.sh`，安装Ubuntu仓库中的 `docker.io`、`docker-compose-v2`、`ca-certificates`、`curl`、`jq`，配置有界json-file日志并hold Docker包。
+- Produces: `install-docker.sh [--check]`；正式模式安装Ubuntu仓库中的 `docker.io`、`docker-compose-v2`、`ca-certificates`、`curl`、`jq`，配置有界json-file日志并hold Docker包；check模式只验证环境和打印脱敏安装计划。
 - Produces: `provision-runtime.ps1`，通过隔离SSH key上传、校验并执行脚本。
 
-- [ ] **Step 1: 写运行时安装合约失败测试**
+- [ ] **Step 1: 写运行时安装行为失败测试**
 
-  断言shell脚本启用 `set -euo pipefail`，只使用Ubuntu Noble仓库包，写入Docker日志轮转，执行 `apt-mark hold`，把 `aimili` 用户加入docker组；不得安装Docker Desktop、启用远程Docker API、挂载Docker socket或写生产路径。
+  在WSL中运行 `install-docker.sh --check`：Ubuntu Noble fixture返回计划中的五个包、日志轮转和hold列表；非Noble fixture退出2。随后在真实VM运行正式模式，断言Docker配置、hold状态、用户组和监听套接字符合预期，不通过grep源码判断成功。
 
 - [ ] **Step 2: 运行测试并确认RED**
 
@@ -254,11 +255,11 @@
 
 **Interfaces:**
 - Produces: `status.ps1 [-AsJson]`，脱敏报告主机资源、VM电源、SSH、Docker、网卡角色和业务容器数。
-- Produces: `stop-vm.ps1`，仅使用 `vmrun stop <vmx> soft`，保留虚拟磁盘和密钥。
+- Produces: `stop-vm.ps1 [-WhatIf]`，正式模式软停止并保留虚拟磁盘和密钥；WhatIf只返回目标和动作。
 
-- [ ] **Step 1: 写生命周期与文档失败测试**
+- [ ] **Step 1: 写生命周期失败测试并列出文档验收项**
 
-  断言停止脚本没有purge、delete、`Remove-Item`或强制kill；README包含资源限制、启动门、双网卡、无生产依赖、默认保留数据和后续阶段说明。
+  对不存在VM和已停止VM分别运行 `stop-vm.ps1 -WhatIf`，断言返回幂等soft-stop计划且磁盘/密钥仍存在；真实软停止后重新启动并验证数据不变。README由本任务人工复核资源限制、启动门、双网卡、无生产依赖、默认保留数据和后续阶段，不为人类文档增加字符串测试。
 
 - [ ] **Step 2: 运行测试并确认RED**
 
