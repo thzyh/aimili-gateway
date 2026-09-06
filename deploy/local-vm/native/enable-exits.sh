@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 umask 077
+
 slot=''
 manifest='/etc/aimili-local/deployment.json'
 while [[ $# -gt 0 ]]; do
@@ -10,23 +11,68 @@ while [[ $# -gt 0 ]]; do
     *) printf 'unknown argument\n' >&2; exit 2 ;;
   esac
 done
-[[ "$slot" =~ ^[0-9]+$ && "$slot" -gt 0 ]] || { printf 'slot_invalid\n' >&2; exit 2; }
+
+[[ "$slot" =~ ^[0-9]+$ ]] || { printf 'slot_invalid\n' >&2; exit 2; }
 [[ -s "$manifest" ]] || { printf 'manifest_missing\n' >&2; exit 3; }
 max_slots="$(python3 -c 'import json,sys; print(int(json.load(open(sys.argv[1]))["expected"]["exitSlots"]))' "$manifest")"
-[[ "$slot" -le "$max_slots" ]] || { printf 'slot_not_declared\n' >&2; exit 2; }
-for command in python3 curl; do command -v "$command" >/dev/null 2>&1 || { printf 'dependency_missing:%s\n' "$command" >&2; exit 3; }; done
-auth_file=/opt/aimilivpn/vpngate_data/ui_auth.json
-slots_file=/opt/aimilivpn/vpngate_data/slots.json
+[[ "$slot" -lt "$max_slots" ]] || { printf 'slot_not_declared\n' >&2; exit 2; }
+for command in python3 curl ip ss; do
+  command -v "$command" >/dev/null 2>&1 || { printf 'dependency_missing:%s\n' "$command" >&2; exit 3; }
+done
+
+auth_file="${AIMILI_UI_AUTH_FILE:-/opt/aimilivpn/vpngate_data/ui_auth.json}"
+slots_file="${AIMILI_SLOTS_FILE:-/opt/aimilivpn/vpngate_data/slots.json}"
+wait_attempts="${AIMILI_SLOT_WAIT_ATTEMPTS:-90}"
+wait_interval="${AIMILI_SLOT_WAIT_INTERVAL:-2}"
+table_base="${AIMILI_SLOT_TABLE_BASE:-200}"
+[[ "$wait_attempts" =~ ^[1-9][0-9]*$ && "$table_base" =~ ^[0-9]+$ ]] || { printf 'verification_config_invalid\n' >&2; exit 2; }
 [[ -s "$auth_file" ]] || { printf 'aimilivpn_auth_missing\n' >&2; exit 3; }
 secret="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["secret_path"])' "$auth_file")"
-response="$(curl -fsS --connect-timeout 5 --max-time 15 -X POST -H 'Content-Type: application/json' -d "{\"slot\":$slot}" "http://127.0.0.1:8787/$secret/api/start_slot")" || { printf 'slot_start_request_failed\n' >&2; exit 4; }
+[[ "$secret" =~ ^[A-Za-z0-9._~/-]+$ ]] || { printf 'aimilivpn_auth_invalid\n' >&2; exit 3; }
+
+response="$({
+  printf 'url = "http://127.0.0.1:8787/%s/api/start_slot"\n' "$secret"
+  printf 'request = "POST"\n'
+  printf 'header = "Content-Type: application/json"\n'
+  printf 'data = "{\\"slot\\":%s}"\n' "$slot"
+} | curl -fsS --connect-timeout 5 --max-time 15 --config -)" || { printf 'slot_start_request_failed\n' >&2; exit 4; }
 python3 -c 'import json,sys; raise SystemExit(0 if json.loads(sys.argv[1]).get("ok") else 1)' "$response" || { printf 'slot_start_rejected\n' >&2; exit 4; }
-for _ in $(seq 1 90); do
-  if [[ -s "$slots_file" ]] && python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); s=d.get(str(sys.argv[2]),{}) if isinstance(d,dict) else next((x for x in d if str(x.get("slot"))==sys.argv[2]),{}); raise SystemExit(0 if str(s.get("status","")).lower() in ("ready","active","running") else 1)' "$slots_file" "$slot"; then
-    printf 'exit_slot_ready slot=%s\n' "$slot"
-    exit 0
+
+for _ in $(seq 1 "$wait_attempts"); do
+  slot_state=''
+  if [[ -s "$slots_file" ]]; then
+    slot_state="$(python3 - "$slots_file" "$slot" <<'PY'
+import json, sys
+document = json.load(open(sys.argv[1], encoding='utf-8'))
+items = document.get('slots', []) if isinstance(document, dict) else []
+item = next((row for row in items if isinstance(row, dict) and str(row.get('slot')) == sys.argv[2]), None)
+if item is None or str(item.get('status', '')).lower() not in ('ready', 'up') or item.get('egress_ok') is not True:
+    raise SystemExit(1)
+device = str(item.get('device') or '')
+port = int(item.get('port') or 0)
+if not device or port < 1 or port > 65535:
+    raise SystemExit(1)
+print(device)
+print(port)
+PY
+)" || slot_state=''
   fi
-  sleep 2
+  if [[ -n "$slot_state" ]]; then
+    mapfile -t fields <<< "$slot_state"
+    device="${fields[0]:-}"
+    port="${fields[1]:-0}"
+    route_table=$((table_base + slot))
+    if [[ "$device" =~ ^[A-Za-z0-9_.:-]+$ ]] &&
+       ip link show "$device" >/dev/null 2>&1 &&
+       [[ -n "$(ip route show table "$route_table" 2>/dev/null)" ]] &&
+       ss -lntH 2>/dev/null | awk -v port="$port" '{ address=$4; sub(/^.*:/,"",address); if (address == port) found=1 } END { exit(found ? 0 : 1) }' &&
+       exit_ip="$(curl -fsS --socks5-hostname "127.0.0.1:$port" --max-time 10 http://api.ipify.org 2>/dev/null)" &&
+       [[ -n "$exit_ip" && ${#exit_ip} -le 64 ]]; then
+      printf 'exit_slot_ready slot=%s\n' "$slot"
+      exit 0
+    fi
+  fi
+  sleep "$wait_interval"
 done
 printf 'exit_slot_timeout slot=%s\n' "$slot" >&2
 exit 5
