@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "services": [
+    "aimilivpn.service",
+    "x-ui.service",
+    "aimili-gateway.service",
+    "caddy.service"
+  ],
+  "expected": {
+    "openvpn": 4,
+    "xray": 1,
+    "logicalExits": 4,
+    "exitSlots": 3
+  },
+  "ports": {
+    "aimilivpnUi": 8787,
+    "aimilivpnProxy": 7928,
+    "control": 8790,
+    "xuiPanel": 2001,
+    "xuiSubscription": 2096,
+    "gateway": 9080,
+    "caddy": 8080
+  },
+  "sourceCommit": "5c1c0f1"
+}
