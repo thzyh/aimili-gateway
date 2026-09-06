@@ -1,0 +1,10 @@
+:8080 {
+    @xui path /xui/*
+    handle @xui {
+        reverse_proxy 127.0.0.1:2001
+    }
+
+    handle {
+        reverse_proxy 127.0.0.1:9080
+    }
+}

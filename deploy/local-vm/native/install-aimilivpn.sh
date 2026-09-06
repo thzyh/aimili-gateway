@@ -28,8 +28,8 @@ for command in python3 openvpn ip curl git systemctl; do
 done
 
 network_probe="$(dirname "$0")/guest-network-preflight.sh"
-if [[ -x "$network_probe" ]]; then
-  network_json="$($network_probe --json)" || { printf 'network_preflight_failed\n' >&2; printf '%s\n' "$network_json" >&2; exit 4; }
+if [[ -f "$network_probe" ]]; then
+  network_json="$(bash "$network_probe" --json)" || { printf 'network_preflight_failed\n' >&2; printf '%s\n' "$network_json" >&2; exit 4; }
 else
   printf 'network_preflight_missing\n' >&2
   exit 3
