@@ -266,4 +266,10 @@ if (Test-Path -LiteralPath $hardeningFixture -PathType Leaf) {
     try { & wsl.exe -u root -- bash 'deploy/local-vm/tests/native-installer-hardening.tests.sh' } finally { Pop-Location }
     if ($LASTEXITCODE -ne 0) { throw "native installer hardening fixture failed with exit code $LASTEXITCODE" }
 }
+$orchestrationFixture = Join-Path $PSScriptRoot 'native-orchestration-fixture.tests.sh'
+if (Test-Path -LiteralPath $orchestrationFixture -PathType Leaf) {
+    Push-Location (Resolve-Path (Join-Path $PSScriptRoot '..\..\..'))
+    try { & wsl.exe -u root -- bash 'deploy/local-vm/tests/native-orchestration-fixture.tests.sh' } finally { Pop-Location }
+    if ($LASTEXITCODE -ne 0) { throw "native orchestration fixture failed with exit code $LASTEXITCODE" }
+}
 Write-Output 'PASS local VM tests'
