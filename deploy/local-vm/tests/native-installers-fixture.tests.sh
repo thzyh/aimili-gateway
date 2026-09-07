@@ -26,6 +26,17 @@ cat > "$fake_bin/caddy" <<'SH'
 printf '%s\n' "$*" >> "$CADDY_LOG"
 exit 0
 SH
+cat > "$fake_bin/curl" <<'SH'
+#!/bin/sh
+case "$*" in
+  *127.0.0.1:2001/xui/csrf-token) printf '{"success":true,"obj":"fixture-csrf"}\n' ;;
+  *) exit 1 ;;
+esac
+SH
+cat > "$fake_bin/ss" <<'SH'
+#!/bin/sh
+printf 'LISTEN 0 128 127.0.0.1:2001 0.0.0.0:*\n'
+SH
 cat > "$fake_bin/aimili-xui-helper" <<'PY'
 #!/usr/bin/env python3
 import os,sys
@@ -65,13 +76,13 @@ cat > "$fake_bin/chown" <<'SH'
 exit 0
 SH
 chmod 0700 "$fake_bin"/*
-for command_name in bash python3 curl sha256sum systemctl install chmod mkdir cp mv rm df awk uname dirname mktemp sed grep; do
+for command_name in bash python3 curl sha256sum systemctl install chmod mkdir cp mv rm df awk uname dirname mktemp sed grep ss; do
   [ -e "$fake_bin/$command_name" ] || ln -s "$(command -v "$command_name")" "$fake_bin/$command_name"
 done
 cat > "$fixture/template.json" <<'JSON'
 {"publicOrigin":"https://example.invalid:8080","databasePath":"old.db"}
 JSON
-common=(PATH="$fake_bin:/usr/bin:/bin" AIMILI_SKIP_NETWORK_PREFLIGHT=1 AIMILI_OS_RELEASE="$fixture/os-release" AIMILI_XUI_ROOT="$fixture/x-ui" AIMILI_XUI_CREDENTIALS="$fixture/xui-credentials.json" AIMILI_XUI_HELPER="$fake_bin/aimili-xui-helper" XUI_HELPER_INPUT="$fixture/xui-helper.json" AIMILI_CADDYFILE="$fixture/Caddyfile" SYSTEMCTL_LOG="$fixture/systemctl.log" UFW_LOG="$fixture/ufw.log" CADDY_LOG="$fixture/caddy.log")
+common=(PATH="$fake_bin:/usr/bin:/bin" AIMILI_SKIP_NETWORK_PREFLIGHT=1 AIMILI_OS_RELEASE="$fixture/os-release" AIMILI_XUI_ROOT="$fixture/x-ui" AIMILI_XUI_CREDENTIALS="$fixture/xui-credentials.json" AIMILI_XUI_HELPER="$fake_bin/aimili-xui-helper" AIMILI_XUI_UNIT_DEST="$fixture/x-ui.service.installed" XUI_HELPER_INPUT="$fixture/xui-helper.json" AIMILI_CADDYFILE="$fixture/Caddyfile" SYSTEMCTL_LOG="$fixture/systemctl.log" UFW_LOG="$fixture/ufw.log" CADDY_LOG="$fixture/caddy.log")
 env "${common[@]}" bash "$xui" --apply --allowed-source 192.0.2.10 --public-origin https://192.168.1.20:8080
 grep -q 'tls internal' "$fixture/Caddyfile"
 grep -q 'reverse_proxy 127.0.0.1:8787' "$fixture/Caddyfile"
