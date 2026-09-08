@@ -52,7 +52,7 @@
 - 两仓库 `git diff --check` 通过。
 - 过度设计审查：`Lean already. Ship.`
 
-本轮新增 AimiliVPN 实现提交为 `bbd277b`；Gateway 实现随本验证记录所在提交发布。远程同步以最终普通 push 后的 fetch/SHA 对比为准。
+本轮实现提交为 Gateway `c6bca94`、AimiliVPN `bbd277b`。两个功能分支均已普通推送，并在推送后通过 `git fetch` 复核本地实现提交与远端跟踪提交一致；本状态记录的后续文档提交不改变实现内容。
 
 ## 用户验收边界
 

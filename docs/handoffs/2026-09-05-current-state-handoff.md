@@ -12,7 +12,7 @@
 
 磁盘已删除 35 个旧备份和 20 个 staging，只保留 `/var/backups/aimili-local/final-20260909-closed-loop`；根分区由 49% 降至 23%，约 18 GB 可用。最新脱敏外部证据采集于 `2026-09-08T18:59:49Z`，完整证据和阻塞处理见 `docs/verification/2026-09-07-local-vm-real-deployment.md`。
 
-本轮最新测试：AimiliVPN 69 项、前端 66 项、Gateway Python 108 项（2 项按平台能力跳过）、Go 全包与 race、vet、所有实际存在的本机 VM PowerShell/Bash/Python 测试均通过。过时总入口仍引用未跟踪且不存在的 `create-vm.ps1`，不作为当前通过项。复杂度审查结论为 `Lean already. Ship.`。AimiliVPN 本地提交为 `bbd277b`；Gateway 尚待本轮精确提交，远程同步只在普通 push 并 fetch 比较后确认。
+本轮最新测试：AimiliVPN 69 项、前端 66 项、Gateway Python 108 项（2 项按平台能力跳过）、Go 全包与 race、vet、所有实际存在的本机 VM PowerShell/Bash/Python 测试均通过。过时总入口仍引用未跟踪且不存在的 `create-vm.ps1`，不作为当前通过项。复杂度审查结论为 `Lean already. Ship.`。实现提交为 Gateway `c6bca94`、AimiliVPN `bbd277b`；两个功能分支均已普通推送，并在推送后通过 `git fetch` 复核本地实现提交与远端跟踪提交一致。本状态记录的后续文档提交不改变实现内容。
 
 剩余唯一用户步骤是浏览器登录、订阅导入和 v2rayN 验收。本轮未使用 Computer Use，不代替用户操作 v2rayN。服务端订阅已解析并完成 6/6 真实握手，但用户原始 v2rayN“更新订阅”操作仍应亲自复测。浏览器未信任本地 CA 时可能显示证书警告；自动验证没有修改 Windows 系统信任库。
 
