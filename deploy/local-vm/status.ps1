@@ -41,7 +41,8 @@ if ($running) {
         if ($report.sshReachable) {
             $verifyPath = Join-Path $PSScriptRoot 'native\verify-native.sh'
             $verifySource = Get-Content -LiteralPath $verifyPath -Raw
-            $probe = @($verifySource | & ssh.exe -i $keyPath -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$knownHosts" "aimili@$($state.guestAddress)" 'sudo -n bash -s -- --json --manifest /etc/aimili-local/deployment.json --evidence /var/lib/aimili-local/verification/native-evidence.json' 2>$null)
+            $verifyPayload = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($verifySource))
+            $probe = @($verifyPayload | & ssh.exe -i $keyPath -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$knownHosts" "aimili@$($state.guestAddress)" 'base64 --decode | sudo -n bash -s -- --json --manifest /etc/aimili-local/deployment.json --evidence /var/lib/aimili-local/verification/native-evidence.json' 2>$null)
             $probeExitCode = $LASTEXITCODE
             $deep = ConvertFrom-AimiliNativeVerifierProbe -Output $probe -ExitCode $probeExitCode
             if ($null -ne $deep) {

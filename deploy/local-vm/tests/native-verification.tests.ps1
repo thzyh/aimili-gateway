@@ -30,9 +30,10 @@ $remoteCommands = @($statusAst.FindAll({
 }, $true))
 if ($remoteCommands.Count -ne 1) { throw 'native status verifier SSH command was not captured exactly once' }
 $capturedRemoteCommand = ($remoteCommands[0].CommandElements | ForEach-Object { $_.Extent.Text }) -join ' '
-if ($capturedRemoteCommand -notmatch "'sudo -n bash -s -- --json --manifest /etc/aimili-local/deployment\.json --evidence /var/lib/aimili-local/verification/native-evidence\.json'") {
-    throw 'native status verifier SSH command does not use non-interactive sudo'
+if ($capturedRemoteCommand -notmatch "'base64 --decode \| sudo -n bash -s -- --json --manifest /etc/aimili-local/deployment\.json --evidence /var/lib/aimili-local/verification/native-evidence\.json'") {
+    throw 'native status verifier SSH command does not preserve LF input and use non-interactive sudo'
 }
+if ($statusSource -notmatch 'ToBase64String' -or $statusSource -notmatch 'UTF8\.GetBytes') { throw 'native status verifier input is vulnerable to PowerShell CRLF conversion' }
 $modulePath = Join-Path $PSScriptRoot '..\lib\AimiliLocalVm.psm1'
 Import-Module $modulePath -Force
 $diagnosticJson = [ordered]@{
