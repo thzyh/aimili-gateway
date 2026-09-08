@@ -164,6 +164,7 @@ try {
     New-Item -ItemType Directory -Path (Join-Path $bundle 'scripts') -Force | Out-Null
     Copy-Item -LiteralPath $AssetRoot -Destination (Join-Path $bundle 'deploy\local-vm\native') -Recurse -Force
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot '..\systemd') -Destination (Join-Path $bundle 'deploy\systemd') -Recurse -Force
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot '..\bin\aimili-gateway-account') -Destination (Join-Path $bundle 'deploy\bin\aimili-gateway-account') -Force
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot '..\bin\aimili-xui-protocol-transaction') -Destination (Join-Path $bundle 'deploy\bin\aimili-xui-protocol-transaction') -Force
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot '..\config\protocol-transaction.example.json') -Destination (Join-Path $bundle 'deploy\config\protocol-transaction.example.json') -Force
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot '..\..\scripts\aimili_xui_protocol_transaction.py') -Destination (Join-Path $bundle 'scripts\aimili_xui_protocol_transaction.py') -Force

@@ -41,6 +41,8 @@ db_path="${AIMILI_GATEWAY_DB:-$state_root/aimili-gateway.db}"
 unit_source="${AIMILI_GATEWAY_UNIT:-$(dirname "$0")/../../systemd/aimili-gateway.service}"
 unit_dest="${AIMILI_GATEWAY_UNIT_DEST:-/etc/systemd/system/aimili-gateway.service}"
 bin_dir="${AIMILI_GATEWAY_BIN_DIR:-/usr/local/bin}"
+account_wrapper_source="${AIMILI_ACCOUNT_WRAPPER_SOURCE:-$(dirname "$0")/../../bin/aimili-gateway-account}"
+account_wrapper_dest="${AIMILI_ACCOUNT_WRAPPER_DEST:-/usr/local/sbin/aimili-gateway-account}"
 protocol_wrapper_source="${AIMILI_PROTOCOL_WRAPPER_SOURCE:-$(dirname "$0")/../../bin/aimili-xui-protocol-transaction}"
 protocol_script_source="${AIMILI_PROTOCOL_SCRIPT_SOURCE:-$(dirname "$0")/../../../scripts/aimili_xui_protocol_transaction.py}"
 protocol_config_template="${AIMILI_PROTOCOL_CONFIG_TEMPLATE:-$(dirname "$0")/../../config/protocol-transaction.example.json}"
@@ -55,6 +57,7 @@ protocol_timer_dest="${AIMILI_PROTOCOL_TIMER_DEST:-/etc/systemd/system/aimili-xu
 protocol_state="${AIMILI_PROTOCOL_STATE:-/var/lib/aimili-xui-protocol-transaction}"
 protocol_config="${AIMILI_PROTOCOL_CONFIG:-$etc_root/protocol-transaction.json}"
 [[ -s "$unit_source" ]] || { printf 'gateway_unit_missing\n' >&2; exit 5; }
+[[ -s "$account_wrapper_source" ]] || { printf 'gateway_account_wrapper_missing\n' >&2; exit 5; }
 grep -q '^LoadCredentialEncrypted=gateway-master-key:' "$unit_source" || { printf 'gateway_unit_not_hardened\n' >&2; exit 5; }
 for source in "$protocol_wrapper_source" "$protocol_script_source" "$protocol_config_template" "$protocol_path_source" "$protocol_service_source" "$protocol_timer_source"; do
   [[ -s "$source" ]] || { printf 'protocol_asset_missing\n' >&2; exit 5; }
@@ -64,12 +67,12 @@ certificate="${AIMILI_PROTOCOL_CERTIFICATE:-/var/lib/caddy/.local/share/caddy/ce
 private_key="${AIMILI_PROTOCOL_PRIVATE_KEY:-/var/lib/caddy/.local/share/caddy/certificates/local/$public_host/$public_host.key}"
 encrypted="$credstore/aimili-gateway-master-key"
 if [[ "$mode" == '--check' ]]; then
-  for installed in "$config_path" "$unit_dest" "$encrypted" "$protocol_bin_dest" "$protocol_lib_dir/aimili_xui_protocol_transaction.py" "$protocol_config" "$protocol_path_dest" "$protocol_service_dest" "$protocol_timer_dest"; do
+  for installed in "$config_path" "$unit_dest" "$encrypted" "$account_wrapper_dest" "$protocol_bin_dest" "$protocol_lib_dir/aimili_xui_protocol_transaction.py" "$protocol_config" "$protocol_path_dest" "$protocol_service_dest" "$protocol_timer_dest"; do
     [[ -s "$installed" ]] || { printf 'installed_gateway_files_missing\n' >&2; exit 5; }
   done
   [[ "$(sha256sum "$binary" | awk '{print $1}')" == "$(sha256sum "$bin_dir/aimili-gateway" | awk '{print $1}')" ]] || { printf 'gateway_binary_mismatch\n' >&2; exit 5; }
   [[ "$(sha256sum "$admin_binary" | awk '{print $1}')" == "$(sha256sum "$bin_dir/aimili-gateway-admin" | awk '{print $1}')" ]] || { printf 'gateway_admin_binary_mismatch\n' >&2; exit 5; }
-  cmp -s "$unit_source" "$unit_dest" && cmp -s "$protocol_wrapper_source" "$protocol_bin_dest" && cmp -s "$protocol_script_source" "$protocol_lib_dir/aimili_xui_protocol_transaction.py" && cmp -s "$protocol_path_source" "$protocol_path_dest" && cmp -s "$protocol_service_source" "$protocol_service_dest" && cmp -s "$protocol_timer_source" "$protocol_timer_dest" || { printf 'installed_gateway_asset_mismatch\n' >&2; exit 5; }
+  cmp -s "$unit_source" "$unit_dest" && cmp -s "$account_wrapper_source" "$account_wrapper_dest" && cmp -s "$protocol_wrapper_source" "$protocol_bin_dest" && cmp -s "$protocol_script_source" "$protocol_lib_dir/aimili_xui_protocol_transaction.py" && cmp -s "$protocol_path_source" "$protocol_path_dest" && cmp -s "$protocol_service_source" "$protocol_service_dest" && cmp -s "$protocol_timer_source" "$protocol_timer_dest" || { printf 'installed_gateway_asset_mismatch\n' >&2; exit 5; }
   python3 - "$config_path" "$protocol_config" "$manifest" "$public_origin" "$allowed_source" "$db_path" "$certificate" "$private_key" "$public_host" <<'PY'
 import json, os, sys
 gateway=json.load(open(sys.argv[1])); protocol=json.load(open(sys.argv[2])); manifest=json.load(open(sys.argv[3]))
@@ -187,6 +190,7 @@ printf '{"username":"%s","password":"%s"}\n' "$username" "$password" | python3 -
 unset username password
 fi
 install -m 0644 "$unit_source" "$unit_dest"
+install -D -o root -g root -m 0755 "$account_wrapper_source" "$account_wrapper_dest"
 install -D -o root -g root -m 0755 "$protocol_wrapper_source" "$protocol_bin_dest"
 install -o root -g root -m 0644 "$protocol_script_source" "$protocol_lib_dir/aimili_xui_protocol_transaction.py"
 install -D -o root -g root -m 0644 "$protocol_path_source" "$protocol_path_dest"

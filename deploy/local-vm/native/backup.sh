@@ -25,7 +25,7 @@ case "$component" in
   manifest) defaults=(/etc/aimili-local/deployment.json) ;;
   aimilivpn) defaults=(/opt/aimilivpn /etc/default/aimilivpn /etc/systemd/system/aimilivpn.service) ;;
   xui-caddy) defaults=(/usr/local/x-ui /etc/x-ui /etc/systemd/system/x-ui.service /etc/caddy /etc/systemd/system/caddy.service /etc/aimili-local/xui-credentials.json /etc/aimili-local/xui-credentials.json.pending /etc/aimili-local/caddy-firewall.json /etc/aimili-local/xui-install.json /usr/local/share/ca-certificates/aimili-local-caddy.crt) ;;
-  gateway) defaults=(/usr/local/bin/aimili-gateway /usr/local/bin/aimili-gateway-admin /usr/local/bin/aimili-xui-protocol-transaction /usr/lib/aimili-gateway/aimili_xui_protocol_transaction.py /etc/aimili-gateway /etc/credstore.encrypted/aimili-gateway-master-key /var/lib/aimili-gateway /var/lib/aimili-xui-protocol-transaction /etc/systemd/system/aimili-gateway.service /etc/systemd/system/aimili-xui-protocol-transaction.path /etc/systemd/system/aimili-xui-protocol-transaction.service /etc/systemd/system/aimili-xui-protocol-transaction.timer) ;;
+  gateway) defaults=(/usr/local/bin/aimili-gateway /usr/local/bin/aimili-gateway-admin /usr/local/sbin/aimili-gateway-account /usr/local/bin/aimili-xui-protocol-transaction /usr/lib/aimili-gateway/aimili_xui_protocol_transaction.py /etc/aimili-gateway /etc/credstore.encrypted/aimili-gateway-master-key /var/lib/aimili-gateway /var/lib/aimili-xui-protocol-transaction /etc/systemd/system/aimili-gateway.service /etc/systemd/system/aimili-xui-protocol-transaction.path /etc/systemd/system/aimili-xui-protocol-transaction.service /etc/systemd/system/aimili-xui-protocol-transaction.timer) ;;
   *) printf 'backup_component_unknown\n' >&2; exit 2 ;;
 esac
 targets=()
@@ -48,7 +48,7 @@ allowed = {
     'manifest': {'/etc/aimili-local/deployment.json'},
     'aimilivpn': {'/opt/aimilivpn', '/etc/default/aimilivpn', '/etc/systemd/system/aimilivpn.service'},
     'xui-caddy': {'/usr/local/x-ui', '/etc/x-ui', '/etc/systemd/system/x-ui.service', '/etc/caddy', '/etc/systemd/system/caddy.service', '/etc/aimili-local/xui-credentials.json', '/etc/aimili-local/xui-credentials.json.pending', '/etc/aimili-local/caddy-firewall.json', '/etc/aimili-local/xui-install.json', '/usr/local/share/ca-certificates/aimili-local-caddy.crt'},
-    'gateway': {'/usr/local/bin/aimili-gateway', '/usr/local/bin/aimili-gateway-admin', '/usr/local/bin/aimili-xui-protocol-transaction', '/usr/lib/aimili-gateway/aimili_xui_protocol_transaction.py', '/etc/aimili-gateway', '/etc/credstore.encrypted/aimili-gateway-master-key', '/var/lib/aimili-gateway', '/var/lib/aimili-xui-protocol-transaction', '/etc/systemd/system/aimili-gateway.service', '/etc/systemd/system/aimili-xui-protocol-transaction.path', '/etc/systemd/system/aimili-xui-protocol-transaction.service', '/etc/systemd/system/aimili-xui-protocol-transaction.timer'},
+    'gateway': {'/usr/local/bin/aimili-gateway', '/usr/local/bin/aimili-gateway-admin', '/usr/local/sbin/aimili-gateway-account', '/usr/local/bin/aimili-xui-protocol-transaction', '/usr/lib/aimili-gateway/aimili_xui_protocol_transaction.py', '/etc/aimili-gateway', '/etc/credstore.encrypted/aimili-gateway-master-key', '/var/lib/aimili-gateway', '/var/lib/aimili-xui-protocol-transaction', '/etc/systemd/system/aimili-gateway.service', '/etc/systemd/system/aimili-xui-protocol-transaction.path', '/etc/systemd/system/aimili-xui-protocol-transaction.service', '/etc/systemd/system/aimili-xui-protocol-transaction.timer'},
 }[component]
 unit_names = {
     'manifest': [],

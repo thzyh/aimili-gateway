@@ -5,7 +5,7 @@ $ErrorActionPreference = 'Stop'
 $scriptPath = Join-Path $PSScriptRoot '..\deploy-native.ps1'
 if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) { throw 'native deployment entry is missing' }
 $source = Get-Content -LiteralPath $scriptPath -Raw
-foreach ($token in @('PlanOnly', 'ResumeFrom', 'state.json', 'StrictHostKeyChecking=yes', 'stage.sh', 'backup.sh', 'rollback.sh', 'install-aimilivpn.sh', 'install-xui-caddy.sh', 'install-gateway.sh', 'enable-exits.sh', 'provision-gateway.py', 'verify-native.sh')) {
+foreach ($token in @('PlanOnly', 'ResumeFrom', 'state.json', 'StrictHostKeyChecking=yes', 'stage.sh', 'backup.sh', 'rollback.sh', 'install-aimilivpn.sh', 'install-xui-caddy.sh', 'install-gateway.sh', 'aimili-gateway-account', 'enable-exits.sh', 'provision-gateway.py', 'verify-native.sh')) {
     if ($source -notmatch [regex]::Escape($token)) { throw "native deployment entry missing contract: $token" }
 }
 foreach ($token in @('row.get("status"', 'list(range(n))', '("ready","up")', 'row.get("egress_ok") is True')) {
