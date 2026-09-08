@@ -270,6 +270,28 @@ func TestResetRequiredStateCanCompleteFirstAlignment(t *testing.T) {
 	}
 }
 
+func TestRepairAlignsDriftedAimiliWithoutRequiringOldAimiliCredentials(t *testing.T) {
+	fixture := newCoordinatorFixture(t)
+	fixture.aimili.username = "drifted-aimili"
+	fixture.aimili.password = "drifted-password-marker"
+	fixture.store.state = store.AccountSyncState{Status: store.AccountSyncRepairRequired, ErrorCode: "account_drift"}
+
+	err := fixture.coordinator.Repair(context.Background(), ChangeRequest{Username: "owner", Password: []byte("new-password-marker")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fixture.aimili.username != "owner" || fixture.aimili.password != "new-password-marker" || fixture.xui.password != "new-password-marker" {
+		t.Fatalf("repair did not align services: aimili=%q xui=%q", fixture.aimili.username, fixture.xui.username)
+	}
+	if len(fixture.store.commits) != 1 || fixture.store.state.Status != store.AccountSyncSynced {
+		t.Fatalf("repair did not commit synchronized credentials: %#v", fixture.store.state)
+	}
+	joined := strings.Join(*fixture.calls, "|")
+	if strings.Contains(joined, "aimili.verify:owner|aimili.update:owner") || !strings.Contains(joined, "aimili.update:owner|xui.update:owner") {
+		t.Fatalf("repair required the drifted Aimili credentials before alignment: %#v", *fixture.calls)
+	}
+}
+
 func assertCoordinatorCode(t *testing.T, err error, want string) {
 	t.Helper()
 	var coordinatorError *Error
