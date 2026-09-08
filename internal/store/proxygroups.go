@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -46,6 +47,75 @@ func (s *Store) CreateProxyGroup(ctx context.Context, group domain.ProxyGroup) e
 			return ErrProxyGroupExists
 		}
 		return fmt.Errorf("create proxy group: %w", err)
+	}
+	return nil
+}
+
+// ReassignProxyGroupCandidates atomically moves a complete set of fixed groups
+// to the candidate IDs currently attached to their AimiliVPN slots. Temporary
+// IDs break swap cycles without exposing an intermediate state outside the
+// SQLite transaction.
+func (s *Store) ReassignProxyGroupCandidates(ctx context.Context, assignments map[string]string, now time.Time) error {
+	if len(assignments) == 0 || now.IsZero() {
+		return errors.New("invalid proxy group candidate reassignment")
+	}
+	ids := make([]string, 0, len(assignments))
+	finalCandidates := make(map[string]struct{}, len(assignments))
+	for id, candidateID := range assignments {
+		if !strings.HasPrefix(id, "agw-") || candidateID == "" || candidateID != strings.TrimSpace(candidateID) || len(candidateID) > 256 || strings.ContainsAny(candidateID, "\x00\r\n") {
+			return errors.New("invalid proxy group candidate reassignment")
+		}
+		if _, duplicate := finalCandidates[candidateID]; duplicate {
+			return ErrProxyGroupExists
+		}
+		finalCandidates[candidateID] = struct{}{}
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin proxy group candidate reassignment: %w", err)
+	}
+	defer tx.Rollback()
+	for index, id := range ids {
+		var temporary string
+		for attempt := 0; ; attempt++ {
+			temporary = fmt.Sprintf("~agw-reassign-%d-%d-%d", now.UTC().UnixNano(), index, attempt)
+			if _, reserved := finalCandidates[temporary]; reserved {
+				continue
+			}
+			var count int
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM proxy_groups WHERE candidate_id = ?`, temporary).Scan(&count); err != nil {
+				return fmt.Errorf("check temporary candidate id: %w", err)
+			}
+			if count == 0 {
+				break
+			}
+		}
+		result, err := tx.ExecContext(ctx, `UPDATE proxy_groups SET candidate_id = ? WHERE id = ?`, temporary, id)
+		if err != nil {
+			return fmt.Errorf("stage proxy group candidate reassignment: %w", err)
+		}
+		changed, err := result.RowsAffected()
+		if err != nil || changed != 1 {
+			return ErrProxyGroupNotFound
+		}
+	}
+	for _, id := range ids {
+		result, err := tx.ExecContext(ctx, `UPDATE proxy_groups SET candidate_id = ?, version = version + 1, updated_at = ? WHERE id = ?`, assignments[id], now.UTC().UnixMilli(), id)
+		if err != nil {
+			if strings.Contains(strings.ToLower(err.Error()), "constraint") {
+				return ErrProxyGroupExists
+			}
+			return fmt.Errorf("apply proxy group candidate reassignment: %w", err)
+		}
+		changed, err := result.RowsAffected()
+		if err != nil || changed != 1 {
+			return ErrProxyGroupNotFound
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit proxy group candidate reassignment: %w", err)
 	}
 	return nil
 }

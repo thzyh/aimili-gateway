@@ -511,6 +511,28 @@ func (s *fakeStore) UpdateProxyGroup(_ context.Context, group domain.ProxyGroup,
 	s.groups[group.ID] = group
 	return nil
 }
+func (s *fakeStore) ReassignProxyGroupCandidates(_ context.Context, assignments map[string]string, now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	seen := make(map[string]struct{}, len(assignments))
+	for id, candidateID := range assignments {
+		if _, ok := s.groups[id]; !ok {
+			return store.ErrProxyGroupNotFound
+		}
+		if _, duplicate := seen[candidateID]; duplicate {
+			return store.ErrProxyGroupExists
+		}
+		seen[candidateID] = struct{}{}
+	}
+	for id, candidateID := range assignments {
+		group := s.groups[id]
+		group.CandidateID = candidateID
+		group.Version++
+		group.UpdatedAt = now
+		s.groups[id] = group
+	}
+	return nil
+}
 func (s *fakeStore) DeleteProxyGroup(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

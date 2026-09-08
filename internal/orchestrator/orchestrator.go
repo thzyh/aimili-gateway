@@ -34,6 +34,7 @@ type Config struct {
 	AggregateVLESSPort  int
 	MainMixedPort       int
 	PublicHost          string
+	PublicOrigin        string
 	RealityServerName   string
 	XrayPath            string
 	ProbeHost           string
@@ -188,6 +189,13 @@ type Orchestrator struct {
 }
 
 func New(config Config, database groupStore, aimiliAdapter aimiliClient, xuiAdapter xuiClient, validation proxyValidator, masterKey []byte) (*Orchestrator, error) {
+	if config.PublicOrigin == "" {
+		config.PublicOrigin = "https://" + config.PublicHost
+	}
+	parsedOrigin, originErr := url.Parse(config.PublicOrigin)
+	if originErr != nil || parsedOrigin.Scheme != "https" || parsedOrigin.Host == "" || parsedOrigin.Path != "" || parsedOrigin.RawQuery != "" || parsedOrigin.Fragment != "" {
+		return nil, errors.New("invalid public origin")
+	}
 	if config.RealityServerName == "" {
 		config.RealityServerName = config.PublicHost
 	}

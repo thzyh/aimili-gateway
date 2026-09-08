@@ -43,6 +43,9 @@ func (c *Client) EnsureSubscriptionClient(ctx context.Context, desired Subscript
 			return Subscription{}, err
 		}
 	}
+	if err := c.ensureSubscriptionSortOrder(ctx, allowed); err != nil {
+		return Subscription{}, err
+	}
 
 	client, found, err := c.getSubscriptionClient(ctx, desired.ClientEmail)
 	if err != nil {
@@ -158,6 +161,9 @@ func (c *Client) VerifySubscriptionClient(ctx context.Context, desired Subscript
 	if !sameInboundIDs(allowed, desired.InboundIDs) {
 		return Subscription{}, &AdapterError{Code: "managed_resource_missing"}
 	}
+	if !hasSubscriptionSortOrder(snapshot.Inbounds, allowed) {
+		return Subscription{}, &AdapterError{Code: "managed_resource_drift"}
+	}
 	if desired.Aliases != nil {
 		if err := validateSubscriptionAliasesDesired(desired.Aliases, allowed); err != nil {
 			return Subscription{}, err
@@ -203,6 +209,9 @@ func (c *Client) RepairSubscriptionAliases(ctx context.Context, desired Subscrip
 	allowed := ownedPublicIDs(snapshot.Inbounds, desired.InboundIDs)
 	if !sameInboundIDs(allowed, desired.InboundIDs) {
 		return Subscription{}, &AdapterError{Code: "managed_resource_missing"}
+	}
+	if !hasSubscriptionSortOrder(snapshot.Inbounds, allowed) {
+		return Subscription{}, &AdapterError{Code: "managed_resource_drift"}
 	}
 	if err := validateSubscriptionAliasesDesired(desired.Aliases, allowed); err != nil {
 		return Subscription{}, err
@@ -645,8 +654,63 @@ func ownedPublicIDs(inbounds []Inbound, requested []int64) []int64 {
 			}
 		}
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i] < result[j] })
 	return result
+}
+
+func hasSubscriptionSortOrder(inbounds []Inbound, ordered []int64) bool {
+	byID := make(map[int64]Inbound, len(inbounds))
+	for _, inbound := range inbounds {
+		byID[inbound.ID] = inbound
+	}
+	for index, id := range ordered {
+		inbound, ok := byID[id]
+		if !ok || inbound.SubSortIndex != index+1 {
+			return false
+		}
+	}
+	return true
+}
+
+// ensureSubscriptionSortOrder updates only Gateway-owned public inbounds and
+// keeps every other inbound field intact. 3x-ui uses subSortIndex, then the
+// database ID, to order links in subscription responses.
+func (c *Client) ensureSubscriptionSortOrder(ctx context.Context, ordered []int64) error {
+	details, err := c.inboundDetails(ctx)
+	if err != nil {
+		return err
+	}
+	byID := make(map[int64]inboundDetail, len(details))
+	for _, detail := range details {
+		byID[detail.ID] = detail
+	}
+	changed := false
+	for index, id := range ordered {
+		detail, ok := byID[id]
+		if !ok || !isOwnedSubscriptionInbound(Inbound{ID: detail.ID, Tag: detail.Tag, Remark: detail.Remark, Protocol: detail.Protocol, Port: detail.Port}) {
+			return &AdapterError{Code: "managed_resource_missing"}
+		}
+		want := index + 1
+		if detail.SubSortIndex == want {
+			continue
+		}
+		payload := cloneObject(detail.Raw)
+		payload["subSortIndex"] = want
+		if err := c.updateInbound(ctx, id, payload); err != nil {
+			return err
+		}
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	updated, err := c.inbounds(ctx)
+	if err != nil {
+		return err
+	}
+	if !hasSubscriptionSortOrder(updated, ordered) {
+		return &AdapterError{Code: "write_verification_failed"}
+	}
+	return nil
 }
 
 func sameInboundIDs(left, right []int64) bool {

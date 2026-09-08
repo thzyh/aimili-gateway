@@ -259,6 +259,8 @@ func TestClientLongOperationsOutliveReadTimeout(t *testing.T) {
 			fmt.Fprint(response, `{"data":{"slot":0,"country":"JP","country_name":"Japan","proxy_type":"datacenter","port":17928,"status":"up","node_id":"node-a","candidate_ip":"198.51.100.10","exit_ip":"203.0.113.10","egress_ok":true,"latency_ms":42,"checked_at":1700000000}}`)
 		case "/control/v1/slots/0/rotate":
 			fmt.Fprint(response, `{"data":{"slot":0,"country":"JP","country_name":"Japan","proxy_type":"datacenter","port":17928,"status":"up","node_id":"node-b","candidate_ip":"198.51.100.11","exit_ip":"203.0.113.11","egress_ok":true,"latency_ms":44,"checked_at":1700000001}}`)
+		case "/control/v1/slots/0/check":
+			fmt.Fprint(response, `{"data":{"slot":0,"country":"JP","country_name":"Japan","proxy_type":"datacenter","port":17928,"status":"up","node_id":"node-b","candidate_ip":"198.51.100.11","exit_ip":"203.0.113.11","egress_ok":true,"latency_ms":44,"checked_at":1700000001}}`)
 		default:
 			http.NotFound(response, request)
 		}
@@ -280,6 +282,9 @@ func TestClientLongOperationsOutliveReadTimeout(t *testing.T) {
 	}
 	if _, err := client.RotateSlot(context.Background(), 0); err != nil {
 		t.Fatalf("rotate slot did not use the long operation timeout: %v", err)
+	}
+	if _, err := client.CheckSlot(context.Background(), 0); err != nil {
+		t.Fatalf("slot check did not use the long operation timeout: %v", err)
 	}
 }
 

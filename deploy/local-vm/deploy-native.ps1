@@ -215,6 +215,7 @@ try {
             $activeComponent = 'xui-caddy'
             Invoke-NativeRemote "sudo -n bash $remoteRoot/deploy/local-vm/native/backup.sh --component xui-caddy --run-id $run --backup-root $backupRoot"
             $xuiAsset = "$remoteRoot/assets/$(Get-NativeAssetName $XuiBinary)"
+            Invoke-NativeRemote "sudo -n chmod 0755 $xuiAsset"
             Invoke-NativeRemote "sudo -n bash $remoteRoot/deploy/local-vm/native/install-xui-caddy.sh --apply --binary $xuiAsset --manifest /etc/aimili-local/deployment.json --allowed-source $($state.allowedSource) --public-origin $origin"
             Invoke-NativeRemote "sudo -n bash $remoteRoot/deploy/local-vm/native/install-xui-caddy.sh --check --binary $xuiAsset --manifest /etc/aimili-local/deployment.json --allowed-source $($state.allowedSource) --public-origin $origin"
             Set-NativeCheckpoint 'xui-caddy'
@@ -223,6 +224,7 @@ try {
         if (-not $ResumeFrom -or [Array]::IndexOf($stages, 'gateway') -ge $resumeIndex) {
             $activeComponent = 'gateway'
             Invoke-NativeRemote "sudo -n bash $remoteRoot/deploy/local-vm/native/backup.sh --component gateway --run-id $run --backup-root $backupRoot"
+            Invoke-NativeRemote "sudo -n chmod 0755 $remoteRoot/assets/$(Get-NativeAssetName $GatewayBinary) $remoteRoot/assets/$(Get-NativeAssetName $GatewayAdminBinary)"
             $gatewayArgs = "--apply --binary $remoteRoot/assets/$(Get-NativeAssetName $GatewayBinary) --admin-binary $remoteRoot/assets/$(Get-NativeAssetName $GatewayAdminBinary) --config-template $remoteRoot/assets/$(Get-NativeAssetName $GatewayConfigTemplate) --manifest /etc/aimili-local/deployment.json --allowed-source $($state.allowedSource) --public-origin $origin"
             Invoke-NativeRemote "sudo -n bash $remoteRoot/deploy/local-vm/native/install-gateway.sh $gatewayArgs"
             Invoke-NativeRemote "sudo -n bash $remoteRoot/deploy/local-vm/native/install-gateway.sh --check --binary $remoteRoot/assets/$(Get-NativeAssetName $GatewayBinary) --admin-binary $remoteRoot/assets/$(Get-NativeAssetName $GatewayAdminBinary) --config-template $remoteRoot/assets/$(Get-NativeAssetName $GatewayConfigTemplate) --manifest /etc/aimili-local/deployment.json --allowed-source $($state.allowedSource) --public-origin $origin"
@@ -236,7 +238,11 @@ try {
             Set-NativeCheckpoint 'slots'
         }
         if (-not $ResumeFrom -or [Array]::IndexOf($stages, 'provision') -ge $resumeIndex) {
-            Invoke-NativeRemote "sudo -n python3 $remoteRoot/deploy/local-vm/native/provision-gateway.py --manifest /etc/aimili-local/deployment.json --config /etc/aimili-gateway/config.json --credentials /etc/aimili-gateway/admin-credentials.json"
+            # The installer credential is a one-time bootstrap artifact and becomes stale
+            # after unified account management changes the password.  Provision with the
+            # live AimiliVPN credential file so a resumed deployment also proves that the
+            # Gateway, AimiliVPN, and 3x-ui accounts are synchronized.
+            Invoke-NativeRemote "sudo -n python3 $remoteRoot/deploy/local-vm/native/provision-gateway.py --manifest /etc/aimili-local/deployment.json --config /etc/aimili-gateway/config.json --credentials /opt/aimilivpn/vpngate_data/ui_auth.json"
             Set-NativeCheckpoint 'provision'
         }
         if (-not $ResumeFrom -or [Array]::IndexOf($stages, 'verify') -ge $resumeIndex) {

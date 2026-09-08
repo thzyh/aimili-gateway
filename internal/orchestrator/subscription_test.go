@@ -35,6 +35,24 @@ func TestSubscriptionAliasesBuildsFourStableLogicalNames(t *testing.T) {
 	}
 }
 
+func TestSubscriptionAliasesBuildsAnyContiguousNumberOfExitSlots(t *testing.T) {
+	main := store.MainEgress{ResourceName: "agw-main", Enabled: true, PublicInboundID: 1, CountryName: "日本"}
+	groups := make([]domain.ProxyGroup, 5)
+	for slot := range groups {
+		groups[slot] = domain.ProxyGroup{
+			ResourceName: fmt.Sprintf("agw-slot-%d", slot), Status: domain.ProxyGroupReady,
+			AimiliSlot: slot, PublicInboundID: int64(slot + 2), CountryName: "日本",
+		}
+	}
+	aliases, err := subscriptionAliases(main, groups)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(aliases) != 6 || aliases[6] != "出口位 5_日本" {
+		t.Fatalf("aliases = %#v", aliases)
+	}
+}
+
 func TestSubscriptionAliasesRejectsDuplicateLogicalSlot(t *testing.T) {
 	_, err := subscriptionAliases(
 		store.MainEgress{ResourceName: "agw-main", Enabled: true, PublicInboundID: 1, CountryName: "日本"},
@@ -74,9 +92,10 @@ func TestSubscriptionPassesFourVerifiedAliasesToTheExclusiveClient(t *testing.T)
 		{code: "JP", name: "日本"}, {code: "US", name: "美国"}, {code: "KR", name: "韩国"},
 	}
 	inbounds := []xui.Inbound{{ID: 1, Tag: "aimili-reality", Remark: "Aimili Reality", Protocol: "vless", Port: 8443}}
+	publicInboundIDs := []int64{12, 5, 9}
 	for slot, country := range countries {
 		group, _ := domain.NewProxyGroupIdentity(country.code, domain.ProxyTypeDatacenter, fmt.Sprintf("node-%d", slot))
-		group.Status, group.AimiliSlot, group.PublicInboundID, group.MixedInboundID = domain.ProxyGroupReady, slot, int64(slot+2), int64(slot+20)
+		group.Status, group.AimiliSlot, group.PublicInboundID, group.MixedInboundID = domain.ProxyGroupReady, slot, publicInboundIDs[slot], int64(slot+20)
 		group.CountryName, group.PublicPort, group.MixedPort, group.ExitIP = country.name, 20000+slot, 30000+slot, fmt.Sprintf("203.0.113.%d", slot+2)
 		fixture.store.groups[group.ID] = group
 		inbounds = append(inbounds, xui.Inbound{ID: group.PublicInboundID, Tag: group.ResourceName + "-vless", Remark: "Aimili Gateway " + group.ResourceName + " VLESS", Protocol: "vless", Port: group.PublicPort})
@@ -87,12 +106,15 @@ func TestSubscriptionPassesFourVerifiedAliasesToTheExclusiveClient(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[int64]string{1: "主连接_日本", 2: "出口位 1_日本", 3: "出口位 2_美国", 4: "出口位 3_韩国"}
+	want := map[int64]string{1: "主连接_日本", 12: "出口位 1_日本", 5: "出口位 2_美国", 9: "出口位 3_韩国"}
 	if !reflect.DeepEqual(fixture.xui.subscriptionDesired.Aliases, want) {
 		t.Fatalf("desired aliases = %#v, want %#v", fixture.xui.subscriptionDesired.Aliases, want)
 	}
 	if fixture.xui.subscriptionDesired.SubscriptionID != "stable-sub" {
 		t.Fatalf("persisted subscription ID was not supplied for recovery")
+	}
+	if got := fixture.xui.subscriptionDesired.InboundIDs; !reflect.DeepEqual(got, []int64{1, 12, 5, 9}) {
+		t.Fatalf("subscription inbound order = %#v", got)
 	}
 }
 
@@ -235,6 +257,27 @@ func TestSubscriptionIncludesMainAndReadyManagedVLESSOnly(t *testing.T) {
 	}
 	if got := fixture.xui.subscriptionDesired.InboundIDs; len(got) != 2 || got[0] != 1 || got[1] != 11 {
 		t.Fatalf("desired inbound IDs=%v", got)
+	}
+}
+
+func TestSubscriptionURLKeepsConfiguredPublicOriginPort(t *testing.T) {
+	fixture := newFixture()
+	orchestrator := fixture.orchestratorWithMax(t, 3)
+	orchestrator.config.PublicOrigin = "https://192.168.88.4:8080"
+	group, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter, "jp-ready")
+	group.Status, group.PublicInboundID, group.AimiliSlot = domain.ProxyGroupReady, 11, 0
+	group.PublicPort, group.MixedPort = 20000, 30000
+	fixture.store.groups[group.ID] = group
+	fixture.xui.snapshot = xui.Snapshot{Inbounds: []xui.Inbound{
+		{ID: 1, Tag: "aimili-reality", Remark: "Aimili Reality", Protocol: "vless", Port: 8443},
+		{ID: 11, Tag: group.ResourceName + "-vless", Protocol: "vless", Port: 20000},
+	}}
+	result, err := orchestrator.Subscription(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(result.URL, "https://192.168.88.4:8080/") {
+		t.Fatalf("subscription URL = %q", result.URL)
 	}
 }
 

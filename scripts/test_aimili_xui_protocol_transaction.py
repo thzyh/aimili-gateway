@@ -461,6 +461,42 @@ class ProtocolTransactionTests(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.TransactionError, "unsafe_path"):
             MODULE.ProtocolTransactionManager(config, FakeRunner()).validate_request(self._request())
 
+    def test_accepts_contiguous_managed_ports_for_five_exit_slots(self):
+        config = MODULE.ProtocolTransactionConfig(
+            **{**self.config.as_dict(), "allowed_ports": (8443, 20000, 20001, 20002, 20003, 20004)}
+        )
+        MODULE.ProtocolTransactionManager(config, FakeRunner())._validate_config_paths()
+
+    def test_five_slot_config_owns_the_fifth_slot_socks_chain(self):
+        config = MODULE.ProtocolTransactionConfig(
+            **{**self.config.as_dict(), "allowed_ports": (8443, 20000, 20001, 20002, 20003, 20004)}
+        )
+        request = self._request(
+            egressId="agw-slot-five", inboundId=41, inboundTag="agw-slot-five-vless", port=20004
+        )
+        with closing(sqlite3.connect(self.database_path)) as database, database:
+            database.execute(
+                "UPDATE inbounds SET remark=?,port=?,tag=? WHERE id=41",
+                ("Aimili Gateway agw-slot-five VLESS", 20004, "agw-slot-five-vless"),
+            )
+        runtime = json.loads(self.runtime_config_path.read_text(encoding="utf-8"))
+        runtime["inbounds"][0]["tag"] = "agw-slot-five-vless"
+        runtime["inbounds"][0]["port"] = 20004
+        runtime["outbounds"][0]["tag"] = "agw-slot-five-socks"
+        runtime["outbounds"][0]["settings"]["servers"][0]["port"] = 17932
+        runtime["routing"]["rules"][0]["inboundTag"] = ["agw-slot-five-vless"]
+        runtime["routing"]["rules"][0]["outboundTag"] = "agw-slot-five-socks"
+        self.runtime_config_path.write_text(json.dumps(runtime), encoding="utf-8")
+
+        MODULE.ProtocolTransactionManager(config, FakeRunner()).validate_request(request)
+
+    def test_rejects_non_contiguous_managed_ports(self):
+        config = MODULE.ProtocolTransactionConfig(
+            **{**self.config.as_dict(), "allowed_ports": (8443, 20000, 20002)}
+        )
+        with self.assertRaisesRegex(MODULE.TransactionError, "invalid_config"):
+            MODULE.ProtocolTransactionManager(config, FakeRunner())._validate_config_paths()
+
     def test_subprocess_runner_reports_the_failing_xray_boundary_without_output(self):
         runner = MODULE.SubprocessRunner(self.config)
         inbound = self.root / "candidate-inbound.json"

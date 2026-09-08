@@ -34,10 +34,12 @@ if [[ "${1:-}" == is-active ]]; then printf '%s\n' active; exit 0; fi
 if [[ "${1:-}" == restart ]]; then
   grep -qx 'MULTI_EXIT_SLOTS=3' "$AIMILI_ENV_FILE"
   grep -qx 'MAX_EXIT_SLOTS=16' "$AIMILI_ENV_FILE"
+  grep -qx 'TARGET_VALID_POOL_SIZE=40' "$AIMILI_ENV_FILE"
   grep -qx 'UI_HOST=127.0.0.1' "$AIMILI_ENV_FILE"
   python3 - "$AIMILI_UI_CONFIG" <<'PY'
 import json,sys
 d=json.load(open(sys.argv[1])); assert d['host']=='127.0.0.1' and d['port']==8787 and d['password']=='preserved-secret', d
+assert d['exit_slot_active']==[0,1,2] and d['exit_slot_count']==3 and d['exit_slot_paused']==[], d
 PY
 fi
 SH
@@ -97,10 +99,11 @@ grep -qx preserved "$data_marker"
 grep -qx 'OTHER_SETTING=preserved' "$env_file"
 [[ "$(grep -c '^MULTI_EXIT_SLOTS=3$' "$env_file")" -eq 1 ]]
 [[ "$(grep -c '^MAX_EXIT_SLOTS=16$' "$env_file")" -eq 1 ]]
+[[ "$(grep -c '^TARGET_VALID_POOL_SIZE=40$' "$env_file")" -eq 1 ]]
 [[ "$(grep -c '^UI_HOST=127.0.0.1$' "$env_file")" -eq 1 ]]
 python3 - "$ui_config" <<'PY'
 import json,os,sys
-d=json.load(open(sys.argv[1])); assert d=={'host':'127.0.0.1','port':8787,'password':'preserved-secret'}, d
+d=json.load(open(sys.argv[1])); assert d=={'host':'127.0.0.1','port':8787,'password':'preserved-secret','exit_slot_active':[0,1,2],'exit_slot_count':3,'exit_slot_paused':[]}, d
 assert os.stat(sys.argv[1]).st_mode & 0o777 == 0o600
 PY
 [[ "$(grep -c '^restart aimilivpn.service$' "$systemctl_log")" -eq 2 ]]

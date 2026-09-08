@@ -7,10 +7,10 @@
     "caddy.service"
   ],
   "expected": {
-    "openvpn": 4,
+    "openvpn": 6,
     "xray": 1,
-    "logicalExits": 4,
-    "exitSlots": 3
+    "logicalExits": 6,
+    "exitSlots": 5
   },
   "ports": {
     "aimilivpnUi": 8787,
@@ -21,5 +21,5 @@
     "gateway": 9080,
     "caddy": 8080
   },
-  "sourceCommit": "edd08172a2ce132f2e1525d7e00b047a56883ff9"
+  "sourceCommit": "bbd277b04f4c578d989ffdb6e1c975a707673c9e"
 }

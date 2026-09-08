@@ -153,6 +153,37 @@ func TestProxyGroupsAllowMultipleCandidatesInOneCountryAndType(t *testing.T) {
 	}
 }
 
+func TestReassignProxyGroupCandidatesSwapsCandidatesAtomically(t *testing.T) {
+	database := openTestStore(t)
+	ctx := context.Background()
+	now := time.Unix(1_700_000_000, 0).UTC()
+	first, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter, "candidate-one")
+	second, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter, "candidate-two")
+	for index, group := range []*domain.ProxyGroup{&first, &second} {
+		group.AimiliSlot = index
+		group.PublicPort = 20100 + index
+		group.MixedPort = 30100 + index
+		group.Status = domain.ProxyGroupReady
+		group.CreatedAt = now
+		group.UpdatedAt = now
+		if err := database.CreateProxyGroup(ctx, *group); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	err := database.ReassignProxyGroupCandidates(ctx, map[string]string{
+		first.ID: "candidate-two", second.ID: "candidate-one",
+	}, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	updatedFirst, _ := database.GetProxyGroup(ctx, first.ID)
+	updatedSecond, _ := database.GetProxyGroup(ctx, second.ID)
+	if updatedFirst.CandidateID != "candidate-two" || updatedSecond.CandidateID != "candidate-one" || updatedFirst.Version != 2 || updatedSecond.Version != 2 {
+		t.Fatalf("atomic reassignment failed: first=%#v second=%#v", updatedFirst, updatedSecond)
+	}
+}
+
 func TestDeleteProxyGroupRemovesOnlyItsProtocolStateAndOperations(t *testing.T) {
 	database := openTestStore(t)
 	ctx := context.Background()

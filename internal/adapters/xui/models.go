@@ -26,11 +26,12 @@ type BrowserSession struct {
 }
 
 type Inbound struct {
-	ID       int64  `json:"id"`
-	Tag      string `json:"tag"`
-	Remark   string `json:"remark"`
-	Protocol string `json:"protocol"`
-	Port     int    `json:"port"`
+	ID           int64  `json:"id"`
+	Tag          string `json:"tag"`
+	Remark       string `json:"remark"`
+	Protocol     string `json:"protocol"`
+	Port         int    `json:"port"`
+	SubSortIndex int    `json:"subSortIndex"`
 }
 
 type Outbound struct {

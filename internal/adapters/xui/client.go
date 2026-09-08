@@ -641,6 +641,7 @@ type inboundDetail struct {
 	Remark         string         `json:"remark"`
 	Protocol       string         `json:"protocol"`
 	Port           int            `json:"port"`
+	SubSortIndex   int            `json:"subSortIndex"`
 	Settings       any            `json:"settings"`
 	StreamSettings any            `json:"streamSettings"`
 	Raw            map[string]any `json:"-"`
@@ -928,7 +929,7 @@ func (c *Client) inbounds(ctx context.Context) ([]Inbound, error) {
 	}
 	result := make([]Inbound, 0, len(details))
 	for _, inbound := range details {
-		result = append(result, Inbound{ID: inbound.ID, Tag: inbound.Tag, Remark: inbound.Remark, Protocol: inbound.Protocol, Port: inbound.Port})
+		result = append(result, Inbound{ID: inbound.ID, Tag: inbound.Tag, Remark: inbound.Remark, Protocol: inbound.Protocol, Port: inbound.Port, SubSortIndex: inbound.SubSortIndex})
 	}
 	return result, nil
 }

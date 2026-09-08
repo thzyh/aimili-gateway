@@ -82,14 +82,22 @@ protocol_expected={'certificatePath':sys.argv[7],'privateKeyPath':sys.argv[8],'t
 if any(gateway.get(key)!=value for key,value in gateway_expected.items()): raise SystemExit(1)
 if any(protocol.get(key)!=value for key,value in protocol_expected.items()) or not os.path.isfile(sys.argv[7]) or not os.path.isfile(sys.argv[8]): raise SystemExit(1)
 PY
-  systemctl is-active --quiet aimili-gateway.service || { printf 'gateway_service_inactive\n' >&2; exit 5; }
+  gateway_ready=0
+  for _ in $(seq 1 15); do
+    if systemctl is-active --quiet aimili-gateway.service \
+      && ss -ltnH | awk '$4 == "127.0.0.1:9080" {found=1} END {exit(found ? 0 : 1)}' \
+      && curl -fsS --connect-timeout 2 --max-time 5 http://127.0.0.1:9080/healthz >/dev/null 2>&1; then
+      gateway_ready=1
+      break
+    fi
+    sleep 1
+  done
+  [[ "$gateway_ready" -eq 1 ]] || { printf 'gateway_service_inactive\n' >&2; exit 5; }
   systemctl is-active --quiet aimili-xui-protocol-transaction.path || { printf 'protocol_path_inactive\n' >&2; exit 5; }
   systemctl is-active --quiet aimili-xui-protocol-transaction.timer || { printf 'protocol_timer_inactive\n' >&2; exit 5; }
   for unit in aimili-gateway.service aimili-xui-protocol-transaction.path aimili-xui-protocol-transaction.timer; do
     systemctl is-enabled --quiet "$unit" || { printf 'gateway_units_disabled\n' >&2; exit 5; }
   done
-  ss -ltnH | awk '$4 == "127.0.0.1:9080" {found=1} END {exit(found ? 0 : 1)}' || { printf 'gateway_listener_not_loopback\n' >&2; exit 5; }
-  curl -fsS --connect-timeout 2 --max-time 5 http://127.0.0.1:9080/healthz >/dev/null || { printf 'gateway_health_failed\n' >&2; exit 5; }
   printf '%s\n' '{"mode":"check","publicOriginValid":true,"masterKeyBytes":32}'
   exit 0
 fi
@@ -199,5 +207,6 @@ install -D -o root -g root -m 0644 "$protocol_timer_source" "$protocol_timer_des
 systemctl daemon-reload
 systemctl enable --now aimili-xui-protocol-transaction.path aimili-xui-protocol-transaction.timer >/dev/null
 systemctl enable aimili-gateway.service >/dev/null
+systemctl reset-failed aimili-gateway.service >/dev/null 2>&1 || true
 systemctl restart aimili-gateway.service
 printf 'gateway_apply_ok\n'

@@ -123,6 +123,25 @@ it('copies a test-style VLESS subscription', async () => {
   expect(wrapper.text()).toContain('复制节点订阅')
 })
 
+it('keeps the main connection and all five fixed exits pinned in slot order', async () => {
+  const slotFour = { ...rows[1], id: 'slot-four', slotNumber: 4, publicPort: 20003, mixedPort: 30003 }
+  const slotFive = { ...rows[1], id: 'slot-five', slotNumber: 5, publicPort: 20004, mixedPort: 30004 }
+  const shuffled = [rows[3], slotFive, rows[5], rows[0], slotFour, rows[2], rows[1]]
+  mocks.apiFetch.mockImplementation((path: string) => {
+    if (path === '/api/v1/proxy-groups') return Promise.resolve(shuffled)
+    if (path === '/api/v1/settings/aimilivpn/countries') return Promise.resolve([])
+    if (path === '/api/v1/settings/aimilivpn/refresh') return Promise.resolve({ state: 'idle', country: '', phase: '', testedCount: 0, validCount: 0 })
+    return Promise.resolve(undefined)
+  })
+
+  const wrapper = mount(VpnPoolView)
+  await flushPromises()
+
+  expect(wrapper.findAll('[data-pool-row]').map(row => row.attributes('data-row-id')).slice(0, 6)).toEqual([
+    'agw-main', 'jp-one', 'kr-one', 'de-rotating', 'slot-four', 'slot-five',
+  ])
+})
+
 it('offers a repair-required runtime slot a safe recheck and synchronization action', async () => {
 	const repairRow = { ...rows[1], id: 'repair-slot', status: 'repair_required', lastErrorCode: 'rollback_failed' }
 	mocks.apiFetch.mockImplementation((path: string) => {

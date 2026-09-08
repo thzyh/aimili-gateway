@@ -96,10 +96,10 @@ env_file="${AIMILI_ENV_FILE:-/etc/default/aimilivpn}"
 install -d -m 0700 "$(dirname "$env_file")"
 touch "$env_file"
 chmod 0600 "$env_file"
-sed -i '/^MULTI_EXIT_SLOTS=/d;/^MAX_EXIT_SLOTS=/d;/^UI_HOST=/d' "$env_file"
-printf 'MULTI_EXIT_SLOTS=%s\nMAX_EXIT_SLOTS=%s\nUI_HOST=127.0.0.1\n' "$slot_count" "$max_slots" >> "$env_file"
+sed -i '/^MULTI_EXIT_SLOTS=/d;/^MAX_EXIT_SLOTS=/d;/^TARGET_VALID_POOL_SIZE=/d;/^UI_HOST=/d' "$env_file"
+printf 'MULTI_EXIT_SLOTS=%s\nMAX_EXIT_SLOTS=%s\nTARGET_VALID_POOL_SIZE=40\nUI_HOST=127.0.0.1\n' "$slot_count" "$max_slots" >> "$env_file"
 ui_config="${AIMILI_UI_CONFIG:-/opt/aimilivpn/vpngate_data/ui_auth.json}"
-python3 - "$ui_config" <<'PY'
+AIMILI_SLOT_COUNT="$slot_count" python3 - "$ui_config" <<'PY'
 import json, os, pathlib, tempfile, sys
 
 path = pathlib.Path(sys.argv[1])
@@ -110,6 +110,9 @@ if not isinstance(document, dict):
     raise SystemExit('aimilivpn_ui_config_invalid')
 state = path.stat()
 document['host'] = '127.0.0.1'
+document['exit_slot_active'] = list(range(int(os.environ.get('AIMILI_SLOT_COUNT', '0'))))
+document['exit_slot_count'] = len(document['exit_slot_active'])
+document['exit_slot_paused'] = [item for item in document.get('exit_slot_paused', []) if item in document['exit_slot_active']]
 descriptor, temporary = tempfile.mkstemp(prefix='.' + path.name + '.', dir=str(path.parent))
 try:
     with os.fdopen(descriptor, 'w', encoding='utf-8') as output:

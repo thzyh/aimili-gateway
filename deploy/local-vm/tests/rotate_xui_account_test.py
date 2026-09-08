@@ -3,6 +3,7 @@ import http.server
 import json
 import pathlib
 import subprocess
+import sys
 import threading
 
 
@@ -65,7 +66,7 @@ def main():
     try:
         payload["baseUrl"] = "http://127.0.0.1:%d/xui/" % server.server_port
         result = subprocess.run(
-            ["python3", str(HELPER)],
+            [sys.executable, str(HELPER)],
             input=json.dumps(payload).encode(),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -87,7 +88,7 @@ def main():
         Handler.old_username = "rotated"
         Handler.old_password = "rotated-password"
         result = subprocess.run(
-            ["python3", str(HELPER)],
+            [sys.executable, str(HELPER)],
             input=json.dumps(payload).encode(),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

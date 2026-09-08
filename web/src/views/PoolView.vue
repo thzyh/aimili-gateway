@@ -47,8 +47,8 @@ const officialCountries = computed(() => candidateCountries.value.map(item => ({
 const poolStats = computed(() => candidateCountries.value[0])
 function runtimeRank(row: ProxyGroupPayload): number | null {
   if (row.egressSource === 'main' || row.id === 'agw-main') return 0
-  const slot = row.slotNumber ?? 0
-  return slot >= 1 && slot <= 3 ? slot : null
+  const slot = row.slotNumber
+  return typeof slot === 'number' && slot >= 0 ? slot + 1 : null
 }
 const rows = computed(() => groups.value.filter(row => {
   if (runtimeRank(row) !== null) return true

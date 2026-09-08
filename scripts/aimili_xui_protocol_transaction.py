@@ -473,7 +473,9 @@ class ProtocolTransactionManager:
             _require_regular_file(path)
         if not re.fullmatch(r"127\.0\.0\.1:[1-9][0-9]{0,4}", self.config.api_server):
             raise TransactionError("invalid_config")
-        if tuple(sorted(set(self.config.allowed_ports))) != (8443, 20000, 20001, 20002):
+        normalized_ports = tuple(sorted(set(self.config.allowed_ports)))
+        expected_ports = (8443, *range(20000, 20000 + len(normalized_ports) - 1))
+        if len(normalized_ports) < 2 or len(normalized_ports) > 65 or normalized_ports != expected_ports:
             raise TransactionError("invalid_config")
         _ensure_private_directory(self.config.snapshot_dir)
         _ensure_private_directory(self.config.profile_dir)
@@ -659,7 +661,7 @@ class ProtocolTransactionManager:
         else:
             expected_remark = "Aimili Gateway " + request["egressId"] + " VLESS"
             outbound_tag = request["egressId"] + "-socks"
-            allowed_socks_ports = {17928, 17929, 17930}
+            allowed_socks_ports = set(range(17928, 17928 + len(self.config.allowed_ports) - 1))
         if row.get("remark") != expected_remark:
             raise TransactionError("ownership_conflict")
         inbounds = runtime.get("inbounds")

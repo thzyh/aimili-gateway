@@ -293,9 +293,9 @@ class VerificationHelperTests(unittest.TestCase):
         self.assertIn("g.get('egressSource')=='main'", MODULE.REMOTE_HELPER)
         self.assertIn("'subscriptionAlias'", MODULE.REMOTE_HELPER)
 
-    def test_remote_collection_authenticates_with_gateway_credentials(self):
-        self.assertIn("/etc/aimili-gateway/admin-credentials.json", MODULE.REMOTE_HELPER)
-        self.assertNotIn("/opt/aimilivpn/vpngate_data/ui_auth.json", MODULE.REMOTE_HELPER)
+    def test_remote_collection_authenticates_with_current_unified_credentials(self):
+        self.assertIn("/opt/aimilivpn/vpngate_data/ui_auth.json", MODULE.REMOTE_HELPER)
+        self.assertNotIn("/etc/aimili-gateway/admin-credentials.json", MODULE.REMOTE_HELPER)
 
     def test_remote_collection_rechecks_groups_before_collecting_connections(self):
         check = "call('POST','/api/v1/proxy-groups/'+urllib.parse.quote(group_id,safe='')+'/check',{},csrf,True)"

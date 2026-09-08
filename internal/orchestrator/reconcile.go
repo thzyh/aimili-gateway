@@ -6,6 +6,7 @@ import (
 	"log"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/thzyh/aimili-gateway/internal/adapters/aimili"
 	"github.com/thzyh/aimili-gateway/internal/domain"
@@ -16,6 +17,10 @@ type ReconcileResult struct {
 	Discovered int `json:"discovered"`
 	Ready      int `json:"ready"`
 	Failed     int `json:"failed"`
+}
+
+type candidateReassignmentStore interface {
+	ReassignProxyGroupCandidates(context.Context, map[string]string, time.Time) error
 }
 
 // Reconcile converges every safe Aimili candidate into an independently usable proxy entry.
@@ -41,6 +46,7 @@ func (o *Orchestrator) Reconcile(ctx context.Context) ReconcileResult {
 	result.Failed += historyFailures
 	groups, adoptionFailures := o.adoptUnmanagedSlots(ctx, groups)
 	result.Failed += adoptionFailures
+	groups = o.refreshAssignedGroups(ctx, groups)
 	existing := make(map[string]domain.ProxyGroup, len(groups))
 	byExit := make(map[string]domain.ProxyGroup, len(groups))
 	activeCount := len(groups)
@@ -109,6 +115,88 @@ func (o *Orchestrator) Reconcile(ctx context.Context) ReconcileResult {
 	// unavailable; the authenticated subscription endpoint surfaces that error.
 	_, _ = o.Subscription(ctx)
 	return result
+}
+
+// refreshAssignedGroups revalidates degraded fixed groups against their current
+// AimiliVPN slot. A slot can legitimately switch to a different candidate while
+// retaining its number; without this pass Reconcile would keep the stale
+// candidate ID forever and report slot_not_found on every subsequent run.
+func (o *Orchestrator) refreshAssignedGroups(ctx context.Context, groups []domain.ProxyGroup) []domain.ProxyGroup {
+	slots, slotsErr := o.aimili.ListSlots(ctx)
+	bySlot := make(map[int]aimili.Slot, len(slots))
+	if slotsErr == nil {
+		for _, slot := range slots {
+			bySlot[slot.Number] = slot
+		}
+	}
+	drifted := make(map[string]struct{})
+	if slotsErr == nil && len(groups) > 0 {
+		assignments := make(map[string]string, len(groups))
+		seenCandidates := make(map[string]struct{}, len(groups))
+		complete := true
+		for _, group := range groups {
+			slot, ok := bySlot[group.AimiliSlot]
+			candidateID := strings.TrimSpace(slot.NodeID)
+			if !ok || !slot.EgressOK || (slot.Status != "up" && slot.Status != "ready") || candidateID == "" {
+				complete = false
+				break
+			}
+			if _, duplicate := seenCandidates[candidateID]; duplicate {
+				complete = false
+				break
+			}
+			seenCandidates[candidateID] = struct{}{}
+			assignments[group.ID] = candidateID
+			if candidateID != strings.TrimSpace(group.CandidateID) {
+				drifted[group.ID] = struct{}{}
+			}
+		}
+		if complete && len(drifted) > 0 {
+			persistence, ok := o.store.(candidateReassignmentStore)
+			if !ok {
+				drifted = map[string]struct{}{}
+			} else if err := persistence.ReassignProxyGroupCandidates(ctx, assignments, o.config.Now().UTC()); err != nil {
+				log.Printf("reconcile candidate reassignment failed: code=%s", errorCode(err))
+				drifted = map[string]struct{}{}
+			} else if reloaded, err := o.store.ListProxyGroups(ctx); err == nil {
+				groups = reloaded
+			} else {
+				log.Printf("reconcile candidate reload failed: code=%s", errorCode(err))
+				drifted = map[string]struct{}{}
+			}
+		}
+	}
+	for index := range groups {
+		group := groups[index]
+		missingManagedResources := group.PublicInboundID <= 0 || group.MixedInboundID <= 0
+		_, assignmentDrift := drifted[group.ID]
+		refreshable := assignmentDrift || group.LastErrorCode == "slot_not_found" || (group.LastErrorCode == "protocol_failed" && missingManagedResources)
+		if (group.Status == domain.ProxyGroupReady && !assignmentDrift) || !refreshable || group.AimiliSlot < 0 || !strings.HasPrefix(group.ID, "agw-") {
+			continue
+		}
+		if missingManagedResources && slotsErr == nil {
+			if slot, ok := bySlot[group.AimiliSlot]; ok && slot.EgressOK {
+				policy, credentials, inputsErr := o.runtimeInputs(ctx)
+				if inputsErr == nil {
+					applySlotSnapshot(&group, slot)
+					refreshed, provisionErr := o.provisionGroupForSlot(ctx, group, slot, policy, credentials, false)
+					if provisionErr == nil {
+						groups[index] = refreshed
+						continue
+					}
+					log.Printf("reconcile assigned group reprovision failed: id=%s slot=%d code=%s", group.ID, group.AimiliSlot, errorCode(provisionErr))
+				}
+			}
+		}
+		refreshed, err := o.Check(ctx, group.ID)
+		if refreshed.ID != "" {
+			groups[index] = refreshed
+		}
+		if err != nil {
+			log.Printf("reconcile assigned group refresh failed: id=%s slot=%d code=%s", group.ID, group.AimiliSlot, errorCode(err))
+		}
+	}
+	return groups
 }
 
 func (o *Orchestrator) adoptUnmanagedSlots(ctx context.Context, groups []domain.ProxyGroup) ([]domain.ProxyGroup, int) {

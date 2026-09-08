@@ -33,15 +33,15 @@ func (o *Orchestrator) repairSubscriptionAliases(ctx context.Context) (Subscript
 
 func subscriptionAliases(main store.MainEgress, groups []domain.ProxyGroup) (map[int64]string, error) {
 	mainCountry := strings.TrimSpace(main.CountryName)
-	if main.ResourceName != "agw-main" || !main.Enabled || main.PublicInboundID < 1 || mainCountry == "" || mainCountry != main.CountryName || len(groups) != 3 {
+	if main.ResourceName != "agw-main" || !main.Enabled || main.PublicInboundID < 1 || mainCountry == "" || mainCountry != main.CountryName || len(groups) == 0 {
 		return nil, &Error{Code: "invalid_request"}
 	}
 	aliases := map[int64]string{main.PublicInboundID: "主连接_" + mainCountry}
-	seenSlots := make(map[int]bool, 3)
+	seenSlots := make(map[int]bool, len(groups))
 	for _, group := range groups {
 		country := strings.TrimSpace(group.CountryName)
 		if !subscribableProxyGroup(group) || !strings.HasPrefix(group.ResourceName, "agw-") || group.ResourceName == "agw-main" ||
-			group.AimiliSlot < 0 || group.AimiliSlot > 2 || group.PublicInboundID < 1 || country == "" || country != group.CountryName || seenSlots[group.AimiliSlot] {
+			group.AimiliSlot < 0 || group.PublicInboundID < 1 || country == "" || country != group.CountryName || seenSlots[group.AimiliSlot] {
 			return nil, &Error{Code: "invalid_request"}
 		}
 		if _, duplicate := aliases[group.PublicInboundID]; duplicate {
@@ -50,8 +50,10 @@ func subscriptionAliases(main store.MainEgress, groups []domain.ProxyGroup) (map
 		seenSlots[group.AimiliSlot] = true
 		aliases[group.PublicInboundID] = fmt.Sprintf("出口位 %d_%s", group.AimiliSlot+1, country)
 	}
-	if len(seenSlots) != 3 {
-		return nil, &Error{Code: "invalid_request"}
+	for slot := 0; slot < len(groups); slot++ {
+		if !seenSlots[slot] {
+			return nil, &Error{Code: "invalid_request"}
+		}
 	}
 	return aliases, nil
 }
@@ -61,7 +63,7 @@ func (o *Orchestrator) refreshDynamicSubscription(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if len(groups) != 3 {
+	if len(groups) == 0 {
 		return nil
 	}
 	mainStore, ok := o.store.(mainEgressStore)
@@ -70,10 +72,16 @@ func (o *Orchestrator) refreshDynamicSubscription(ctx context.Context) error {
 	}
 	main, err := mainStore.GetMainEgress(ctx)
 	if err != nil {
+		if errors.Is(err, store.ErrProxyGroupNotFound) {
+			return nil
+		}
 		return err
 	}
 	if _, err := subscriptionAliases(main, groups); err != nil {
-		return err
+		// A partially provisioned or test-only slot set is not ready for an
+		// alias refresh; keep the existing subscription and let reconciliation
+		// complete the contiguous runtime set before rebuilding it.
+		return nil
 	}
 	_, err = o.Subscription(ctx)
 	return err
@@ -107,32 +115,36 @@ func (o *Orchestrator) Subscription(ctx context.Context) (SubscriptionResult, er
 			ids = append(ids, inbound.ID)
 		}
 	}
-	for _, group := range groups {
+	orderedGroups := append([]domain.ProxyGroup(nil), groups...)
+	sort.SliceStable(orderedGroups, func(i, j int) bool {
+		if orderedGroups[i].AimiliSlot == orderedGroups[j].AimiliSlot {
+			return orderedGroups[i].ID < orderedGroups[j].ID
+		}
+		return orderedGroups[i].AimiliSlot < orderedGroups[j].AimiliSlot
+	})
+	for _, group := range orderedGroups {
 		if subscribableProxyGroup(group) && group.PublicInboundID > 0 {
 			ids = append(ids, group.PublicInboundID)
 		}
 	}
-	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	if len(ids) == 0 {
 		return SubscriptionResult{}, &Error{Code: "not_ready"}
 	}
 	var aliases map[int64]string
-	if len(ids) == 4 && len(groups) == 3 {
+	if len(groups) > 0 && len(ids) == len(groups)+1 {
 		mainStore, ok := o.store.(mainEgressStore)
-		if !ok {
-			return SubscriptionResult{}, &Error{Code: "not_configured"}
-		}
-		main, err := mainStore.GetMainEgress(ctx)
-		if err != nil {
-			return SubscriptionResult{}, &Error{Code: "not_ready"}
-		}
-		aliases, err = subscriptionAliases(main, groups)
-		if err != nil || len(aliases) != len(ids) {
-			return SubscriptionResult{}, &Error{Code: "not_ready"}
-		}
-		for _, id := range ids {
-			if aliases[id] == "" {
-				return SubscriptionResult{}, &Error{Code: "not_ready"}
+		if ok {
+			main, mainErr := mainStore.GetMainEgress(ctx)
+			if mainErr == nil && main.Enabled {
+				aliases, err = subscriptionAliases(main, groups)
+				if err != nil || len(aliases) != len(ids) {
+					return SubscriptionResult{}, &Error{Code: "not_ready"}
+				}
+				for _, id := range ids {
+					if aliases[id] == "" {
+						return SubscriptionResult{}, &Error{Code: "not_ready"}
+					}
+				}
 			}
 		}
 	}
@@ -185,7 +197,7 @@ func (o *Orchestrator) Subscription(ctx context.Context) (SubscriptionResult, er
 	if len(subscription.PublicProfiles) != len(ids) {
 		return SubscriptionResult{}, &Error{Code: "subscription_incomplete"}
 	}
-	return SubscriptionResult{URL: "https://" + o.config.PublicHost + reference.EscapedPath(), InboundCount: len(ids), UpdatedAt: updatedAt, PublicProfiles: append([]xui.PublicProfile(nil), subscription.PublicProfiles...)}, nil
+	return SubscriptionResult{URL: strings.TrimRight(o.config.PublicOrigin, "/") + reference.EscapedPath(), InboundCount: len(ids), UpdatedAt: updatedAt, PublicProfiles: append([]xui.PublicProfile(nil), subscription.PublicProfiles...)}, nil
 }
 
 func subscribableProxyGroup(group domain.ProxyGroup) bool {

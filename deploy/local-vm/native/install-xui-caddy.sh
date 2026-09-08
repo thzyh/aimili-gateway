@@ -64,6 +64,7 @@ caddy_root_certificate="${AIMILI_CADDY_ROOT_CERTIFICATE:-/var/lib/caddy/.local/s
 caddy_trust_certificate="${AIMILI_CADDY_TRUST_CERTIFICATE:-/usr/local/share/ca-certificates/aimili-local-caddy.crt}"
 system_ca_bundle="${AIMILI_SYSTEM_CA_BUNDLE:-/etc/ssl/certs/ca-certificates.crt}"
 helper="${AIMILI_XUI_HELPER:-$(dirname "$0")/rotate-xui-account.py}"
+aimili_ui_auth="${AIMILI_UI_AUTH_FILE:-/opt/aimilivpn/vpngate_data/ui_auth.json}"
 unit_source="${AIMILI_XUI_UNIT_SOURCE:-$(dirname "$0")/x-ui.service.debian}"
 unit_dest="${AIMILI_XUI_UNIT_DEST:-/etc/systemd/system/x-ui.service}"
 readonly XUI_UNIT_SHA256='513f84fd2be16e3eec41e61acdd72c32cc639715eb4105e6dd9dc5ff190e5aec'
@@ -82,6 +83,17 @@ with open(target,'w',encoding='utf-8') as handle: json.dump(policy,handle,separa
 os.chmod(target,0o600)
 PY
 desired_caddy="$(mktemp /var/tmp/aimili-caddy-config.XXXXXX)"
+aimili_secret_path=''
+if [[ -s "$aimili_ui_auth" ]]; then
+  aimili_secret_path="$(python3 - "$aimili_ui_auth" <<'PY'
+import json,re,sys
+value=str(json.load(open(sys.argv[1],encoding='utf-8')).get('secret_path','')).strip()
+if not re.fullmatch(r'[A-Za-z0-9_-]{8,128}', value):
+    raise SystemExit(1)
+print(value)
+PY
+)" || { printf 'aimili_ui_auth_invalid\n' >&2; exit 5; }
+fi
 cat > "$desired_caddy" <<CADDY
 $public_origin {
     tls internal
@@ -95,6 +107,7 @@ $public_origin {
     }
     @vpngate path /vpngate/*
     handle @vpngate {
+$(if [[ -n "$aimili_secret_path" ]]; then printf '        uri replace /vpngate /%s\n' "$aimili_secret_path"; fi)
         reverse_proxy 127.0.0.1:8787
     }
     handle {

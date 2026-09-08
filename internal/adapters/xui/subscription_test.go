@@ -23,6 +23,15 @@ type subscriptionFixture struct {
 	aliasWriteFailure bool
 	aliasReadMismatch bool
 	updated           map[string]any
+	subSortIndexes    map[int64]int
+	inboundUpdates    map[int64]map[string]any
+}
+
+func (f *subscriptionFixture) subSortIndex(id int64, fallback int) int {
+	if value, ok := f.subSortIndexes[id]; ok {
+		return value
+	}
+	return fallback
 }
 
 func (f *subscriptionFixture) handler(w http.ResponseWriter, r *http.Request) {
@@ -35,13 +44,13 @@ func (f *subscriptionFixture) handler(w http.ResponseWriter, r *http.Request) {
 	case "/panel/panel/api/xray/":
 		fmt.Fprint(w, `{"success":true,"obj":{"xraySetting":"{\"outbounds\":[],\"routing\":{\"rules\":[]}}","outboundTestUrl":"https://probe.invalid/"}}`)
 	case "/panel/panel/api/inbounds/list":
-		fmt.Fprint(w, `{"success":true,"obj":[
-			{"id":1,"tag":"aimili-reality","remark":"Aimili Reality","protocol":"vless","port":8443,"settings":"{\"clients\":[{\"id\":\"stable-client\",\"email\":\"aimili-gateway-subscription\",\"flow\":\"xtls-rprx-vision\"}]}","streamSettings":"{\"network\":\"tcp\",\"security\":\"reality\",\"realitySettings\":{\"serverNames\":[\"proxy.example.test\"],\"shortIds\":[\"short-one\"],\"settings\":{\"publicKey\":\"public-one\",\"fingerprint\":\"chrome\"}}}"},
-			{"id":2,"tag":"agw-jp-dc-vless","remark":"Aimili Gateway agw-jp-dc VLESS","protocol":"vless","port":20000,"settings":"{\"clients\":[{\"id\":\"stable-client\",\"email\":\"aimili-gateway-subscription\",\"flow\":\"\"}]}","streamSettings":"{\"network\":\"xhttp\",\"security\":\"reality\",\"xhttpSettings\":{\"path\":\"/safe-xhttp-path\",\"mode\":\"auto\"},\"realitySettings\":{\"serverNames\":[\"proxy.example.test\"],\"shortIds\":[\"short-two\"],\"settings\":{\"publicKey\":\"public-two\",\"fingerprint\":\"chrome\"}}}"},
+		fmt.Fprintf(w, `{"success":true,"obj":[
+			{"id":1,"tag":"aimili-reality","remark":"Aimili Reality","protocol":"vless","port":8443,"subSortIndex":%d,"settings":"{\"clients\":[{\"id\":\"stable-client\",\"email\":\"aimili-gateway-subscription\",\"flow\":\"xtls-rprx-vision\"}]}","streamSettings":"{\"network\":\"tcp\",\"security\":\"reality\",\"realitySettings\":{\"serverNames\":[\"proxy.example.test\"],\"shortIds\":[\"short-one\"],\"settings\":{\"publicKey\":\"public-one\",\"fingerprint\":\"chrome\"}}}"},
+			{"id":2,"tag":"agw-jp-dc-vless","remark":"Aimili Gateway agw-jp-dc VLESS","protocol":"vless","port":20000,"subSortIndex":%d,"settings":"{\"clients\":[{\"id\":\"stable-client\",\"email\":\"aimili-gateway-subscription\",\"flow\":\"\"}]}","streamSettings":"{\"network\":\"xhttp\",\"security\":\"reality\",\"xhttpSettings\":{\"path\":\"/safe-xhttp-path\",\"mode\":\"auto\"},\"realitySettings\":{\"serverNames\":[\"proxy.example.test\"],\"shortIds\":[\"short-two\"],\"settings\":{\"publicKey\":\"public-two\",\"fingerprint\":\"chrome\"}}}"},
             {"id":3,"tag":"agw-jp-dc-mixed","remark":"Aimili Gateway agw-jp-dc mixed","protocol":"mixed","port":30000},
 			{"id":4,"tag":"user-vless","remark":"User VLESS","protocol":"vless","port":40000},
-			{"id":5,"tag":"agw-us-dc-vless","remark":"Aimili Gateway agw-us-dc VLESS","protocol":"hysteria","port":20001,"settings":"{\"version\":2,\"clients\":[{\"auth\":\"stable-auth\",\"email\":\"aimili-gateway-subscription\"}]}","streamSettings":"{\"network\":\"hysteria\",\"security\":\"tls\",\"hysteriaSettings\":{\"version\":2},\"tlsSettings\":{\"serverName\":\"192.0.2.20\"}}"}
-        ]}`)
+			{"id":5,"tag":"agw-us-dc-vless","remark":"Aimili Gateway agw-us-dc VLESS","protocol":"hysteria","port":20001,"subSortIndex":%d,"settings":"{\"version\":2,\"clients\":[{\"auth\":\"stable-auth\",\"email\":\"aimili-gateway-subscription\"}]}","streamSettings":"{\"network\":\"hysteria\",\"security\":\"tls\",\"hysteriaSettings\":{\"version\":2},\"tlsSettings\":{\"serverName\":\"192.0.2.20\"}}"}
+		]}`, f.subSortIndex(1, 1), f.subSortIndex(2, 2), f.subSortIndex(5, 3))
 	case "/panel/panel/api/setting/all":
 		f.settingVerb = r.Method
 		if r.Method != http.MethodPost {
@@ -117,9 +126,90 @@ func (f *subscriptionFixture) handler(w http.ResponseWriter, r *http.Request) {
 				f.client["inboundAliases"] = aliases
 			}
 			fmt.Fprint(w, `{"success":true,"obj":null}`)
+		case strings.HasPrefix(r.URL.Path, "/panel/panel/api/inbounds/update/"):
+			var id int64
+			if _, err := fmt.Sscan(strings.TrimPrefix(r.URL.Path, "/panel/panel/api/inbounds/update/"), &id); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			if f.inboundUpdates == nil {
+				f.inboundUpdates = map[int64]map[string]any{}
+			}
+			if f.subSortIndexes == nil {
+				f.subSortIndexes = map[int64]int{}
+			}
+			f.inboundUpdates[id] = payload
+			f.subSortIndexes[id] = int(integerValue(payload["subSortIndex"]))
+			fmt.Fprint(w, `{"success":true,"obj":null}`)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
+	}
+}
+
+func TestOwnedPublicIDsPreservesRequestedOrder(t *testing.T) {
+	inbounds := []Inbound{
+		{ID: 1, Tag: "aimili-reality", Remark: "Aimili Reality", Protocol: "vless"},
+		{ID: 5, Tag: "agw-slot-2-vless", Remark: "Aimili Gateway slot 2", Protocol: "vless"},
+		{ID: 9, Tag: "agw-slot-3-vless", Remark: "Aimili Gateway slot 3", Protocol: "hysteria"},
+		{ID: 12, Tag: "agw-slot-1-vless", Remark: "Aimili Gateway slot 1", Protocol: "vless"},
+	}
+	if got, want := ownedPublicIDs(inbounds, []int64{1, 12, 5, 9}), []int64{1, 12, 5, 9}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("owned IDs = %v, want %v", got, want)
+	}
+}
+
+func TestEnsureSubscriptionClientSetsOwnedInboundSortOrderOnly(t *testing.T) {
+	fixture := &subscriptionFixture{
+		client: map[string]any{"id": 42, "email": "aimili-gateway-subscription", "subId": "stable-sub", "uuid": "stable-client", "auth": "stable-auth", "inboundIds": []any{1, 2, 5}},
+	}
+	client := newSubscriptionFixtureClient(t, fixture)
+
+	subscription, err := client.EnsureSubscriptionClient(context.Background(), SubscriptionDesired{
+		ClientEmail: "aimili-gateway-subscription", ClientUUID: "stable-client", InboundIDs: []int64{5, 2, 1, 3, 4},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := subscription.InboundIDs, []int64{5, 2, 1}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("subscription IDs = %v, want %v", got, want)
+	}
+	if len(fixture.inboundUpdates) != 2 || fixture.subSortIndexes[5] != 1 || fixture.subSortIndexes[1] != 3 {
+		t.Fatalf("sort indexes=%v updates=%v", fixture.subSortIndexes, fixture.inboundUpdates)
+	}
+	if _, touched := fixture.inboundUpdates[3]; touched {
+		t.Fatal("mixed inbound was modified")
+	}
+	if _, touched := fixture.inboundUpdates[4]; touched {
+		t.Fatal("user-owned inbound was modified")
+	}
+	for id, update := range fixture.inboundUpdates {
+		if update["tag"] == nil || update["port"] == nil || update["settings"] == nil || update["streamSettings"] == nil {
+			t.Fatalf("inbound %d update did not preserve the full payload: %#v", id, update)
+		}
+	}
+}
+
+func TestVerifySubscriptionClientRejectsSortOrderDriftWithoutWriting(t *testing.T) {
+	fixture := &subscriptionFixture{
+		client:         map[string]any{"id": 42, "email": "aimili-gateway-subscription", "subId": "stable-sub", "client": map[string]any{"id": "stable-client"}, "inboundIds": []any{1, 2}},
+		subSortIndexes: map[int64]int{1: 2, 2: 1},
+	}
+	client := newSubscriptionFixtureClient(t, fixture)
+	_, err := client.VerifySubscriptionClient(context.Background(), SubscriptionDesired{
+		ClientEmail: "aimili-gateway-subscription", ClientUUID: "stable-client", InboundIDs: []int64{1, 2},
+	})
+	var adapterError *AdapterError
+	if !errors.As(err, &adapterError) || adapterError.Code != "managed_resource_drift" {
+		t.Fatalf("error = %v", err)
+	}
+	if len(fixture.inboundUpdates) != 0 {
+		t.Fatalf("read-only verification wrote inbounds: %#v", fixture.inboundUpdates)
 	}
 }
 

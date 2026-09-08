@@ -577,7 +577,10 @@ func (c *Client) AssignSlotNode(ctx context.Context, slot int, input AssignSlotR
 
 func (c *Client) CheckSlot(ctx context.Context, slot int) (SlotCheck, error) {
 	var result SlotCheck
-	err := c.do(ctx, c.readTimeout, http.MethodPost, fmt.Sprintf("control/v1/slots/%d/check", slot), struct{}{}, &result)
+	// A check performs up to two sequential real egress probes in AimiliVPN.
+	// It is a mutating operation (the fresh result is persisted), so the short
+	// read timeout can expire before the fallback probe has a chance to finish.
+	err := c.do(ctx, c.operationTimeout, http.MethodPost, fmt.Sprintf("control/v1/slots/%d/check", slot), struct{}{}, &result)
 	return result, err
 }
 

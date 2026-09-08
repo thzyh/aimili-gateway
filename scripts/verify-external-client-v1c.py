@@ -88,7 +88,10 @@ import base64, http.cookiejar, json, pathlib, re, socket, sqlite3, subprocess, s
 base=json.load(open('/etc/aimili-gateway/config.json',encoding='utf-8'))['publicOrigin']
 endpoint='http://127.0.0.1:9080'
 manifest=json.load(open('/etc/aimili-local/deployment.json',encoding='utf-8')); slot_count=int(manifest['expected']['exitSlots']); expected_groups=1+slot_count
-account=json.load(open('/etc/aimili-gateway/admin-credentials.json',encoding='utf-8'))
+# ui_auth.json is atomically updated by the unified-account transaction.  The
+# install-time admin-credentials.json is only a bootstrap recovery artifact and
+# intentionally becomes stale after the operator rotates the shared account.
+account=json.load(open('/opt/aimilivpn/vpngate_data/ui_auth.json',encoding='utf-8'))
 jar=http.cookiejar.CookieJar(); op=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
 def call(method,path,payload=None,csrf='',idempotent=False):
  data=None; headers={'Accept':'application/json'}
