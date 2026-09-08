@@ -26,6 +26,8 @@ import (
 
 const enrollmentIssuer = "Aimili Gateway"
 
+const gatewayReloadRequiredExitCode = 10
+
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr, time.Now))
 }
@@ -77,7 +79,9 @@ func runWithDependencies(args []string, in io.Reader, out, errOut io.Writer, dep
 				return 1
 			}
 		}
-		if err := runAccountMenu(context.Background(), database, cfg.MasterKeyFile, newPromptReader(in), out, dependencies); err != nil {
+		if err := runAccountMenu(context.Background(), database, cfg.MasterKeyFile, newPromptReader(in), out, dependencies); errors.Is(err, errGatewayReloadRequired) {
+			return gatewayReloadRequiredExitCode
+		} else if err != nil {
 			writeCommandError(errOut, "manage administrator", err)
 			return 1
 		}

@@ -451,7 +451,11 @@ func TestAccountCommandUsesRestrictedTransientUnit(t *testing.T) {
 		"NoNewPrivileges=yes",
 		"/usr/local/bin/aimili-gateway-admin",
 		"account",
-		"/usr/bin/systemctl try-restart aimili-gateway.service",
+		"status=$?",
+		`case "$status" in`,
+		"10)",
+		"/usr/bin/systemctl reset-failed aimili-gateway.service",
+		"/usr/bin/systemctl restart aimili-gateway.service",
 	} {
 		if !strings.Contains(script, required) {
 			t.Fatalf("account command missing %q", required)
@@ -460,7 +464,7 @@ func TestAccountCommandUsesRestrictedTransientUnit(t *testing.T) {
 	if !strings.Contains(script, `unit_name="aimili-gateway-account-`) || !strings.Contains(script, `--unit="$unit_name"`) {
 		t.Fatal("account command does not use a unique transient unit name")
 	}
-	for _, forbidden := range []string{"bash -c", "sh -c", "eval ", "curl ", "wget ", "$@", "=%d/"} {
+	for _, forbidden := range []string{"bash -c", "sh -c", "eval ", "curl ", "wget ", "$@", "=%d/", "try-restart"} {
 		if strings.Contains(script, forbidden) {
 			t.Fatalf("account command contains unsafe behavior %q", forbidden)
 		}
