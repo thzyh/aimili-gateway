@@ -7,7 +7,7 @@ $caddyPath = Join-Path $PSScriptRoot '..\native\local-caddy.Caddyfile'
 if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) { throw 'x-ui/Caddy installer is missing' }
 if (-not (Test-Path -LiteralPath $caddyPath -PathType Leaf)) { throw 'local Caddyfile is missing' }
 $source = Get-Content -LiteralPath $scriptPath -Raw
-foreach ($token in @('--check', '--apply', '--allowed-source', '--public-origin', 'x-ui.service', 'caddy.service', 'v3.7.0', 'f727d04f6522bb94a8fb52e8352fdcafb51c11e1', '0f8dd7baef3458f6591574e24814f322cf7f5e1e27f0a594683745e50be84ec5', '127.0.0.1', 'ufw allow from', 'xui-credentials.json')) {
+foreach ($token in @('--check', '--apply', '--allowed-source', '--public-origin', 'x-ui.service', 'caddy.service', 'v3.7.0', 'f727d04f6522bb94a8fb52e8352fdcafb51c11e1', '0f8dd7baef3458f6591574e24814f322cf7f5e1e27f0a594683745e50be84ec5', '127.0.0.1', 'ufw allow from', 'xui-credentials.json', 'update-ca-certificates', 'aimili-local-caddy.crt', 'openssl verify')) {
     if ($source -notmatch [regex]::Escape($token)) { throw "x-ui/Caddy installer contract missing: $token" }
 }
 $caddy = Get-Content -LiteralPath $caddyPath -Raw

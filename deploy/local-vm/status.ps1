@@ -18,12 +18,15 @@ $report = [ordered]@{
     expected = $manifest.expected
     actual = [ordered]@{ openvpn = 0; xray = 0; logicalExits = 0; exitSlots = 0 }
     listeners = [ordered]@{}
+    xrayListeners = [ordered]@{}
     mainChecks = [ordered]@{ tun = $false; route = $false; listener = $false; egress = $false }
     slotChecks = @()
     databaseReadable = $false
     evidenceSchema = $false
     subscriptionExitSet = $false
     protocolIsolation = $false
+    xrayRuntimeListeners = $false
+    protocolAutomation = [ordered]@{ gatewayServiceActive = $false; pathActive = $false; timerActive = $false; gatewayServiceEnabled = $false; pathEnabled = $false; timerEnabled = $false; wrapperExecutable = $false; scriptInstalled = $false; configInstalled = $false; pathUnitInstalled = $false; serviceUnitInstalled = $false; timerUnitInstalled = $false }
     hostSafety = $false
     nativeReady = $false
 }
@@ -53,12 +56,15 @@ if ($running) {
                     $report.nativeEnabled.caddy = if ($deep.nativeEnabled.caddy) { 'enabled' } else { 'disabled' }
                     $report.actual = $deep.actual
                     $report.listeners = $deep.listeners
+                    $report.xrayListeners = $deep.xrayListeners
                     $report.mainChecks = $deep.mainChecks
                     $report.slotChecks = @($deep.slotChecks)
                     $report.databaseReadable = [bool]$deep.databaseReadable
                     $report.evidenceSchema = [bool]$deep.evidenceSchema
                     $report.subscriptionExitSet = [bool]$deep.subscriptionExitSet
                     $report.protocolIsolation = [bool]$deep.protocolIsolation
+                    $report.xrayRuntimeListeners = [bool]$deep.xrayRuntimeListeners
+                    $report.protocolAutomation = $deep.protocolAutomation
                     $report.hostSafety = [bool]$deep.hostSafety
                     $report.nativeReady = [bool]$deep.nativeReady
                 } catch {

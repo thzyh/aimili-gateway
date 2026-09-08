@@ -534,6 +534,41 @@ class ProtocolTransactionTests(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.TransactionError, "managed_resource_drift"):
             self._manager().validate_request(self._request())
 
+    def test_load_target_composes_3xui_template_with_database_inbounds(self):
+        template = json.loads(self.runtime_config_path.read_text(encoding="utf-8"))
+        template["inbounds"] = [item for item in template["inbounds"] if item.get("tag") == "api"]
+        with closing(sqlite3.connect(self.database_path)) as database, database:
+            database.execute("CREATE TABLE settings(id INTEGER PRIMARY KEY, key TEXT, value TEXT)")
+            database.execute(
+                "INSERT INTO settings(key,value) VALUES('xrayTemplateConfig',?)",
+                (json.dumps(template, sort_keys=True),),
+            )
+        self.runtime_config_path.write_text(json.dumps(template, sort_keys=True), encoding="utf-8")
+
+        source = self._manager().load_target(self._request())
+
+        matches = [item for item in source["runtime"]["inbounds"] if item.get("tag") == "agw-slot-one-vless"]
+        self.assertEqual(1, len(matches))
+        self.assertEqual(20000, matches[0]["port"])
+
+    def test_load_target_accepts_empty_optional_stream_settings_on_mixed_inbound(self):
+        template = json.loads(self.runtime_config_path.read_text(encoding="utf-8"))
+        template["inbounds"] = [item for item in template["inbounds"] if item.get("tag") == "api"]
+        with closing(sqlite3.connect(self.database_path)) as database, database:
+            database.execute("CREATE TABLE settings(id INTEGER PRIMARY KEY, key TEXT, value TEXT)")
+            database.execute(
+                "INSERT INTO settings(key,value) VALUES('xrayTemplateConfig',?)",
+                (json.dumps(template, sort_keys=True),),
+            )
+            database.execute("UPDATE inbounds SET stream_settings='' WHERE id=42")
+        self.runtime_config_path.write_text(json.dumps(template, sort_keys=True), encoding="utf-8")
+
+        source = self._manager().load_target(self._request())
+
+        mixed = [item for item in source["runtime"]["inbounds"] if item.get("tag") == "agw-slot-one-mixed"]
+        self.assertEqual(1, len(mixed))
+        self.assertEqual({}, mixed[0]["streamSettings"])
+
     def test_template_tcp_and_xhttp_preserve_reality_identity_and_select_flow(self):
         manager = self._manager()
         source = manager.load_target(self._request())

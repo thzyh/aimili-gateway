@@ -11,9 +11,12 @@ mkdir -p "$fake_bin"
 systemctl_log="$fixture/systemctl.log"
 installer_log="$fixture/installer.log"
 env_file="$fixture/aimilivpn.default"
+ui_config="$fixture/ui_auth.json"
 data_marker="$fixture/existing-data"
 printf '%s\n' preserved > "$data_marker"
-printf '%s\n' 'OTHER_SETTING=preserved' 'MULTI_EXIT_SLOTS=1' 'MAX_EXIT_SLOTS=2' > "$env_file"
+printf '%s\n' 'OTHER_SETTING=preserved' 'MULTI_EXIT_SLOTS=1' 'MAX_EXIT_SLOTS=2' 'UI_HOST=0.0.0.0' > "$env_file"
+printf '%s\n' '{"host":"::","port":8787,"password":"preserved-secret"}' > "$ui_config"
+chmod 0600 "$ui_config"
 cat > "$fixture/os-release" <<'EOF'
 ID=ubuntu
 VERSION_ID=24.04
@@ -31,6 +34,11 @@ if [[ "${1:-}" == is-active ]]; then printf '%s\n' active; exit 0; fi
 if [[ "${1:-}" == restart ]]; then
   grep -qx 'MULTI_EXIT_SLOTS=3' "$AIMILI_ENV_FILE"
   grep -qx 'MAX_EXIT_SLOTS=16' "$AIMILI_ENV_FILE"
+  grep -qx 'UI_HOST=127.0.0.1' "$AIMILI_ENV_FILE"
+  python3 - "$AIMILI_UI_CONFIG" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1])); assert d['host']=='127.0.0.1' and d['port']==8787 and d['password']=='preserved-secret', d
+PY
 fi
 SH
 cat > "$fake_bin/ip" <<'SH'
@@ -59,6 +67,8 @@ chmod 0700 "$fixture/network-preflight.sh"
 cat > "$fixture/installer.sh" <<'SH'
 #!/bin/bash
 set -euo pipefail
+test -f "${APT_CONFIG:-}"
+grep -qx 'DPkg::Lock::Timeout "120";' "$APT_CONFIG"
 printf '%s\n' invocation >> "$INSTALLER_LOG"
 printf '%s\n' 'sensitive-canary-stdout'
 printf '%s\n' 'sensitive-canary-stderr' >&2
@@ -66,7 +76,7 @@ install -m 0700 /bin/true "$FAKE_BIN/openvpn"
 SH
 chmod 0700 "$fixture/installer.sh"
 
-common_env=(PATH="$fake_bin" FAKE_BIN="$fake_bin" SYSTEMCTL_LOG="$systemctl_log" INSTALLER_LOG="$installer_log" AIMILI_NETWORK_PROBE="$fixture/network-preflight.sh" AIMILI_OS_RELEASE="$fixture/os-release" AIMILI_TUN_PATH=/dev/null AIMILI_DISK_PATH="$fixture" AIMILI_ENV_FILE="$env_file")
+common_env=(PATH="$fake_bin" FAKE_BIN="$fake_bin" SYSTEMCTL_LOG="$systemctl_log" INSTALLER_LOG="$installer_log" AIMILI_NETWORK_PROBE="$fixture/network-preflight.sh" AIMILI_OS_RELEASE="$fixture/os-release" AIMILI_TUN_PATH=/dev/null AIMILI_DISK_PATH="$fixture" AIMILI_ENV_FILE="$env_file" AIMILI_UI_CONFIG="$ui_config")
 
 check_output="$(env "${common_env[@]}" bash "$script" --check --slot-count 3)"
 python3 - "$check_output" <<'PY'
@@ -87,5 +97,11 @@ grep -qx preserved "$data_marker"
 grep -qx 'OTHER_SETTING=preserved' "$env_file"
 [[ "$(grep -c '^MULTI_EXIT_SLOTS=3$' "$env_file")" -eq 1 ]]
 [[ "$(grep -c '^MAX_EXIT_SLOTS=16$' "$env_file")" -eq 1 ]]
+[[ "$(grep -c '^UI_HOST=127.0.0.1$' "$env_file")" -eq 1 ]]
+python3 - "$ui_config" <<'PY'
+import json,os,sys
+d=json.load(open(sys.argv[1])); assert d=={'host':'127.0.0.1','port':8787,'password':'preserved-secret'}, d
+assert os.stat(sys.argv[1]).st_mode & 0o777 == 0o600
+PY
 [[ "$(grep -c '^restart aimilivpn.service$' "$systemctl_log")" -eq 2 ]]
 printf '%s\n' 'PASS AimiliVPN installer check and idempotent apply fixture'

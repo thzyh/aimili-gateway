@@ -20,16 +20,11 @@ for command in python3 curl ip ss; do
   command -v "$command" >/dev/null 2>&1 || { printf 'dependency_missing:%s\n' "$command" >&2; exit 3; }
 done
 
-auth_file="${AIMILI_UI_AUTH_FILE:-/opt/aimilivpn/vpngate_data/ui_auth.json}"
 slots_file="${AIMILI_SLOTS_FILE:-/opt/aimilivpn/vpngate_data/slots.json}"
 wait_attempts="${AIMILI_SLOT_WAIT_ATTEMPTS:-90}"
 wait_interval="${AIMILI_SLOT_WAIT_INTERVAL:-2}"
 table_base="${AIMILI_SLOT_TABLE_BASE:-200}"
 [[ "$wait_attempts" =~ ^[1-9][0-9]*$ && "$table_base" =~ ^[0-9]+$ ]] || { printf 'verification_config_invalid\n' >&2; exit 2; }
-[[ -s "$auth_file" ]] || { printf 'aimilivpn_auth_missing\n' >&2; exit 3; }
-secret="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["secret_path"])' "$auth_file")"
-[[ "$secret" =~ ^[A-Za-z0-9._~/-]+$ ]] || { printf 'aimilivpn_auth_invalid\n' >&2; exit 3; }
-
 link_has_up_flag() {
   local state="$1" flags
   [[ "$state" == *'<'*'>'* ]] || return 1
@@ -37,14 +32,6 @@ link_has_up_flag() {
   flags="${flags%%>*}"
   [[ ",$flags," == *,UP,* ]]
 }
-
-response="$({
-  printf 'url = "http://127.0.0.1:8787/%s/api/start_slot"\n' "$secret"
-  printf 'request = "POST"\n'
-  printf 'header = "Content-Type: application/json"\n'
-  printf 'data = "{\\"slot\\":%s}"\n' "$slot"
-} | curl -fsS --connect-timeout 5 --max-time 15 --config -)" || { printf 'slot_start_request_failed\n' >&2; exit 4; }
-python3 -c 'import json,sys; raise SystemExit(0 if json.loads(sys.argv[1]).get("ok") else 1)' "$response" || { printf 'slot_start_rejected\n' >&2; exit 4; }
 
 for _ in $(seq 1 "$wait_attempts"); do
   slot_state=''

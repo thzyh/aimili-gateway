@@ -38,6 +38,9 @@ class FakeProcess:
 
 
 class VerificationHelperTests(unittest.TestCase):
+    def test_external_egress_probe_uses_http_to_avoid_nested_target_tls(self):
+        self.assertEqual("http://api.ipify.org", MODULE.EGRESS_PROBE_URL)
+
     def _verify_public_probe(self, curl_results, mode="vless_tcp_reality_vision"):
         attempts = []
 
@@ -111,6 +114,36 @@ class VerificationHelperTests(unittest.TestCase):
 
         self.assertFalse(result["external_public_protocol"])
         self.assertEqual(1, len(attempts))
+
+    def test_mixed_probe_retries_one_transient_timeout(self):
+        process = FakeProcess([0])
+        payload = {
+            "exitIp": "203.0.113.1",
+            "protocolMode": "vless_tcp_reality_vision",
+            "publicUri": (
+                "vless://client@example.test:20000?type=tcp&security=reality&"
+                "flow=xtls-rprx-vision&fp=chrome&sni=front.example&pbk=public&sid=abcd"
+            ),
+            "socks5hUri": "socks5h://127.0.0.1:1080",
+        }
+        results = [
+            subprocess.CompletedProcess([], 28, "", "timeout"),
+            subprocess.CompletedProcess([], 0, "203.0.113.1", ""),
+            subprocess.CompletedProcess([], 0, "203.0.113.1", ""),
+        ]
+        with (
+            mock.patch.object(MODULE, "tcp_reachable", return_value=True),
+            mock.patch.object(MODULE, "free_port", return_value=10808),
+            mock.patch.object(MODULE.subprocess, "run", side_effect=results) as run,
+            mock.patch.object(MODULE.subprocess, "Popen", return_value=process),
+            mock.patch.object(MODULE.socket, "create_connection", return_value=mock.MagicMock()),
+        ):
+            result = MODULE.verify_group(payload, "xray.exe", probe_public_socks=True)
+
+        self.assertTrue(result["external_socks5h"])
+        self.assertEqual(0, result["socks_curl_exit"])
+        self.assertEqual(MODULE.EGRESS_PROBE_URL, run.call_args_list[0].args[0][-1])
+        self.assertEqual(payload["socks5hUri"], run.call_args_list[0].kwargs["env"]["HTTP_PROXY"])
 
     def test_remote_switch_uses_gateway_cas_and_has_no_unconditional_rollback(self):
         self.assertIn("'expectedProtocolMode':expected_old", MODULE.REMOTE_HELPER)
@@ -204,7 +237,10 @@ class VerificationHelperTests(unittest.TestCase):
         uri = "hysteria2://opaque-auth@example.test:20001/?sni=front.example"
 
         document = MODULE.build_public_client_config(
-            uri, "hysteria2_quic_tls", 10808
+            uri,
+            "hysteria2_quic_tls",
+            10808,
+            ca_certificate_path="C:/Temp/aimili-validation-ca.crt",
         )
 
         outbound = document["outbounds"][0]
@@ -220,6 +256,16 @@ class VerificationHelperTests(unittest.TestCase):
         self.assertEqual(
             "front.example",
             outbound["streamSettings"]["tlsSettings"]["serverName"],
+        )
+        self.assertFalse(
+            outbound["streamSettings"]["tlsSettings"]["allowInsecure"]
+        )
+        self.assertTrue(
+            outbound["streamSettings"]["tlsSettings"]["disableSystemRoot"]
+        )
+        self.assertEqual(
+            [{"certificateFile": "C:/Temp/aimili-validation-ca.crt", "usage": "verify"}],
+            outbound["streamSettings"]["tlsSettings"]["certificates"],
         )
 
     def test_decode_subscription_accepts_vless_and_hysteria2(self):
@@ -247,9 +293,100 @@ class VerificationHelperTests(unittest.TestCase):
         self.assertIn("g.get('egressSource')=='main'", MODULE.REMOTE_HELPER)
         self.assertIn("'subscriptionAlias'", MODULE.REMOTE_HELPER)
 
+    def test_remote_collection_authenticates_with_gateway_credentials(self):
+        self.assertIn("/etc/aimili-gateway/admin-credentials.json", MODULE.REMOTE_HELPER)
+        self.assertNotIn("/opt/aimilivpn/vpngate_data/ui_auth.json", MODULE.REMOTE_HELPER)
+
+    def test_remote_collection_rechecks_groups_before_collecting_connections(self):
+        check = "call('POST','/api/v1/proxy-groups/'+urllib.parse.quote(group_id,safe='')+'/check',{},csrf,True)"
+        self.assertIn(check, MODULE.REMOTE_HELPER)
+        self.assertIn("remote_group_check_slot_", MODULE.REMOTE_HELPER)
+        self.assertIn("if not group.get('fixed'): continue", MODULE.REMOTE_HELPER)
+        self.assertIn("for attempt in range(37):", MODULE.REMOTE_HELPER)
+        self.assertIn("attempt < 36", MODULE.REMOTE_HELPER)
+        self.assertIn("remote_group_check_http_409_operation_busy", MODULE.REMOTE_HELPER)
+        self.assertIn("remote_group_check_http_409_maintenance_busy", MODULE.REMOTE_HELPER)
+        self.assertIn("\n groups=call('GET','/api/v1/proxy-groups')\n for group in groups:\n", MODULE.REMOTE_HELPER)
+        self.assertLess(MODULE.REMOTE_HELPER.index(check), MODULE.REMOTE_HELPER.index("connections=call('GET'"))
+
+    def test_remote_subscription_fetch_preserves_the_public_host(self):
+        self.assertIn("'Host':subscription_url.hostname", MODULE.REMOTE_HELPER)
+
+    def test_remote_collection_uses_explicit_vm_ssh_target_and_options(self):
+        completed = subprocess.CompletedProcess([], 0, '{"expectedGroups":5}', "")
+        with mock.patch.object(MODULE.subprocess, "run", return_value=completed) as run:
+            remote = MODULE.run_remote(
+                None,
+                "none",
+                ssh_target="aimili@192.168.88.4",
+                ssh_options=["-i", "fixture-key", "-o", "StrictHostKeyChecking=yes"],
+            )
+
+        self.assertEqual(5, remote["expectedGroups"])
+        self.assertEqual(
+            ["ssh", "-i", "fixture-key", "-o", "StrictHostKeyChecking=yes", "aimili@192.168.88.4", "sudo", "python3", "-", "-1", "none", "any"],
+            run.call_args.args[0],
+        )
+
+    def test_external_evaluation_uses_manifest_group_count_and_forces_each_mixed_probe(self):
+        materials = [
+            {
+                "exitIp": f"203.0.113.{index + 1}",
+                "protocolMode": "vless_tcp_reality_vision",
+                "publicUri": f"vless://client@example.test:{20000 + index}?type=tcp",
+                "socks5hUri": f"socks5h://example.test:{30000 + index}",
+                "slotNumber": index,
+                "authorizedSocks5h": True,
+            }
+            for index in range(5)
+        ]
+        remote = {
+            "expectedGroups": 5,
+            "sourceRestrictionEnabled": True,
+            "groups": materials,
+            "subscription": MODULE.base64.b64encode(b"fixture").decode(),
+            "xrayPid": 10,
+            "publicCount": 5,
+            "mixedCount": 5,
+            "switch": None,
+            "tlsCa": MODULE.base64.b64encode(
+                b"-----BEGIN CERTIFICATE-----\nfixture-ca\n-----END CERTIFICATE-----\n"
+            ).decode(),
+        }
+        probe_flags = []
+        ca_certificates = []
+
+        def verify(material, _xray, probe_public_socks, ca_certificate):
+            probe_flags.append(probe_public_socks)
+            ca_certificates.append(ca_certificate)
+            return {
+                "external_socks5h": True,
+                "external_socks_tcp": True,
+                "external_public_protocol": True,
+                "protocol_mode": material["protocolMode"],
+            }
+
+        with (
+            mock.patch.object(MODULE, "decode_subscription", return_value=["entry"] * 5),
+            mock.patch.object(MODULE, "validate_subscription_coverage", return_value={"entryCount": 5, "vless": 5, "hysteria2": 0}),
+            mock.patch.object(MODULE, "bind_subscription_entries", return_value=materials),
+            mock.patch.object(MODULE, "verify_group", side_effect=verify),
+        ):
+            result, passed = MODULE.evaluate_remote(remote, None, "xray", probe_public_socks=True)
+
+        self.assertTrue(passed)
+        self.assertEqual(5, result["ready_groups"])
+        self.assertTrue(all(result["invariants"].values()))
+        self.assertEqual([True] * 5, probe_flags)
+        self.assertEqual(
+            ["-----BEGIN CERTIFICATE-----\nfixture-ca\n-----END CERTIFICATE-----\n"] * 5,
+            ca_certificates,
+        )
+
     def test_remote_helper_source_is_ascii_for_ssh_stdin_compatibility(self):
         self.assertTrue(MODULE.REMOTE_HELPER.isascii())
         self.assertIn(r"'\u4e3b\u8fde\u63a5_'", MODULE.REMOTE_HELPER)
+        self.assertIn("headers['Cookie']=cookie_header", MODULE.REMOTE_HELPER)
 
     def test_subscription_coverage_matches_ports_and_protocols(self):
         materials = [
@@ -426,6 +563,42 @@ class VerificationHelperTests(unittest.TestCase):
             MODULE.validate_subscription_coverage(materials, [
                 "vless://client@example.test:20000?type=xhttp&path=%2Fopaque#%E5%87%BA%E5%8F%A3%E4%BD%8D%201_%E9%9F%A9%E5%9B%BD"
             ])
+
+    def test_subscription_coverage_accepts_3xui_suffix_for_dynamic_main_alias_only(self):
+        main = [{
+            "exitIp": "203.0.113.1",
+            "protocolMode": "vless_tcp_reality_vision",
+            "publicUri": "vless://client@example.test:8443?type=tcp#agw-main",
+            "socks5hUri": "socks5h://main",
+            "subscriptionAlias": "主连接_日本",
+            "slotNumber": 0,
+        }]
+        suffixed_main = (
+            "vless://client@example.test:8443?type=tcp#"
+            "%E4%B8%BB%E8%BF%9E%E6%8E%A5_%E6%97%A5%E6%9C%AC-aimili-gateway-subscription"
+        )
+        self.assertEqual(
+            {"entryCount": 1, "hysteria2": 0, "vless": 1},
+            MODULE.validate_subscription_coverage(main, [suffixed_main]),
+        )
+
+        rejected = (
+            (
+                {**main[0], "subscriptionAlias": "出口位 1_日本", "slotNumber": 1},
+                "vless://client@example.test:8443?type=tcp#"
+                "%E5%87%BA%E5%8F%A3%E4%BD%8D%201_%E6%97%A5%E6%9C%AC-aimili-gateway-subscription",
+            ),
+            (
+                main[0],
+                "vless://client@example.test:8443?type=tcp#"
+                "%E4%B8%BB%E8%BF%9E%E6%8E%A5_%E6%97%A5%E6%9C%AC-impostor",
+            ),
+        )
+        for material, entry in rejected:
+            with self.subTest(entry=entry), self.assertRaisesRegex(
+                RuntimeError, "subscription coverage mismatch"
+            ):
+                MODULE.validate_subscription_coverage([material], [entry])
 
     def test_subscription_coverage_accepts_3xui_stable_remarks_and_default_parameters(self):
         materials = [

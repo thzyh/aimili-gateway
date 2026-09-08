@@ -366,7 +366,7 @@ func TestEnsureLegacyMainPreserves8443AndAddsOnlyMixedInbound(t *testing.T) {
 	}
 	client := newXUIFixtureClient(t, fixture)
 	managed, err := client.EnsureLegacyMain(context.Background(), LegacyMainDesired{
-		VLESSPort: 8443, MixedPort: 31000, SOCKSPort: 7928, MixedUsername: "user", MixedPassword: "password",
+		VLESSPort: 8443, MixedPort: 31000, SOCKSPort: 7928, VLESSClientID: "11111111-2222-4333-8444-555555555555", MixedUsername: "user", MixedPassword: "password",
 		RealityTarget: "127.0.0.1:443", RealityServerName: "proxy.example.test",
 	})
 	if err != nil {
@@ -390,6 +390,41 @@ func TestEnsureLegacyMainPreserves8443AndAddsOnlyMixedInbound(t *testing.T) {
 	}
 	if fixture.updatedXrayCalls != updatesBefore {
 		t.Fatal("idempotent main inspection unexpectedly rewrote Xray settings")
+	}
+}
+
+func TestEnsureLegacyMainBootstrapsAnEmptyOwnedChain(t *testing.T) {
+	fixture := &xuiFixture{}
+	client := newXUIFixtureClient(t, fixture)
+
+	managed, err := client.EnsureLegacyMain(context.Background(), LegacyMainDesired{
+		VLESSPort: 8443, MixedPort: 31000, SOCKSPort: 7928, VLESSClientID: "11111111-2222-4333-8444-555555555555", MixedUsername: "user", MixedPassword: "password",
+		RealityTarget: "127.0.0.1:443", RealityServerName: "proxy.example.test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if managed.VLESSInboundID == 0 || managed.MixedInboundID == 0 || managed.ClientID == "" || managed.PublicKey == "" || managed.ShortID == "" {
+		t.Fatalf("fresh main is incomplete: %#v", managed)
+	}
+	if managed.ClientID != "11111111-2222-4333-8444-555555555555" {
+		t.Fatalf("fresh main client ID = %q", managed.ClientID)
+	}
+	tags := map[string]bool{}
+	listed := make([]Inbound, 0, len(fixture.inbounds))
+	for _, inbound := range fixture.inbounds {
+		tags[stringValue(inbound["tag"])] = true
+		port, _ := inbound["port"].(int)
+		if numeric, ok := inbound["port"].(float64); ok {
+			port = int(numeric)
+		}
+		listed = append(listed, Inbound{Tag: stringValue(inbound["tag"]), Remark: stringValue(inbound["remark"]), Protocol: stringValue(inbound["protocol"]), Port: port})
+	}
+	if !tags["aimili-reality"] || !tags["agw-main-mixed"] {
+		t.Fatalf("fresh main inbounds missing: %#v", fixture.inbounds)
+	}
+	if err := verifyLegacyMainChain(listed, fixture.updatedXray, 8443, 7928); err != nil {
+		t.Fatalf("fresh main chain is invalid: %v", err)
 	}
 }
 

@@ -128,6 +128,39 @@ func TestReconcileAdoptsV1BLegacyGroupFromItsExistingSlot(t *testing.T) {
 	}
 }
 
+func TestReconcileAdoptsHealthyPrecreatedSlotsWithoutRecreatingThem(t *testing.T) {
+	fixture := newFixture()
+	fixture.aimili.candidates = []aimili.Candidate{}
+	fixture.aimili.createdSlots = map[int]aimili.Slot{
+		0: {Number: 0, Country: "KR", CountryName: "韩国", ProxyType: "residential", Port: 17928, Status: "up", NodeID: "runtime-slot-zero", CandidateIP: "198.51.100.10", ExitIP: "203.0.113.10", EgressOK: true, CheckedAt: 1_700_000_000},
+		1: {Number: 1, Country: "KR", CountryName: "韩国", ProxyType: "residential", Port: 17929, Status: "up", NodeID: "runtime-slot-one", CandidateIP: "198.51.100.11", ExitIP: "203.0.113.11", EgressOK: true, CheckedAt: 1_700_000_001},
+		2: {Number: 2, Country: "JP", CountryName: "日本", ProxyType: "residential", Port: 17930, Status: "up", NodeID: "runtime-slot-two", CandidateIP: "198.51.100.12", ExitIP: "203.0.113.12", EgressOK: true, CheckedAt: 1_700_000_002},
+	}
+
+	result := fixture.orchestratorWithMax(t, 3).Reconcile(context.Background())
+	groups, err := fixture.store.ListProxyGroups(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result.Ready != 3 || result.Failed != 0 || len(groups) != 3 {
+		t.Fatalf("precreated slots were not adopted: result=%#v groups=%#v", result, groups)
+	}
+	bySlot := make(map[int]domain.ProxyGroup, len(groups))
+	for _, group := range groups {
+		bySlot[group.AimiliSlot] = group
+	}
+	for slot := 0; slot < 3; slot++ {
+		group, ok := bySlot[slot]
+		if !ok || group.Status != domain.ProxyGroupReady || group.CandidateID == "" || group.PublicPort != 20000+slot || group.MixedPort != 30000+slot {
+			t.Fatalf("adopted group %d is incomplete: %#v", slot, group)
+		}
+	}
+	if contains(fixture.calls, "slot.create") || contains(fixture.calls, "slot.delete") {
+		t.Fatalf("precreated slots were recreated or deleted: %#v", fixture.calls)
+	}
+}
+
 func TestReconcileContinuesAfterOneCandidateFails(t *testing.T) {
 	fixture := newFixture()
 	fixture.aimili.candidates = []aimili.Candidate{

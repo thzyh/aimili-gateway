@@ -83,7 +83,10 @@ else
   curl -fsSL --connect-timeout 10 --max-time 60 "https://raw.githubusercontent.com/thzyh/aimili-vpngate/${source_commit}/install.sh" -o "$installer"
 fi
 chmod 0700 "$installer"
-if ! bash "$installer" thzyh aimili-vpngate custom "$source_commit" >"$work_dir/install.log" 2>&1; then
+apt_config="$work_dir/apt.conf"
+printf '%s\n' 'DPkg::Lock::Timeout "120";' > "$apt_config"
+chmod 0600 "$apt_config"
+if ! APT_CONFIG="$apt_config" bash "$installer" thzyh aimili-vpngate custom "$source_commit" >"$work_dir/install.log" 2>&1; then
   printf 'aimilivpn_installer_failed\n' >&2
   exit 5
 fi
@@ -93,8 +96,35 @@ env_file="${AIMILI_ENV_FILE:-/etc/default/aimilivpn}"
 install -d -m 0700 "$(dirname "$env_file")"
 touch "$env_file"
 chmod 0600 "$env_file"
-sed -i '/^MULTI_EXIT_SLOTS=/d;/^MAX_EXIT_SLOTS=/d' "$env_file"
-printf 'MULTI_EXIT_SLOTS=%s\nMAX_EXIT_SLOTS=%s\n' "$slot_count" "$max_slots" >> "$env_file"
+sed -i '/^MULTI_EXIT_SLOTS=/d;/^MAX_EXIT_SLOTS=/d;/^UI_HOST=/d' "$env_file"
+printf 'MULTI_EXIT_SLOTS=%s\nMAX_EXIT_SLOTS=%s\nUI_HOST=127.0.0.1\n' "$slot_count" "$max_slots" >> "$env_file"
+ui_config="${AIMILI_UI_CONFIG:-/opt/aimilivpn/vpngate_data/ui_auth.json}"
+python3 - "$ui_config" <<'PY'
+import json, os, pathlib, tempfile, sys
+
+path = pathlib.Path(sys.argv[1])
+if path.is_symlink() or not path.is_file():
+    raise SystemExit('aimilivpn_ui_config_missing')
+document = json.loads(path.read_text(encoding='utf-8'))
+if not isinstance(document, dict):
+    raise SystemExit('aimilivpn_ui_config_invalid')
+state = path.stat()
+document['host'] = '127.0.0.1'
+descriptor, temporary = tempfile.mkstemp(prefix='.' + path.name + '.', dir=str(path.parent))
+try:
+    with os.fdopen(descriptor, 'w', encoding='utf-8') as output:
+        json.dump(document, output, separators=(',', ':'))
+        output.flush()
+        os.fsync(output.fileno())
+    os.chmod(temporary, state.st_mode & 0o7777)
+    os.chown(temporary, state.st_uid, state.st_gid)
+    os.replace(temporary, path)
+finally:
+    try:
+        os.unlink(temporary)
+    except FileNotFoundError:
+        pass
+PY
 systemctl daemon-reload
 systemctl enable aimilivpn.service >/dev/null
 systemctl restart aimilivpn.service >/dev/null

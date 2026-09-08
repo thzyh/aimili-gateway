@@ -10,11 +10,11 @@
 
 ## 已有基础与边界
 
-- 复用 `D:\VirtualMachines\AimiliGatewayLocal` 中的现有 VM、24 GiB 动态磁盘、固定 Ubuntu OVA、NoCloud seed、SSH 密钥和桥接网络。
+- 复用 `D:\VirtualMachines\AimiliGatewayLocal` 中的现有 VM、24 GiB 动态磁盘、固定 Ubuntu OVA、NoCloud seed、SSH 密钥和 VMnet8 NAT 网络。
 - VM 固定使用 2 vCPU、2048 MiB 内存和约 1 GiB swap；本轮不自动扩容。
 - 宿主可用内存低于 3.5 GiB 时拒绝自动启动 VM，不结束用户程序。
-- VM 只有一张连接 VMnet0 的物理桥接网卡，承担默认路由和管理流量。
-- UFW 管理入口只允许创建 VM 时记录的 Windows 物理地址；不增加路由器端口转发，不开放无来源限制的公网代理。
+- VM 只有一张连接 VMnet8 的 NAT 网卡，承担默认路由和管理流量。
+- UFW 管理入口只允许创建 VM 时记录的 Windows VMnet8 宿主地址；不增加路由器端口转发，不开放无来源限制的公网代理。
 - 不连接 ny，不读取或复制 ny 的数据库、配置、证书、Cookie、token、UUID、私钥、公网地址或后台路径。
 - 不读取或修改 v2rayN 配置、日志、活动节点、TUN 或系统代理；只读取 PID、系统代理和 Windows 默认路由摘要验证不变性。
 - 不修改 Windows 默认路由、DNS 或防火墙，不使用浏览器自动化；页面、订阅和 v2rayN 最终验收由用户执行。
@@ -97,9 +97,9 @@ Caddy 作为 `caddy.service` 运行，仅承担本机管理入口反向代理。
 
 ## 网络失败处理
 
-业务安装的硬前置条件是 VM 同时满足：局域网网关可达、公共 IP 的 TCP 443 可达、DNS 能解析、HTTPS 能完成请求。当前只有局域网网关可达，因此先按真实数据流定位：来宾路由与源地址 → 来宾防火墙 → VMnet0 桥接 → 上游网络准入。
+业务安装的硬前置条件是 VM 同时满足：VMnet8 NAT 网关可达、公共 IP 的 TCP 443 可达、DNS 能解析、HTTPS 能完成请求。先按真实数据流定位：来宾路由与源地址 → 来宾防火墙 → VMnet8 NAT → 上游网络。
 
-只允许修改 VM 内或 VMware 本 VM 的配置。若证据证明上游网络拒绝第二个桥接 MAC，需要用户或网络管理员完成准入；不得通过修改 Windows 默认路由、DNS、防火墙或 v2rayN 绕过。
+只允许修改 VM 内或 VMware 本 VM 的配置。不得切换为会改变宿主路由或网络安全边界的替代方案，也不得通过修改 Windows 默认路由、DNS、防火墙或 v2rayN 绕过。
 
 ## 状态与验证
 
@@ -107,7 +107,7 @@ Caddy 作为 `caddy.service` 运行，仅承担本机管理入口反向代理。
 
 验收分层执行：
 
-1. VM 基础：资源、磁盘、swap、桥接、SSH、UFW、DNS、TCP 443、HTTPS；
+1. VM 基础：资源、磁盘、swap、VMnet8 NAT、SSH、UFW、DNS、TCP 443、HTTPS；
 2. 服务：四项 systemd active/enabled、重启计数、日志无新增致命错误；
 3. 数据：Gateway 与 x-ui 数据库可读，配置和凭据权限符合预期；
 4. 数据面：主连接后依次启用出口1至出口3，每步核对隧道、策略路由、本地代理和真实出口；
@@ -125,5 +125,5 @@ Caddy 作为 `caddy.service` 运行，仅承担本机管理入口反向代理。
 - 当前四个逻辑出口完成自动数据面验证；
 - 当前 OpenVPN/Xray 数量与部署清单一致，但代码没有把它们定义成永久上限；
 - VM 重启恢复、数据库可读、来源限制和宿主不变性通过；
-- 两个工作树分别有清晰的本地提交，不推送远程；
+- 两个工作树分别有清晰的本地提交；真实 VM 部署、外部自动验证和重启复验通过后，普通推送功能分支并核对远程 SHA，禁止强制推送；
 - 用户最终页面、订阅和 v2rayN 验收明确标记为未执行，直到用户亲自完成。

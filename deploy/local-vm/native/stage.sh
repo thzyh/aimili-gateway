@@ -57,7 +57,7 @@ for item in manifest['files']:
     actual = hashlib.sha256(source.read_bytes()).hexdigest()
     if actual.lower() != digest.lower():
         raise SystemExit('manifest_digest_mismatch')
-    entries.append((rel, source))
+    entries.append((rel, source, digest))
 
 root = pathlib.Path(staging_root).resolve()
 dest = root / run_id
@@ -68,10 +68,14 @@ if tmp.exists():
     raise SystemExit('staging_temp_exists')
 tmp.mkdir(mode=0o700)
 try:
-    for rel, source in entries:
+    for rel, source, digest in entries:
         target = tmp.joinpath(*rel.split('/'))
         target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         shutil.copy2(source, target, follow_symlinks=False)
+        if target.is_symlink() or not target.is_file():
+            raise SystemExit('staging_target_not_regular')
+        if hashlib.sha256(target.read_bytes()).hexdigest().lower() != digest.lower():
+            raise SystemExit('staging_copy_digest_mismatch')
         os.chmod(target, source.stat().st_mode & 0o777)
     with open(tmp / 'manifest.json', 'w', encoding='utf-8') as handle:
         json.dump(manifest, handle, separators=(',', ':'))

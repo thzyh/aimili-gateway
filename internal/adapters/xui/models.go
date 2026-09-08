@@ -87,6 +87,7 @@ type LegacyMainDesired struct {
 	VLESSPort                     int
 	MixedPort                     int
 	SOCKSPort                     int
+	VLESSClientID                 string
 	MixedUsername                 string
 	MixedPassword                 string
 	MixedSourceRestrictionEnabled bool

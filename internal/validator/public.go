@@ -140,7 +140,7 @@ func buildPublicClientConfig(target PublicTarget, localPort int, username, passw
 		outbound["settings"] = map[string]any{"vnext": []any{map[string]any{"address": host, "port": serverPort, "users": []any{map[string]any{"id": target.ClientID, "encryption": "none", "flow": flow}}}}}
 		outbound["streamSettings"] = stream
 	case domain.ProtocolHysteria2QUICTLS:
-		if !safePublicMaterial(target.Auth, 512) || !safePublicHost(target.TLSServerName) || target.ClientID != "" || target.XHTTPPath != "" {
+		if !safePublicMaterial(target.Auth, 512) || !safeTLSName(target.TLSServerName) || target.ClientID != "" || target.XHTTPPath != "" {
 			return nil, validationFailure("invalid_configuration")
 		}
 		outbound["protocol"] = "hysteria"
@@ -168,4 +168,8 @@ func safePublicMaterial(value string, maximum int) bool {
 
 func safePublicHost(value string) bool {
 	return value != "" && len(value) <= 253 && net.ParseIP(value) == nil && value == strings.TrimSpace(value) && !strings.ContainsAny(value, "/:\\?#\x00\r\n\t ")
+}
+
+func safeTLSName(value string) bool {
+	return value != "" && len(value) <= 253 && value == strings.TrimSpace(value) && !strings.ContainsAny(value, "/\\?#\x00\r\n\t ") && (net.ParseIP(value) != nil || !strings.Contains(value, ":"))
 }

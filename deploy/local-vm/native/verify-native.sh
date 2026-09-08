@@ -47,6 +47,35 @@ for unit in manifest['services']:
     services[name] = succeeds(['systemctl', 'is-active', '--quiet', unit])
     enabled[name] = succeeds(['systemctl', 'is-enabled', '--quiet', unit])
 
+def installed_file(path):
+    try:
+        return os.path.isfile(path) and os.path.getsize(path) > 0
+    except OSError:
+        return False
+
+protocol_paths = {
+    'wrapper': os.environ.get('AIMILI_PROTOCOL_WRAPPER', '/usr/local/bin/aimili-xui-protocol-transaction'),
+    'script': os.environ.get('AIMILI_PROTOCOL_SCRIPT', '/usr/lib/aimili-gateway/aimili_xui_protocol_transaction.py'),
+    'config': os.environ.get('AIMILI_PROTOCOL_CONFIG', '/etc/aimili-gateway/protocol-transaction.json'),
+    'pathUnit': os.environ.get('AIMILI_PROTOCOL_PATH_UNIT', '/etc/systemd/system/aimili-xui-protocol-transaction.path'),
+    'serviceUnit': os.environ.get('AIMILI_PROTOCOL_SERVICE_UNIT', '/etc/systemd/system/aimili-xui-protocol-transaction.service'),
+    'timerUnit': os.environ.get('AIMILI_PROTOCOL_TIMER_UNIT', '/etc/systemd/system/aimili-xui-protocol-transaction.timer'),
+}
+protocol_automation = {
+    'gatewayServiceActive': services.get('aimili-gateway') is True,
+    'pathActive': succeeds(['systemctl', 'is-active', '--quiet', 'aimili-xui-protocol-transaction.path']),
+    'timerActive': succeeds(['systemctl', 'is-active', '--quiet', 'aimili-xui-protocol-transaction.timer']),
+    'gatewayServiceEnabled': enabled.get('aimili-gateway') is True,
+    'pathEnabled': succeeds(['systemctl', 'is-enabled', '--quiet', 'aimili-xui-protocol-transaction.path']),
+    'timerEnabled': succeeds(['systemctl', 'is-enabled', '--quiet', 'aimili-xui-protocol-transaction.timer']),
+    'wrapperExecutable': installed_file(protocol_paths['wrapper']) and os.access(protocol_paths['wrapper'], os.X_OK),
+    'scriptInstalled': installed_file(protocol_paths['script']),
+    'configInstalled': installed_file(protocol_paths['config']),
+    'pathUnitInstalled': installed_file(protocol_paths['pathUnit']),
+    'serviceUnitInstalled': installed_file(protocol_paths['serviceUnit']),
+    'timerUnitInstalled': installed_file(protocol_paths['timerUnit']),
+}
+
 def process_count(arguments):
     try:
         return int((output(arguments) or '0').strip() or 0)
@@ -56,10 +85,10 @@ def process_count(arguments):
 openvpn = process_count(['pgrep', '-cx', 'openvpn'])
 xray = process_count(['pgrep', '-fc', r'(^|/)(xray-linux-amd64|xray)([[:space:]]|$)'])
 
-socket_lines = output(['ss', '-lntH']).splitlines()
-def listener_hosts(port):
+socket_lines = {'tcp': output(['ss', '-lntH']).splitlines(), 'udp': output(['ss', '-lnuH']).splitlines()}
+def listener_hosts(port, transport='tcp'):
     hosts = []
-    for line in socket_lines:
+    for line in socket_lines[transport]:
         fields = line.split()
         if len(fields) < 4:
             continue
@@ -86,12 +115,24 @@ def loopback_listener(port):
             return False
     return True
 
-def any_listener(port):
-    return bool(listener_hosts(port))
+def any_listener(port, transport='tcp'):
+    return bool(listener_hosts(port, transport))
+
+def public_listener(port, transport='tcp'):
+    hosts = listener_hosts(port, transport)
+    for host in hosts:
+        if host == '*':
+            return True
+        try:
+            if not ipaddress.ip_address(host).is_loopback:
+                return True
+        except ValueError:
+            continue
+    return False
 
 listeners = {}
 for name, port in manifest.get('ports', {}).items():
-    listeners[name] = any_listener(port) if name == 'caddy' else loopback_listener(port)
+    listeners[name] = public_listener(port) if name == 'caddy' else loopback_listener(port)
 
 def tun_up(device):
     if not device:
@@ -184,6 +225,8 @@ if isinstance(subscription_entries, list):
 
 isolation_rows = evidence.get('protocolIsolation', {}).get('exits', []) if isinstance(evidence, dict) else []
 protocol_isolation = False
+xray_listeners = {}
+xray_runtime_listeners = False
 if isinstance(isolation_rows, list):
     try:
         isolation_by_exit = {}
@@ -200,10 +243,15 @@ if isinstance(isolation_rows, list):
                 raise ValueError
             if subscription_by_exit.get(exit_id) != (public_port, public_protocol):
                 raise ValueError
+            public_transport = 'udp' if public_protocol == 'hysteria2_quic_tls' else 'tcp'
+            public_listening = public_listener(public_port, public_transport)
+            mixed_listening = public_listener(mixed_port)
+            xray_listeners[exit_id] = {'public': public_listening, 'mixed': mixed_listening}
             isolation_by_exit[exit_id] = True
             public_ports.add(public_port)
             mixed_ports.add(mixed_port)
         protocol_isolation = sorted(isolation_by_exit) == sorted(expected_exits) and len(public_ports) == len(expected_exits) and len(mixed_ports) == len(expected_exits) and public_ports.isdisjoint(mixed_ports)
+        xray_runtime_listeners = sorted(xray_listeners) == sorted(expected_exits) and all(all(value.values()) for value in xray_listeners.values())
     except (KeyError, TypeError, ValueError):
         protocol_isolation = False
 
@@ -217,8 +265,8 @@ try:
 except (KeyError, TypeError):
     pass
 
-ready = all(services.values()) and all(enabled.values()) and all(listeners.values()) and database_readable and main_ready and slots_valid and evidence_schema and subscription_exit_set and protocol_isolation and host_safety and all(actual[key] == int(expected[key]) for key in ('openvpn','xray','logicalExits','exitSlots'))
-report = {'nativeServices':services,'nativeEnabled':enabled,'expected':expected,'actual':actual,'listeners':listeners,'mainChecks':main_checks,'slotChecks':slot_checks,'databaseReadable':database_readable,'evidenceSchema':evidence_schema,'subscriptionExitSet':subscription_exit_set,'protocolIsolation':protocol_isolation,'hostSafety':host_safety,'nativeReady':ready}
+ready = all(services.values()) and all(enabled.values()) and all(protocol_automation.values()) and all(listeners.values()) and database_readable and main_ready and slots_valid and evidence_schema and subscription_exit_set and protocol_isolation and xray_runtime_listeners and host_safety and all(actual[key] == int(expected[key]) for key in ('openvpn','xray','logicalExits','exitSlots'))
+report = {'nativeServices':services,'nativeEnabled':enabled,'expected':expected,'actual':actual,'listeners':listeners,'xrayListeners':xray_listeners,'mainChecks':main_checks,'slotChecks':slot_checks,'databaseReadable':database_readable,'evidenceSchema':evidence_schema,'subscriptionExitSet':subscription_exit_set,'protocolIsolation':protocol_isolation,'xrayRuntimeListeners':xray_runtime_listeners,'protocolAutomation':protocol_automation,'hostSafety':host_safety,'nativeReady':ready}
 print(json.dumps(report, separators=(',', ':')))
 raise SystemExit(0 if ready else 1)
 PY

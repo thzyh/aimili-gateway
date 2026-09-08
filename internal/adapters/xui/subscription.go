@@ -712,15 +712,17 @@ func publicProfile(detail inboundDetail, client subscriptionClient) (PublicProfi
 	}
 	if detail.Protocol == "hysteria" {
 		hysteria, ok := decodeObject(stream["hysteriaSettings"])
-		if !ok || stringValue(stream["network"]) != "hysteria" || stringValue(stream["security"]) != "tls" || integerValue(hysteria["version"]) != 2 || integerValue(settings["version"]) != 2 {
+		tls, tlsOK := decodeObject(stream["tlsSettings"])
+		if !ok || !tlsOK || stringValue(stream["network"]) != "hysteria" || stringValue(stream["security"]) != "tls" || integerValue(hysteria["version"]) != 2 || integerValue(settings["version"]) != 2 {
 			return PublicProfile{}, &AdapterError{Code: "managed_resource_drift"}
 		}
+		profile.ServerName = stringValue(tls["serverName"])
 		for _, candidate := range asObjectSlice(settings["clients"]) {
 			if stringValue(candidate["email"]) == client.email && stringValue(candidate["auth"]) != "" {
 				profile.Auth = stringValue(candidate["auth"])
 			}
 		}
-		if profile.Auth == "" || (client.auth != "" && profile.Auth != client.auth) {
+		if profile.Auth == "" || profile.ServerName == "" || (client.auth != "" && profile.Auth != client.auth) {
 			return PublicProfile{}, &AdapterError{Code: "ownership_conflict"}
 		}
 		profile.Mode = domain.ProtocolHysteria2QUICTLS

@@ -10,9 +10,14 @@ foreach ($name in @('enable-exits.sh', 'verify-native.sh')) {
     if ($source -notmatch 'deployment.json|manifest') { throw "native verification script does not consume a manifest: $name" }
 }
 $statusPath = Join-Path $PSScriptRoot '..\status.ps1'
+$runPath = Join-Path $PSScriptRoot 'run.ps1'
 $statusSource = Get-Content -LiteralPath $statusPath -Raw
+$runSource = Get-Content -LiteralPath $runPath -Raw
+if ($runSource -notmatch 'native-runtime-fixture\.tests\.sh') { throw 'local VM aggregate test omits native runtime fixture' }
 if ($statusSource -notmatch 'verify-native\.sh') { throw 'native status does not reuse deep native verification' }
-if ($statusSource -notmatch 'subscriptionExitSet|protocolIsolation|hostSafety') { throw 'native status omits deep verification evidence fields' }
+foreach ($field in @('subscriptionExitSet','protocolIsolation','xrayRuntimeListeners','protocolAutomation','hostSafety')) {
+    if ($statusSource -notmatch [regex]::Escape($field)) { throw "native status omits deep verification evidence field: $field" }
+}
 if ($statusSource -match '\$report\.nativeReady\s*=\s*\(\$report\.nativeServices') { throw 'native status still computes shallow readiness from services and counts' }
 $parseErrors = $null
 $statusAst = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $statusPath), [ref]$null, [ref]$parseErrors)
@@ -36,6 +41,9 @@ $diagnosticJson = [ordered]@{
     expected = [ordered]@{ openvpn = 4; xray = 1; logicalExits = 4; exitSlots = 3 }
     actual = [ordered]@{ openvpn = 3; xray = 1; logicalExits = 3; exitSlots = 2 }
     listeners = [ordered]@{ gateway = $false }
+    xrayListeners = [ordered]@{ main = [ordered]@{ public = $true; mixed = $true } }
+    xrayRuntimeListeners = $true
+    protocolAutomation = [ordered]@{ gatewayServiceActive = $false; pathActive = $true; timerActive = $true; gatewayServiceEnabled = $true; pathEnabled = $true; timerEnabled = $true; wrapperExecutable = $true; scriptInstalled = $true; configInstalled = $true; pathUnitInstalled = $true; serviceUnitInstalled = $true; timerUnitInstalled = $true }
     mainChecks = [ordered]@{ tun = $true; route = $true; listener = $true; egress = $true }
     slotChecks = @([ordered]@{ slot = 0; ready = $true; tun = $true; route = $true; listener = $true; egress = $true })
     databaseReadable = $true
@@ -49,6 +57,7 @@ $unhealthy = ConvertFrom-AimiliNativeVerifierProbe -Output @($diagnosticJson) -E
 if ($null -eq $unhealthy -or [int]$unhealthy.actual.openvpn -ne 3 -or [bool]$unhealthy.nativeServices.'aimili-gateway' -or [bool]$unhealthy.nativeReady) {
     throw 'native status discarded a valid unhealthy verifier diagnostic'
 }
+if (-not (Assert-AimiliNativeStatusContract -Status ($diagnosticJson | ConvertFrom-Json))) { throw 'native status assertion rejected a complete verifier report' }
 if ($null -ne (ConvertFrom-AimiliNativeVerifierProbe -Output @($diagnosticJson) -ExitCode 2)) {
     throw 'native status trusted verifier output from an SSH or sudo failure'
 }

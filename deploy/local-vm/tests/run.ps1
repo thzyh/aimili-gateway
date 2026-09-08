@@ -48,17 +48,20 @@ try {
     Assert-Equal 8 $manifestExtraScale.expected.openvpn 'native manifest imposed an OpenVPN hard limit'
     Assert-Equal 2 $manifestExtraScale.expected.xray 'native manifest imposed an Xray hard limit'
     Assert-AimiliNativeStatusContract -Status ([pscustomobject]@{
-        nativeServices = [pscustomobject]@{ aimilivpn = 'inactive'; xui = 'inactive'; gateway = 'inactive'; caddy = 'inactive' }
-        nativeEnabled = [pscustomobject]@{ aimilivpn = 'disabled'; xui = 'disabled'; gateway = 'disabled'; caddy = 'disabled' }
+        nativeServices = [pscustomobject]@{ aimilivpn = 'inactive'; 'x-ui' = 'inactive'; 'aimili-gateway' = 'inactive'; caddy = 'inactive' }
+        nativeEnabled = [pscustomobject]@{ aimilivpn = 'disabled'; 'x-ui' = 'disabled'; 'aimili-gateway' = 'disabled'; caddy = 'disabled' }
         expected = [pscustomobject]@{ openvpn = 4; xray = 1; logicalExits = 4; exitSlots = 3 }
         actual = [pscustomobject]@{ openvpn = 0; xray = 0; logicalExits = 0; exitSlots = 0 }
         listeners = [pscustomobject]@{}
+        xrayListeners = [pscustomobject]@{}
         mainChecks = [pscustomobject]@{ tun = $false; route = $false; listener = $false; egress = $false }
         slotChecks = @()
         databaseReadable = $false
         evidenceSchema = $false
         subscriptionExitSet = $false
         protocolIsolation = $false
+        xrayRuntimeListeners = $false
+        protocolAutomation = [pscustomobject]@{ gatewayServiceActive = $false; pathActive = $false; timerActive = $false; gatewayServiceEnabled = $false; pathEnabled = $false; timerEnabled = $false; wrapperExecutable = $false; scriptInstalled = $false; configInstalled = $false; pathUnitInstalled = $false; serviceUnitInstalled = $false; timerUnitInstalled = $false }
         hostSafety = $false
         nativeReady = $false
     })
@@ -271,5 +274,26 @@ if (Test-Path -LiteralPath $orchestrationFixture -PathType Leaf) {
     Push-Location (Resolve-Path (Join-Path $PSScriptRoot '..\..\..'))
     try { & wsl.exe -u root -- bash 'deploy/local-vm/tests/native-orchestration-fixture.tests.sh' } finally { Pop-Location }
     if ($LASTEXITCODE -ne 0) { throw "native orchestration fixture failed with exit code $LASTEXITCODE" }
+}
+$nativeDeployTest = Join-Path $PSScriptRoot 'native-deploy.tests.ps1'
+if (Test-Path -LiteralPath $nativeDeployTest -PathType Leaf) {
+    & $nativeDeployTest
+    if ($LASTEXITCODE -ne 0) { throw "native deployment entry test failed with exit code $LASTEXITCODE" }
+}
+$gatewayProvisionTest = Join-Path $PSScriptRoot 'test_provision_gateway.py'
+if (Test-Path -LiteralPath $gatewayProvisionTest -PathType Leaf) {
+    & python -m unittest 'deploy.local-vm.tests.test_provision_gateway'
+    if ($LASTEXITCODE -ne 0) { throw "native Gateway provisioning test failed with exit code $LASTEXITCODE" }
+}
+$externalVerificationTest = Join-Path $PSScriptRoot 'native-external-verification.tests.ps1'
+if (Test-Path -LiteralPath $externalVerificationTest -PathType Leaf) {
+    & $externalVerificationTest
+    if ($LASTEXITCODE -ne 0) { throw "native external verification entry test failed with exit code $LASTEXITCODE" }
+}
+$runtimeFixture = Join-Path $PSScriptRoot 'native-runtime-fixture.tests.sh'
+if (Test-Path -LiteralPath $runtimeFixture -PathType Leaf) {
+    Push-Location (Resolve-Path (Join-Path $PSScriptRoot '..\..\..'))
+    try { & wsl.exe -u root -- bash 'deploy/local-vm/tests/native-runtime-fixture.tests.sh' } finally { Pop-Location }
+    if ($LASTEXITCODE -ne 0) { throw "native runtime fixture failed with exit code $LASTEXITCODE" }
 }
 Write-Output 'PASS local VM tests'

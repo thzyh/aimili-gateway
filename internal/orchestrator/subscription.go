@@ -668,7 +668,7 @@ func (o *Orchestrator) checkMain(ctx context.Context, persist bool) (store.MainE
 	if err != nil {
 		return store.MainEgress{}, err
 	}
-	legacy, err := manager.EnsureLegacyMain(ctx, xui.LegacyMainDesired{VLESSPort: 8443, MixedPort: o.config.MainMixedPort, SOCKSPort: 7928, MixedUsername: string(credentials.mixedUsername), MixedPassword: string(credentials.mixedPassword), MixedSourceRestrictionEnabled: policy.Enabled, MixedSourceCIDRs: prefixStrings(policy.CIDRs), RealityTarget: "127.0.0.1:443", RealityServerName: o.config.PublicHost})
+	legacy, err := manager.EnsureLegacyMain(ctx, xui.LegacyMainDesired{VLESSPort: 8443, MixedPort: o.config.MainMixedPort, SOCKSPort: 7928, VLESSClientID: string(credentials.vlessID), MixedUsername: string(credentials.mixedUsername), MixedPassword: string(credentials.mixedPassword), MixedSourceRestrictionEnabled: policy.Enabled, MixedSourceCIDRs: prefixStrings(policy.CIDRs), RealityTarget: "127.0.0.1:443", RealityServerName: o.config.RealityServerName})
 	if err != nil {
 		return store.MainEgress{}, operationError(err)
 	}
@@ -683,6 +683,20 @@ func (o *Orchestrator) checkMain(ctx context.Context, persist bool) (store.MainE
 	result := store.MainEgress{ResourceName: "agw-main", CountryCode: country, CountryName: status.CountryName, ProxyType: proxyType, CandidateID: status.CandidateID, ExitIP: status.ExitIP, PublicInboundID: legacy.VLESSInboundID, MixedInboundID: legacy.MixedInboundID, PublicPort: legacy.VLESSPort, MixedPort: legacy.MixedPort, Enabled: true, VLESSLatencyMS: durationMillis(vlessResult.Latency), SOCKSLatencyMS: durationMillis(socksResult.Latency), LastCheckedAt: now, UpdatedAt: now}
 	if persist {
 		if err := o.store.SaveMainEgress(ctx, result); err != nil {
+			return store.MainEgress{}, &Error{Code: "storage_failed"}
+		}
+		protocols, ok := o.store.(protocolModeStore)
+		if !ok {
+			return store.MainEgress{}, &Error{Code: "not_configured"}
+		}
+		if _, protocolErr := protocols.GetEgressProtocolMode(ctx, "agw-main"); errors.Is(protocolErr, store.ErrEgressProtocolNotFound) {
+			if err := protocols.CreateEgressProtocolMode(ctx, domain.EgressProtocolMode{
+				EgressID: "agw-main", ActiveMode: domain.ProtocolVLESSTCPRealityVision, DesiredMode: domain.ProtocolVLESSTCPRealityVision,
+				State: domain.ProtocolReady, Version: 1, UpdatedAt: now,
+			}); err != nil {
+				return store.MainEgress{}, &Error{Code: "storage_failed"}
+			}
+		} else if protocolErr != nil {
 			return store.MainEgress{}, &Error{Code: "storage_failed"}
 		}
 	}

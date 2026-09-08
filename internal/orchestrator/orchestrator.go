@@ -34,6 +34,7 @@ type Config struct {
 	AggregateVLESSPort  int
 	MainMixedPort       int
 	PublicHost          string
+	RealityServerName   string
 	XrayPath            string
 	ProbeHost           string
 	ReadyTimeout        time.Duration
@@ -187,9 +188,12 @@ type Orchestrator struct {
 }
 
 func New(config Config, database groupStore, aimiliAdapter aimiliClient, xuiAdapter xuiClient, validation proxyValidator, masterKey []byte) (*Orchestrator, error) {
+	if config.RealityServerName == "" {
+		config.RealityServerName = config.PublicHost
+	}
 	if config.MaxGroups < 1 || config.VLESSPortStart < 1 || config.VLESSPortEnd < config.VLESSPortStart ||
-		config.MixedPortStart < 1 || config.MixedPortEnd < config.MixedPortStart || net.ParseIP(config.PublicHost) != nil ||
-		strings.TrimSpace(config.PublicHost) == "" || strings.TrimSpace(config.XrayPath) == "" || strings.TrimSpace(config.ProbeHost) == "" ||
+		config.MixedPortStart < 1 || config.MixedPortEnd < config.MixedPortStart || !validPublicEndpointHost(config.PublicHost) ||
+		net.ParseIP(config.RealityServerName) != nil || strings.TrimSpace(config.RealityServerName) == "" || strings.TrimSpace(config.XrayPath) == "" || strings.TrimSpace(config.ProbeHost) == "" ||
 		database == nil || aimiliAdapter == nil || xuiAdapter == nil || validation == nil || len(masterKey) != 32 {
 		return nil, errors.New("invalid orchestrator configuration")
 	}
@@ -361,15 +365,54 @@ func (o *Orchestrator) Enable(ctx context.Context, request EnableRequest) (domai
 		_ = o.store.DeleteProxyGroup(ctx, group.ID)
 		return domain.ProxyGroup{}, operationError(err)
 	}
+	return o.provisionGroupForSlot(ctx, group, slot, policy, credentials, true)
+}
+
+func (o *Orchestrator) adoptExistingSlot(ctx context.Context, slot aimili.Slot, groups []domain.ProxyGroup) (domain.ProxyGroup, error) {
+	proxyType := domain.ProxyType(strings.ToLower(strings.TrimSpace(slot.ProxyType)))
+	identity, err := domain.NewProxyGroupIdentity(strings.ToUpper(strings.TrimSpace(slot.Country)), proxyType, strings.TrimSpace(slot.NodeID))
+	if err != nil || slot.Number < 0 || slot.Port < 1 || slot.Port > 65535 || strings.TrimSpace(slot.CountryName) == "" || !slot.EgressOK || net.ParseIP(strings.TrimSpace(slot.ExitIP)) == nil {
+		return domain.ProxyGroup{}, &Error{Code: "invalid_response"}
+	}
+	for _, group := range groups {
+		if group.AimiliSlot == slot.Number || (group.CandidateID != "" && group.CandidateID == identity.CandidateID) {
+			return domain.ProxyGroup{}, &Error{Code: "ownership_conflict"}
+		}
+	}
+	policy, credentials, err := o.runtimeInputs(ctx)
+	if err != nil {
+		return domain.ProxyGroup{}, err
+	}
+	vlessPort, mixedPort, ok := o.allocatePorts(groups)
+	if !ok {
+		return domain.ProxyGroup{}, &Error{Code: "port_capacity_exceeded"}
+	}
+	now := o.config.Now().UTC()
+	identity.AimiliSlot = slot.Number
+	identity.CountryName = strings.TrimSpace(slot.CountryName)
+	identity.CandidateIP = strings.TrimSpace(slot.CandidateIP)
+	identity.CandidateLatencyMS = slot.LatencyMS
+	identity.LastSeenAt = now
+	identity.PublicPort = vlessPort
+	identity.MixedPort = mixedPort
+	identity.CreatedAt = now
+	identity.UpdatedAt = now
+	if err := o.store.CreateProxyGroup(ctx, identity); err != nil {
+		return domain.ProxyGroup{}, operationError(err)
+	}
+	return o.provisionGroupForSlot(ctx, identity, slot, policy, credentials, false)
+}
+
+func (o *Orchestrator) provisionGroupForSlot(ctx context.Context, group domain.ProxyGroup, slot aimili.Slot, policy store.MixedSourcePolicy, credentials runtimeCredentials, deleteSlotOnFailure bool) (domain.ProxyGroup, error) {
 	group.AimiliSlot = slot.Number
 	group.CountryName = slot.CountryName
 	checked, err := o.waitForSlot(ctx, slot.Number)
 	if err != nil || !checked.EgressOK || net.ParseIP(checked.ExitIP) == nil {
-		return domain.ProxyGroup{}, o.rollbackEnable(ctx, &group, xui.ManagedGroup{}, codeOr(err, "egress_unavailable"))
+		return domain.ProxyGroup{}, o.rollbackSlotProvision(ctx, &group, xui.ManagedGroup{}, codeOr(err, "egress_unavailable"), deleteSlotOnFailure)
 	}
 	checked, err = o.ensureUniqueExit(ctx, group.ID, checked)
 	if err != nil {
-		return domain.ProxyGroup{}, o.rollbackEnable(ctx, &group, xui.ManagedGroup{}, errorCode(err))
+		return domain.ProxyGroup{}, o.rollbackSlotProvision(ctx, &group, xui.ManagedGroup{}, errorCode(err), deleteSlotOnFailure)
 	}
 	group.ExitIP = checked.ExitIP
 	group.ExitIPCheckedAt = checked.CheckedAt
@@ -377,10 +420,10 @@ func (o *Orchestrator) Enable(ctx context.Context, request EnableRequest) (domai
 		ResourceName: group.ResourceName, SOCKSPort: checked.Port, VLESSPort: group.PublicPort, MixedPort: group.MixedPort,
 		VLESSClientID: string(credentials.vlessID), MixedUsername: string(credentials.mixedUsername), MixedPassword: string(credentials.mixedPassword),
 		MixedSourceRestrictionEnabled: policy.Enabled, MixedSourceCIDRs: prefixStrings(policy.CIDRs),
-		RealityTarget: "127.0.0.1:443", RealityServerName: o.config.PublicHost,
+		RealityTarget: "127.0.0.1:443", RealityServerName: o.config.RealityServerName,
 	})
 	if err != nil {
-		return domain.ProxyGroup{}, o.rollbackEnable(ctx, &group, xui.ManagedGroup{}, errorCode(err))
+		return domain.ProxyGroup{}, o.rollbackSlotProvision(ctx, &group, xui.ManagedGroup{}, errorCode(err), deleteSlotOnFailure)
 	}
 	group.ConfigFingerprint = managed.Fingerprint
 	group.PublicInboundID = managed.VLESSInboundID
@@ -391,11 +434,11 @@ func (o *Orchestrator) Enable(ctx context.Context, request EnableRequest) (domai
 	group.RealityMLDSA65Verify = managed.MLDSA65Verify
 	socksResult, err := o.validateSOCKS(ctx, group, credentials)
 	if err != nil {
-		return domain.ProxyGroup{}, o.rollbackEnable(ctx, &group, managed, errorCode(err))
+		return domain.ProxyGroup{}, o.rollbackSlotProvision(ctx, &group, managed, errorCode(err), deleteSlotOnFailure)
 	}
 	vlessResult, err := o.validateVLESS(ctx, group, credentials)
 	if err != nil {
-		return domain.ProxyGroup{}, o.rollbackEnable(ctx, &group, managed, errorCode(err))
+		return domain.ProxyGroup{}, o.rollbackSlotProvision(ctx, &group, managed, errorCode(err), deleteSlotOnFailure)
 	}
 	group.SOCKSLatencyMS = durationMillis(socksResult.Latency)
 	group.VLESSLatencyMS = durationMillis(vlessResult.Latency)
@@ -404,17 +447,17 @@ func (o *Orchestrator) Enable(ctx context.Context, request EnableRequest) (domai
 	group.LastErrorCode = ""
 	group.UpdatedAt = group.LastCheckedAt
 	if err := o.save(ctx, &group); err != nil {
-		return domain.ProxyGroup{}, o.rollbackEnable(ctx, &group, managed, "storage_failed")
+		return domain.ProxyGroup{}, o.rollbackSlotProvision(ctx, &group, managed, "storage_failed", deleteSlotOnFailure)
 	}
 	protocols, ok := o.store.(protocolModeStore)
 	if !ok {
-		return domain.ProxyGroup{}, o.rollbackEnable(ctx, &group, managed, "storage_failed")
+		return domain.ProxyGroup{}, o.rollbackSlotProvision(ctx, &group, managed, "storage_failed", deleteSlotOnFailure)
 	}
 	if err := protocols.CreateEgressProtocolMode(ctx, domain.EgressProtocolMode{
 		EgressID: group.ID, ActiveMode: domain.ProtocolVLESSTCPRealityVision, DesiredMode: domain.ProtocolVLESSTCPRealityVision,
 		State: domain.ProtocolReady, Version: 1, UpdatedAt: o.config.Now().UTC(),
 	}); err != nil {
-		return domain.ProxyGroup{}, o.rollbackEnable(ctx, &group, managed, "storage_failed")
+		return domain.ProxyGroup{}, o.rollbackSlotProvision(ctx, &group, managed, "storage_failed", deleteSlotOnFailure)
 	}
 	_, _ = o.Subscription(ctx)
 	return group, nil
@@ -672,12 +715,12 @@ func buildPublicURI(publicHost string, port int, name string, profile xui.Public
 		return "", &Error{Code: "invalid_response"}
 	}
 	if profile.Mode == domain.ProtocolHysteria2QUICTLS {
-		if profile.Auth == "" {
+		if profile.Auth == "" || profile.ServerName == "" {
 			return "", &Error{Code: "invalid_response"}
 		}
 		uri := url.URL{Scheme: "hysteria2", User: url.User(profile.Auth), Host: net.JoinHostPort(publicHost, fmt.Sprint(port)), Path: "/", Fragment: name}
 		query := uri.Query()
-		query.Set("sni", publicHost)
+		query.Set("sni", profile.ServerName)
 		query.Set("insecure", "0")
 		uri.RawQuery = query.Encode()
 		return uri.String(), nil
@@ -727,7 +770,7 @@ func (o *Orchestrator) mainConnections(ctx context.Context) (Connections, error)
 	if err != nil {
 		return Connections{}, err
 	}
-	legacy, err := manager.EnsureLegacyMain(ctx, xui.LegacyMainDesired{VLESSPort: 8443, MixedPort: o.config.MainMixedPort, SOCKSPort: 7928, MixedUsername: string(credentials.mixedUsername), MixedPassword: string(credentials.mixedPassword), MixedSourceRestrictionEnabled: policy.Enabled, MixedSourceCIDRs: prefixStrings(policy.CIDRs), RealityTarget: "127.0.0.1:443", RealityServerName: o.config.PublicHost})
+	legacy, err := manager.EnsureLegacyMain(ctx, xui.LegacyMainDesired{VLESSPort: 8443, MixedPort: o.config.MainMixedPort, SOCKSPort: 7928, VLESSClientID: string(credentials.vlessID), MixedUsername: string(credentials.mixedUsername), MixedPassword: string(credentials.mixedPassword), MixedSourceRestrictionEnabled: policy.Enabled, MixedSourceCIDRs: prefixStrings(policy.CIDRs), RealityTarget: "127.0.0.1:443", RealityServerName: o.config.RealityServerName})
 	if err != nil {
 		return Connections{}, operationError(err)
 	}
@@ -836,10 +879,17 @@ func (o *Orchestrator) validateCurrentPublic(ctx context.Context, group domain.P
 			Mode: state.ActiveMode, XrayPath: o.config.XrayPath, InboundAddress: net.JoinHostPort("127.0.0.1", fmt.Sprint(group.PublicPort)),
 			ClientID: profile.ClientID, Auth: profile.Auth, PublicKey: profile.PublicKey, ShortID: profile.ShortID,
 			ServerName: profile.ServerName, MLDSA65Verify: profile.MLDSA65Verify, XHTTPPath: profile.XHTTPPath,
-			TLSServerName: o.config.PublicHost, ProbeHost: o.config.ProbeHost, ExpectedExitIP: group.ExitIP,
+			TLSServerName: profile.ServerName, ProbeHost: o.config.ProbeHost, ExpectedExitIP: group.ExitIP,
 		})
 	}
 	return validator.Result{}, &Error{Code: "subscription_incomplete"}
+}
+
+func validPublicEndpointHost(value string) bool {
+	if value == "" || value != strings.TrimSpace(value) || len(value) > 253 || strings.ContainsAny(value, "/\\?#\x00\r\n\t ") {
+		return false
+	}
+	return net.ParseIP(value) != nil || !strings.Contains(value, ":")
 }
 
 func (o *Orchestrator) waitForSlot(ctx context.Context, slot int) (aimili.SlotCheck, error) {
@@ -924,14 +974,19 @@ func (o *Orchestrator) save(ctx context.Context, g *domain.ProxyGroup) error {
 	return nil
 }
 func (o *Orchestrator) rollbackEnable(ctx context.Context, g *domain.ProxyGroup, managed xui.ManagedGroup, cause string) error {
+	return o.rollbackSlotProvision(ctx, g, managed, cause, true)
+}
+func (o *Orchestrator) rollbackSlotProvision(ctx context.Context, g *domain.ProxyGroup, managed xui.ManagedGroup, cause string, deleteSlot bool) error {
 	rollbackFailed := false
 	if managed.ResourceName != "" {
 		if err := o.xui.DeleteManagedGroup(ctx, managed); err != nil {
 			rollbackFailed = true
 		}
 	}
-	if err := o.aimili.DeleteSlot(ctx, g.AimiliSlot); err != nil {
-		rollbackFailed = true
+	if deleteSlot {
+		if err := o.aimili.DeleteSlot(ctx, g.AimiliSlot); err != nil {
+			rollbackFailed = true
+		}
 	}
 	if !rollbackFailed {
 		if err := o.store.DeleteProxyGroup(ctx, g.ID); err == nil {

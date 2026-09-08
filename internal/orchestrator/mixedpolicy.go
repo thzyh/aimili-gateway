@@ -215,16 +215,16 @@ func (o *Orchestrator) desiredGroup(group domain.ProxyGroup, socksPort int, cred
 		ResourceName: group.ResourceName, SOCKSPort: socksPort, VLESSPort: group.PublicPort, MixedPort: group.MixedPort,
 		VLESSClientID: string(credentials.vlessID), MixedUsername: string(credentials.mixedUsername), MixedPassword: string(credentials.mixedPassword),
 		MixedSourceRestrictionEnabled: policy.Enabled, MixedSourceCIDRs: prefixStrings(policy.CIDRs),
-		RealityTarget: "127.0.0.1:443", RealityServerName: o.config.PublicHost,
+		RealityTarget: "127.0.0.1:443", RealityServerName: o.config.RealityServerName,
 	}
 }
 
 func (o *Orchestrator) desiredLegacyMain(credentials runtimeCredentials, policy store.MixedSourcePolicy) xui.LegacyMainDesired {
 	return xui.LegacyMainDesired{
 		VLESSPort: 8443, MixedPort: o.config.MainMixedPort, SOCKSPort: 7928,
-		MixedUsername: string(credentials.mixedUsername), MixedPassword: string(credentials.mixedPassword),
+		VLESSClientID: string(credentials.vlessID), MixedUsername: string(credentials.mixedUsername), MixedPassword: string(credentials.mixedPassword),
 		MixedSourceRestrictionEnabled: policy.Enabled, MixedSourceCIDRs: prefixStrings(policy.CIDRs),
-		RealityTarget: "127.0.0.1:443", RealityServerName: o.config.PublicHost,
+		RealityTarget: "127.0.0.1:443", RealityServerName: o.config.RealityServerName,
 	}
 }
 

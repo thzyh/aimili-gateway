@@ -24,6 +24,7 @@ PROTOCOL_MODES = {
     "vless_xhttp_reality",
     "hysteria2_quic_tls",
 }
+EGRESS_PROBE_URL = "http://api.ipify.org"
 MAIN_SUBSCRIPTION_REMARKS = {
     "Aimili Reality",
     "Aimili Reality-aimili-gateway-subscription",
@@ -52,16 +53,16 @@ SAFE_RUNTIME_ERRORS = {
 def safe_error_category(error: BaseException) -> str:
     if isinstance(error, subprocess.CalledProcessError):
         slot_match = re.search(
-            r"\bremote_connections_slot_([0-3])_http_([45][0-9]{2})(?:_([a-z0-9_]{1,64}))?\b",
+            r"\bremote_(connections|group_check)_slot_([0-9]+)_http_([45][0-9]{2})(?:_([a-z0-9_]{1,64}))?\b",
             error.stderr or "",
         )
         if slot_match is not None:
-            category = "remote_connections_slot_" + slot_match.group(1) + "_http_" + slot_match.group(2)
-            if slot_match.group(3):
-                category += "_" + slot_match.group(3)
+            category = "remote_" + slot_match.group(1) + "_slot_" + slot_match.group(2) + "_http_" + slot_match.group(3)
+            if slot_match.group(4):
+                category += "_" + slot_match.group(4)
             return category
         phase_match = re.search(
-            r"\bremote_(auth_login|auth_session|groups|mixed_policy|connections|subscription|protocol_switch)_http_([45][0-9]{2})(?:_([a-z0-9_]{1,64}))?\b",
+            r"\bremote_(auth_login|auth_session|groups|mixed_policy|group_check|connections|subscription|protocol_switch)_http_([45][0-9]{2})(?:_([a-z0-9_]{1,64}))?\b",
             error.stderr or "",
         )
         if phase_match is not None:
@@ -83,16 +84,20 @@ class RollbackConflict(RuntimeError):
 
 
 REMOTE_HELPER = r'''
-import base64, http.cookiejar, json, pathlib, re, socket, sqlite3, subprocess, sys, urllib.error, urllib.parse, urllib.request, uuid
+import base64, http.cookiejar, json, pathlib, re, socket, sqlite3, subprocess, sys, time, urllib.error, urllib.parse, urllib.request, uuid
 base=json.load(open('/etc/aimili-gateway/config.json',encoding='utf-8'))['publicOrigin']
-account=json.load(open('/opt/aimilivpn/vpngate_data/ui_auth.json',encoding='utf-8'))
+endpoint='http://127.0.0.1:9080'
+manifest=json.load(open('/etc/aimili-local/deployment.json',encoding='utf-8')); slot_count=int(manifest['expected']['exitSlots']); expected_groups=1+slot_count
+account=json.load(open('/etc/aimili-gateway/admin-credentials.json',encoding='utf-8'))
 jar=http.cookiejar.CookieJar(); op=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
 def call(method,path,payload=None,csrf='',idempotent=False):
  data=None; headers={'Accept':'application/json'}
  if payload is not None: data=json.dumps(payload,separators=(',',':')).encode(); headers['Content-Type']='application/json'
  if method!='GET': headers['Origin']=base; headers.update({'X-CSRF-Token':csrf} if csrf else {})
  if idempotent: headers['Idempotency-Key']=str(uuid.uuid4())
- req=urllib.request.Request(base+path,data=data,headers=headers,method=method)
+ cookie_header='; '.join(cookie.name+'='+cookie.value for cookie in jar)
+ if cookie_header: headers['Cookie']=cookie_header
+ req=urllib.request.Request(endpoint+path,data=data,headers=headers,method=method)
  try:
   with op.open(req,timeout=180) as r:
    raw=r.read(); return json.loads(raw) if raw else None
@@ -108,6 +113,7 @@ def call(method,path,payload=None,csrf='',idempotent=False):
   elif path=='/api/v1/auth/session': phase='auth_session'
   elif path=='/api/v1/proxy-groups': phase='groups'
   elif path=='/api/v1/settings/mixed-source-policy': phase='mixed_policy'
+  elif path.endswith('/check'): phase='group_check'
   elif path.endswith('/connections'): phase='connections'
   elif path=='/api/v1/proxy-groups/subscription': phase='subscription'
   elif path.endswith('/protocol-mode'): phase='protocol_switch'
@@ -146,7 +152,7 @@ slot=int(sys.argv[1]); requested=sys.argv[2]; expected_old=sys.argv[3]
 allowed={'vless_tcp_reality_vision','vless_xhttp_reality','hysteria2_quic_tls'}
 switch=None
 if slot >= 0:
- if slot not in {0,1,2,3}: raise RuntimeError('invalid_switch_request')
+ if slot > slot_count: raise RuntimeError('invalid_switch_request')
  groups=call('GET','/api/v1/proxy-groups')
  if slot == 0:
   target=next(g for g in groups if g.get('egressSource')=='main' and g.get('status')=='ready')
@@ -163,6 +169,22 @@ if slot >= 0:
 try:
  if switch is not None:
   call('PUT',target_path,{'protocolMode':requested,'expectedProtocolMode':expected_old},csrf,True)
+ groups=call('GET','/api/v1/proxy-groups')
+ for group in groups:
+  if not group.get('fixed'): continue
+  group_id='agw-main' if group.get('egressSource')=='main' else str(group['id'])
+  for attempt in range(37):
+   try:
+    call('POST','/api/v1/proxy-groups/'+urllib.parse.quote(group_id,safe='')+'/check',{},csrf,True); break
+   except RuntimeError as error:
+    marker=str(error)
+    if marker in {'remote_group_check_http_409_operation_busy','remote_group_check_http_409_maintenance_busy'} and attempt < 36:
+     time.sleep(5); continue
+    match=re.fullmatch(r'remote_group_check_http_([45][0-9]{2})(?:_([a-z0-9_]{1,64}))?',marker)
+    if match:
+     suffix='_'+match.group(2) if match.group(2) else ''
+     raise RuntimeError('remote_group_check_slot_'+str(int(group.get('slotNumber') or 0))+'_http_'+match.group(1)+suffix) from None
+    raise
  groups=call('GET','/api/v1/proxy-groups'); ready=[g for g in groups if g.get('status')=='ready']
  policy=call('GET','/api/v1/settings/mixed-source-policy')
  materials=[]
@@ -178,8 +200,8 @@ try:
    raise
   alias=('\u4e3b\u8fde\u63a5_' if group.get('egressSource')=='main' else '\u51fa\u53e3\u4f4d '+str(int(group.get('slotNumber') or 0))+'_')+str(group.get('countryName') or '')
   materials.append({'exitIp':group['exitIp'],'protocolMode':group['protocolMode'],'publicUri':connections['publicUri'],'socks5hUri':connections['socks5hUri'],'subscriptionAlias':alias,'slotNumber':int(group.get('slotNumber') or 0),'publicPort':int(group.get('publicPort') or group.get('vlessPort') or 0),'mixedPort':int(group.get('mixedPort') or 0),'authorizedSocks5h':authorized_socks(connections['socks5hUri'],group['exitIp'])})
- subscription=call('GET','/api/v1/proxy-groups/subscription')
- request=urllib.request.Request(subscription['url'],headers={'Accept':'text/plain','User-Agent':'v2rayN/7.24.4'})
+ subscription=call('GET','/api/v1/proxy-groups/subscription'); subscription_url=urllib.parse.urlsplit(subscription['url'])
+ request=urllib.request.Request('http://127.0.0.1:'+str(int(manifest['ports']['xuiSubscription']))+subscription_url.path,headers={'Accept':'text/plain','User-Agent':'v2rayN/7.24.4','Host':subscription_url.hostname})
  with op.open(request,timeout=30) as response: subscription_raw=response.read(1<<20)
  expected=pathlib.Path('/usr/local/x-ui/bin/xray-linux-amd64').resolve(); pids=[]
  for item in pathlib.Path('/proc').iterdir():
@@ -188,8 +210,12 @@ try:
    if (item/'exe').resolve()==expected: pids.append(int(item.name))
   except OSError: pass
  xui=sqlite3.connect('file:/etc/x-ui/x-ui.db?mode=ro',uri=True); rows=xui.execute('SELECT tag,port FROM inbounds').fetchall(); xui.close()
- public_ports={8443,20000,20001,20002}; mixed_ports={30000,30001,30002,31000}
- print(json.dumps({'sourceRestrictionEnabled':bool(policy.get('enabled')),'groups':materials,'subscription':base64.b64encode(subscription_raw).decode(),'xrayPid':pids[0] if len(pids)==1 else 0,'publicCount':sum(int(r[1]) in public_ports for r in rows),'mixedCount':sum(int(r[1]) in mixed_ports for r in rows),'switch':switch},separators=(',',':')))
+ public_ports={int(item['publicPort']) for item in materials}; mixed_ports={int(item['mixedPort']) for item in materials}
+ ca_paths=[pathlib.Path('/var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt'),pathlib.Path('/var/lib/caddy/.local/share/caddy/pki/authorities/local/intermediate.crt')]
+ tls_ca=''
+ if all(path.is_file() and path.stat().st_size <= 32768 for path in ca_paths):
+  tls_ca=base64.b64encode(b'\n'.join(path.read_bytes().rstrip()+b'\n' for path in ca_paths)).decode()
+ print(json.dumps({'expectedGroups':expected_groups,'sourceRestrictionEnabled':bool(policy.get('enabled')),'groups':materials,'subscription':base64.b64encode(subscription_raw).decode(),'tlsCa':tls_ca,'xrayPid':pids[0] if len(pids)==1 else 0,'publicCount':sum(int(r[1]) in public_ports for r in rows),'mixedCount':sum(int(r[1]) in mixed_ports for r in rows),'switch':switch},separators=(',',':')))
 except BaseException:
  raise
 '''
@@ -350,7 +376,15 @@ def validate_subscription_coverage(
     for port, material in expected.items():
         expected_alias = material.get("subscriptionAlias")
         if expected_alias is not None:
-            if not isinstance(expected_alias, str) or urllib.parse.unquote(urllib.parse.urlsplit(actual[port]).fragment) != expected_alias:
+            actual_alias = urllib.parse.unquote(urllib.parse.urlsplit(actual[port]).fragment)
+            if (
+                isinstance(expected_alias, str)
+                and type(material.get("slotNumber")) is int
+                and material["slotNumber"] == 0
+                and actual_alias == expected_alias + "-aimili-gateway-subscription"
+            ):
+                actual_alias = expected_alias
+            if not isinstance(expected_alias, str) or actual_alias != expected_alias:
                 raise RuntimeError("subscription coverage mismatch")
             if canonical(actual[port], ignore_fragment=True) != canonical(str(material["publicUri"]), ignore_fragment=True):
                 raise RuntimeError("subscription coverage mismatch")
@@ -381,7 +415,9 @@ def validate_switch_arguments(slot: int, mode: str) -> tuple[int, str]:
     return slot, mode
 
 
-def build_public_client_config(uri: str, mode: str, local_port: int) -> dict[str, object]:
+def build_public_client_config(
+    uri: str, mode: str, local_port: int, ca_certificate_path: str = ""
+) -> dict[str, object]:
     parsed = urllib.parse.urlsplit(uri)
     query = {key: values[0] for key, values in urllib.parse.parse_qs(parsed.query).items() if values}
     if not parsed.hostname or not parsed.port or not parsed.username or local_port < 1 or local_port > 65535 or mode not in PROTOCOL_MODES:
@@ -418,6 +454,17 @@ def build_public_client_config(uri: str, mode: str, local_port: int) -> dict[str
     else:
         if parsed.scheme not in {"hysteria2", "hy2"} or not query.get("sni"):
             raise RuntimeError("invalid Hysteria2 connection document")
+        tls_settings: dict[str, object] = {
+            "serverName": query["sni"],
+            "allowInsecure": False,
+            "fingerprint": "chrome",
+        }
+        if ca_certificate_path:
+            tls_settings["disableSystemRoot"] = True
+            tls_settings["certificates"] = [{
+                "certificateFile": ca_certificate_path,
+                "usage": "verify",
+            }]
         outbound.update({
             "protocol": "hysteria",
             "settings": {"version": 2, "address": parsed.hostname, "port": parsed.port},
@@ -425,7 +472,7 @@ def build_public_client_config(uri: str, mode: str, local_port: int) -> dict[str
                 "network": "hysteria",
                 "security": "tls",
                 "hysteriaSettings": {"version": 2, "auth": urllib.parse.unquote(parsed.username)},
-                "tlsSettings": {"serverName": query["sni"], "allowInsecure": False, "fingerprint": "chrome"},
+                "tlsSettings": tls_settings,
             },
         })
     return {
@@ -468,20 +515,36 @@ def select_materials(materials: list[dict[str, str]], index: int | None) -> list
 
 
 def verify_group(
-    payload: dict[str, str], xray: str, probe_public_socks: bool = True
+    payload: dict[str, str], xray: str, probe_public_socks: bool = True,
+    ca_certificate: str = "",
 ) -> dict[str, object]:
     expected = str(ipaddress.ip_address(payload["exitIp"]))
     socks = urllib.parse.urlparse(payload["socks5hUri"])
     proxy_environment = os.environ.copy()
     proxy_environment["ALL_PROXY"] = payload["socks5hUri"]
+    proxy_environment["HTTP_PROXY"] = payload["socks5hUri"]
     proxy_environment["HTTPS_PROXY"] = payload["socks5hUri"]
     proxy_environment["NO_PROXY"] = ""
     socks_result = subprocess.CompletedProcess([], -1, "", "")
     if probe_public_socks:
         socks_result = subprocess.run(
-            ["curl.exe", "-4", "-fsS", "--max-time", "25", "https://api.ipify.org"],
+            ["curl.exe", "-4", "-fsS", "--max-time", "25", EGRESS_PROBE_URL],
             capture_output=True, text=True, env=proxy_environment,
         )
+        try:
+            first_socks_response_is_ip = bool(
+                ipaddress.ip_address(socks_result.stdout.strip())
+            )
+        except ValueError:
+            first_socks_response_is_ip = False
+        if (
+            socks_result.returncode in {28, 35, 56}
+            and not first_socks_response_is_ip
+        ):
+            socks_result = subprocess.run(
+                ["curl.exe", "-4", "-fsS", "--max-time", "25", EGRESS_PROBE_URL],
+                capture_output=True, text=True, env=proxy_environment,
+            )
     try:
         socks_response_is_ip = bool(ipaddress.ip_address(socks_result.stdout.strip()))
     except ValueError:
@@ -496,8 +559,23 @@ def verify_group(
         else False
     )
     local_port = free_port()
+    ca_handle = None
+    if payload["protocolMode"] == "hysteria2_quic_tls" and ca_certificate:
+        if (
+            len(ca_certificate) > 65536
+            or not ca_certificate.startswith("-----BEGIN CERTIFICATE-----\n")
+            or not ca_certificate.rstrip().endswith("-----END CERTIFICATE-----")
+        ):
+            raise RuntimeError("invalid TLS CA certificate")
+        ca_handle = tempfile.NamedTemporaryFile(
+            mode="w", encoding="ascii", suffix=".crt", delete=False
+        )
+        ca_handle.write(ca_certificate)
+        ca_handle.close()
+        os.chmod(ca_handle.name, 0o600)
     config = build_public_client_config(
-        payload["publicUri"], payload["protocolMode"], local_port
+        payload["publicUri"], payload["protocolMode"], local_port,
+        ca_certificate_path=ca_handle.name if ca_handle is not None else "",
     )
     handle = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".json", delete=False)
     process: subprocess.Popen[str] | None = None
@@ -522,7 +600,7 @@ def verify_group(
                     time.sleep(0.2)
             result = subprocess.run(
                 ["curl.exe", "-4", "-fsS", "--socks5-hostname", f"127.0.0.1:{local_port}",
-                 "--max-time", "25", "https://api.ipify.org"],
+                 "--max-time", "25", EGRESS_PROBE_URL],
                 capture_output=True, text=True,
             )
             try:
@@ -537,7 +615,7 @@ def verify_group(
             ):
                 result = subprocess.run(
                     ["curl.exe", "-4", "-fsS", "--socks5-hostname", f"127.0.0.1:{local_port}",
-                     "--max-time", "25", "https://api.ipify.org"],
+                     "--max-time", "25", EGRESS_PROBE_URL],
                     capture_output=True, text=True,
                 )
             try:
@@ -556,6 +634,11 @@ def verify_group(
             os.unlink(handle.name)
         except FileNotFoundError:
             pass
+        if ca_handle is not None:
+            try:
+                os.unlink(ca_handle.name)
+            except FileNotFoundError:
+                pass
     public_error_category = "none"
     for category, markers in (
         ("timeout", ("timeout", "deadline exceeded")),
@@ -577,9 +660,16 @@ def verify_group(
     }
 
 
-def run_remote(slot: int | None, mode: str, expected_old: str | None = None) -> dict[str, object]:
+def run_remote(
+    slot: int | None,
+    mode: str,
+    expected_old: str | None = None,
+    *,
+    ssh_target: str = "ny",
+    ssh_options: list[str] | None = None,
+) -> dict[str, object]:
     completed = subprocess.run(
-        ["ssh", "ny", "sudo", "python3", "-", str(-1 if slot is None else slot), mode, expected_old or "any"], input=REMOTE_HELPER, text=True,
+        ["ssh", *(ssh_options or []), ssh_target, "sudo", "python3", "-", str(-1 if slot is None else slot), mode, expected_old or "any"], input=REMOTE_HELPER, text=True,
         capture_output=True, timeout=240, check=True,
     )
     remote = json.loads(completed.stdout)
@@ -588,8 +678,10 @@ def run_remote(slot: int | None, mode: str, expected_old: str | None = None) -> 
     return remote
 
 
-def inspect_remote_mode(slot: int) -> str:
-    remote = run_remote(slot, "inspect")
+def inspect_remote_mode(
+    slot: int, *, ssh_target: str = "ny", ssh_options: list[str] | None = None
+) -> str:
+    remote = run_remote(slot, "inspect", ssh_target=ssh_target, ssh_options=ssh_options)
     inspection = remote.get("inspection")
     if (
         not isinstance(inspection, dict)
@@ -601,7 +693,8 @@ def inspect_remote_mode(slot: int) -> str:
 
 
 def evaluate_remote(
-    remote: dict[str, object], index: int | None, xray: str
+    remote: dict[str, object], index: int | None, xray: str,
+    probe_public_socks: bool | None = None,
 ) -> tuple[dict[str, object], bool]:
     source_restriction_enabled = bool(remote.get("sourceRestrictionEnabled"))
     all_materials = require_ready_materials(remote.get("groups"))
@@ -609,8 +702,14 @@ def evaluate_remote(
     subscription_entries = decode_subscription(subscription_raw)
     coverage = validate_subscription_coverage(all_materials, subscription_entries)
     materials = select_materials(bind_subscription_entries(all_materials, subscription_entries), index)
-    public_socks_probe = should_probe_public_socks(source_restriction_enabled)
-    verified = [verify_group(material, xray, public_socks_probe) for material in materials]
+    public_socks_probe = should_probe_public_socks(source_restriction_enabled) if probe_public_socks is None else probe_public_socks
+    tls_ca = ""
+    if remote.get("tlsCa"):
+        try:
+            tls_ca = base64.b64decode(str(remote["tlsCa"]), validate=True).decode("ascii")
+        except (ValueError, UnicodeDecodeError) as error:
+            raise RuntimeError("invalid TLS CA certificate") from error
+    verified = [verify_group(material, xray, public_socks_probe, tls_ca) for material in materials]
     results = []
     for material, result in zip(materials, verified):
         result["slot_number"] = int(material.get("slotNumber") or 0)
@@ -624,11 +723,13 @@ def evaluate_remote(
         authorized_socks=bool(result["authorized_socks5h"]),
         public_protocol=bool(result["external_public_protocol"]),
     ) for result in results)
+    expected_groups = int(remote.get("expectedGroups", 0))
     invariants = {
-        "mixed_count": int(remote.get("mixedCount", 0)) == 4,
-        "public_count": int(remote.get("publicCount", 0)) == 4,
+        "ready_groups": len(all_materials) == expected_groups,
+        "mixed_count": int(remote.get("mixedCount", 0)) == expected_groups,
+        "public_count": int(remote.get("publicCount", 0)) == expected_groups,
         "single_xray": int(remote.get("xrayPid", 0)) > 0,
-        "subscription_entries": coverage["entryCount"] == 4,
+        "subscription_entries": coverage["entryCount"] == expected_groups,
     }
     passed = passed and all(invariants.values()) and len(set(exit_ips)) == len(exit_ips)
     return ({
@@ -706,6 +807,9 @@ def main(
     slot: int | None = None,
     mode: str | None = None,
     xray: str = r"E:\SoftWare\v2rayN-windows-64\bin\xray\xray.exe",
+    ssh_target: str = "ny",
+    ssh_options: list[str] | None = None,
+    probe_public_socks: bool | None = None,
 ) -> int:
     if (slot is None) != (mode is None):
         raise ValueError("slot and protocol mode must be provided together")
@@ -716,11 +820,12 @@ def main(
     result, passed = run_with_switch_rollback(
         slot,
         mode,
-        inspect_remote_mode,
+        lambda requested_slot: inspect_remote_mode(requested_slot, ssh_target=ssh_target, ssh_options=ssh_options),
         lambda requested_slot, requested_mode, expected_old: run_remote(
-            requested_slot, requested_mode or "none", expected_old
+            requested_slot, requested_mode or "none", expected_old,
+            ssh_target=ssh_target, ssh_options=ssh_options,
         ),
-        lambda remote: evaluate_remote(remote, index, xray),
+        lambda remote: evaluate_remote(remote, index, xray, probe_public_socks),
     )
     print(json.dumps(result, sort_keys=True))
     return 0 if passed else 2
@@ -732,9 +837,23 @@ if __name__ == "__main__":
     parser.add_argument("--slot", type=int)
     parser.add_argument("--set-mode", choices=sorted(PROTOCOL_MODES))
     parser.add_argument("--xray", default=r"E:\SoftWare\v2rayN-windows-64\bin\xray\xray.exe")
+    parser.add_argument("--ssh-target", default="ny")
+    parser.add_argument("--ssh-bind")
+    parser.add_argument("--ssh-key")
+    parser.add_argument("--known-hosts")
+    parser.add_argument("--probe-public-socks", action="store_true")
     arguments = parser.parse_args()
     try:
-        raise SystemExit(main(arguments.index, arguments.slot, arguments.set_mode, arguments.xray))
+        ssh_options = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "-o", "StrictHostKeyChecking=yes"]
+        if arguments.ssh_bind:
+            if ipaddress.ip_address(arguments.ssh_bind).version != 4:
+                raise ValueError("invalid SSH bind address")
+            ssh_options[0:0] = ["-b", arguments.ssh_bind]
+        if arguments.ssh_key:
+            ssh_options[0:0] = ["-i", arguments.ssh_key]
+        if arguments.known_hosts:
+            ssh_options.extend(["-o", "UserKnownHostsFile=" + arguments.known_hosts])
+        raise SystemExit(main(arguments.index, arguments.slot, arguments.set_mode, arguments.xray, arguments.ssh_target, ssh_options, True if arguments.probe_public_socks else None))
     except Exception as error:
         category = safe_error_category(error)
         print(json.dumps({"status": "failed", "error_category": category}, sort_keys=True))

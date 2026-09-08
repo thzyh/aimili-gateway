@@ -39,6 +39,19 @@ func TestEnableCreatesAndValidatesOneStableProxyGroup(t *testing.T) {
 	}
 }
 
+func TestNewAcceptsIPAddressEndpointWithSeparateRealityServerName(t *testing.T) {
+	fixture := newFixture()
+	value, err := New(Config{
+		MaxGroups: 1, VLESSPortStart: 20000, VLESSPortEnd: 20009,
+		MixedPortStart: 30000, MixedPortEnd: 30009,
+		PublicHost: "192.168.88.4", RealityServerName: "reality.aimili.test",
+		XrayPath: "/xray", ProbeHost: "ip.example.test",
+	}, fixture.store, fixture.aimili, fixture.xui, fixture.validator, []byte("01234567890123456789012345678901"))
+	if err != nil || value == nil {
+		t.Fatalf("IP endpoint with a separate Reality name was rejected: value=%#v err=%v", value, err)
+	}
+}
+
 func TestEnableCompensatesWhenDefaultProtocolStateCannotBeCreated(t *testing.T) {
 	fixture := newFixture()
 	fixture.store.protocolCreateError = errors.New("storage unavailable")

@@ -22,9 +22,10 @@ native_root="${native_root%/}"
 [[ -n "$native_root" ]] || native_root='/'
 
 case "$component" in
+  manifest) defaults=(/etc/aimili-local/deployment.json) ;;
   aimilivpn) defaults=(/opt/aimilivpn /etc/default/aimilivpn /etc/systemd/system/aimilivpn.service) ;;
-  xui-caddy) defaults=(/usr/local/x-ui /etc/x-ui /etc/systemd/system/x-ui.service /etc/caddy /etc/systemd/system/caddy.service) ;;
-  gateway) defaults=(/usr/local/bin/aimili-gateway /usr/local/bin/aimili-gateway-admin /etc/aimili-gateway /etc/credstore.encrypted/aimili-gateway-master-key /var/lib/aimili-gateway /etc/systemd/system/aimili-gateway.service) ;;
+  xui-caddy) defaults=(/usr/local/x-ui /etc/x-ui /etc/systemd/system/x-ui.service /etc/caddy /etc/systemd/system/caddy.service /etc/aimili-local/xui-credentials.json /etc/aimili-local/xui-credentials.json.pending /etc/aimili-local/caddy-firewall.json /etc/aimili-local/xui-install.json /usr/local/share/ca-certificates/aimili-local-caddy.crt) ;;
+  gateway) defaults=(/usr/local/bin/aimili-gateway /usr/local/bin/aimili-gateway-admin /usr/local/bin/aimili-xui-protocol-transaction /usr/lib/aimili-gateway/aimili_xui_protocol_transaction.py /etc/aimili-gateway /etc/credstore.encrypted/aimili-gateway-master-key /var/lib/aimili-gateway /var/lib/aimili-xui-protocol-transaction /etc/systemd/system/aimili-gateway.service /etc/systemd/system/aimili-xui-protocol-transaction.path /etc/systemd/system/aimili-xui-protocol-transaction.service /etc/systemd/system/aimili-xui-protocol-transaction.timer) ;;
   *) printf 'backup_component_unknown\n' >&2; exit 2 ;;
 esac
 targets=()
@@ -40,40 +41,90 @@ else
   done
 fi
 python3 - "$component" "$run_id" "$backup_root" "$native_root" "${targets[@]}" <<'PY'
-import hashlib, json, os, pathlib, shutil, sys, tempfile
+import hashlib, json, os, pathlib, shutil, subprocess, sys, tempfile
 
 component, run_id, backup_root, native_root, *targets = sys.argv[1:]
 allowed = {
+    'manifest': {'/etc/aimili-local/deployment.json'},
     'aimilivpn': {'/opt/aimilivpn', '/etc/default/aimilivpn', '/etc/systemd/system/aimilivpn.service'},
-    'xui-caddy': {'/usr/local/x-ui', '/etc/x-ui', '/etc/systemd/system/x-ui.service', '/etc/caddy', '/etc/systemd/system/caddy.service'},
-    'gateway': {'/usr/local/bin/aimili-gateway', '/usr/local/bin/aimili-gateway-admin', '/etc/aimili-gateway', '/etc/credstore.encrypted/aimili-gateway-master-key', '/var/lib/aimili-gateway', '/etc/systemd/system/aimili-gateway.service'},
+    'xui-caddy': {'/usr/local/x-ui', '/etc/x-ui', '/etc/systemd/system/x-ui.service', '/etc/caddy', '/etc/systemd/system/caddy.service', '/etc/aimili-local/xui-credentials.json', '/etc/aimili-local/xui-credentials.json.pending', '/etc/aimili-local/caddy-firewall.json', '/etc/aimili-local/xui-install.json', '/usr/local/share/ca-certificates/aimili-local-caddy.crt'},
+    'gateway': {'/usr/local/bin/aimili-gateway', '/usr/local/bin/aimili-gateway-admin', '/usr/local/bin/aimili-xui-protocol-transaction', '/usr/lib/aimili-gateway/aimili_xui_protocol_transaction.py', '/etc/aimili-gateway', '/etc/credstore.encrypted/aimili-gateway-master-key', '/var/lib/aimili-gateway', '/var/lib/aimili-xui-protocol-transaction', '/etc/systemd/system/aimili-gateway.service', '/etc/systemd/system/aimili-xui-protocol-transaction.path', '/etc/systemd/system/aimili-xui-protocol-transaction.service', '/etc/systemd/system/aimili-xui-protocol-transaction.timer'},
+}[component]
+unit_names = {
+    'manifest': [],
+    'aimilivpn': ['aimilivpn.service'],
+    'xui-caddy': ['x-ui.service', 'caddy.service'],
+    'gateway': ['aimili-gateway.service', 'aimili-xui-protocol-transaction.path', 'aimili-xui-protocol-transaction.service', 'aimili-xui-protocol-transaction.timer'],
 }[component]
 if not targets or len(set(targets)) != len(targets) or any(t not in allowed for t in targets):
     raise SystemExit('backup_target_not_allowlisted')
 root = pathlib.Path(native_root or '/')
 backup = pathlib.Path(backup_root).resolve()
 dest = backup / run_id / component
-if dest.exists():
-    raise SystemExit('backup_component_exists')
-dest.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-tmp = pathlib.Path(tempfile.mkdtemp(prefix='.' + component + '.tmp.', dir=str(dest.parent)))
-(tmp / 'entries').mkdir(mode=0o700)
 
 def scan(path, base):
     result = []
     if path.is_file():
-        result.append({'path': '.', 'sha256': hashlib.sha256(path.read_bytes()).hexdigest(), 'mode': path.stat().st_mode & 0o7777, 'uid': path.stat().st_uid, 'gid': path.stat().st_gid})
+        result.append({'path': '.', 'kind': 'file', 'sha256': hashlib.sha256(path.read_bytes()).hexdigest(), 'mode': path.stat().st_mode & 0o7777, 'uid': path.stat().st_uid, 'gid': path.stat().st_gid})
     else:
         for item in sorted(path.rglob('*')):
             if item.is_symlink():
                 raise SystemExit('backup_symlink_rejected')
-            if item.is_file():
-                rel = str(item.relative_to(base)).replace(os.sep, '/')
-                st = item.stat()
-                result.append({'path': rel, 'sha256': hashlib.sha256(item.read_bytes()).hexdigest(), 'mode': st.st_mode & 0o7777, 'uid': st.st_uid, 'gid': st.st_gid})
+            rel = str(item.relative_to(base)).replace(os.sep, '/')
+            st = item.stat()
+            record = {'path': rel, 'kind': 'directory' if item.is_dir() else 'file', 'mode': st.st_mode & 0o7777, 'uid': st.st_uid, 'gid': st.st_gid}
+            if item.is_file(): record['sha256'] = hashlib.sha256(item.read_bytes()).hexdigest()
+            result.append(record)
     return result
 
-metadata = {'schemaVersion': 1, 'component': component, 'runId': run_id, 'targets': []}
+def content_identity(records):
+    return {(item.get('path'), item.get('kind'), item.get('sha256')) for item in records}
+
+if dest.exists():
+    metadata_path = dest / 'metadata.json'
+    try:
+        existing = json.loads(metadata_path.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        raise SystemExit('backup_component_exists_invalid')
+    states = existing.get('targets')
+    units = existing.get('units')
+    if existing.get('schemaVersion') != 1 or existing.get('component') != component or existing.get('runId') != run_id or not isinstance(states, list) or not isinstance(units, dict) or set(units) != set(unit_names) or any(set(value) != {'active', 'enabled'} or not all(isinstance(flag, bool) for flag in value.values()) for value in units.values()):
+        raise SystemExit('backup_component_exists_invalid')
+    if [state.get('path') for state in states] != targets or len(states) != len(targets):
+        raise SystemExit('backup_component_exists_invalid')
+    entries = dest / 'entries'
+    if not entries.is_dir() or {item.name for item in entries.iterdir()} != {f'{index:03d}' for index in range(len(states))}:
+        raise SystemExit('backup_component_exists_invalid')
+    for index, state in enumerate(states):
+        entry = entries / f'{index:03d}'
+        try:
+            recorded = json.loads((entry / 'state.json').read_text(encoding='utf-8'))
+            recorded_target = (entry / 'target').read_text(encoding='utf-8')
+        except (OSError, json.JSONDecodeError):
+            raise SystemExit('backup_component_exists_invalid')
+        if recorded != state or recorded_target != state.get('path'):
+            raise SystemExit('backup_component_exists_invalid')
+        if state.get('exists'):
+            payload = entry / 'payload'
+            expected_files = state.get('files')
+            if payload.is_symlink() or not payload.exists() or not isinstance(expected_files, list) or content_identity(scan(payload, payload)) != content_identity(expected_files):
+                raise SystemExit('backup_component_exists_invalid')
+    print(dest)
+    raise SystemExit(0)
+dest.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+tmp = pathlib.Path(tempfile.mkdtemp(prefix='.' + component + '.tmp.', dir=str(dest.parent)))
+(tmp / 'entries').mkdir(mode=0o700)
+
+metadata = {
+    'schemaVersion': 1,
+    'component': component,
+    'runId': run_id,
+    'targets': [],
+    'units': {unit: {
+        'active': subprocess.run(['systemctl', 'is-active', '--quiet', unit]).returncode == 0,
+        'enabled': subprocess.run(['systemctl', 'is-enabled', '--quiet', unit]).returncode == 0,
+    } for unit in unit_names},
+}
 try:
     for index, rel in enumerate(targets):
         target = root / rel.lstrip('/')

@@ -5,6 +5,11 @@ https://example.invalid:8080 {
         reverse_proxy 127.0.0.1:2001
     }
 
+    @subscription path /sub/*
+    handle @subscription {
+        reverse_proxy 127.0.0.1:2096
+    }
+
     @vpngate path /vpngate/*
     handle @vpngate {
         reverse_proxy 127.0.0.1:8787

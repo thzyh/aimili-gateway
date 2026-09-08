@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"log"
 	"sort"
 	"strings"
 
@@ -38,6 +39,8 @@ func (o *Orchestrator) Reconcile(ctx context.Context) ReconcileResult {
 	groups = o.adoptLegacyGroups(ctx, groups, candidates)
 	groups, historyFailures := o.degradeHistoricalDuplicateExits(ctx, groups)
 	result.Failed += historyFailures
+	groups, adoptionFailures := o.adoptUnmanagedSlots(ctx, groups)
+	result.Failed += adoptionFailures
 	existing := make(map[string]domain.ProxyGroup, len(groups))
 	byExit := make(map[string]domain.ProxyGroup, len(groups))
 	activeCount := len(groups)
@@ -106,6 +109,45 @@ func (o *Orchestrator) Reconcile(ctx context.Context) ReconcileResult {
 	// unavailable; the authenticated subscription endpoint surfaces that error.
 	_, _ = o.Subscription(ctx)
 	return result
+}
+
+func (o *Orchestrator) adoptUnmanagedSlots(ctx context.Context, groups []domain.ProxyGroup) ([]domain.ProxyGroup, int) {
+	slots, err := o.aimili.ListSlots(ctx)
+	if err != nil {
+		return groups, 1
+	}
+	sort.Slice(slots, func(i, j int) bool { return slots[i].Number < slots[j].Number })
+	claimedSlots := make(map[int]struct{}, len(groups))
+	claimedCandidates := make(map[string]struct{}, len(groups))
+	for _, group := range groups {
+		claimedSlots[group.AimiliSlot] = struct{}{}
+		if candidateID := strings.TrimSpace(group.CandidateID); candidateID != "" {
+			claimedCandidates[candidateID] = struct{}{}
+		}
+	}
+	failures := 0
+	for _, slot := range slots {
+		candidateID := strings.TrimSpace(slot.NodeID)
+		if len(groups) >= o.config.MaxGroups || candidateID == "" || !slot.EgressOK || (slot.Status != "up" && slot.Status != "ready") {
+			continue
+		}
+		if _, claimed := claimedSlots[slot.Number]; claimed {
+			continue
+		}
+		if _, claimed := claimedCandidates[candidateID]; claimed {
+			continue
+		}
+		group, adoptErr := o.adoptExistingSlot(ctx, slot, groups)
+		if adoptErr != nil {
+			log.Printf("reconcile slot adoption failed: slot=%d code=%s", slot.Number, errorCode(adoptErr))
+			failures++
+			continue
+		}
+		groups = append(groups, group)
+		claimedSlots[group.AimiliSlot] = struct{}{}
+		claimedCandidates[group.CandidateID] = struct{}{}
+	}
+	return groups, failures
 }
 
 func (o *Orchestrator) degradeHistoricalDuplicateExits(ctx context.Context, groups []domain.ProxyGroup) ([]domain.ProxyGroup, int) {

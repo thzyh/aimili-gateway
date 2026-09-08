@@ -9,5 +9,5 @@ foreach ($token in @('--check', '--apply', '--public-origin', 'aimili-gateway.se
     if ($source -notmatch [regex]::Escape($token)) { throw "Gateway installer contract missing: $token" }
 }
 if ($source -match 'docker|ssh ny|v2rayN') { throw 'Gateway installer contains an out-of-scope integration' }
-if ($source -match 'token_urlsafe\(32\)|publicOrigin.*http://127') { throw 'Gateway installer retains insecure key or origin generation' }
+if ($source -match 'token_urlsafe\(32\)|["'']publicOrigin["'']\s*:\s*["'']http://127') { throw 'Gateway installer retains insecure key or origin generation' }
 Write-Output 'PASS Gateway native installer contract'

@@ -47,7 +47,7 @@ func TestBuildPublicClientConfigSelectsTCPAndXHTTPReality(t *testing.T) {
 func TestBuildPublicClientConfigUsesHysteria2AuthAndTLSServerName(t *testing.T) {
 	encoded, err := buildPublicClientConfig(PublicTarget{
 		Mode: domain.ProtocolHysteria2QUICTLS, InboundAddress: "127.0.0.1:20001",
-		Auth: "test-independent-auth", TLSServerName: "proxy.example.test",
+		Auth: "test-independent-auth", TLSServerName: "192.168.88.4",
 	}, 19080, "ephemeral-user", "ephemeral-password")
 	if err != nil {
 		t.Fatal(err)
@@ -63,7 +63,7 @@ func TestBuildPublicClientConfigUsesHysteria2AuthAndTLSServerName(t *testing.T) 
 	if outbound["protocol"] != "hysteria" || settings["version"] != float64(2) || settings["address"] != "127.0.0.1" || settings["port"] != float64(20001) || hysteria["auth"] != "test-independent-auth" {
 		t.Fatal("Hysteria2 server contract is incomplete")
 	}
-	if stream["network"] != "hysteria" || stream["security"] != "tls" || stream["tlsSettings"].(map[string]any)["serverName"] != "proxy.example.test" {
+	if stream["network"] != "hysteria" || stream["security"] != "tls" || stream["tlsSettings"].(map[string]any)["serverName"] != "192.168.88.4" {
 		t.Fatal("Hysteria2 TLS contract is incomplete")
 	}
 	if _, exists := settings["servers"]; exists {

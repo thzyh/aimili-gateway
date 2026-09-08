@@ -7,10 +7,12 @@
 - `stage.sh <manifest> <run-id>`：验证严格文件清单、SHA-256、常规文件和相对路径后，原子 promotion 到 `/var/lib/aimili-local/staging/<run-id>`。
 - `backup.sh`：按 `aimilivpn`、`xui-caddy`、`gateway` 固定 allowlist 记录存在与缺失目标、类型、权限、owner/group、文件清单和 SHA-256；同一 run/component 仅允许一份备份。
 - `rollback.sh`：只恢复备份 metadata 中且仍属于组件 allowlist 的精确目标；本轮新建目标会删除，既有目标保留至多一个 `.previous`，最后执行 `systemctl daemon-reload`。
-- `verify-native.sh --json`：读取清单和脱敏验收证据，统一验证 systemd、TUN、路由、监听、真实出口、订阅覆盖、协议隔离与宿主不变性。
+- `verify-native.sh --json`：读取清单和脱敏验收证据，统一验证 systemd、protocol automation、TUN、路由、监听、真实出口、订阅覆盖、协议隔离与宿主不变性。
 
 `verify-native.sh` 的 `--evidence` JSON 使用 `schemaVersion: 1`，只保存可公开比较的逻辑出口名（`main`、`slot-N`）、公网协议/端口、mixed 端口、订阅是否误含 mixed 的布尔值，以及宿主进程号列表和代理/默认路由的 SHA-256 摘要。不得写入订阅 URL、认证材料、UUID、节点 IP 或随机后台路径。验证结果只返回布尔判定和数量，不回显输入证据。
 
 Windows 端入口为 `../deploy-native.ps1`。`-PlanOnly` 只输出脱敏阶段、清单期望数量和提交；正式执行固定使用 runtime 中的 SSH key/known_hosts，按 `aimilivpn → xui-caddy → gateway → slots → verify` 顺序运行，组件 apply 失败只回滚当前组件。`-ResumeFrom` 必须同时传入原 `-RunId`，并先检查上一个远端 checkpoint。
+
+内部验证通过后，必须再运行 `../verify-external.ps1`。该入口显式连接 `aimili@<guest-ip>`，从清单动态读取逻辑出口数量，并使用 Windows 上的 Xray 对每个公网 VLESS/Reality、XHTTP/Reality 或 Hysteria2 入口做真实握手，同时从 Windows 对每个受认证 mixed SOCKS 执行代理 DNS 与出口 IP 验证。它不使用 `ssh ny`，不修改 v2rayN、系统代理、默认路由、DNS 或 Windows 防火墙；脱敏结果保存到 runtime 的 `verification/external-client.json`。`nativeReady=true` 只代表 VM 内部深度检查通过，不能替代该外部数据面门禁。
 
 脚本不负责连接 ny，不安装 Docker，也不修改 Windows 默认路由、DNS、防火墙或 v2rayN。生产调用只使用固定路径、清单值和严格验证的 IP/整数；fixture 的 `AIMILI_STAGING_ROOT`、`AIMILI_BACKUP_ROOT`、`AIMILI_NATIVE_ROOT` 仅用于临时目录行为测试。

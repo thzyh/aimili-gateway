@@ -4,7 +4,6 @@ import json
 import pathlib
 import subprocess
 import threading
-import urllib.parse
 
 
 HELPER = pathlib.Path(__file__).parents[1] / "native" / "rotate-xui-account.py"
@@ -48,24 +47,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
         assert payload["oldUsername"] == self.old_username
         assert payload["oldPassword"] == self.old_password
         self._json({"success": True})
-
-
-def run(payload):
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        result = subprocess.run(
-            ["python3", str(HELPER)],
-            input=json.dumps(payload).encode(),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
-        return result
-    finally:
-        server.shutdown()
-        thread.join()
 
 
 def main():

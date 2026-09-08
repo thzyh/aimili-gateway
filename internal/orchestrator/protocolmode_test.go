@@ -42,6 +42,29 @@ func TestSwitchProtocolModeAppliesVerifiesFinalizesAndPreservesOtherState(t *tes
 	}
 }
 
+func TestSwitchProtocolModeValidatesHysteriaWithInboundTLSIdentity(t *testing.T) {
+	fixture, group := protocolFixture(t)
+	fixture.xui.profileSequences = [][]xui.PublicProfile{{{
+		InboundID: group.PublicInboundID, Mode: domain.ProtocolHysteria2QUICTLS,
+		Auth: "hysteria-auth", ServerName: "tls.example.test",
+	}}}
+	client := &fakeProtocolTransaction{calls: &fixture.calls}
+	orchestrator := fixture.orchestratorWithMax(t, 3)
+	orchestrator.protocolTransaction = client
+
+	result, err := orchestrator.SwitchProtocolMode(context.Background(), group.ID, domain.ProtocolHysteria2QUICTLS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ActiveMode != domain.ProtocolHysteria2QUICTLS || len(fixture.validator.publicTargets) != 1 {
+		t.Fatalf("result=%#v publicTargets=%#v", result, fixture.validator.publicTargets)
+	}
+	target := fixture.validator.publicTargets[0]
+	if target.TLSServerName != "tls.example.test" || target.InboundAddress != "127.0.0.1:20000" {
+		t.Fatalf("Hysteria validation target conflated endpoint and TLS identity: %#v", target)
+	}
+}
+
 func TestSwitchProtocolModeRejectsPendingSlotBeforeRuntimeWrites(t *testing.T) {
 	fixture, group := protocolFixture(t)
 	slot := fixture.aimili.createdSlots[group.AimiliSlot]

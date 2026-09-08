@@ -559,7 +559,55 @@ class ProtocolTransactionManager:
             raise TransactionError("runtime_config_invalid") from error
         if not isinstance(document, dict):
             raise TransactionError("runtime_config_invalid")
-        return document
+        try:
+            with closing(self._connect()) as database:
+                has_settings = database.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='settings'"
+                ).fetchone()
+                if has_settings is None:
+                    return document
+                stored = database.execute(
+                    "SELECT value FROM settings WHERE key='xrayTemplateConfig'"
+                ).fetchone()
+                if stored is None:
+                    return document
+                template = _json_object(stored[0], "runtime_config_invalid")
+                rows = database.execute(
+                    """
+                    SELECT listen,port,protocol,settings,stream_settings,tag,sniffing
+                    FROM inbounds WHERE enable=1 ORDER BY id
+                    """
+                ).fetchall()
+        except sqlite3.Error as error:
+            raise TransactionError("database_read_failed") from error
+        inbounds = template.get("inbounds")
+        if not isinstance(inbounds, list):
+            raise TransactionError("runtime_config_invalid")
+        composed = copy.deepcopy(inbounds)
+        tags = {item.get("tag") for item in composed if isinstance(item, dict)}
+        for row in rows:
+            tag = str(row[5] or "")
+            if not tag or tag in tags:
+                raise TransactionError("runtime_config_invalid")
+            stream = {} if row[4] == "" else _json_object(row[4], "runtime_config_invalid")
+            for key in ("tlsSettings", "realitySettings"):
+                settings = stream.get(key)
+                if isinstance(settings, dict):
+                    settings.pop("settings", None)
+            inbound = {
+                "port": int(row[1]),
+                "protocol": str(row[2]),
+                "settings": _json_object(row[3], "runtime_config_invalid"),
+                "streamSettings": stream,
+                "tag": tag,
+                "sniffing": _json_object(row[6], "runtime_config_invalid"),
+            }
+            if row[0]:
+                inbound["listen"] = str(row[0])
+            composed.append(inbound)
+            tags.add(tag)
+        template["inbounds"] = composed
+        return template
 
     def _connect(self) -> sqlite3.Connection:
         try:

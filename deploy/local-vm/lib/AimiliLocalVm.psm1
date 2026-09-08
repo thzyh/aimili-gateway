@@ -347,7 +347,7 @@ function Get-AimiliNativeManifest {
 
 function Assert-AimiliNativeStatusContract {
     param([Parameter(Mandatory)]$Status)
-    foreach ($name in @('nativeServices', 'nativeEnabled', 'expected', 'actual', 'listeners', 'mainChecks', 'slotChecks', 'databaseReadable', 'evidenceSchema', 'subscriptionExitSet', 'protocolIsolation', 'hostSafety', 'nativeReady')) {
+    foreach ($name in @('nativeServices', 'nativeEnabled', 'expected', 'actual', 'listeners', 'xrayListeners', 'mainChecks', 'slotChecks', 'databaseReadable', 'evidenceSchema', 'subscriptionExitSet', 'protocolIsolation', 'xrayRuntimeListeners', 'protocolAutomation', 'hostSafety', 'nativeReady')) {
         if (-not $Status.PSObject.Properties[$name]) { throw "native_status_field_missing:$name" }
     }
     foreach ($name in @('openvpn', 'xray', 'logicalExits', 'exitSlots')) {
@@ -356,9 +356,12 @@ function Assert-AimiliNativeStatusContract {
             if ($null -eq $value -or [int]$value -lt 0 -or [int]$value -ne [double]$value) { throw "native_status_count_invalid:$section.$name" }
         }
     }
-    foreach ($service in @('aimilivpn', 'xui', 'gateway', 'caddy')) {
+    foreach ($service in @('aimilivpn', 'x-ui', 'aimili-gateway', 'caddy')) {
         if (-not $Status.nativeServices.PSObject.Properties[$service]) { throw "native_status_service_missing:$service" }
         if (-not $Status.nativeEnabled.PSObject.Properties[$service]) { throw "native_status_enabled_missing:$service" }
+    }
+    foreach ($name in @('gatewayServiceActive', 'pathActive', 'timerActive', 'gatewayServiceEnabled', 'pathEnabled', 'timerEnabled', 'wrapperExecutable', 'scriptInstalled', 'configInstalled', 'pathUnitInstalled', 'serviceUnitInstalled', 'timerUnitInstalled')) {
+        if (-not $Status.protocolAutomation.PSObject.Properties[$name] -or $Status.protocolAutomation.$name -isnot [bool]) { throw "native_status_protocol_automation_invalid:$name" }
     }
     return $true
 }
@@ -379,7 +382,7 @@ function ConvertFrom-AimiliNativeVerifierProbe {
     }
     if ($null -eq $status -or $status -isnot [psobject]) { return $null }
 
-    foreach ($name in @('nativeServices', 'nativeEnabled', 'expected', 'actual', 'listeners', 'mainChecks', 'slotChecks', 'databaseReadable', 'evidenceSchema', 'subscriptionExitSet', 'protocolIsolation', 'hostSafety', 'nativeReady')) {
+    foreach ($name in @('nativeServices', 'nativeEnabled', 'expected', 'actual', 'listeners', 'xrayListeners', 'mainChecks', 'slotChecks', 'databaseReadable', 'evidenceSchema', 'subscriptionExitSet', 'protocolIsolation', 'xrayRuntimeListeners', 'protocolAutomation', 'hostSafety', 'nativeReady')) {
         if (-not $status.PSObject.Properties[$name]) { return $null }
     }
     foreach ($name in @('openvpn', 'xray', 'logicalExits', 'exitSlots')) {
@@ -395,7 +398,10 @@ function ConvertFrom-AimiliNativeVerifierProbe {
     foreach ($check in @('tun', 'route', 'listener', 'egress')) {
         if (-not $status.mainChecks.PSObject.Properties[$check] -or $status.mainChecks.$check -isnot [bool]) { return $null }
     }
-    foreach ($name in @('databaseReadable', 'evidenceSchema', 'subscriptionExitSet', 'protocolIsolation', 'hostSafety', 'nativeReady')) {
+    foreach ($name in @('gatewayServiceActive', 'pathActive', 'timerActive', 'gatewayServiceEnabled', 'pathEnabled', 'timerEnabled', 'wrapperExecutable', 'scriptInstalled', 'configInstalled', 'pathUnitInstalled', 'serviceUnitInstalled', 'timerUnitInstalled')) {
+        if (-not $status.protocolAutomation.PSObject.Properties[$name] -or $status.protocolAutomation.$name -isnot [bool]) { return $null }
+    }
+    foreach ($name in @('databaseReadable', 'evidenceSchema', 'subscriptionExitSet', 'protocolIsolation', 'xrayRuntimeListeners', 'hostSafety', 'nativeReady')) {
         if ($status.$name -isnot [bool]) { return $null }
     }
     foreach ($slot in @($status.slotChecks)) {

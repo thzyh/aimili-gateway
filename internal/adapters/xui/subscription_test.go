@@ -40,7 +40,7 @@ func (f *subscriptionFixture) handler(w http.ResponseWriter, r *http.Request) {
 			{"id":2,"tag":"agw-jp-dc-vless","remark":"Aimili Gateway agw-jp-dc VLESS","protocol":"vless","port":20000,"settings":"{\"clients\":[{\"id\":\"stable-client\",\"email\":\"aimili-gateway-subscription\",\"flow\":\"\"}]}","streamSettings":"{\"network\":\"xhttp\",\"security\":\"reality\",\"xhttpSettings\":{\"path\":\"/safe-xhttp-path\",\"mode\":\"auto\"},\"realitySettings\":{\"serverNames\":[\"proxy.example.test\"],\"shortIds\":[\"short-two\"],\"settings\":{\"publicKey\":\"public-two\",\"fingerprint\":\"chrome\"}}}"},
             {"id":3,"tag":"agw-jp-dc-mixed","remark":"Aimili Gateway agw-jp-dc mixed","protocol":"mixed","port":30000},
 			{"id":4,"tag":"user-vless","remark":"User VLESS","protocol":"vless","port":40000},
-			{"id":5,"tag":"agw-us-dc-vless","remark":"Aimili Gateway agw-us-dc VLESS","protocol":"hysteria","port":20001,"settings":"{\"version\":2,\"clients\":[{\"auth\":\"stable-auth\",\"email\":\"aimili-gateway-subscription\"}]}","streamSettings":"{\"network\":\"hysteria\",\"security\":\"tls\",\"hysteriaSettings\":{\"version\":2}}"}
+			{"id":5,"tag":"agw-us-dc-vless","remark":"Aimili Gateway agw-us-dc VLESS","protocol":"hysteria","port":20001,"settings":"{\"version\":2,\"clients\":[{\"auth\":\"stable-auth\",\"email\":\"aimili-gateway-subscription\"}]}","streamSettings":"{\"network\":\"hysteria\",\"security\":\"tls\",\"hysteriaSettings\":{\"version\":2},\"tlsSettings\":{\"serverName\":\"192.0.2.20\"}}"}
         ]}`)
 	case "/panel/panel/api/setting/all":
 		f.settingVerb = r.Method
@@ -288,7 +288,7 @@ func TestEnsureSubscriptionClientReadsMixedPublicProfilesWithoutReattaching(t *t
 			t.Fatalf("profile %d has wrong identity or mode", index)
 		}
 	}
-	if subscription.PublicProfiles[1].XHTTPPath != "/safe-xhttp-path" || subscription.PublicProfiles[2].Auth != "stable-auth" {
+	if subscription.PublicProfiles[1].XHTTPPath != "/safe-xhttp-path" || subscription.PublicProfiles[2].Auth != "stable-auth" || subscription.PublicProfiles[2].ServerName != "192.0.2.20" {
 		t.Fatal("protocol-specific transient material was not resolved")
 	}
 	if subscription.PublicProfiles[0].ClientID != "stable-client" || subscription.PublicProfiles[1].ClientID != "stable-client" || subscription.PublicProfiles[2].ClientID != "" {

@@ -210,13 +210,9 @@ func newRuntimeServices(ctx context.Context, cfg config.Config, database *store.
 	if err := seedMixedCIDRs(ctx, database, cfg.MixedSourceCIDRs); err != nil {
 		return runtimeServices{}, err
 	}
-	publicHost := "localhost"
-	if cfg.PublicOrigin != "" {
-		parsed, parseErr := url.Parse(cfg.PublicOrigin)
-		if parseErr != nil || parsed.Hostname() == "" {
-			return runtimeServices{}, errors.New("resolve public proxy host")
-		}
-		publicHost = parsed.Hostname()
+	publicHost, realityServerName, err := publicEndpointHosts(cfg.PublicOrigin)
+	if err != nil {
+		return runtimeServices{}, err
 	}
 	var protocolClient *protocoltxn.Client
 	if regularDirectoryExists(cfg.ProtocolRequestDir) && regularDirectoryExists(cfg.ProtocolResultDir) {
@@ -230,7 +226,8 @@ func newRuntimeServices(ctx context.Context, cfg config.Config, database *store.
 	}
 	proxy, err := orchestrator.New(orchestrator.Config{
 		MaxGroups: cfg.MaxProxyGroups, VLESSPortStart: cfg.VLESSPortStart, VLESSPortEnd: cfg.VLESSPortEnd,
-		MixedPortStart: cfg.MixedPortStart, MixedPortEnd: cfg.MixedPortEnd, AggregateVLESSPort: cfg.AggregateVLESSPort, MainMixedPort: cfg.MainMixedPort, PublicHost: publicHost,
+		MixedPortStart: cfg.MixedPortStart, MixedPortEnd: cfg.MixedPortEnd, AggregateVLESSPort: cfg.AggregateVLESSPort, MainMixedPort: cfg.MainMixedPort,
+		PublicHost: publicHost, RealityServerName: realityServerName,
 		XrayPath: cfg.XrayPath, ProbeHost: cfg.ProbeHost, ProtocolTransaction: protocolClient,
 	}, database, aimiliClient, xuiClient, validator.New(20*time.Second), masterKey)
 	if err != nil {
@@ -255,6 +252,25 @@ func newRuntimeServices(ctx context.Context, cfg config.Config, database *store.
 		}
 	}
 	return result, nil
+}
+
+func realityServerNameForPublicHost(publicHost string) string {
+	if _, err := netip.ParseAddr(publicHost); err == nil {
+		return "reality.aimili.test"
+	}
+	return publicHost
+}
+
+func publicEndpointHosts(publicOrigin string) (string, string, error) {
+	publicHost := "localhost"
+	if publicOrigin != "" {
+		parsed, err := url.Parse(publicOrigin)
+		if err != nil || parsed.Hostname() == "" {
+			return "", "", errors.New("resolve public proxy host")
+		}
+		publicHost = parsed.Hostname()
+	}
+	return publicHost, realityServerNameForPublicHost(publicHost), nil
 }
 
 func accountCheckInitialDelay() time.Duration {

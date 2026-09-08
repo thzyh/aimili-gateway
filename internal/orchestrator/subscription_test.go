@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"reflect"
 	"strings"
 	"testing"
@@ -268,9 +269,11 @@ func TestConnectionsUseNeutralPublicURIForHysteria2AndKeepSOCKS5H(t *testing.T) 
 	group.ExitIP = "203.0.113.8"
 	fixture.store.groups[group.ID] = group
 	fixture.store.protocolModes[group.ID] = domain.EgressProtocolMode{EgressID: group.ID, ActiveMode: domain.ProtocolHysteria2QUICTLS, DesiredMode: domain.ProtocolHysteria2QUICTLS, State: domain.ProtocolReady, Version: 1, UpdatedAt: fixture.now()}
-	fixture.xui.subscriptionProfiles = []xui.PublicProfile{{InboundID: 21, Mode: domain.ProtocolHysteria2QUICTLS, Auth: "test-auth", ClientID: "must-not-be-used"}}
+	fixture.xui.subscriptionProfiles = []xui.PublicProfile{{InboundID: 21, Mode: domain.ProtocolHysteria2QUICTLS, Auth: "test-auth", ClientID: "must-not-be-used", ServerName: "tls.example.test"}}
 
-	connections, err := fixture.orchestratorWithMax(t, 3).Connections(context.Background(), group.ID)
+	orchestrator := fixture.orchestratorWithMax(t, 3)
+	orchestrator.config.PublicHost = "192.0.2.20"
+	connections, err := orchestrator.Connections(context.Background(), group.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,6 +282,13 @@ func TestConnectionsUseNeutralPublicURIForHysteria2AndKeepSOCKS5H(t *testing.T) 
 	}
 	if strings.Contains(connections.PublicURI, "must-not-be-used") {
 		t.Fatal("Hysteria2 connection reused a VLESS identity")
+	}
+	parsed, err := url.Parse(connections.PublicURI)
+	if err != nil || parsed.Hostname() != "192.0.2.20" || parsed.Query().Get("sni") != "tls.example.test" {
+		t.Fatalf("Hysteria2 endpoint and TLS identity were conflated: %q", connections.PublicURI)
+	}
+	if socks, err := url.Parse(connections.SOCKS5HURI); err != nil || socks.Hostname() != "192.0.2.20" {
+		t.Fatalf("SOCKS endpoint does not use the public address: %q", connections.SOCKS5HURI)
 	}
 }
 
@@ -488,6 +498,10 @@ func TestCheckMainStoresBothProtocolLatencies(t *testing.T) {
 	}
 	if main.SOCKSLatencyMS != 12 || main.VLESSLatencyMS != 18 || !main.Enabled {
 		t.Fatalf("main=%#v", main)
+	}
+	mode, ok := fixture.store.protocolModes["agw-main"]
+	if !ok || mode.ActiveMode != domain.ProtocolVLESSTCPRealityVision || mode.DesiredMode != domain.ProtocolVLESSTCPRealityVision || mode.State != domain.ProtocolReady {
+		t.Fatalf("fresh main protocol state was not initialized: %#v", mode)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/cookiejar"
@@ -1241,6 +1242,100 @@ func verifyLegacyMainChain(inbounds []Inbound, setting map[string]any, vlessPort
 	return &AdapterError{Code: "managed_resource_missing"}
 }
 
+func (c *Client) bootstrapLegacyMain(ctx context.Context, snapshot Snapshot, desired LegacyMainDesired) error {
+	if strings.TrimSpace(desired.VLESSClientID) == "" {
+		return &AdapterError{Code: "invalid_request"}
+	}
+	if len(snapshot.Inbounds) != 0 {
+		return &AdapterError{Code: "managed_resource_missing"}
+	}
+	for _, outbound := range asObjectSlice(snapshot.XraySetting["outbounds"]) {
+		if stringValue(outbound["tag"]) == "aimili-socks" {
+			return &AdapterError{Code: "managed_resource_missing"}
+		}
+	}
+	routing, _ := snapshot.XraySetting["routing"].(map[string]any)
+	for _, rule := range asObjectSlice(routing["rules"]) {
+		if stringValue(rule["outboundTag"]) == "aimili-socks" || ruleContainsInbound(rule, "aimili-reality") {
+			return &AdapterError{Code: "managed_resource_missing"}
+		}
+	}
+	privateKey, publicKey, err := c.newX25519(ctx)
+	if err != nil {
+		return logLegacyMainBootstrapFailure("generate-key", err)
+	}
+	shortRaw := make([]byte, 4)
+	if _, err := rand.Read(shortRaw); err != nil {
+		return &AdapterError{Code: "random_failed"}
+	}
+	shortID := hex.EncodeToString(shortRaw)
+	originalSetting := cloneObject(snapshot.XraySetting)
+	setting := cloneObject(snapshot.XraySetting)
+	if setting == nil {
+		setting = map[string]any{}
+	}
+	outbounds := asObjectSlice(setting["outbounds"])
+	setting["outbounds"] = append(anyObjects(outbounds), map[string]any{
+		"tag": "aimili-socks", "protocol": "socks",
+		"settings": map[string]any{"servers": []any{map[string]any{"address": "127.0.0.1", "port": desired.SOCKSPort}}},
+	})
+	routing, _ = setting["routing"].(map[string]any)
+	if routing == nil {
+		routing = map[string]any{"domainStrategy": "AsIs"}
+		setting["routing"] = routing
+	}
+	routing["rules"] = append([]any{map[string]any{"type": "field", "inboundTag": []any{"aimili-reality"}, "outboundTag": "aimili-socks"}}, anyObjects(asObjectSlice(routing["rules"]))...)
+	if err := c.updateXray(ctx, setting, snapshot.OutboundTestURL); err != nil {
+		return logLegacyMainBootstrapFailure("update-xray", err)
+	}
+	template := vlessInbound(DesiredGroup{
+		ResourceName: "agw-main", SOCKSPort: desired.SOCKSPort, VLESSPort: desired.VLESSPort,
+		VLESSClientID: desired.VLESSClientID, RealityTarget: desired.RealityTarget, RealityServerName: desired.RealityServerName,
+	}, "aimili-reality", privateKey, publicKey, shortID)
+	template["remark"] = "Aimili Reality"
+	if err := c.addInbound(ctx, template); err != nil {
+		_ = c.updateXray(ctx, originalSetting, snapshot.OutboundTestURL)
+		return logLegacyMainBootstrapFailure("add-inbound", err)
+	}
+	updated, err := c.snapshot(ctx)
+	if err == nil {
+		err = verifyLegacyMainChain(updated.Inbounds, updated.XraySetting, desired.VLESSPort, desired.SOCKSPort)
+	}
+	if err == nil {
+		return nil
+	}
+	logLegacyMainBootstrapFailure("verify-chain", err)
+	rollbackFailed := false
+	if current, listErr := c.inbounds(ctx); listErr == nil {
+		for _, inbound := range current {
+			if inbound.Tag == "aimili-reality" && inbound.Remark == "Aimili Reality" {
+				if _, deleteErr := c.call(ctx, http.MethodPost, "panel/api/inbounds/del/"+formatInt64(inbound.ID), map[string]any{}, false); deleteErr != nil {
+					rollbackFailed = true
+				}
+			}
+		}
+	} else {
+		rollbackFailed = true
+	}
+	if restoreErr := c.updateXray(ctx, originalSetting, snapshot.OutboundTestURL); restoreErr != nil {
+		rollbackFailed = true
+	}
+	if rollbackFailed {
+		return &AdapterError{Code: "partial_inbound_create"}
+	}
+	return &AdapterError{Code: "write_verification_failed"}
+}
+
+func logLegacyMainBootstrapFailure(stage string, err error) error {
+	code := "unknown"
+	var adapterError *AdapterError
+	if errors.As(err, &adapterError) && adapterError.Code != "" {
+		code = adapterError.Code
+	}
+	log.Printf("xui legacy main bootstrap failed: stage=%s code=%s", stage, code)
+	return err
+}
+
 func (c *Client) EnsureLegacyMain(ctx context.Context, desired LegacyMainDesired) (LegacyMain, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1255,7 +1350,17 @@ func (c *Client) EnsureLegacyMain(ctx context.Context, desired LegacyMainDesired
 		return LegacyMain{}, err
 	}
 	if err := verifyLegacyMainChain(snapshot.Inbounds, snapshot.XraySetting, desired.VLESSPort, desired.SOCKSPort); err != nil {
-		return LegacyMain{}, err
+		var adapterError *AdapterError
+		if !errors.As(err, &adapterError) || adapterError.Code != "managed_resource_missing" {
+			return LegacyMain{}, err
+		}
+		if err := c.bootstrapLegacyMain(ctx, snapshot, desired); err != nil {
+			return LegacyMain{}, err
+		}
+		snapshot, err = c.snapshot(ctx)
+		if err != nil {
+			return LegacyMain{}, err
+		}
 	}
 	originalSetting := cloneObject(snapshot.XraySetting)
 	result := LegacyMain{VLESSPort: desired.VLESSPort, MixedPort: desired.MixedPort, OutboundTag: "aimili-socks"}

@@ -733,7 +733,7 @@ func (o *Orchestrator) verifyProtocolTarget(ctx context.Context, target protocol
 		Mode: mode, XrayPath: o.config.XrayPath, InboundAddress: net.JoinHostPort("127.0.0.1", fmt.Sprint(target.port)),
 		ClientID: profile.ClientID, Auth: profile.Auth, PublicKey: profile.PublicKey, ShortID: profile.ShortID,
 		ServerName: profile.ServerName, MLDSA65Verify: profile.MLDSA65Verify, XHTTPPath: profile.XHTTPPath,
-		TLSServerName: o.config.PublicHost, ProbeHost: o.config.ProbeHost, ExpectedExitIP: target.group.ExitIP,
+		TLSServerName: profile.ServerName, ProbeHost: o.config.ProbeHost, ExpectedExitIP: target.group.ExitIP,
 	})
 	return err
 }

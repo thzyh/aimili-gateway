@@ -206,6 +206,22 @@ func (checker *recordingAccountChecker) Check(context.Context) error {
 	return nil
 }
 
+func TestRealityServerNameForPublicHostUsesReservedNameForIPAddress(t *testing.T) {
+	if got := realityServerNameForPublicHost("192.168.88.4"); got != "reality.aimili.test" {
+		t.Fatalf("IP public host produced Reality server name %q", got)
+	}
+	if got := realityServerNameForPublicHost("gateway.example.test"); got != "gateway.example.test" {
+		t.Fatalf("DNS public host changed to %q", got)
+	}
+}
+
+func TestPublicEndpointHostsKeepIPAddressSeparateFromRealityName(t *testing.T) {
+	endpoint, reality, err := publicEndpointHosts("https://192.168.88.4:8080")
+	if err != nil || endpoint != "192.168.88.4" || reality != "reality.aimili.test" {
+		t.Fatalf("endpoint=%q reality=%q err=%v", endpoint, reality, err)
+	}
+}
+
 func TestNewProvidesHealthHandlerAndClosesIdempotently(t *testing.T) {
 	directory := t.TempDir()
 	masterKeyPath := filepath.Join(directory, "master.key")
