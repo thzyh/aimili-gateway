@@ -6,9 +6,9 @@ Aimili Gateway 是 AimiliVPN 与 3x-ui 的轻量统一控制台项目。统一�
 
 当前权威入口是 `docs/handoffs/2026-09-05-current-state-handoff.md`。它记录实际功能工作树路径、最新本地提交、生产摘要、回滚资产和仍未实现的发布机制；历史设计、计划和验证文档保留各自时间点的事实，不再承担“当前状态”职责。
 
-截至 2026-09-05，主连接安全切换、每出口独立协议、混合协议订阅、动态中文别名、受管资源恢复、节点国家规范化和刷新通知持久关闭均已完成本地实现并部署生产。用户已确认当前 v2rayN 测试正常；生产只读检查为四服务 active、4 个 OpenVPN、1 个 Xray、四条协议状态 ready，根分区使用率 51%。
+截至 2026-09-08，本机 VMware Ubuntu 的 AimiliVPN、3x-ui/Xray、Aimili Gateway 和 Caddy 原生部署已经完成内外门禁及重启复验；用户入口为 `https://192.168.88.4:8080`。当前 manifest 使用4个OpenVPN、1个Xray和4个逻辑出口，但数量不是永久上限。浏览器、订阅导入和v2rayN验收仍由用户执行。完整证据见 `docs/verification/2026-09-07-local-vm-real-deployment.md`。
 
-Gateway 与 AimiliVPN 的最新本地提交尚未推送 GitHub。纯 UI 外部静态资源免重启发布、回退与恢复均已通过生产验证，内嵌 UI 仍作为安全兜底。最新 Gateway 代码已部署为 `v1.0.0`；后端更新器的只读预检通过，但真实升级被生产会话索引完整性问题阻断，尚未完成后端升级/回滚验收。
+ny VPS 的既有生产状态未在本机部署任务中改变。纯 UI 外部静态资源免重启发布、回退与恢复均已通过此前生产验证，内嵌 UI 仍作为安全兜底；后端更新器的历史阻断继续以对应验证记录为准，不能用本机 VM 结果替代生产验收。
 
 外部 UI Stage A 使用 `scripts/build-ui-release.ps1` 生成 `manifest.json`、`manifest.sig` 和 `ui.tar.gz`，由离线 `aimili-gateway-update-install` 校验并原子切换 `current`/`previous`。首次启用需要随 Gateway 二进制部署并只重启 Gateway；启用后日常签名 UI 发布和回退不重启 Gateway，也不触碰 AimiliVPN、x-ui/Xray 或 Caddy。
 

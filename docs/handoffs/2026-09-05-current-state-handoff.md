@@ -1,6 +1,18 @@
 # Aimili Gateway 当前状态交接
 
-日期：2026-09-06（Asia/Shanghai）。状态：当前权威入口。
+日期：2026-09-08（Asia/Shanghai）。状态：当前权威入口。
+
+## 2026-09-08 本机 VMware 真实部署闭环
+
+本机 VMware Ubuntu 部署已完成自动闭环，ny VPS 本轮未连接、未读取、未修改。VMX 为 `D:\VirtualMachines\AimiliGatewayLocal\AimiliGatewayLocal.vmx`，当前 VMnet8 地址为 `192.168.88.4`；Windows 用户入口是 `https://192.168.88.4:8080`，不是 `127.0.0.1`。Caddy 本地根 CA 严格请求返回 HTTP 200。
+
+最终和重启后的两轮门禁均通过：四服务 active/enabled；manifest 期望与实际均为 4 个 OpenVPN、1 个 Xray、4 个逻辑出口、3 个普通出口位；`nativeReady=true`。Windows 外部验证为 `status=pass`、4/4 mixed/SOCKS5H 与代理 DNS通过、4/4 公网协议通过、唯一出口与来源认证通过、订阅覆盖完整、单一 Xray。Hysteria2 保持严格证书验证，没有使用 `allowInsecure=true`。宿主默认路由、DNS、防火墙、系统代理、系统证书信任库及 v2rayN 未修改。
+
+重启使用来宾正常关机和 VMware 无界面启动；离线 VMDK 检查退出码为0。开机后 AimiliVPN 先执行候选扫描，本次约4分钟后自动恢复三个固定槽位；不要把启动初期仅有主隧道或候选测速临时 TUN 当成最终失败/成功。完整脱敏证据和阻塞处理见 `docs/verification/2026-09-07-local-vm-real-deployment.md`。
+
+本轮最新测试：AimiliVPN 170项、前端65项、Gateway Python 105项（2项按平台能力跳过）、Go全包与race、vet、双二进制构建、本机VM PowerShell/Bash/Python套件全部通过。复杂度审查无可删项。Gateway实现提交为 `5e4d507`，AimiliVPN提交为 `50be9e7`；远程同步只在普通push并fetch比较后确认。
+
+剩余唯一用户步骤是浏览器登录、订阅导入和v2rayN验收。本轮未使用Computer Use，不代替用户操作v2rayN。浏览器未信任本地CA时可能显示证书警告；自动验证没有修改Windows系统信任库。
 
 ## 2026-09-06 本机 VMware 原生部署恢复检查
 
@@ -47,7 +59,7 @@ VM 本轮检查为运行中且 SSH 可达，2 vCPU、约 2 GiB 内存、约 1 Gi
 
 功能分支为 `feat/main-switch-protocol-modes`。旧的同级 `aimili-gateway.worktrees` 路径已失效；沿用当前工作树，不重新创建或扫描全仓库。
 
-## Git状态
+## 2026-09-06 Git状态（历史记录）
 
 Gateway最新业务提交：
 
