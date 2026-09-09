@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param()
 
 $ErrorActionPreference = 'Stop'
@@ -13,7 +13,7 @@ foreach ($serviceName in @('VMAuthdService', 'VMnetDHCP', 'VMware NAT Service'))
         throw "startup script omits VMware service: $serviceName"
     }
 }
-foreach ($required in @('Start-Service', 'repair-host-route.ps1', 'Apply = $true', 'vmrun.exe', "'start'", "'nogui'", 'status.ps1', 'nativeReady', 'ValidateOnly', 'Read-Host', 'startup-last-result.json', 'ResultPath')) {
+foreach ($required in @('Start-Service', 'Stop-Service', 'repair-host-route.ps1', 'Apply = $true', 'vmrun.exe', "'start'", "'nogui'", "'stop'", "'soft'", 'status.ps1', 'nativeReady', 'ValidateOnly', 'Read-Host', 'startup-last-result.json', 'ResultPath', 'vmware-tray.exe', 'otherRunningVms')) {
     if ($source -notmatch [regex]::Escape($required)) {
         throw "startup script contract missing: $required"
     }
@@ -21,8 +21,11 @@ foreach ($required in @('Start-Service', 'repair-host-route.ps1', 'Apply = $true
 if ($source -notmatch 'ssh\.exe' -or $source -notmatch "'-b'\s*,\s*\[string\]\`$state\.allowedSource") {
     throw 'startup SSH readiness check does not bind the VMnet8 source address'
 }
-if ($source -match 'Stop-Process|taskkill|Set-ItemProperty[\s\S]*Internet Settings|Set-DnsClient|Set-NetFirewall|Remove-NetRoute') {
+if ($source -match 'taskkill|Set-ItemProperty[\s\S]*Internet Settings|Set-DnsClient|Set-NetFirewall|Remove-NetRoute') {
     throw 'startup script can disturb the active proxy or host network'
+}
+if ($source -notmatch '停止 AimiliGatewayLocal' -or $source -notmatch '启动或恢复 AimiliGatewayLocal') {
+    throw 'startup menu prompts are not Chinese'
 }
 
 $tokens = $null
@@ -52,7 +55,7 @@ try {
     if ($process.ExitCode -ne 0 -or -not [string]::IsNullOrWhiteSpace($menuError)) {
         throw 'startup menu smoke test failed'
     }
-    if ($menuOutput -notmatch 'AimiliGatewayLocal startup manager' -or $menuOutput -notmatch 'Start services') {
+    if ($menuOutput -notmatch 'AimiliGatewayLocal 启动管理器' -or $menuOutput -notmatch '启动或恢复 AimiliGatewayLocal') {
         throw 'startup menu options were not rendered'
     }
 } finally {

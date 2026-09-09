@@ -4,7 +4,10 @@
 
 ## 2026-09-10 开机启动入口与排障经验固化
 
-- 新增 `deploy/local-vm/start-local-vm.ps1`。右键“使用 PowerShell 运行”或无参数执行会进入交互菜单；可选择完整启动、只读状态或单独修复路由。完整启动会请求 UAC，随后幂等启动 `VMAuthdService`、`VMnetDHCP`、`VMware NAT Service`，恢复 VMnet8 持久 `/32` 路由，只在 VM 未运行时执行 `vmrun start ... nogui`，最后等待 SSH 与 `nativeReady=true`。它不操作 v2rayN、TUN、系统代理、DNS、防火墙或默认路由。
+- 追加交互改进：菜单、进度、确认、成功、失败和下一步提示全部改为中文；脚本使用 UTF-8 BOM，并已由 Windows PowerShell 5.1 实际解析执行。启动完成后显式启动 `E:\SoftWare\Vmware16\vmware-tray.exe`；本轮从“VM 正常运行但托盘进程不存在”恢复为 Session 1 中单一托盘进程，状态入口返回 `trayRunning=true`，没有打开 Workstation 主窗口。
+- 菜单新增安全关闭：二次确认后对目标 VM 执行 soft stop；只有 `vmrun list` 确认没有其他 VM 时才停止托盘及 NAT、DHCP、Authorization 三项共享服务，存在其他 VM 时保留共享服务。持久 VMnet8 `/32` 不删除，后续启动继续复用。
+- 新增个人 Skill `interactive-local-scripts`：只针对人工运行且存在多个合理动作的本地脚本，优先考虑无参数中文交互菜单，同时保留 `-Action`/JSON 等非交互入口；明确排除 CI、库函数、无人值守自动化和真正的单用途脚本，因此不修改或冲突于其他全局设置。
+- 新增 `deploy/local-vm/start-local-vm.ps1`。右键“使用 PowerShell 运行”或无参数执行会进入交互菜单；可选择完整启动、只读状态、单独修复路由或安全关闭。完整启动会请求 UAC，随后幂等启动 `VMAuthdService`、`VMnetDHCP`、`VMware NAT Service`，恢复 VMnet8 持久 `/32` 路由，只在 VM 未运行时执行 `vmrun start ... nogui`，最后等待 SSH 与 `nativeReady=true` 并确保托盘运行。它不操作 v2rayN、TUN、系统代理、DNS、防火墙或默认路由。
 - 首版自提升运行只返回 `local_vm_elevated_start_failed:1`。实时复核确认活动和持久 VMnet8 `/32` 均存在，但 `Find-NetRoute` 在透明 TUN 工作时返回 sing-box `/1`，旧门禁因此误报路由未选择并使管理员子进程退出 1。门禁现按全部同目标 `/32` 的 route metric＋interface metric 选择最佳主机路由：继续覆盖 `qinshi /32` 冲突，但不把透明 TUN `/1` 当成同类竞争路由。
 - 自提升结果现原子写入 `%LOCALAPPDATA%\AimiliGateway\vmware-local\startup-last-result.json`；父窗口会回显失败阶段、原始错误和诊断路径，不再丢失管理员子进程错误。
 - `-ValidateOnly -AsJson` 已在当前运行环境真实通过：三项 VMware 服务 Running，持久路由选择 VMnet8，SSH 可达，VM 内实际为 6 个 OpenVPN、1 个 Xray、6 个逻辑出口、5 个普通出口位，`nativeReady=true`。

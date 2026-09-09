@@ -1,6 +1,6 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
-    [ValidateSet('Menu', 'Start', 'Status', 'RepairRoute')]
+    [ValidateSet('Menu', 'Start', 'Status', 'RepairRoute', 'Stop')]
     [string]$Action = 'Menu',
     [ValidateRange(30, 900)]
     [int]$SshTimeoutSeconds = 180,
@@ -41,15 +41,43 @@ function Get-LocalVmInputs {
         KeyPath = Join-Path $paths.RuntimeRoot 'id_ed25519'
         KnownHosts = Join-Path $paths.RuntimeRoot 'known_hosts'
         VmrunPath = Join-Path $paths.VmwareRoot 'vmrun.exe'
+        TrayPath = Join-Path $paths.VmwareRoot 'vmware-tray.exe'
         RepairPath = Join-Path $PSScriptRoot 'repair-host-route.ps1'
         StatusPath = Join-Path $PSScriptRoot 'status.ps1'
     }
-    foreach ($requiredPath in @($inputs.StatePath, $inputs.KeyPath, $inputs.KnownHosts, $inputs.VmrunPath, $paths.VmxPath, $inputs.RepairPath, $inputs.StatusPath)) {
+    foreach ($requiredPath in @($inputs.StatePath, $inputs.KeyPath, $inputs.KnownHosts, $inputs.VmrunPath, $inputs.TrayPath, $paths.VmxPath, $inputs.RepairPath, $inputs.StatusPath)) {
         if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
             throw "local_vm_startup_input_missing:$requiredPath"
         }
     }
     return $inputs
+}
+
+function Get-RunningVmPaths {
+    param([Parameter(Mandatory)]$Inputs)
+    $output = @(& $Inputs.VmrunPath 'list' 2>&1)
+    if ($LASTEXITCODE -ne 0) { throw "vmrun_list_failed:$LASTEXITCODE" }
+    return @($output | Select-Object -Skip 1 | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+}
+
+function Get-CurrentSessionTrayProcesses {
+    $sessionId = [Diagnostics.Process]::GetCurrentProcess().SessionId
+    return @(Get-Process -Name 'vmware-tray' -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $sessionId })
+}
+
+function Start-VMwareTray {
+    param([Parameter(Mandatory)]$Inputs)
+    $script:CurrentStage = 'vmware-tray'
+    $trayProcesses = @(Get-CurrentSessionTrayProcesses)
+    if ($trayProcesses.Count -eq 0) {
+        Start-Process -FilePath $Inputs.TrayPath -WindowStyle Hidden | Out-Null
+        $deadline = (Get-Date).AddSeconds(10)
+        do {
+            Start-Sleep -Milliseconds 250
+            $trayProcesses = @(Get-CurrentSessionTrayProcesses)
+        } while ($trayProcesses.Count -eq 0 -and (Get-Date) -lt $deadline)
+    }
+    return $trayProcesses.Count -gt 0
 }
 
 function Invoke-RouteRepair {
@@ -66,7 +94,7 @@ function Invoke-RouteRepair {
 }
 
 function Invoke-LocalVmOperation {
-    param([ValidateSet('Start', 'Status', 'RepairRoute')][string]$Mode)
+    param([ValidateSet('Start', 'Status', 'RepairRoute', 'Stop')][string]$Mode)
     $startedAt = [DateTimeOffset]::Now
     $inputs = Get-LocalVmInputs
     $paths = $inputs.Paths
@@ -80,6 +108,52 @@ function Invoke-LocalVmOperation {
                 selectedInterface = [string]$route.selectedInterface
                 guestAddress = [string]$route.guestAddress; sourceAddress = [string]$route.sourceAddress
             }
+        }
+    }
+
+    if ($Mode -eq 'Stop') {
+        $script:CurrentStage = 'vmware-shutdown'
+        $runningVmPaths = @(Get-RunningVmPaths -Inputs $inputs)
+        $vmWasRunning = $runningVmPaths -contains $paths.VmxPath
+        if ($vmWasRunning) {
+            $stopOutput = @(& $inputs.VmrunPath 'stop' $paths.VmxPath 'soft' 2>&1)
+            if ($LASTEXITCODE -ne 0) { throw "vmrun_soft_stop_failed:$LASTEXITCODE" }
+            $deadline = (Get-Date).AddSeconds(180)
+            do {
+                Start-Sleep -Seconds 3
+                $runningVmPaths = @(Get-RunningVmPaths -Inputs $inputs)
+            } while ($runningVmPaths -contains $paths.VmxPath -and (Get-Date) -lt $deadline)
+            if ($runningVmPaths -contains $paths.VmxPath) { throw 'local_vm_soft_stop_timeout' }
+        }
+
+        $otherRunningVms = @($runningVmPaths | Where-Object { $_ -ne $paths.VmxPath })
+        $sharedServicesStopped = $false
+        $trayStopped = $false
+        if ($otherRunningVms.Count -eq 0) {
+            $script:CurrentStage = 'vmware-tray'
+            $trayProcesses = @(Get-CurrentSessionTrayProcesses)
+            if ($trayProcesses.Count -gt 0) {
+                $trayProcesses | Stop-Process -Force -ErrorAction Stop
+                $trayStopped = $true
+            }
+            $script:CurrentStage = 'vmware-services'
+            foreach ($serviceName in @('VMware NAT Service', 'VMnetDHCP', 'VMAuthdService')) {
+                $service = Get-Service -Name $serviceName -ErrorAction Stop
+                if ($service.Status -ne [ServiceProcess.ServiceControllerStatus]::Stopped) {
+                    Stop-Service -Name $serviceName -ErrorAction Stop
+                    $service.WaitForStatus([ServiceProcess.ServiceControllerStatus]::Stopped, [TimeSpan]::FromSeconds(30))
+                }
+            }
+            $sharedServicesStopped = $true
+        }
+        $script:CurrentStage = 'complete'
+        return [pscustomobject][ordered]@{
+            success = $true; action = $Mode; stage = 'complete'
+            vmWasRunning = $vmWasRunning; vmRunning = $false
+            otherRunningVms = $otherRunningVms.Count
+            sharedServicesStopped = $sharedServicesStopped; trayStopped = $trayStopped
+            persistentRoutePreserved = $true
+            elapsedSeconds = [math]::Round(([DateTimeOffset]::Now - $startedAt).TotalSeconds, 1)
         }
     }
 
@@ -98,9 +172,7 @@ function Invoke-LocalVmOperation {
 
     $route = Invoke-RouteRepair -Inputs $inputs -Apply ($Mode -eq 'Start')
     $script:CurrentStage = 'vmware-runtime'
-    $vmrunOutput = @(& $inputs.VmrunPath 'list' 2>&1)
-    if ($LASTEXITCODE -ne 0) { throw "vmrun_list_failed:$LASTEXITCODE" }
-    $vmRunning = @($vmrunOutput | Select-Object -Skip 1) -contains $paths.VmxPath
+    $vmRunning = @(Get-RunningVmPaths -Inputs $inputs) -contains $paths.VmxPath
     $vmStarted = $false
     if (-not $vmRunning) {
         if ($Mode -eq 'Status') { throw 'local_vm_not_running' }
@@ -140,6 +212,8 @@ function Invoke-LocalVmOperation {
     } while ($true)
     if ($null -eq $nativeStatus -or -not $nativeStatus.nativeReady) { throw 'local_vm_native_ready_timeout' }
 
+    $trayRunning = @(Get-CurrentSessionTrayProcesses).Count -gt 0
+    if ($Mode -eq 'Start') { $trayRunning = Start-VMwareTray -Inputs $inputs }
     $script:CurrentStage = 'complete'
     return [pscustomobject][ordered]@{
         success = $true; action = $Mode; stage = 'complete'; vmStarted = $vmStarted; vmRunning = $true
@@ -149,7 +223,7 @@ function Invoke-LocalVmOperation {
             selectedInterface = [string]$route.selectedInterface
             guestAddress = [string]$route.guestAddress; sourceAddress = [string]$route.sourceAddress
         }
-        sshReachable = $sshReachable; nativeReady = [bool]$nativeStatus.nativeReady
+        sshReachable = $sshReachable; nativeReady = [bool]$nativeStatus.nativeReady; trayRunning = $trayRunning
         actual = $nativeStatus.actual; gatewayUrl = "https://$($state.guestAddress):8080"
         elapsedSeconds = [math]::Round(([DateTimeOffset]::Now - $startedAt).TotalSeconds, 1)
     }
@@ -166,7 +240,7 @@ function New-FailureResult {
 }
 
 function Invoke-ElevatedOperation {
-    param([ValidateSet('Start', 'RepairRoute')][string]$Mode)
+    param([ValidateSet('Start', 'RepairRoute', 'Stop')][string]$Mode)
     $runtimeRoot = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'AimiliGateway\vmware-local'
     $diagnosticPath = Join-Path $runtimeRoot 'startup-last-result.json'
     if (Test-Path -LiteralPath $diagnosticPath) { Remove-Item -LiteralPath $diagnosticPath -Force }
@@ -192,8 +266,8 @@ function Invoke-ElevatedOperation {
 }
 
 function Invoke-RequestedAction {
-    param([ValidateSet('Start', 'Status', 'RepairRoute')][string]$Mode)
-    if ($Mode -in @('Start', 'RepairRoute') -and -not (Test-Administrator)) {
+    param([ValidateSet('Start', 'Status', 'RepairRoute', 'Stop')][string]$Mode)
+    if ($Mode -in @('Start', 'RepairRoute', 'Stop') -and -not (Test-Administrator)) {
         return Invoke-ElevatedOperation -Mode $Mode
     }
     return Invoke-LocalVmOperation -Mode $Mode
@@ -202,22 +276,34 @@ function Invoke-RequestedAction {
 function Show-Result {
     param([Parameter(Mandatory)]$Result)
     if (-not $Result.success) {
-        Write-Host "FAILED [$($Result.stage)] $($Result.error)" -ForegroundColor Red
-        if ($Result.diagnostic) { Write-Host $Result.diagnostic -ForegroundColor DarkGray }
+        Write-Host "操作失败，阶段：$($Result.stage)" -ForegroundColor Red
+        Write-Host "错误：$($Result.error)" -ForegroundColor Red
+        if ($Result.diagnostic) { Write-Host "诊断信息：$($Result.diagnostic)" -ForegroundColor DarkGray }
         return
     }
     if ($Result.action -eq 'RepairRoute') {
-        Write-Host 'Host route is ready.' -ForegroundColor Green
-        Write-Host "Guest: $($Result.hostRoute.guestAddress) via $($Result.hostRoute.selectedInterface)"
-        Write-Host "Persistent: $($Result.hostRoute.persistent)"
+        Write-Host '虚拟机主机路由已经就绪。' -ForegroundColor Green
+        Write-Host "虚拟机地址：$($Result.hostRoute.guestAddress)"
+        Write-Host "使用网卡：$($Result.hostRoute.selectedInterface)"
+        Write-Host "持久路由：$($Result.hostRoute.persistent)"
         return
     }
-    Write-Host 'AimiliGatewayLocal is ready.' -ForegroundColor Green
-    Write-Host "VM started by this run: $($Result.vmStarted)"
-    Write-Host "SSH reachable: $($Result.sshReachable)"
-    Write-Host "Native ready: $($Result.nativeReady)"
-    Write-Host "OpenVPN/Xray/logical exits: $($Result.actual.openvpn)/$($Result.actual.xray)/$($Result.actual.logicalExits)"
-    Write-Host "Gateway: $($Result.gatewayUrl)"
+    if ($Result.action -eq 'Stop') {
+        Write-Host 'AimiliGatewayLocal 已安全关闭。' -ForegroundColor Green
+        Write-Host "本次关闭前虚拟机正在运行：$($Result.vmWasRunning)"
+        Write-Host "其他正在运行的 VMware 虚拟机：$($Result.otherRunningVms)"
+        Write-Host "共享 VMware 服务已停止：$($Result.sharedServicesStopped)"
+        Write-Host "VMware 托盘程序已停止：$($Result.trayStopped)"
+        Write-Host "VMnet8 持久路由已保留：$($Result.persistentRoutePreserved)"
+        return
+    }
+    Write-Host 'AimiliGatewayLocal 已经就绪。' -ForegroundColor Green
+    Write-Host "本次是否启动了虚拟机：$($Result.vmStarted)"
+    Write-Host "SSH 是否可达：$($Result.sshReachable)"
+    Write-Host "业务数据面是否就绪：$($Result.nativeReady)"
+    Write-Host "VMware 托盘是否运行：$($Result.trayRunning)"
+    Write-Host "OpenVPN/Xray/逻辑出口：$($Result.actual.openvpn)/$($Result.actual.xray)/$($Result.actual.logicalExits)"
+    Write-Host "Gateway 地址：$($Result.gatewayUrl)"
 }
 
 if ($ValidateOnly) { $Action = 'Status' }
@@ -225,30 +311,40 @@ if ($ValidateOnly) { $Action = 'Status' }
 if ($Action -eq 'Menu') {
     do {
         Clear-Host
-        Write-Host 'AimiliGatewayLocal startup manager' -ForegroundColor Cyan
+        Write-Host 'AimiliGatewayLocal 启动管理器' -ForegroundColor Cyan
         Write-Host ''
-        Write-Host '1. Start services, repair route, start VM, and wait until ready'
-        Write-Host '2. Read-only status check'
-        Write-Host '3. Repair or verify the persistent VMnet8 host route'
-        Write-Host '0. Exit'
+        Write-Host '1. 启动或恢复 AimiliGatewayLocal，并等待全部服务就绪'
+        Write-Host '2. 只读检查当前运行状态'
+        Write-Host '3. 修复或检查 VMnet8 持久主机路由'
+        Write-Host '4. 停止 AimiliGatewayLocal，并在安全时关闭 VMware 服务'
+        Write-Host '0. 退出'
         Write-Host ''
-        $choice = Read-Host 'Select'
+        $choice = Read-Host '请选择'
         if ($choice -eq '0') { break }
         $selected = switch ($choice) {
-            '1' { 'Start' }; '2' { 'Status' }; '3' { 'RepairRoute' }; default { $null }
+            '1' { 'Start' }; '2' { 'Status' }; '3' { 'RepairRoute' }; '4' { 'Stop' }; default { $null }
         }
         if ($null -eq $selected) {
-            Write-Host 'Invalid selection.' -ForegroundColor Yellow
+            Write-Host '输入无效，请输入 0、1、2、3 或 4。' -ForegroundColor Yellow
         } else {
             try {
-                Write-Host 'Running, please wait...' -ForegroundColor Cyan
-                Show-Result -Result (Invoke-RequestedAction -Mode $selected)
+                if ($selected -eq 'Stop') {
+                    $confirmation = Read-Host '确认关闭 AimiliGatewayLocal 吗？请输入 Y 继续'
+                    if ($confirmation -notin @('Y', 'y')) {
+                        Write-Host '已取消关闭操作。' -ForegroundColor Yellow
+                        $selected = $null
+                    }
+                }
+                if ($null -ne $selected) {
+                    Write-Host '正在执行，请稍候……' -ForegroundColor Cyan
+                    Show-Result -Result (Invoke-RequestedAction -Mode $selected)
+                }
             } catch {
                 Show-Result -Result (New-FailureResult -ErrorRecord $_ -RequestedAction $selected)
             }
         }
         Write-Host ''
-        [void](Read-Host 'Press Enter to return to the menu')
+        [void](Read-Host '按 Enter 键返回菜单')
     } while ($true)
     exit 0
 }
