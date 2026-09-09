@@ -4,7 +4,7 @@
 
 ## 2026-09-09 15:00 后续现场复核
 
-本轮复测期间 VM 发生一次真实的 OpenVPN 节点重置/超时，SSH 也短暂失联；执行一次有边界的 `vmrun stop soft`/`start nogui` 后来宾恢复。最新只读状态显示四服务 active/enabled，但主连接和出口位 0、2、3 就绪，出口位 1（JP）与 4（KR）因当前没有可用住宅候选而 pending，实际为 4 个 OpenVPN、4 个逻辑出口、3 个就绪出口位。Windows 外部验证的明确失败边界是 `subscription_coverage_mismatch`：旧订阅仍有 6 条，而当前只有 4 条可用数据面；没有激活 v2rayN `local`，没有切换 TUN/系统代理。待候选恢复后需刷新订阅再做用户验收。
+本轮复测期间 VM 发生一次真实的 OpenVPN 节点重置/超时，SSH 也短暂失联；执行一次有边界的 `vmrun stop soft`/`start nogui` 后来宾恢复。最新只读状态显示四服务 active/enabled，主连接和出口位 0、2、3 就绪，出口位 1（JP）与 4（KR）因当前没有可用住宅候选而 pending；最近一次门禁为 5 个 OpenVPN、4 个逻辑出口、3 个就绪出口位。Windows 外部验证的明确失败边界是 `subscription_coverage_mismatch`：旧订阅仍有 6 条，而当前只有 4 条可用数据面；没有激活 v2rayN `local`，没有切换 TUN/系统代理。待候选恢复后需刷新订阅再做用户验收。
 
 本轮没有把 Xray `publicKey` 改写为 `password` 作为修复：同一配置的 A/B 结果受 VM 数据面状态影响，不能据此认定字段名是根因。Gateway 主连接持久记录兜底修复已部署，重连期间主连接保留为 degraded，不再消失；相关 Go 回归测试已通过。
 
