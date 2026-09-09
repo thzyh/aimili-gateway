@@ -8,6 +8,7 @@
 - Gateway 已兼容旧版 AimiliVPN 国家目录响应：当上游只提供逐国家 `candidateCount` 时，从同一份当前有效候选快照补齐 `officialCandidateTotal`、`validNodeCount` 和 `validCountryCount`。部署后实时结果为官方 99、当前有效 40，国家数随当前候选刷新变化且不再显示 0；最终复核为 3 国。
 - 三服务账户轮换后，Gateway 会在严格确认 mixed 入站仍属于 `agw-` 受管资源后自动同步代理账号；Xray 更新失败会恢复原 mixed 入站配置。来源限制已真实执行关闭、开启、再次关闭和最终恢复开启，所有返回均为 `applyStatus=applied`；最终只允许 `192.168.88.1/32`，3x-ui 受管资源检查为 `ownershipMatches=true`。
 - AimiliVPN 重启后五个出口位可能自动换到仍可用候选；本轮重新 provision 后，Gateway 数据库、3x-ui/Xray 入站和六条订阅已重新同步。VM 内门禁再次得到 `nativeReady=true`，四服务 active/enabled、6 个 OpenVPN、1 个 Xray、6 个逻辑出口和 5 个普通出口位全部符合 manifest。
+- OpenVPN 免费节点重连会重建 TUN，Linux 同时会删除绑定旧 TUN 的策略路由。AimiliVPN 现会在主连接、受管出口位和周期出口探测前检查并按需恢复对应路由。部署后清空出口位 5 的表 204 做现场故障注入，守护线程在 20 秒内自动恢复 `tun124` 的默认路由和选表规则，OpenVPN 进程与节点均未重启或替换；随后完整 VM 门禁仍为 `nativeReady=true`。
 - 服务端严格使用 Caddy 本地根 CA 请求订阅得到 HTTPS 200、`text/plain`，解析出 6 条 `vless`/`hysteria2` 节点。v2rayN 在 `2026-09-09 09:41` 和 `09:49` 的最新日志第一失败边界是 `net_ssl_io_cert_chain_validation, PartialChain`，请求尚未进入订阅内容解析；这是 Windows 当前不信任本机 Caddy 根 CA，不是订阅文档无效。
 - 本轮没有修改 Windows 系统证书信任库，也没有代替用户操作 v2rayN。Windows 外部自动门禁在 v2rayN/TUN 进程运行期间出现部分公网协议超时或响应不一致，因此该次结果不作为通过证据；VM 内真实 SOCKS5H、代理 DNS、公网协议检查和来源认证均已通过，最终 v2rayN 导入仍由用户在处理 CA 信任后验收。
 
@@ -52,7 +53,7 @@
 
 ## 最新测试
 
-- AimiliVPN：`python -m unittest discover -s tests -v`，69 项通过。
+- AimiliVPN：`python -m unittest discover -s tests -v`，71 项通过。
 - Gateway Go：`go test ./... -count=1` 通过；`go test ./... -race -count=1` 全包通过；`go vet ./...` 通过。
 - Gateway 前端：66 项通过，生产构建通过。
 - Gateway Python：108 项通过，2 项因 Windows 普通账户不可创建 symlink 按设计跳过。
@@ -60,7 +61,7 @@
 - 两仓库 `git diff --check` 通过。
 - 过度设计审查：`Lean already. Ship.`
 
-本轮实现提交为 Gateway `c6bca94`、AimiliVPN `bbd277b`。两个功能分支均已普通推送，并在推送后通过 `git fetch` 复核本地实现提交与远端跟踪提交一致；本状态记录的后续文档提交不改变实现内容。
+本轮实现提交包括 Gateway `bcf5e99` 和 AimiliVPN `12d0588`；前者修复池统计与 mixed 来源策略漂移，后者修复 TUN 重连后的策略路由自愈。本状态记录的后续文档提交不改变实现内容。
 
 ## 用户验收边界
 

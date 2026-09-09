@@ -8,6 +8,8 @@
 
 AimiliVPN 重启后五个出口位重新选择了可用候选，已再次 provision 并同步 Gateway、3x-ui/Xray 和六条订阅。VM 内门禁最新为 `nativeReady=true`，四服务 active/enabled，实际数量仍为 6 个 OpenVPN、1 个 Xray、6 个逻辑出口、5 个普通出口位。服务端用 Caddy 本地根 CA 严格请求订阅为 HTTPS 200、`text/plain`、6 条可解析 `vless`/`hysteria2` 节点。
 
+AimiliVPN 已增加 OpenVPN/TUN 重连后的策略路由自愈。在 VM 上清空出口位 5 的表 204 后，守护线程于 20 秒内自动恢复 `tun124` 的默认路由与选表规则，没有重启 OpenVPN 或替换节点；重新 provision 后完整门禁仍为 `nativeReady=true`。最新 AimiliVPN 全量测试 71 项通过，实现提交为 `12d0588`。
+
 v2rayN `2026-09-09 09:41` 与 `09:49` 日志的第一失败边界是 `net_ssl_io_cert_chain_validation, PartialChain`，尚未进入订阅内容解析。Windows 当前未信任本机 Caddy 根 CA；本轮没有修改系统证书信任库，也没有代替用户操作 v2rayN。最终订阅导入仍由用户在处理 CA 信任后验收。
 
 ## 2026-09-09 本机 VMware 五出口真实部署闭环
