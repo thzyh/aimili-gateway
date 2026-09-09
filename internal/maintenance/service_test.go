@@ -167,6 +167,30 @@ func TestServiceStartsCountryRefreshAndReconcilesAfterCompletion(t *testing.T) {
 	}
 }
 
+func TestCandidateCountriesDerivesLegacyAggregateCounters(t *testing.T) {
+	service, err := New(Config{MaxOnline: 1}, &fakeAimiliSource{
+		countries: []aimili.CandidateCountry{
+			{Code: "AR", Name: "阿根廷", CandidateCount: 2},
+			{Code: "JP", Name: "日本", CandidateCount: 3},
+		},
+		candidates: []aimili.Candidate{
+			{ID: "jp-1", CountryCode: "JP", ProxyType: "datacenter", ProbeStatus: "available"},
+			{ID: "jp-2", CountryCode: "JP", ProxyType: "residential", ProbeStatus: "available"},
+			{ID: "ar-1", CountryCode: "AR", ProxyType: "datacenter", ProbeStatus: "failed"},
+		},
+	}, &fakeXUISource{}, &fakeGroupSource{}, &fakeAccountStatus{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	countries, err := service.CandidateCountries(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(countries) != 2 || countries[0].OfficialCandidateTotal != 5 || countries[0].ValidNodeCount != 2 || countries[0].ValidCountryCount != 1 || countries[1].OfficialCandidateTotal != 5 || countries[1].ValidNodeCount != 2 || countries[1].ValidCountryCount != 1 {
+		t.Fatalf("legacy aggregate counters = %#v", countries)
+	}
+}
+
 func TestServicePreservesRefreshErrorCodesAndCancelsPollingWithGateway(t *testing.T) {
 	aimiliSource := &fakeAimiliSource{startError: &aimili.AdapterError{Code: "maintenance_busy"}}
 	service, err := New(Config{MaxOnline: 1}, aimiliSource, &fakeXUISource{}, &fakeGroupSource{}, &fakeAccountStatus{})

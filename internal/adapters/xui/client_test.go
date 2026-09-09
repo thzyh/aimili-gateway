@@ -974,7 +974,7 @@ func TestUpdateManagedGroupAdoptsUniqueOwnedPortPairWhenResourceNameDrifts(t *te
 	}
 }
 
-func TestUpdateManagedGroupRejectsOwnedPortPairWithDifferentMixedAccount(t *testing.T) {
+func TestUpdateManagedGroupRepairsDifferentMixedAccountBeforeRouting(t *testing.T) {
 	fixture := &xuiFixture{}
 	client := newXUIFixtureClient(t, fixture)
 	desired := DesiredGroup{
@@ -1000,13 +1000,11 @@ func TestUpdateManagedGroupRejectsOwnedPortPairWithDifferentMixedAccount(t *test
 		inbound["settings"] = settings
 	}
 
-	_, err = client.UpdateManagedGroup(context.Background(), desired, managed)
-	var adapterError *AdapterError
-	if !errors.As(err, &adapterError) || adapterError.Code != "managed_resource_drift" {
-		t.Fatalf("unexpected mixed drift error: %v", err)
+	if _, err = client.UpdateManagedGroup(context.Background(), desired, managed); err != nil {
+		t.Fatal(err)
 	}
-	if fixture.updatedXray != nil {
-		t.Fatal("mixed account drift changed Xray routing before validation")
+	if fixture.updatedXray == nil || len(fixture.updatedInboundIDs) != 1 {
+		t.Fatalf("mixed account was not repaired before routing: inbound=%v xray=%#v", fixture.updatedInboundIDs, fixture.updatedXray)
 	}
 }
 

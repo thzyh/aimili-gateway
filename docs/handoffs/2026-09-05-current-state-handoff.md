@@ -2,6 +2,14 @@
 
 日期：2026-09-09（Asia/Shanghai）。状态：当前权威入口。
 
+## 2026-09-09 节点池与来源限制追加修复
+
+本机 VMware 的 Gateway 已部署兼容修复：旧版 AimiliVPN 国家目录缺少汇总字段时，Gateway 从当前有效候选快照补齐统计；实时 UI 数据为官方 99、当前有效 40、5 国。统一账户变更导致 mixed 入站保留旧代理账号时，Gateway 在严格确认 `agw-` 所有权后自动同步账号，并在后续 Xray 更新失败时恢复原配置。来源限制已完成关闭、开启、再次关闭和最终恢复开启的真实往返验证，最终为 `enabled=true`、`applyStatus=applied`、仅允许 `192.168.88.1/32`；3x-ui 受管资源 `ownershipMatches=true`。
+
+AimiliVPN 重启后五个出口位重新选择了可用候选，已再次 provision 并同步 Gateway、3x-ui/Xray 和六条订阅。VM 内门禁最新为 `nativeReady=true`，四服务 active/enabled，实际数量仍为 6 个 OpenVPN、1 个 Xray、6 个逻辑出口、5 个普通出口位。服务端用 Caddy 本地根 CA 严格请求订阅为 HTTPS 200、`text/plain`、6 条可解析 `vless`/`hysteria2` 节点。
+
+v2rayN `2026-09-09 09:41` 与 `09:49` 日志的第一失败边界是 `net_ssl_io_cert_chain_validation, PartialChain`，尚未进入订阅内容解析。Windows 当前未信任本机 Caddy 根 CA；本轮没有修改系统证书信任库，也没有代替用户操作 v2rayN。最终订阅导入仍由用户在处理 CA 信任后验收。
+
 ## 2026-09-09 本机 VMware 五出口真实部署闭环
 
 本机 VMware Ubuntu 部署已完成自动闭环，ny VPS 本轮未连接、未读取、未修改。VMX 为 `D:\VirtualMachines\AimiliGatewayLocal\AimiliGatewayLocal.vmx`，当前 VMnet8 地址为 `192.168.88.4`；Windows 用户入口是 `https://192.168.88.4:8080`，不是 `127.0.0.1`。Caddy 本地根 CA 严格请求返回 HTTP 200。

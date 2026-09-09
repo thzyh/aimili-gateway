@@ -229,14 +229,21 @@ func (c *Client) UpdateManagedGroup(ctx context.Context, desired DesiredGroup, m
 	if err != nil {
 		return ManagedGroup{}, err
 	}
-	if err := c.verifyCurrentMixedAccount(ctx, desired, managed); err != nil {
+	originalMixed, mixedChanged, err := c.syncManagedMixedAccount(ctx, desired, managed)
+	if err != nil {
 		return ManagedGroup{}, err
 	}
 	setting, err := mergeManagedXray(snapshot.XraySetting, effectiveDesired, managed.VLESSInboundTag, managed.MixedInboundTag)
 	if err != nil {
+		if mixedChanged {
+			_ = c.updateInbound(ctx, managed.MixedInboundID, originalMixed)
+		}
 		return ManagedGroup{}, err
 	}
 	if err := c.updateXray(ctx, setting, snapshot.OutboundTestURL); err != nil {
+		if mixedChanged {
+			_ = c.updateInbound(ctx, managed.MixedInboundID, originalMixed)
+		}
 		return ManagedGroup{}, err
 	}
 	managed.Fingerprint = fingerprintDesired(effectiveDesired)
@@ -272,7 +279,8 @@ func (c *Client) RepairManagedPublic(ctx context.Context, desired DesiredGroup, 
 	if err != nil {
 		return ManagedGroup{}, err
 	}
-	if err := c.verifyCurrentMixedAccount(ctx, desired, managed); err != nil {
+	_, _, err = c.syncManagedMixedAccount(ctx, desired, managed)
+	if err != nil {
 		return ManagedGroup{}, err
 	}
 	if err := verifyManagedSocksOutbound(snapshot.XraySetting, managed.OutboundTag, desired.SOCKSPort); err != nil {
@@ -509,7 +517,8 @@ func (c *Client) UpdateManagedMixedPolicy(ctx context.Context, desired DesiredGr
 	if err != nil {
 		return ManagedGroup{}, err
 	}
-	if err := c.verifyCurrentMixedAccount(ctx, desired, managed); err != nil {
+	originalMixed, mixedChanged, err := c.syncManagedMixedAccount(ctx, desired, managed)
+	if err != nil {
 		return ManagedGroup{}, err
 	}
 	if err := verifyManagedSocksOutbound(snapshot.XraySetting, managed.OutboundTag, desired.SOCKSPort); err != nil {
@@ -522,6 +531,9 @@ func (c *Client) UpdateManagedMixedPolicy(ctx context.Context, desired DesiredGr
 	}
 	if !reflect.DeepEqual(original, setting) {
 		if err := c.updateXray(ctx, setting, snapshot.OutboundTestURL); err != nil {
+			if mixedChanged {
+				_ = c.updateInbound(ctx, managed.MixedInboundID, originalMixed)
+			}
 			return ManagedGroup{}, err
 		}
 	}
@@ -609,30 +621,48 @@ func resolveManagedInboundIDs(inbounds []Inbound, desired DesiredGroup, managed 
 	return managed, nil
 }
 
-func (c *Client) verifyCurrentMixedAccount(ctx context.Context, desired DesiredGroup, managed ManagedGroup) error {
+// syncManagedMixedAccount repairs credentials in a Gateway-owned mixed
+// inbound after the unified admin account has rotated.  Older deployments
+// can legitimately retain the previous proxy username/password; rejecting
+// that state makes the source-restriction toggle permanently repair-required.
+// Ownership is still checked strictly by tag, protocol, port and remark.
+func (c *Client) syncManagedMixedAccount(ctx context.Context, desired DesiredGroup, managed ManagedGroup) (map[string]any, bool, error) {
 	details, err := c.inboundDetails(ctx)
 	if err != nil {
-		return err
+		return nil, false, err
 	}
 	for _, inbound := range details {
 		if inbound.ID != managed.MixedInboundID {
 			continue
 		}
 		if inbound.Tag != managed.MixedInboundTag || inbound.Protocol != "mixed" || inbound.Port != desired.MixedPort || !strings.HasPrefix(inbound.Remark, "Aimili Gateway ") {
-			return &AdapterError{Code: "ownership_conflict"}
+			return nil, false, &AdapterError{Code: "ownership_conflict"}
 		}
 		settings, ok := decodeObject(inbound.Settings)
 		if !ok {
-			return &AdapterError{Code: "invalid_response"}
+			return nil, false, &AdapterError{Code: "invalid_response"}
 		}
 		accounts := asObjectSlice(settings["accounts"])
-		if stringValue(settings["auth"]) != "password" || len(accounts) != 1 ||
-			stringValue(accounts[0]["user"]) != desired.MixedUsername || stringValue(accounts[0]["pass"]) != desired.MixedPassword {
-			return &AdapterError{Code: "managed_resource_drift"}
+		if stringValue(settings["auth"]) == "password" && len(accounts) == 1 &&
+			stringValue(accounts[0]["user"]) == desired.MixedUsername && stringValue(accounts[0]["pass"]) == desired.MixedPassword {
+			return nil, false, nil
 		}
-		return nil
+		desiredSettings := cloneObject(settings)
+		desiredSettings["auth"] = "password"
+		desiredSettings["accounts"] = []any{map[string]any{"user": desired.MixedUsername, "pass": desired.MixedPassword}}
+		desiredSettings["udp"] = true
+		if reflect.DeepEqual(settings, desiredSettings) {
+			return nil, false, nil
+		}
+		original := cloneObject(inbound.Raw)
+		updated := cloneObject(inbound.Raw)
+		updated["settings"] = mustJSONString(desiredSettings)
+		if err := c.updateInbound(ctx, managed.MixedInboundID, updated); err != nil {
+			return nil, false, err
+		}
+		return original, true, nil
 	}
-	return &AdapterError{Code: "managed_resource_missing"}
+	return nil, false, &AdapterError{Code: "managed_resource_missing"}
 }
 
 type inboundDetail struct {
@@ -1567,7 +1597,8 @@ func (c *Client) UpdateLegacyMainMixedPolicy(ctx context.Context, desired Legacy
 	if err != nil {
 		return err
 	}
-	if err := c.verifyCurrentMixedAccount(ctx, groupDesired, managed); err != nil {
+	originalMixed, mixedChanged, err := c.syncManagedMixedAccount(ctx, groupDesired, managed)
+	if err != nil {
 		return err
 	}
 	if err := verifyManagedSocksOutbound(snapshot.XraySetting, "aimili-socks", desired.SOCKSPort); err != nil {
@@ -1581,7 +1612,13 @@ func (c *Client) UpdateLegacyMainMixedPolicy(ctx context.Context, desired Legacy
 	if reflect.DeepEqual(original, setting) {
 		return nil
 	}
-	return c.updateXray(ctx, setting, snapshot.OutboundTestURL)
+	if err := c.updateXray(ctx, setting, snapshot.OutboundTestURL); err != nil {
+		if mixedChanged {
+			_ = c.updateInbound(ctx, managed.MixedInboundID, originalMixed)
+		}
+		return err
+	}
+	return nil
 }
 
 func validateLegacyMainDesired(desired LegacyMainDesired) error {

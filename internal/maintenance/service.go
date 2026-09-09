@@ -154,6 +154,33 @@ func (service *Service) CandidateCountries(ctx context.Context) ([]aimili.Candid
 	if err != nil {
 		return nil, countryRefreshError(err)
 	}
+	// Older AimiliVPN control planes expose only the per-country catalog
+	// count.  Keep the UI aggregate counters correct by deriving the missing
+	// fields from the same current candidate snapshot instead of displaying
+	// zeroes until AimiliVPN is upgraded.
+	candidates, candidateErr := service.availableCandidates(ctx)
+	if candidateErr != nil {
+		return nil, candidateErr
+	}
+	officialTotal := 0
+	for _, country := range countries {
+		officialTotal += country.CandidateCount
+	}
+	validCountries := make(map[string]struct{})
+	for _, candidate := range candidates {
+		validCountries[strings.ToUpper(strings.TrimSpace(candidate.CountryCode))] = struct{}{}
+	}
+	for index := range countries {
+		if countries[index].OfficialCandidateTotal <= 0 {
+			countries[index].OfficialCandidateTotal = officialTotal
+		}
+		if countries[index].ValidNodeCount <= 0 {
+			countries[index].ValidNodeCount = len(candidates)
+		}
+		if countries[index].ValidCountryCount <= 0 {
+			countries[index].ValidCountryCount = len(validCountries)
+		}
+	}
 	return countries, nil
 }
 
