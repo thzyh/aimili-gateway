@@ -41,11 +41,17 @@ function Test-IPv4PrefixContains {
     return $true
 }
 
-function Get-SelectedRoute {
-    param([Parameter(Mandatory)][string]$RemoteAddress)
-    return @(Find-NetRoute -RemoteIPAddress $RemoteAddress -ErrorAction Stop |
-        Where-Object { $_.PSObject.Properties['DestinationPrefix'] } |
-        Select-Object -Last 1)[0]
+function Get-BestHostRoute {
+    param([Parameter(Mandatory)][string]$DestinationPrefix)
+    $hostRoutes = @(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix $DestinationPrefix -PolicyStore ActiveStore -ErrorAction SilentlyContinue)
+    if ($hostRoutes.Count -eq 0) { return $null }
+    return @($hostRoutes | ForEach-Object {
+        $ipInterface = Get-NetIPInterface -AddressFamily IPv4 -InterfaceIndex $_.InterfaceIndex -ErrorAction Stop
+        [pscustomobject]@{
+            Route = $_
+            EffectiveMetric = [int]$_.RouteMetric + [int]$ipInterface.InterfaceMetric
+        }
+    } | Sort-Object EffectiveMetric, @{ Expression = { [int]$_.Route.InterfaceIndex } } | Select-Object -First 1)[0]
 }
 
 $paths = Get-AimiliLocalVmPaths
@@ -137,7 +143,12 @@ $afterSafety = Get-AimiliHostSafetySnapshot
 Assert-AimiliHostSafetyUnchanged -Before $beforeSafety -After $afterSafety
 if ($null -ne $operationError) { throw $operationError }
 
-$selectedRoute = Get-SelectedRoute -RemoteAddress $guestAddress
+$selectedHostRoute = Get-BestHostRoute -DestinationPrefix $desiredPrefix
+$selectedRoute = if ($null -ne $selectedHostRoute) { $selectedHostRoute.Route } else {
+    @(Find-NetRoute -RemoteIPAddress $guestAddress -ErrorAction Stop |
+        Where-Object { $_.PSObject.Properties['DestinationPrefix'] } |
+        Select-Object -Last 1)[0]
+}
 $selectedInterfaceIndex = [int]$selectedRoute.InterfaceIndex
 $persistentReady = @(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix $desiredPrefix -InterfaceIndex $targetInterfaceIndex -PolicyStore PersistentStore -ErrorAction SilentlyContinue).Count -gt 0
 $ready = $selectedInterfaceIndex -eq $targetInterfaceIndex -and ((-not $Apply) -or $persistentReady)

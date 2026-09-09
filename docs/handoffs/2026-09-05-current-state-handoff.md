@@ -4,8 +4,11 @@
 
 ## 2026-09-10 开机启动入口与排障经验固化
 
-- 新增 `deploy/local-vm/start-local-vm.ps1`。普通 PowerShell 执行会请求 UAC，随后幂等启动 `VMAuthdService`、`VMnetDHCP`、`VMware NAT Service`，恢复 VMnet8 持久 `/32` 路由，只在 VM 未运行时执行 `vmrun start ... nogui`，最后等待 SSH 与 `nativeReady=true`。它不操作 v2rayN、TUN、系统代理、DNS、防火墙或默认路由。
+- 新增 `deploy/local-vm/start-local-vm.ps1`。右键“使用 PowerShell 运行”或无参数执行会进入交互菜单；可选择完整启动、只读状态或单独修复路由。完整启动会请求 UAC，随后幂等启动 `VMAuthdService`、`VMnetDHCP`、`VMware NAT Service`，恢复 VMnet8 持久 `/32` 路由，只在 VM 未运行时执行 `vmrun start ... nogui`，最后等待 SSH 与 `nativeReady=true`。它不操作 v2rayN、TUN、系统代理、DNS、防火墙或默认路由。
+- 首版自提升运行只返回 `local_vm_elevated_start_failed:1`。实时复核确认活动和持久 VMnet8 `/32` 均存在，但 `Find-NetRoute` 在透明 TUN 工作时返回 sing-box `/1`，旧门禁因此误报路由未选择并使管理员子进程退出 1。门禁现按全部同目标 `/32` 的 route metric＋interface metric 选择最佳主机路由：继续覆盖 `qinshi /32` 冲突，但不把透明 TUN `/1` 当成同类竞争路由。
+- 自提升结果现原子写入 `%LOCALAPPDATA%\AimiliGateway\vmware-local\startup-last-result.json`；父窗口会回显失败阶段、原始错误和诊断路径，不再丢失管理员子进程错误。
 - `-ValidateOnly -AsJson` 已在当前运行环境真实通过：三项 VMware 服务 Running，持久路由选择 VMnet8，SSH 可达，VM 内实际为 6 个 OpenVPN、1 个 Xray、6 个逻辑出口、5 个普通出口位，`nativeReady=true`。
+- 本轮使用 VM 真实关机状态验证了 `vmrun start ... nogui`，VM 从 0 台运行恢复为 1 台；SSH 随后恢复，约数分钟后 6 个 OpenVPN、1 个 Xray、6 个逻辑出口和 5 个出口位全部达到 `nativeReady=true`。无参数菜单通过重定向输入选择退出的冒烟测试，返回码为 0；管理员结果文件链也已验证成功写入、读取和清理。
 - Windows 重启后持久路由原则上仍在，但 VM 本身和两个 Manual VMware 服务不能仅靠该事实推断已启动；统一入口会检查并按需恢复全部启动前提，因此无需再手动逐条执行 `Start-Service`、路由和 `vmrun` 命令。
 - 重复失败的核心教训已写入个人 Skill `trace-client-data-path`，仅用于代理、VPN、订阅、虚拟机和路由的客户端数据流故障：以故障时刻真实客户端配置/日志为起点，用同配置隔离 A/B 找第一失败边界，并强制保护现有代理基线；没有修改其他全局设置。
 

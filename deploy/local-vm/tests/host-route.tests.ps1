@@ -11,6 +11,8 @@ $source = Get-Content -LiteralPath $scriptPath -Raw
 foreach ($required in @(
     'Get-AimiliHostSafetySnapshot',
     'Assert-AimiliHostSafetyUnchanged',
+    'Get-BestHostRoute',
+    'EffectiveMetric',
     'Find-NetRoute',
     'New-NetRoute',
     'PersistentStore',

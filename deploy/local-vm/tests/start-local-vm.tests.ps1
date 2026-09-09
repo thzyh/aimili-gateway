@@ -13,7 +13,7 @@ foreach ($serviceName in @('VMAuthdService', 'VMnetDHCP', 'VMware NAT Service'))
         throw "startup script omits VMware service: $serviceName"
     }
 }
-foreach ($required in @('Start-Service', 'repair-host-route.ps1', 'routeParameters.Apply', 'vmrun.exe', "'start'", "'nogui'", 'status.ps1', 'nativeReady', 'ValidateOnly')) {
+foreach ($required in @('Start-Service', 'repair-host-route.ps1', 'Apply = $true', 'vmrun.exe', "'start'", "'nogui'", 'status.ps1', 'nativeReady', 'ValidateOnly', 'Read-Host', 'startup-last-result.json', 'ResultPath')) {
     if ($source -notmatch [regex]::Escape($required)) {
         throw "startup script contract missing: $required"
     }
@@ -30,6 +30,34 @@ $parseErrors = $null
 [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $scriptPath), [ref]$tokens, [ref]$parseErrors) | Out-Null
 if ($parseErrors.Count -gt 0) {
     throw ('startup script does not parse: ' + ($parseErrors[0].Message))
+}
+
+$startInfo = [Diagnostics.ProcessStartInfo]::new()
+$startInfo.FileName = 'powershell.exe'
+$startInfo.Arguments = '-NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $scriptPath
+$startInfo.UseShellExecute = $false
+$startInfo.RedirectStandardInput = $true
+$startInfo.RedirectStandardOutput = $true
+$startInfo.RedirectStandardError = $true
+$process = [Diagnostics.Process]::Start($startInfo)
+try {
+    $process.StandardInput.WriteLine('0')
+    $process.StandardInput.Close()
+    if (-not $process.WaitForExit(10000)) {
+        $process.Kill()
+        throw 'startup menu did not accept the exit selection'
+    }
+    $menuOutput = $process.StandardOutput.ReadToEnd()
+    $menuError = $process.StandardError.ReadToEnd()
+    if ($process.ExitCode -ne 0 -or -not [string]::IsNullOrWhiteSpace($menuError)) {
+        throw 'startup menu smoke test failed'
+    }
+    if ($menuOutput -notmatch 'AimiliGatewayLocal startup manager' -or $menuOutput -notmatch 'Start services') {
+        throw 'startup menu options were not rendered'
+    }
+} finally {
+    if (-not $process.HasExited) { $process.Kill() }
+    $process.Dispose()
 }
 
 Write-Output 'PASS local VM startup contract'
