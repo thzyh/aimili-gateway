@@ -12,6 +12,10 @@ $hostRouteTest = Join-Path $PSScriptRoot 'host-route.tests.ps1'
 & $hostRouteTest
 if ($LASTEXITCODE -ne 0) { throw "host route test failed with exit code $LASTEXITCODE" }
 
+$startupTest = Join-Path $PSScriptRoot 'start-local-vm.tests.ps1'
+& $startupTest
+if ($LASTEXITCODE -ne 0) { throw "local VM startup test failed with exit code $LASTEXITCODE" }
+
 function Assert-True {
     param([bool]$Condition, [string]$Message)
     if (-not $Condition) { throw $Message }

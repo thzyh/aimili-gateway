@@ -1,6 +1,13 @@
 # Aimili Gateway 当前状态交接
 
-日期：2026-09-09（Asia/Shanghai）。状态：当前权威入口。
+日期：2026-09-10（Asia/Shanghai）。状态：当前权威入口。
+
+## 2026-09-10 开机启动入口与排障经验固化
+
+- 新增 `deploy/local-vm/start-local-vm.ps1`。普通 PowerShell 执行会请求 UAC，随后幂等启动 `VMAuthdService`、`VMnetDHCP`、`VMware NAT Service`，恢复 VMnet8 持久 `/32` 路由，只在 VM 未运行时执行 `vmrun start ... nogui`，最后等待 SSH 与 `nativeReady=true`。它不操作 v2rayN、TUN、系统代理、DNS、防火墙或默认路由。
+- `-ValidateOnly -AsJson` 已在当前运行环境真实通过：三项 VMware 服务 Running，持久路由选择 VMnet8，SSH 可达，VM 内实际为 6 个 OpenVPN、1 个 Xray、6 个逻辑出口、5 个普通出口位，`nativeReady=true`。
+- Windows 重启后持久路由原则上仍在，但 VM 本身和两个 Manual VMware 服务不能仅靠该事实推断已启动；统一入口会检查并按需恢复全部启动前提，因此无需再手动逐条执行 `Start-Service`、路由和 `vmrun` 命令。
+- 重复失败的核心教训已写入个人 Skill `trace-client-data-path`，仅用于代理、VPN、订阅、虚拟机和路由的客户端数据流故障：以故障时刻真实客户端配置/日志为起点，用同配置隔离 A/B 找第一失败边界，并强制保护现有代理基线；没有修改其他全局设置。
 
 ## 2026-09-09 23:40 `local` 节点 `-1` 根因修复与隔离闭环（当前状态）
 
