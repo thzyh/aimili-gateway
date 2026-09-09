@@ -3,9 +3,20 @@
 日期：2026-09-09（Asia/Shanghai）
 目标：在本机 VMware Ubuntu 中原生运行 AimiliVPN、3x-ui/Xray、Aimili Gateway 和 Caddy，并完成 Windows 外部自动数据面验证与重启复验。
 
+## 2026-09-09 17:40 最终故障定位与恢复验证
+
+- 主连接、出口 2 与 v2rayN 六节点同时失败的共同边界是 VM 数据面，不是订阅正文或 Reality/Hysteria2 参数。来宾内核日志在故障时段连续记录 `ens192` Link Down/Up，VMware 日志同时存在 Link State Propagation 事件；六条 OpenVPN 连接随之重置。VMX 已持久设置 `ethernet0.linkStatePropagation.enable = "FALSE"`，本次启动后 `ens192: NIC Link is Down` 计数为 0。
+- 旧 OpenVPN 命令固定 `--connect-retry-max 1`，会把宿主侧短暂链路抖动放大为整条隧道退出。AimiliVPN 现通过 `OPENVPN_CONNECT_RETRY_MAX` 配置该值，默认 3、允许 1–10；VM 当前 OpenVPN 进程已使用 `--connect-retry-max 3`。对应全量测试 72 项通过。
+- 本机部署比 ny VPS 多一层 VMware NAT：来宾 OpenVPN 在 Windows 宿主上的实际承载进程是 `vmnat.exe`。v2rayN TUN 若把 `vmnat.exe` 再送入 `local`，会形成“VMware NAT → local 节点 → VM 内 OpenVPN 上游 → VMware NAT”的递归依赖；ny VPS 没有这一层。v2rayN 三个路由模式现均在首条保存唯一的 `vmnat.exe → direct` 规则，运行环境数据库修改前备份保存在 `%LOCALAPPDATA%\AimiliGateway\vmware-local\backups\v2rayN-guiNDB-before-vmnat-direct.db`。
+- 故障槽位恢复时还发现出口 2 原先固定的 `JP + residential` 当时没有可用候选，因此保持原国家、改用当前存在的 `JP + datacenter` 候选并完成真实出口检查；另一个假活候选也经受管 rotate 后通过。没有增加出口数量、改变固定端口或接管非 `agw-` 资源。
+- `status.ps1 -AsJson` 于 17:35 后再次得到 `nativeReady=true`：四服务 active/enabled，实际 6 个 OpenVPN、1 个 Xray、6 个逻辑出口、5 个普通出口位；主连接及出口位 0–4 的 TUN、策略路由、监听和真实出口全部为 true。
+- `verify-external.ps1 -AsJson` 于 17:39 再次得到 `status=pass`、`ready_groups=6`、`verified_groups=6`、`unique_exit_ips=true`；6/6 mixed/SOCKS5H、代理 DNS、来源认证和公网协议全部通过，协议分布为 4 个 VLESS、2 个 Hysteria2。该验证会逐组调用与页面“重新检测并同步”相同的 `/api/v1/proxy-groups/{id}/check` 路径，因此同时证明同步操作已真实执行，而不是只检查静态端口。
+- 最新外部门禁读取到来源限制当前为关闭；本轮没有改变该开关。此前“最终恢复开启”是较早快照，不代表 17:39 的当前配置。
+- 本轮没有激活 v2rayN `local`，没有切换 TUN 或系统代理，也没有使用 Computer Use。用户最终验收前应正常重启一次 v2rayN，使新路由规则从持久数据库进入当前进程，然后自行激活 `local`，分别验证两种代理模式。
+
 ## 2026-09-09 节点池、来源限制与订阅复查
 
-## 2026-09-09 15:00 后续故障复核（以本轮最新事实为准）
+## 2026-09-09 15:00 故障快照（已由 17:40 恢复结果取代）
 
 - v2rayN `local` 六节点测速 `-1` 的第一失败边界不是订阅编码或 TLS：VM 在复测期间发生了 OpenVPN 免费节点远端重置/超时，随后来宾 SSH 也短暂失联。AimiliVPN 日志明确记录 `connection-reset`、`server_poll timeout` 和 `ERR_OVPN_NODE_UNREACHABLE`；重启 VM 后 SSH 恢复。
 - VM 重启后的槽位状态为：主连接、出口位 0、2、3 就绪；出口位 1、4 为 `pending`，明确原因分别为 `暂无可用住宅节点（JP）`、`暂无可用住宅节点（KR）`。随后主连接恢复且一个额外 OpenVPN 进程已启动，但两个槽位仍未就绪；最近一次门禁为 5 个 OpenVPN、4 个逻辑出口、3 个就绪出口位，不能把旧的 6 条客户端节点当作当前全部可用。
@@ -30,7 +41,7 @@
 - Hysteria2 使用 `allowInsecure=false`、专用 CA 和 `disableSystemRoot=true` 完成严格证书验证，没有降级为跳过校验。
 - 初始外部门禁未修改 Windows 默认路由、DNS、防火墙、系统代理、证书信任库及 v2rayN，证据记录 `hostSafetyUnchanged=true`。为修复后续确认的 v2rayN `PartialChain`，仅新增当前用户 Caddy 根 CA 信任；默认路由、DNS、防火墙、系统代理和本机级根证书库仍未修改。
 
-最终脱敏外部证据位于 `%LOCALAPPDATA%\AimiliGateway\vmware-local\verification\external-client.json`，最新采集时间为 `2026-09-08T18:59:49Z`。VM 内证据位于 `/var/lib/aimili-local/verification/native-evidence.json`。
+最终脱敏外部证据位于 `%LOCALAPPDATA%\AimiliGateway\vmware-local\verification\external-client.json`，最新采集时间为 `2026-09-09T17:39:38+08:00`。VM 内证据位于 `/var/lib/aimili-local/verification/native-evidence.json`。
 
 ## 重启闭环
 
@@ -60,7 +71,7 @@
 
 ## 最新测试
 
-- AimiliVPN：`python -m unittest discover -s tests -v`，71 项通过。
+- AimiliVPN：`python -m unittest discover -s tests -v`，72 项通过。
 - Gateway Go：`go test ./... -count=1` 通过；`go test ./... -race -count=1` 全包通过；`go vet ./...` 通过。
 - Gateway 前端：66 项通过，生产构建通过。
 - Gateway Python：108 项通过，2 项因 Windows 普通账户不可创建 symlink 按设计跳过。
@@ -72,4 +83,4 @@
 
 ## 用户验收边界
 
-自动部署、数据面和 v2rayN 订阅导入闭环已经完成，本轮未使用 Computer Use。v2rayN 自身已成功更新 `local` 并保存 6 个节点；用户仍负责选择节点后的日常使用体验验收。当前用户根证书信任已经添加，浏览器刷新或重新建立连接后不应再因该根 CA 显示证书链警告；本机级根证书库未修改。
+自动部署、服务端数据面、页面同步接口和 v2rayN 订阅导入闭环已经完成，本轮未使用 Computer Use。v2rayN 自身已成功更新 `local` 并保存 6 个节点，三个路由模式均已持久加入 `vmnat.exe → direct`；用户仍负责重启 v2rayN 后选择节点的日常使用体验验收。当前用户根证书信任已经添加，浏览器刷新或重新建立连接后不应再因该根 CA 显示证书链警告；本机级根证书库未修改。

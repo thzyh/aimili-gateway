@@ -2,7 +2,17 @@
 
 日期：2026-09-09（Asia/Shanghai）。状态：当前权威入口。
 
-## 2026-09-09 15:00 后续现场复核
+## 2026-09-09 17:40 本机 VMware 故障闭环
+
+主连接、出口 2 和 v2rayN `local` 节点测速 `-1` 的共同根因已经定位并修复。故障时来宾 `ens192` 连续 Link Down/Up，VMware 同期记录 Link State Propagation，六条 OpenVPN 随之重置；VMX 现持久设置 `ethernet0.linkStatePropagation.enable = "FALSE"`，本次启动后的内核 Link Down 计数为 0。AimiliVPN 原先固定的 `--connect-retry-max 1` 已改为可配置 `OPENVPN_CONNECT_RETRY_MAX`、默认 3，VM 运行进程已经使用新值。
+
+本机与 ny VPS 的关键差异是 VMware NAT。来宾连接的宿主承载进程为 `vmnat.exe`；v2rayN TUN 若把它再次送入 `local` 会产生递归依赖，而 ny VPS 不经过该层。v2rayN 三个路由模式现均在首条保存唯一的 `vmnat.exe → direct` 规则，修改前 SQLite 备份位于 `%LOCALAPPDATA%\AimiliGateway\vmware-local\backups\v2rayN-guiNDB-before-vmnat-direct.db`。没有激活 `local`，没有切换 TUN/系统代理，也没有使用 Computer Use。
+
+故障槽位已通过受管 Control API 在原逻辑槽位恢复；出口 2 原 `JP + residential` 约束当时没有当前有效候选，改用存在的 `JP + datacenter` 候选并通过真实出口检查，假活候选也已 rotate。最新 VM 内门禁为 `nativeReady=true`：四服务 active/enabled、6 个 OpenVPN、1 个 Xray、6 个逻辑出口、5 个普通出口位，主连接与五个出口位的 TUN、策略路由、监听、真实出口全部通过。17:39 的 Windows 外部门禁为 `status=pass`、6/6 组验证完成、出口 IP 全部唯一、4 个 VLESS 与 2 个 Hysteria2 公网握手通过。外部门禁逐组调用与页面“重新检测并同步”相同的 `/check` 接口，因此按钮背后的服务端操作已真实验证。来源限制当前为关闭，本轮没有改变该开关；较早记录中的“最终恢复开启”仅代表当时快照。
+
+当前只剩用户客户端体验验收：正常重启一次 v2rayN，使持久路由规则进入当前进程；更新 `local` 后由用户自行激活节点，分别测试“开启 TUN＋清除系统代理”和“关闭 TUN＋自动配置系统代理”。
+
+## 2026-09-09 15:00 故障快照（已由 17:40 状态取代）
 
 本轮复测期间 VM 发生一次真实的 OpenVPN 节点重置/超时，SSH 也短暂失联；执行一次有边界的 `vmrun stop soft`/`start nogui` 后来宾恢复。最新只读状态显示四服务 active/enabled，主连接和出口位 0、2、3 就绪，出口位 1（JP）与 4（KR）因当前没有可用住宅候选而 pending；最近一次门禁为 5 个 OpenVPN、4 个逻辑出口、3 个就绪出口位。Windows 外部验证的明确失败边界是 `subscription_coverage_mismatch`：旧订阅仍有 6 条，而当前只有 4 条可用数据面；没有激活 v2rayN `local`，没有切换 TUN/系统代理。待候选恢复后需刷新订阅再做用户验收。
 
