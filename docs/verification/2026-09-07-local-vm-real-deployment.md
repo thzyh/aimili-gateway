@@ -5,6 +5,13 @@
 
 ## 2026-09-09 节点池、来源限制与订阅复查
 
+## 2026-09-09 15:00 后续故障复核（以本轮最新事实为准）
+
+- v2rayN `local` 六节点测速 `-1` 的第一失败边界不是订阅编码或 TLS：VM 在复测期间发生了 OpenVPN 免费节点远端重置/超时，随后来宾 SSH 也短暂失联。AimiliVPN 日志明确记录 `connection-reset`、`server_poll timeout` 和 `ERR_OVPN_NODE_UNREACHABLE`；重启 VM 后 SSH 恢复。
+- VM 重启后的槽位状态为：主连接、出口位 0、2、3 就绪；出口位 1、4 为 `pending`，明确原因分别为 `暂无可用住宅节点（JP）`、`暂无可用住宅节点（KR）`。因此最新实际为 4 个 OpenVPN、4 个逻辑出口、3 个就绪出口位，不能把旧的 6 条客户端节点当作当前全部可用。
+- Windows 外部验证在该状态下按事实失败于 `subscription_coverage_mismatch`；没有修改 v2rayN、没有激活 `local`、没有切换 TUN/系统代理。当前订阅仍保留此前生成的 6 条配置，用户在槽位恢复并刷新订阅前不应据此判断客户端核心故障。
+- Gateway 主连接持久记录兜底修复已部署：AimiliVPN 重连或实时状态不可用时，池页面继续显示主连接并标记 degraded/`egress_unavailable`，不会整行消失；对应回归测试已通过。
+
 - Gateway 已兼容旧版 AimiliVPN 国家目录响应：当上游只提供逐国家 `candidateCount` 时，从同一份当前有效候选快照补齐 `officialCandidateTotal`、`validNodeCount` 和 `validCountryCount`。部署后实时结果为官方 99、当前有效 40，国家数随当前候选刷新变化且不再显示 0；最终复核为 3 国。
 - 三服务账户轮换后，Gateway 会在严格确认 mixed 入站仍属于 `agw-` 受管资源后自动同步代理账号；Xray 更新失败会恢复原 mixed 入站配置。来源限制已真实执行关闭、开启、再次关闭和最终恢复开启，所有返回均为 `applyStatus=applied`；最终只允许 `192.168.88.1/32`，3x-ui 受管资源检查为 `ownershipMatches=true`。
 - AimiliVPN 重启后五个出口位可能自动换到仍可用候选；本轮重新 provision 后，Gateway 数据库、3x-ui/Xray 入站和六条订阅已重新同步。VM 内门禁再次得到 `nativeReady=true`，四服务 active/enabled、6 个 OpenVPN、1 个 Xray、6 个逻辑出口和 5 个普通出口位全部符合 manifest。
@@ -12,7 +19,7 @@
 - 服务端严格使用 Caddy 本地根 CA 请求订阅得到 HTTPS 200、`text/plain`，Base64 解码出 6 条 `vless`/`hysteria2` 节点。v2rayN 在 `2026-09-09 09:41`、`09:49` 以及 `12:40` 的第一失败边界均为 TLS `PartialChain`，调用栈停在 `DownloadService`，尚未进入订阅正文解析；v2rayN 中 `local` 保存 URL 的 SHA-256 与 Gateway 当前生成 URL 完全一致。
 - 已通过固定 SSH 身份取回并核对 Caddy 根 CA，将精确指纹 `46924F9DFCE0D6FD3C8FD52C12BDCA212C507B18` 导入 `Cert:\CurrentUser\Root`；没有修改 `LocalMachine\Root`。同一订阅随后用 Windows 系统信任直连得到 HTTP 200。v2rayN 7.24.4 自身的订阅任务于 13:04 后成功更新，`local` 从 0 个节点变为 6 个，日志只有 `Update subscription end`，没有新的 TLS 或解析错误。临时自动更新间隔已恢复为 0。
 
-## 最终结果
+## 部署基线结果（历史通过快照；最新后续状态见上节）
 
 - VM：`D:\VirtualMachines\AimiliGatewayLocal\AimiliGatewayLocal.vmx`，当前地址 `192.168.88.4`。
 - 用户入口：`https://192.168.88.4:8080`。严格使用 Caddy 本地根 CA 验证返回 HTTP 200。Windows 的 `127.0.0.1` 不指向来宾 VM；Gateway 在 VM 内部才监听 `127.0.0.1:9080`。

@@ -207,6 +207,38 @@ func TestPoolIncludesHealthyLegacyMainAsFourthEgress(t *testing.T) {
 	}
 }
 
+func TestPoolKeepsPersistedMainVisibleWhileRuntimeReconnects(t *testing.T) {
+	fixture := newFixture()
+	fixture.store.mainEgress = store.MainEgress{
+		ResourceName: "agw-main", CountryCode: "JP", CountryName: "日本",
+		ProxyType: domain.ProxyTypeDatacenter, ExitIP: "203.0.113.20",
+		PublicInboundID: 1, MixedInboundID: 2, PublicPort: 8443, MixedPort: 31000,
+		Enabled: true, VLESSLatencyMS: 81, SOCKSLatencyMS: 70,
+		LastCheckedAt: fixture.now(), UpdatedAt: fixture.now(),
+	}
+	fixture.aimili.mainStatus = aimili.MainStatus{Port: 7928, EgressOK: true, Active: false}
+	fixture.store.protocolModes["agw-main"] = domain.EgressProtocolMode{
+		EgressID: "agw-main", ActiveMode: domain.ProtocolVLESSTCPRealityVision,
+		DesiredMode: domain.ProtocolVLESSTCPRealityVision, State: domain.ProtocolReady,
+		Version: 1, UpdatedAt: fixture.now(),
+	}
+
+	pool, err := fixture.orchestratorWithMax(t, 3).Pool(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var main *domain.ProxyGroup
+	for i := range pool {
+		if pool[i].ID == "agw-main" {
+			main = &pool[i]
+			break
+		}
+	}
+	if main == nil || main.Status != domain.ProxyGroupDegraded || main.LastErrorCode != "egress_unavailable" || main.PublicPort != 8443 || main.ExitIP != "203.0.113.20" {
+		t.Fatalf("persisted main disappeared or was misreported: main=%#v pool=%#v", main, pool)
+	}
+}
+
 func TestPoolAttachesPersistedProtocolStateToLiveEgress(t *testing.T) {
 	fixture := newFixture()
 	group, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter, "node-one")

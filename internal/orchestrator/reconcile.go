@@ -324,30 +324,49 @@ func (o *Orchestrator) Pool(ctx context.Context) ([]domain.ProxyGroup, error) {
 		}
 	}
 	result = append(legacy, result...)
-	if main, mainErr := o.aimili.MainStatus(ctx); mainErr == nil && main.Active {
-		proxyType := domain.ProxyType(main.ProxyType)
+	main, mainErr := o.aimili.MainStatus(ctx)
+	storedMain, storedMainErr := store.MainEgress{}, error(store.ErrProxyGroupNotFound)
+	if source, ok := o.store.(mainEgressStore); ok {
+		storedMain, storedMainErr = source.GetMainEgress(ctx)
+	}
+	if (mainErr == nil && main.Active) || (storedMainErr == nil && storedMain.Enabled) {
+		proxyType := storedMain.ProxyType
+		country, countryName := storedMain.CountryCode, storedMain.CountryName
+		candidateID, exitIP := storedMain.CandidateID, storedMain.ExitIP
+		publicPort, mixedPort := storedMain.PublicPort, storedMain.MixedPort
+		if mainErr == nil && main.Active {
+			proxyType = domain.ProxyType(main.ProxyType)
+			if !proxyType.Valid() {
+				proxyType = storedMain.ProxyType
+			}
+			country = strings.ToUpper(strings.TrimSpace(main.Country))
+			countryName, candidateID, exitIP = main.CountryName, main.CandidateID, main.ExitIP
+			publicPort, mixedPort = 8443, o.config.MainMixedPort
+		}
 		if !proxyType.Valid() {
 			proxyType = domain.ProxyTypeDatacenter
 		}
-		country := strings.ToUpper(strings.TrimSpace(main.Country))
 		if len(country) != 2 {
 			country = "ZZ"
 		}
-		status := domain.ProxyGroupDegraded
-		lastError := "egress_unavailable"
-		if main.EgressOK {
+		if publicPort == 0 {
+			publicPort = 8443
+		}
+		if mixedPort == 0 {
+			mixedPort = o.config.MainMixedPort
+		}
+		status, lastError := domain.ProxyGroupDegraded, "egress_unavailable"
+		if mainErr == nil && main.Active && main.EgressOK {
 			status, lastError = domain.ProxyGroupReady, ""
 		}
-		mainGroup := domain.ProxyGroup{ID: "agw-main", ResourceName: "agw-main", CountryCode: country, CountryName: main.CountryName, ProxyType: proxyType, CandidateID: main.CandidateID, Status: status, EgressSource: domain.EgressSourceMain, AimiliSlot: -1, PublicPort: 8443, MixedPort: o.config.MainMixedPort, ExitIP: main.ExitIP, LastErrorCode: lastError, Version: 1, LastCheckedAt: o.config.Now().UTC()}
-		if source, ok := o.store.(mainEgressStore); ok {
-			if stored, storedErr := source.GetMainEgress(ctx); storedErr == nil {
-				mainGroup.CandidateLatencyMS = stored.CandidateLatencyMS
-				mainGroup.VLESSLatencyMS = stored.VLESSLatencyMS
-				mainGroup.SOCKSLatencyMS = stored.SOCKSLatencyMS
-				mainGroup.LastCheckedAt = stored.LastCheckedAt
-				if stored.LastErrorCode != "" {
-					mainGroup.LastErrorCode = stored.LastErrorCode
-				}
+		mainGroup := domain.ProxyGroup{ID: "agw-main", ResourceName: "agw-main", CountryCode: country, CountryName: countryName, ProxyType: proxyType, CandidateID: candidateID, Status: status, EgressSource: domain.EgressSourceMain, AimiliSlot: -1, PublicPort: publicPort, MixedPort: mixedPort, ExitIP: exitIP, LastErrorCode: lastError, Version: 1, LastCheckedAt: o.config.Now().UTC()}
+		if storedMainErr == nil {
+			mainGroup.CandidateLatencyMS = storedMain.CandidateLatencyMS
+			mainGroup.VLESSLatencyMS = storedMain.VLESSLatencyMS
+			mainGroup.SOCKSLatencyMS = storedMain.SOCKSLatencyMS
+			mainGroup.LastCheckedAt = storedMain.LastCheckedAt
+			if storedMain.LastErrorCode != "" {
+				mainGroup.LastErrorCode = storedMain.LastErrorCode
 			}
 		}
 		for _, group := range result {
