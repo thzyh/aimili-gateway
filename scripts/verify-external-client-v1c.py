@@ -210,7 +210,8 @@ try:
  for item in pathlib.Path('/proc').iterdir():
   if not item.name.isdigit(): continue
   try:
-   if (item/'exe').resolve()==expected: pids.append(int(item.name))
+   command=(item/'cmdline').read_bytes().replace(b'\x00',b' ').decode('utf-8','replace')
+   if (item/'exe').resolve()==expected and '/opt/aimili-upstream/config.json' not in command: pids.append(int(item.name))
   except OSError: pass
  xui=sqlite3.connect('file:/etc/x-ui/x-ui.db?mode=ro',uri=True); rows=xui.execute('SELECT tag,port FROM inbounds').fetchall(); xui.close()
  public_ports={int(item['publicPort']) for item in materials}; mixed_ports={int(item['mixedPort']) for item in materials}

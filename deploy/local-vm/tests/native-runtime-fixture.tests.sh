@@ -228,6 +228,10 @@ cat > "$fake_bin/pgrep" <<'SH'
 #!/usr/bin/env bash
 case "$*" in *openvpn*) echo 4 ;; *xray-linux-amd64*) echo 1 ;; *) echo 0 ;; esac
 SH
+cat > "$fake_bin/ps" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' 'bin/xray-linux-amd64 -c bin/config.json'
+SH
 cat > "$fake_bin/ss" <<'SH'
 #!/usr/bin/env bash
 if [[ "$*" == *u* ]]; then ports=(20001); else ports=(8787 7928 8790 2001 "${SUBSCRIPTION_PORT:-2096}" 9080 8080 17928 17929 17930 8443 20000 20002 31000 31001 31002 31003); fi

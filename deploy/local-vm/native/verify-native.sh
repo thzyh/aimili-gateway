@@ -83,7 +83,24 @@ def process_count(arguments):
         return -1
 
 openvpn = process_count(['pgrep', '-cx', 'openvpn'])
-xray = process_count(['pgrep', '-fc', r'(^|/)(xray-linux-amd64|xray)([[:space:]]|$)'])
+
+def managed_xray_count():
+    """Count the gateway's x-ui Xray only.
+
+    A local VM may also run the deliberately independent nyVPS upstream Xray
+    used by AimiliVPN to reach VPNGate.  It is a separate data-plane helper,
+    not an additional public exit, so counting every xray process incorrectly
+    marks a healthy deployment as over-provisioned.
+    """
+    lines = output(['ps', '-eo', 'args=']).splitlines()
+    return sum(
+        1
+        for line in lines
+        if re.search(r'(^|/)(xray-linux-amd64|xray)(\s|$)', line)
+        and '/opt/aimili-upstream/config.json' not in line
+    )
+
+xray = managed_xray_count()
 
 socket_lines = {'tcp': output(['ss', '-lntH']).splitlines(), 'udp': output(['ss', '-lnuH']).splitlines()}
 def listener_hosts(port, transport='tcp'):
