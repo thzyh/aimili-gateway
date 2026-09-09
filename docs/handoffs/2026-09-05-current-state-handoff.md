@@ -2,29 +2,32 @@
 
 日期：2026-09-09（Asia/Shanghai）。状态：当前权威入口。
 
-## 2026-09-09 22:30 `local` 节点 `-1` 根因复核（当前未完成）
+## 2026-09-09 23:40 `local` 节点 `-1` 根因修复与隔离闭环（当前状态）
 
-用户在 v2rayN 激活 `local` 后，无论“开启 TUN＋清除系统代理”还是“关闭 TUN＋自动配置系统代理”，节点测试仍为 `-1`。本轮只读取用户 21:27–21:30 产生的配置和日志，没有切换节点、TUN、系统代理或默认路由，也没有使用 Computer Use。
+用户在 v2rayN 激活 `local` 后，无论“开启 TUN＋清除系统代理”还是“关闭 TUN＋自动配置系统代理”，节点测试均为 `-1`。第一失败边界已通过故障时段日志和同配置 A/B 测试确认并修复；本轮没有切换用户节点、TUN、系统代理或默认路由，也没有使用 Computer Use。
 
 已确认的第一失败边界不是订阅、Reality、Caddy 或 VM 数据面，而是 Windows 到来宾的接口选路：
 
 - `configTest*.json` 的 6 个 local 出站目标为 `192.168.88.4`，21:27–21:30 的真实配置均未设置 `sendThrough`；当前主 ny 配置仍连接公网地址。
 - `Find-NetRoute 192.168.88.4` 在故障窗口命中动态 `192.168.88.4/32 → qinshi`（接口 53、metric 1），覆盖 VMnet8 的 `192.168.88.0/24`；故障时连 SSH 22、Gateway 443/8443 也同时超时。
 - 同一份 6 节点 local 配置启动隔离 Xray：未绑定源接口时 6/6 超时；仅把出站源地址绑定为 VMnet8 的 `192.168.88.1` 后 6/6 返回 HTTP 204。该 A/B 复现未触碰用户 v2rayN。
-- `qinshi` 仍显示为 RAS 已连接，并会在 local 连接尝试时重新注入该 `/32`；因此“偶尔看到 VMnet8 选路”不是稳定修复。
+- `qinshi` 仍显示为 RAS 已连接，并会在 local 连接尝试时重新注入该 `/32`；因此“偶尔看到 VMnet8 选路”不是稳定修复。用户以管理员身份执行修复后，当前活动路由和持久路由均为 `192.168.88.4/32 → VMware Network Adapter VMnet8`，源地址为 `192.168.88.1`，VMnet8 IPv4 metric 为 5。
 - VM 同期日志显示 6 个受管 OpenVPN、主连接、5 个出口位的 TUN/路由/监听/真实出口均通过；修订后的门禁精确排除 5 个临时候选探测进程，当前 VM 验收为 `nativeReady=true`。
 
-本轮最小修复已实现并通过隔离合同测试，工作树本地提交 `10a54fb`（尚未推送）：
+最小修复实现位于本地提交 `10a54fb`，验证说明位于 `3f5f241`；本节更新时二者尚未推送：
 
 - 新增 `deploy/local-vm/repair-host-route.ps1`，只校验 `state.json` 的来宾地址和 `allowedSource` 对应的 VMware 适配器；`-Apply` 仅将来宾 `/32` 持久绑定到 VMnet8，并把该适配器 IPv4 metric 设为 5，不断开 `qinshi`，不修改 v2rayN、系统代理、DNS、防火墙或默认路由。
 - `verify-native.sh` 改为按 `tun0` 和 `AIMILI_SLOT` 计数受管 OpenVPN，避免节点池候选探测导致健康门禁误报。
 - 新增主机路由合同测试；VM 内 `native-runtime-fixture.tests.sh` 与 `native-verification.tests.ps1` 通过。
+- 恢复检查另发现 `status.ps1` 将 Base64 通过 PowerShell 原生命令 stdin 发送时附加 CRLF，GNU `base64` 在解码完正文后报 `invalid input`。现改为将只含安全字符的 Base64 作为 SSH 参数传入，并显式绑定 `192.168.88.1`；Windows PowerShell 5.1 与 pwsh 7.6 均已得到完整 `nativeReady=true` JSON。
 
-当前唯一未完成项是 Windows 管理员权限：本 Codex 进程不是管理员，第一次 UAC 仅成功设置 VMnet8 metric；随后 `New-NetRoute -PolicyStore PersistentStore` 被本机 provider 明确拒绝，已改为 `route.exe -p add`，但第二次 UAC 启动被宿主安全策略拦截。因此持久 `/32` 尚未应用，不能声明用户原操作已修复。管理员执行以下命令后，再运行 `-AsJson` 应得到 `ready=true` 且 `persistentRoute=true`，随后才进行最终 6/6 未绑定源地址和两种模式等价复验：
+最新真实验证：
 
-```powershell
-& 'D:\CodexProject\Github\aimili-gateway\.worktrees\main-switch-protocol-modes\deploy\local-vm\repair-host-route.ps1' -Apply -AsJson
-```
+- VM 内深度门禁为 `nativeReady=true`：主连接和出口位 0–4 的 TUN、策略路由、监听与真实出口全部为 true；实际数量为 6 个 OpenVPN、1 个 Xray、6 个逻辑出口、5 个普通出口位。
+- 23:31 的 Windows 外部门禁在用户当前 TUN 存在、系统代理关闭的环境中，以独立临时 Xray 对 6/6 订阅节点完成真实公网协议、mixed/SOCKS5H、代理 DNS、授权和预期出口 IP 验证；4 个 VLESS、2 个 Hysteria2 全部通过。
+- 进程级 HTTP 代理隔离测试为每个节点启动独立临时 HTTP 入站，模拟“自动配置系统代理”的应用流量，6/6 均取得对应预期出口。测试前后 v2rayN PID、TUN 接口、系统代理和默认路由摘要一致，临时配置和测试 Xray 均已清理。
+
+服务器和隔离客户端闭环已经完成。唯一未由助手执行的是用户现有 v2rayN 中选择 `local` 后的交互体验验收；这是按用户要求保留的最终步骤，不能把它误写成已由自动化切换验证。
 
 ## 2026-09-09 17:40 本机 VMware 故障闭环
 

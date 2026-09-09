@@ -42,7 +42,12 @@ if ($running) {
             $verifyPath = Join-Path $PSScriptRoot 'native\verify-native.sh'
             $verifySource = Get-Content -LiteralPath $verifyPath -Raw
             $verifyPayload = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($verifySource))
-            $probe = @($verifyPayload | & ssh.exe -i $keyPath -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$knownHosts" "aimili@$($state.guestAddress)" 'base64 --decode | sudo -n bash -s -- --json --manifest /etc/aimili-local/deployment.json --evidence /var/lib/aimili-local/verification/native-evidence.json' 2>$null)
+            # Do not pipe Base64 through PowerShell's native-command stdin. Both
+            # Windows PowerShell and pwsh append CRLF, while GNU base64 rejects
+            # the carriage return after decoding the otherwise valid payload.
+            # Base64 has no shell metacharacters, so passing it as a quoted
+            # argument preserves the verifier bytes without a remote temp file.
+            $probe = @(& ssh.exe -b ([string]$state.allowedSource) -i $keyPath -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$knownHosts" "aimili@$($state.guestAddress)" "printf %s '$verifyPayload' | base64 --decode | sudo -n bash -s -- --json --manifest /etc/aimili-local/deployment.json --evidence /var/lib/aimili-local/verification/native-evidence.json" 2>$null)
             $probeExitCode = $LASTEXITCODE
             $deep = ConvertFrom-AimiliNativeVerifierProbe -Output $probe -ExitCode $probeExitCode
             if ($null -ne $deep) {

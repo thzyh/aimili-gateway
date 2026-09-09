@@ -3,6 +3,16 @@
 日期：2026-09-09（Asia/Shanghai）
 目标：在本机 VMware Ubuntu 中原生运行 AimiliVPN、3x-ui/Xray、Aimili Gateway 和 Caddy，并完成 Windows 外部自动数据面验证与重启复验。
 
+## 2026-09-09 23:40 v2rayN `local` 路由冲突最终闭环
+
+- 21:27–21:30 的最新 v2rayN 测试配置把 6 个 local 节点都指向 `192.168.88.4`，且没有 `sendThrough`。故障窗口内 Windows 首选动态 `192.168.88.4/32 → qinshi`，覆盖 VMnet8 直连网段；同一配置未绑定源地址时 6/6 超时，仅绑定 `192.168.88.1` 后 6/6 成功。第一失败边界因此是宿主到来宾的错误接口选路，不是订阅、TLS“不安全”、Reality、Hysteria2 或 Caddy。
+- 用户以管理员身份执行 `repair-host-route.ps1 -Apply -AsJson` 后，活动和持久路由均为 `192.168.88.4/32 → VMware Network Adapter VMnet8`，VMnet8 IPv4 metric 为 5；没有删除 `qinshi` 路由、断开 VPN 或修改 v2rayN、DNS、防火墙、系统代理和默认路由。
+- 最新 VM 内门禁为 `nativeReady=true`：四服务 active/enabled，主连接与出口位 0–4 的 TUN、策略路由、监听和真实出口全部通过，实际为 6 个 OpenVPN、1 个 Xray、6 个逻辑出口、5 个普通出口位。
+- 23:31 的 Windows 外部门禁在当前 TUN 存在且系统代理关闭时，通过独立临时 Xray 验证 6/6 节点的公网协议、mixed/SOCKS5H、代理 DNS、认证和出口 IP，结果 `status=pass`、`unique_exit_ips=true`；协议为 4 个 VLESS、2 个 Hysteria2。
+- 另以逐节点临时 Xray HTTP 入站和仅限测试进程的 `HTTP_PROXY` 模拟“关闭 TUN＋自动配置系统代理”应用路径，6/6 节点均返回各自预期出口。测试没有操作用户 v2rayN；前后 v2rayN PID、TUN 接口、注册表系统代理与默认路由摘要一致，临时配置和测试进程均已清理。
+- `status.ps1` 的恢复检查曾因 PowerShell 向原生命令 stdin 附加 CRLF，在 VM 端得到 `base64: invalid input`。修复后不再经 stdin 传输 Base64，并显式绑定 VMnet8 源地址；Windows PowerShell 5.1 与 pwsh 7.6 均已返回完整 `nativeReady=true`。
+- 按用户要求，助手未在现有 v2rayN 中激活 `local`，未切换 TUN/系统代理，也未使用 Computer Use。服务器与隔离客户端已闭环，用户仍负责最后一次交互式选择节点体验验收。
+
 ## 2026-09-09 17:40 最终故障定位与恢复验证
 
 - 主连接、出口 2 与 v2rayN 六节点同时失败的共同边界是 VM 数据面，不是订阅正文或 Reality/Hysteria2 参数。来宾内核日志在故障时段连续记录 `ens192` Link Down/Up，VMware 日志同时存在 Link State Propagation 事件；六条 OpenVPN 连接随之重置。VMX 已持久设置 `ethernet0.linkStatePropagation.enable = "FALSE"`，本次启动后 `ens192: NIC Link is Down` 计数为 0。
