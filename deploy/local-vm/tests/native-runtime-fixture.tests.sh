@@ -226,11 +226,17 @@ cat > "$fake_bin/systemctl" <<'SH'
 SH
 cat > "$fake_bin/pgrep" <<'SH'
 #!/usr/bin/env bash
-case "$*" in *openvpn*) echo 4 ;; *xray-linux-amd64*) echo 1 ;; *) echo 0 ;; esac
+case "$*" in *openvpn*) echo 5 ;; *xray-linux-amd64*) echo 1 ;; *) echo 0 ;; esac
 SH
 cat > "$fake_bin/ps" <<'SH'
 #!/usr/bin/env bash
-printf '%s\n' 'bin/xray-linux-amd64 -c bin/config.json'
+printf '%s\n' \
+  'bin/xray-linux-amd64 -c bin/config.json' \
+  'openvpn --dev tun0 --route-nopull' \
+  'openvpn --dev tun120 --route-nopull --setenv AIMILI_SLOT 0' \
+  'openvpn --dev tun121 --route-nopull --setenv AIMILI_SLOT 1' \
+  'openvpn --dev tun122 --route-nopull --setenv AIMILI_SLOT 2' \
+  'openvpn --dev tun7 --route-nopull'
 SH
 cat > "$fake_bin/ss" <<'SH'
 #!/usr/bin/env bash
@@ -286,6 +292,7 @@ report="$(env "${common_env[@]}" bash "$verify" "${verify_args[@]}")"
 python3 - "$report" <<'PY'
 import json, sys
 r=json.loads(sys.argv[1]); assert r['nativeReady'] is True and r['evidenceSchema'] is True, r
+assert r['actual']['openvpn'] == 4, r
 assert r['subscriptionExitSet'] and r['protocolIsolation'] and r['hostSafety'], r
 assert all(r['nativeEnabled'].values()) and all(r['listeners'].values()), r
 assert all(r['protocolAutomation'].values()), r

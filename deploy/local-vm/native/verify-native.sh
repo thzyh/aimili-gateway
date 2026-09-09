@@ -82,7 +82,20 @@ def process_count(arguments):
     except ValueError:
         return -1
 
-openvpn = process_count(['pgrep', '-cx', 'openvpn'])
+def managed_openvpn_count():
+    """Count the main tunnel and declared slot tunnels, not candidate probes."""
+    lines = output(['ps', '-eo', 'args=']).splitlines()
+    return sum(
+        1
+        for line in lines
+        if re.search(r'(^|/)(openvpn)(\s|$)', line)
+        and (
+            re.search(r'--dev\s+tun0(?:\s|$)', line)
+            or re.search(r'--setenv\s+AIMILI_SLOT\s+\d+(?:\s|$)', line)
+        )
+    )
+
+openvpn = managed_openvpn_count()
 
 def managed_xray_count():
     """Count the gateway's x-ui Xray only.

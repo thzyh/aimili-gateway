@@ -13,6 +13,8 @@
 
 Windows 端入口为 `../deploy-native.ps1`。`-PlanOnly` 只输出脱敏阶段、清单期望数量和提交；正式执行固定使用 runtime 中的 SSH key/known_hosts，按 `aimilivpn → xui-caddy → gateway → slots → verify` 顺序运行，组件 apply 失败只回滚当前组件。`-ResumeFrom` 必须同时传入原 `-RunId`，并先检查上一个远端 checkpoint。
 
+当 Windows 同时运行其他全隧道 VPN 时，v2rayN/sing-box 可能为来宾地址创建指向该 VPN 的临时 `/32` 路由，优先级高于 VMnet8 的直连网段，表现为 SSH、Gateway 页面和所有订阅节点同时超时。先运行 `../repair-host-route.ps1 -AsJson` 只读确认实际选路；确认冲突后，以管理员身份运行 `../repair-host-route.ps1 -Apply -AsJson`。该脚本只为 `state.json` 中的来宾地址在承载 `allowedSource` 的 VMware 适配器上建立持久 `/32` 路由并降低该适配器自身的 IPv4 metric；它不删除其他 VPN 路由，不断开 VPN，也不修改 v2rayN、系统代理、DNS、防火墙或默认路由。
+
 内部验证通过后，必须再运行 `../verify-external.ps1`。该入口显式连接 `aimili@<guest-ip>`，从清单动态读取逻辑出口数量，并使用 Windows 上的 Xray 对每个公网 VLESS/Reality、XHTTP/Reality 或 Hysteria2 入口做真实握手，同时从 Windows 对每个受认证 mixed SOCKS 执行代理 DNS 与出口 IP 验证。它不使用 `ssh ny`，不修改 v2rayN、系统代理、默认路由、DNS 或 Windows 防火墙；脱敏结果保存到 runtime 的 `verification/external-client.json`。`nativeReady=true` 只代表 VM 内部深度检查通过，不能替代该外部数据面门禁。
 
 脚本不负责连接 ny，不安装 Docker，也不修改 Windows 默认路由、DNS、防火墙或 v2rayN。生产调用只使用固定路径、清单值和严格验证的 IP/整数；fixture 的 `AIMILI_STAGING_ROOT`、`AIMILI_BACKUP_ROOT`、`AIMILI_NATIVE_ROOT` 仅用于临时目录行为测试。

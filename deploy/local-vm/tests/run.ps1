@@ -8,6 +8,10 @@ if (-not (Test-Path -LiteralPath $modulePath -PathType Leaf)) {
 }
 Import-Module $modulePath -Force
 
+$hostRouteTest = Join-Path $PSScriptRoot 'host-route.tests.ps1'
+& $hostRouteTest
+if ($LASTEXITCODE -ne 0) { throw "host route test failed with exit code $LASTEXITCODE" }
+
 function Assert-True {
     param([bool]$Condition, [string]$Message)
     if (-not $Condition) { throw $Message }
