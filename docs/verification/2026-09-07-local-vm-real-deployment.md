@@ -9,8 +9,8 @@
 - 三服务账户轮换后，Gateway 会在严格确认 mixed 入站仍属于 `agw-` 受管资源后自动同步代理账号；Xray 更新失败会恢复原 mixed 入站配置。来源限制已真实执行关闭、开启、再次关闭和最终恢复开启，所有返回均为 `applyStatus=applied`；最终只允许 `192.168.88.1/32`，3x-ui 受管资源检查为 `ownershipMatches=true`。
 - AimiliVPN 重启后五个出口位可能自动换到仍可用候选；本轮重新 provision 后，Gateway 数据库、3x-ui/Xray 入站和六条订阅已重新同步。VM 内门禁再次得到 `nativeReady=true`，四服务 active/enabled、6 个 OpenVPN、1 个 Xray、6 个逻辑出口和 5 个普通出口位全部符合 manifest。
 - OpenVPN 免费节点重连会重建 TUN，Linux 同时会删除绑定旧 TUN 的策略路由。AimiliVPN 现会在主连接、受管出口位和周期出口探测前检查并按需恢复对应路由。部署后清空出口位 5 的表 204 做现场故障注入，守护线程在 20 秒内自动恢复 `tun124` 的默认路由和选表规则，OpenVPN 进程与节点均未重启或替换；随后完整 VM 门禁仍为 `nativeReady=true`。
-- 服务端严格使用 Caddy 本地根 CA 请求订阅得到 HTTPS 200、`text/plain`，解析出 6 条 `vless`/`hysteria2` 节点。v2rayN 在 `2026-09-09 09:41` 和 `09:49` 的最新日志第一失败边界是 `net_ssl_io_cert_chain_validation, PartialChain`，请求尚未进入订阅内容解析；这是 Windows 当前不信任本机 Caddy 根 CA，不是订阅文档无效。
-- 本轮没有修改 Windows 系统证书信任库，也没有代替用户操作 v2rayN。Windows 外部自动门禁在 v2rayN/TUN 进程运行期间出现部分公网协议超时或响应不一致，因此该次结果不作为通过证据；VM 内真实 SOCKS5H、代理 DNS、公网协议检查和来源认证均已通过，最终 v2rayN 导入仍由用户在处理 CA 信任后验收。
+- 服务端严格使用 Caddy 本地根 CA 请求订阅得到 HTTPS 200、`text/plain`，Base64 解码出 6 条 `vless`/`hysteria2` 节点。v2rayN 在 `2026-09-09 09:41`、`09:49` 以及 `12:40` 的第一失败边界均为 TLS `PartialChain`，调用栈停在 `DownloadService`，尚未进入订阅正文解析；v2rayN 中 `local` 保存 URL 的 SHA-256 与 Gateway 当前生成 URL 完全一致。
+- 已通过固定 SSH 身份取回并核对 Caddy 根 CA，将精确指纹 `46924F9DFCE0D6FD3C8FD52C12BDCA212C507B18` 导入 `Cert:\CurrentUser\Root`；没有修改 `LocalMachine\Root`。同一订阅随后用 Windows 系统信任直连得到 HTTP 200。v2rayN 7.24.4 自身的订阅任务于 13:04 后成功更新，`local` 从 0 个节点变为 6 个，日志只有 `Update subscription end`，没有新的 TLS 或解析错误。临时自动更新间隔已恢复为 0。
 
 ## 最终结果
 
@@ -21,7 +21,7 @@
 - VM 内最终门禁为 `nativeReady=true`：主连接和五个出口位的 TUN、策略路由、监听及真实出口均通过；数据库、订阅出口集合、协议隔离、Xray 运行时监听和宿主安全门均通过。
 - Windows 外部最终结果为 `status=pass`、`ready_groups=6`、`verified_groups=6`：6/6 mixed/SOCKS5H、代理 DNS、来源认证和公网协议均通过，出口 IP 唯一且与各组预期一致；协议覆盖为 4 个 VLESS（含 TCP/Reality 与 XHTTP/Reality）和 2 个 Hysteria2。
 - Hysteria2 使用 `allowInsecure=false`、专用 CA 和 `disableSystemRoot=true` 完成严格证书验证，没有降级为跳过校验。
-- Windows 默认路由、DNS、防火墙、系统代理、系统证书信任库及 v2rayN 未被修改；外部门禁证据记录 `hostSafetyUnchanged=true`。
+- 初始外部门禁未修改 Windows 默认路由、DNS、防火墙、系统代理、证书信任库及 v2rayN，证据记录 `hostSafetyUnchanged=true`。为修复后续确认的 v2rayN `PartialChain`，仅新增当前用户 Caddy 根 CA 信任；默认路由、DNS、防火墙、系统代理和本机级根证书库仍未修改。
 
 最终脱敏外部证据位于 `%LOCALAPPDATA%\AimiliGateway\vmware-local\verification\external-client.json`，最新采集时间为 `2026-09-08T18:59:49Z`。VM 内证据位于 `/var/lib/aimili-local/verification/native-evidence.json`。
 
@@ -46,7 +46,7 @@
 - Gateway 的单槽位真实出口检查最长约需 16 秒，旧的 8 秒 HTTP 读取超时会把仍在运行的检查误判为失败。`CheckSlot` 现使用 75 秒操作超时，回归测试覆盖旧失败和新成功路径。
 - 外部门禁不再读取部署时的 bootstrap 凭据，而读取会随改密更新的当前统一账户文件，修复账户变更后的 401。
 - 主连接与出口位 1 曾出现出口 IP 重复；仅轮换出口位 1 后恢复 6 个唯一出口，固定端口和其他出口不变。
-- 订阅后端现输出 6 条可解析节点并保持 1–6 排序；3x-ui 的 `subSortIndex` 与逻辑出口一致。此结论来自服务端与外部门禁解析/握手，不代替用户在 v2rayN 中的最终导入验收。
+- 订阅后端现输出 6 条可解析节点并保持 1–6 排序；3x-ui 的 `subSortIndex` 与逻辑出口一致。补齐当前用户 Caddy 根 CA 信任后，v2rayN 自身已成功写入 6 个 `local` 节点：2 个 Reality/raw、2 个 Reality/xhttp、2 个 Hysteria2/TLS，全部保持 `allowInsecure=false`。
 - 高级设置中的 SOCKS5H 来源限制已达到 `enabled/applied`；3x-ui 与 AimiliVPN 原后台检测均为 HTTP 200，自动登录均返回同源 HTTP 303 跳转。
 - 账户管理命令可用，状态显示统一账户已同步；生成、修改和修复账户的漂移保护已由自动测试覆盖。TOTP 当前关闭。
 - 清理 35 个旧备份和 20 个 staging，只保留 `/var/backups/aimili-local/final-20260909-closed-loop`；根分区使用率由 49% 降至 23%，staging 为空。
@@ -65,4 +65,4 @@
 
 ## 用户验收边界
 
-自动部署与数据面闭环已经完成。浏览器登录、订阅导入和 v2rayN 实际使用由用户执行，本轮未使用 Computer Use，也不声称这些用户步骤已完成。服务端订阅已验证可解析且 6 个节点均完成真实协议握手，但 v2rayN 的“更新订阅”仍需用户按原操作路径复测。浏览器若尚未信任 Caddy 本地根 CA，会显示证书警告；自动 Hysteria2 验证使用临时 CA 文件，不会修改 Windows 系统信任库。
+自动部署、数据面和 v2rayN 订阅导入闭环已经完成，本轮未使用 Computer Use。v2rayN 自身已成功更新 `local` 并保存 6 个节点；用户仍负责选择节点后的日常使用体验验收。当前用户根证书信任已经添加，浏览器刷新或重新建立连接后不应再因该根 CA 显示证书链警告；本机级根证书库未修改。
