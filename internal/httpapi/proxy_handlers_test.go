@@ -463,9 +463,9 @@ func TestSafeProxyGroupExposesMissingProtocolStateAsRepairRequired(t *testing.T)
 func TestSafeProxyGroupExposesCandidateAndVerifiedExitMetadataSeparately(t *testing.T) {
 	result := safeProxyGroup(domain.ProxyGroup{
 		ID: "agw-jp-dc-one", CandidateIP: "198.51.100.10",
-		ExitIP: "203.0.113.10", ExitIPCheckedAt: 1700000005,
+		ExitIP: "203.0.113.10", ExitIPCheckedAt: 1700000005, AutoRepairPerformed: true,
 	})
-	if result.CandidateIP != "198.51.100.10" || result.ExitIP != "203.0.113.10" || result.ExitIPCheckedAt != 1700000005 {
+	if result.CandidateIP != "198.51.100.10" || result.ExitIP != "203.0.113.10" || result.ExitIPCheckedAt != 1700000005 || !result.AutoRepairPerformed {
 		t.Fatalf("safe response collapsed candidate and exit metadata: %#v", result)
 	}
 

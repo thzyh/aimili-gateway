@@ -51,7 +51,6 @@ class RepairStore:
             unresolved = (
                 isinstance(current, dict)
                 and current.get("status") in {"repairing", "manual_required"}
-                and str(current.get("failed_candidate_id") or "") == candidate_id
             )
             if unresolved:
                 return False

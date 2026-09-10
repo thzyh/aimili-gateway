@@ -154,8 +154,7 @@ it('offers a repair-required runtime slot a safe recheck and synchronization act
 	const wrapper = mount(VpnPoolView)
 	await flushPromises()
 
-	expect(wrapper.get('[data-repair="repair-slot"]').text()).toContain('重新检测')
-	expect(wrapper.get('[data-repair="repair-slot"]').text()).not.toContain('同步')
+	expect(wrapper.get('[data-repair="repair-slot"]').text()).toContain('检测并自动修复')
 	await wrapper.get('[data-repair="repair-slot"]').trigger('click')
 	await flushPromises()
 	expect(mocks.apiFetch).toHaveBeenCalledWith('/api/v1/proxy-groups/repair-slot/check', { method: 'POST' })
@@ -167,17 +166,17 @@ it('offers a degraded runtime slot the same safe recheck and synchronization act
 		if (path === '/api/v1/proxy-groups') return Promise.resolve([degradedRow])
 		if (path === '/api/v1/settings/aimilivpn/countries') return Promise.resolve([])
 		if (path === '/api/v1/settings/aimilivpn/refresh') return Promise.resolve({ state: 'idle', country: '', phase: '', testedCount: 0, validCount: 0 })
-		if (path === '/api/v1/proxy-groups/degraded-slot/check') return Promise.resolve({ ...degradedRow, status: 'ready' })
+		if (path === '/api/v1/proxy-groups/degraded-slot/check') return Promise.resolve({ ...degradedRow, status: 'ready', autoRepairPerformed: true })
 		return Promise.resolve(undefined)
 	})
 	const wrapper = mount(VpnPoolView)
 	await flushPromises()
 
-	expect(wrapper.get('[data-repair="degraded-slot"]').text()).toContain('重新检测')
-	expect(wrapper.get('[data-repair="degraded-slot"]').text()).not.toContain('同步')
+	expect(wrapper.get('[data-repair="degraded-slot"]').text()).toContain('检测并自动修复')
 	await wrapper.get('[data-repair="degraded-slot"]').trigger('click')
 	await flushPromises()
 	expect(mocks.apiFetch).toHaveBeenCalledWith('/api/v1/proxy-groups/degraded-slot/check', { method: 'POST' })
+	expect(wrapper.get('[data-top-notice]').text()).toContain('出口 1 自动修复成功')
 })
 
 it('keeps a failed automatic repair visible and tells the user to replace it manually', async () => {
@@ -193,7 +192,7 @@ it('keeps a failed automatic repair visible and tells the user to replace it man
 
 	expect(wrapper.get('[data-row-id="manual-slot"]').attributes('data-row-id')).toBe('manual-slot')
 	expect(wrapper.get('[data-row-detail="manual-slot"]').text()).toContain('自动修复已失败，等待人工更换')
-	expect(wrapper.get('[data-repair="manual-slot"]').text()).toBe('重新检测')
+	expect(wrapper.get('[data-repair="manual-slot"]').text()).toBe('复核状态')
 })
 
 it('shows closable progress and success feedback when a ready exit passes detection', async () => {
@@ -214,6 +213,7 @@ it('shows closable progress and success feedback when a ready exit passes detect
 	let notice = wrapper.get('[data-top-notice]')
 	expect(notice.attributes('data-notice-kind')).toBe('progress')
 	expect(notice.text()).toContain('正在检测出口 1')
+	expect(notice.text()).toContain('只会自动选择一个同国家候选修复一次')
 
 	finishCheck(rows[1])
 	await flushPromises()
@@ -225,13 +225,13 @@ it('shows closable progress and success feedback when a ready exit passes detect
 	expect(wrapper.find('[data-top-notice]').exists()).toBe(false)
 })
 
-it('only detects a degraded exit and never starts a second repair workflow', async () => {
+it('runs detection and at most one automatic repair in a single request', async () => {
 	const degradedRow = { ...rows[1], id: 'degraded-slot', status: 'degraded', slotNumber: 3 }
 	mocks.apiFetch.mockImplementation((path: string) => {
 		if (path === '/api/v1/proxy-groups') return Promise.resolve([degradedRow])
 		if (path === '/api/v1/settings/aimilivpn/countries') return Promise.resolve([])
 		if (path === '/api/v1/settings/aimilivpn/refresh') return Promise.resolve({ state: 'idle', country: '', phase: '', testedCount: 0, validCount: 0 })
-		if (path === '/api/v1/proxy-groups/degraded-slot/check') return Promise.reject(new Error('egress_check_failed'))
+		if (path === '/api/v1/proxy-groups/degraded-slot/check') return Promise.reject(new Error('no_same_country_candidate'))
 		return Promise.resolve(undefined)
 	})
 	const wrapper = mount(VpnPoolView)
@@ -248,8 +248,9 @@ it('only detects a degraded exit and never starts a second repair workflow', asy
 	])
 	const notice = wrapper.get('[data-top-notice]')
 	expect(notice.attributes('data-notice-kind')).toBe('error')
-	expect(notice.text()).toContain('当前出口隧道或代理不可用')
-	expect(notice.text()).not.toContain('egress_check_failed')
+	expect(notice.text()).toContain('已执行本次故障唯一一次自动修复')
+	expect(notice.text()).toContain('没有找到同国家可用节点')
+	expect(notice.text()).not.toContain('no_same_country_candidate')
 })
 
 it('does not rotate a degraded exit when detection reports a non-runtime failure', async () => {
@@ -291,7 +292,7 @@ it('reports a ready exit tunnel failure without rotating it or exposing the erro
 	expect(mocks.apiFetch.mock.calls.some(([path]) => path === '/api/v1/proxy-groups/jp-one/rotate')).toBe(false)
 	const notice = wrapper.get('[data-top-notice]')
 	expect(notice.attributes('data-notice-kind')).toBe('error')
-	expect(notice.text()).toContain('当前出口隧道或代理不可用')
+	expect(notice.text()).toContain('出口节点本身仍能联网')
 	expect(notice.text()).not.toContain('egress_check_failed')
 })
 

@@ -69,6 +69,7 @@ type ProxyGroup struct {
 	RealityServerName     string
 	RealityMLDSA65Verify  string
 	LastErrorCode         string
+	AutoRepairPerformed   bool
 	RecoveryState         string
 	Version               int64
 	CreatedAt             time.Time

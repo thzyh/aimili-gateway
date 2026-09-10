@@ -403,12 +403,35 @@ func TestCheckKeepsDisconnectedSlotVisibleForManualReplacement(t *testing.T) {
 	}}
 
 	checked, err := orchestrator.Check(context.Background(), created.ID)
-	if codeOf(err) != "manual_replacement_required" {
+	if codeOf(err) != "replacement_failed" {
 		t.Fatalf("error = %v checked=%#v", err, checked)
 	}
 	persisted := fixture.store.groups[created.ID]
-	if persisted.Status != domain.ProxyGroupDegraded || persisted.LastErrorCode != "manual_replacement_required" || persisted.PublicPort != created.PublicPort || persisted.MixedPort != created.MixedPort || persisted.CandidateID != created.CandidateID {
+	if persisted.Status != domain.ProxyGroupDegraded || persisted.LastErrorCode != "replacement_failed" || persisted.PublicPort != created.PublicPort || persisted.MixedPort != created.MixedPort || persisted.CandidateID != created.CandidateID {
 		t.Fatalf("manual replacement placeholder was not preserved: before=%#v after=%#v", created, persisted)
+	}
+}
+
+func TestCheckReportsSuccessfulAutomaticRepairToTheCaller(t *testing.T) {
+	fixture := newFixture()
+	orchestrator := fixture.orchestrator(t)
+	created, err := orchestrator.Enable(context.Background(), EnableRequest{CountryCode: "JP", ProxyType: domain.ProxyTypeDatacenter})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.aimili.createdSlots = map[int]aimili.Slot{}
+	fixture.aimili.checkResults = []aimili.SlotCheck{{
+		Number: created.AimiliSlot, NodeID: "jp-replacement", Country: "JP", CountryName: "日本",
+		ProxyType: "residential", Port: 17928, Status: "up", ExitIP: "203.0.113.88",
+		EgressOK: true, AutoRepairPerformed: true,
+	}}
+
+	checked, err := orchestrator.Check(context.Background(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !checked.AutoRepairPerformed || checked.CandidateID != "jp-replacement" || checked.ExitIP != "203.0.113.88" {
+		t.Fatalf("automatic repair result was lost: %#v", checked)
 	}
 }
 

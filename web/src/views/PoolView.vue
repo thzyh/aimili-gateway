@@ -284,15 +284,24 @@ async function switchProtocol(row: ProxyGroupPayload, protocolMode: ProtocolMode
 async function checkRow(row: ProxyGroupPayload): Promise<void> {
   const subject = row.egressSource === 'main' ? '主连接' : row.slotNumber ? `出口 ${row.slotNumber}` : `${row.countryName || row.countryCode}出口`
   busy.value = `check-${row.id}`
-  topNotice.value = makeNotice('progress', row.status === 'ready' ? `正在检测${subject}` : `正在重新检测${subject}`, '正在核对真实出口、SOCKS5H 和当前公网协议；检测本身不会更换 IP。')
+  topNotice.value = makeNotice('progress', `正在检测${subject}`, '正在核对节点隧道、真实出口和代理链路；若确认节点本身失效，只会自动选择一个同国家候选修复一次。')
   try {
     const path = row.egressSource === 'main' ? '/api/v1/proxy-groups/agw-main/check' : `/api/v1/proxy-groups/${row.id}/check`
-    await apiFetch<ProxyGroupPayload>(path, { method: 'POST', ...(row.egressSource === 'main' ? { headers: idempotencyHeaders() } : {}) })
-    topNotice.value = makeNotice('success', `${subject} 检测成功`, '真实出口、SOCKS5H 和当前公网协议链路正常。')
+    const result = await apiFetch<ProxyGroupPayload>(path, { method: 'POST', ...(row.egressSource === 'main' ? { headers: idempotencyHeaders() } : {}) })
+    topNotice.value = result.autoRepairPerformed
+      ? makeNotice('success', `${subject} 自动修复成功`, '已切换到一个同国家可用节点，并重新验证真实出口和代理链路。')
+      : makeNotice('success', `${subject} 检测成功`, '真实出口、SOCKS5H 和当前公网协议链路正常；本次没有更换节点。')
     await loadGroups(false)
   } catch (error) {
     await loadGroups(false)
-    topNotice.value = makeNotice('error', `${subject} 检测失败`, localizedError(error, '节点检测失败，当前代理数据面保持不变，请稍后重试。'))
+    const code = codeFromError(error)
+    const repairResult = ['no_same_country_candidate', 'replacement_failed'].includes(code)
+    const alreadyAttempted = ['manual_repair_required', 'manual_replacement_required'].includes(code)
+    topNotice.value = makeNotice(
+      'error',
+      repairResult ? `${subject} 自动修复未成功` : alreadyAttempted ? `${subject} 等待人工更换` : `${subject} 检测失败`,
+      localizedError(error, '节点检测失败，当前代理数据面保持不变，请稍后重试。'),
+    )
   } finally { busy.value = '' }
 }
 

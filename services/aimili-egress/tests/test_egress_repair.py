@@ -27,6 +27,19 @@ class RepairStoreTests(unittest.TestCase):
             self.assertEqual(restarted_process.get("slot:1")["status"], "manual_required")
             self.assertEqual(restarted_process.get("slot:1")["attempt_count"], 1)
 
+    def test_unresolved_failure_does_not_reclaim_when_candidate_identity_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "repair.json"
+            store = RepairStore(path, now=lambda: 10.0)
+            self.assertTrue(store.claim("slot:1", "jp-broken", "JP"))
+            store.require_manual("slot:1", "replacement_failed", "jp-new")
+
+            restarted_process = RepairStore(path, now=lambda: 20.0)
+
+            self.assertFalse(restarted_process.claim("slot:1", "", "JP"))
+            self.assertFalse(restarted_process.claim("slot:1", "jp-different", "JP"))
+            self.assertEqual(restarted_process.get("slot:1")["attempt_count"], 1)
+
     def test_healthy_recovery_allows_a_later_new_failure(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "repair.json"

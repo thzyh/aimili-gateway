@@ -530,7 +530,9 @@ func (o *Orchestrator) Check(ctx context.Context, id string) (domain.ProxyGroup,
 	group.UpdatedAt = group.LastCheckedAt
 	if err != nil || !checked.EgressOK {
 		group.Status = domain.ProxyGroupDegraded
-		if checked.RepairStatus == "manual_required" {
+		if strings.TrimSpace(checked.LastErrorCode) != "" {
+			group.LastErrorCode = strings.TrimSpace(checked.LastErrorCode)
+		} else if checked.RepairStatus == "manual_required" {
 			group.LastErrorCode = "manual_replacement_required"
 		} else {
 			group.LastErrorCode = codeOr(err, "egress_unavailable")
@@ -631,6 +633,7 @@ func applySlotSnapshot(group *domain.ProxyGroup, slot aimili.Slot) {
 	if proxyType := domain.ProxyType(strings.ToLower(strings.TrimSpace(slot.ProxyType))); proxyType.Valid() {
 		group.ProxyType = proxyType
 	}
+	group.AutoRepairPerformed = slot.AutoRepairPerformed
 	if slot.LatencyMS >= 0 {
 		group.CandidateLatencyMS = slot.LatencyMS
 	}

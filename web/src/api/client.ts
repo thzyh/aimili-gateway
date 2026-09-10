@@ -44,7 +44,7 @@ export interface ProxyGroupPayload {
   protocolMode?: ProtocolMode; desiredProtocolMode?: ProtocolMode; protocolState?: ProtocolState; subscriptionState?: SubscriptionState
   availableProtocolModes?: ProtocolMode[]
   vlessPort: number; mixedPort: number; candidateIp?: string; exitIp: string; exitIpCheckedAt?: number; candidateLatencyMs: number; vlessLatencyMs: number; socksLatencyMs: number
-  lastErrorCode?: string; version: number; lastCheckedAt?: string
+  lastErrorCode?: string; autoRepairPerformed?: boolean; version: number; lastCheckedAt?: string
 }
 export interface ConnectionsPayload { protocolMode: ProtocolMode; publicUri: string; vlessUri?: string; vlessError?: string; socks5hUri: string }
 export interface ProtocolModePayload {

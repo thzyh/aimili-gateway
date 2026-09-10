@@ -464,8 +464,10 @@ class ExitSlotTypeTests(unittest.TestCase):
         runtime = {2: {"slot": 2}}
         with (
             mock.patch.object(manager, "managed_slot_snapshot", side_effect=snapshots),
+            mock.patch.object(manager, "slot_process_alive", return_value=True),
             mock.patch.object(manager, "ensure_policy_routing", return_value=True) as ensure,
             mock.patch.object(manager, "check_slot_egress", return_value=(True, "198.51.100.20")) as probe,
+            mock.patch.object(manager.egress_repair_store, "mark_healthy"),
             mock.patch.object(manager, "exit_slots", runtime),
             mock.patch.object(manager, "write_slots_state"),
         ):
@@ -662,6 +664,7 @@ class ExitSlotTypeTests(unittest.TestCase):
             mock.patch.object(manager, "exit_slots_supervise_lock", threading.Lock()),
             mock.patch.object(manager, "get_active_slots", return_value=[0]),
             mock.patch.object(manager, "get_paused_slots", return_value=set()),
+            mock.patch.object(manager.egress_repair_store, "get", return_value={}),
             mock.patch.object(manager, "exit_slots", {}),
             mock.patch.object(manager, "exit_slot_proxy_stops", {}),
             mock.patch.object(manager, "slot_process_alive", return_value=False),
@@ -877,8 +880,10 @@ class ManagedSlotFacadeTests(unittest.TestCase):
                 return_value=False,
             ),
             mock.patch.object(manager, "managed_slot_snapshot", return_value=snapshot),
+            mock.patch.object(manager, "slot_process_alive", return_value=True),
             mock.patch.object(manager, "ensure_policy_routing", return_value=True),
             mock.patch.object(manager, "check_slot_egress", return_value=(True, "198.51.100.20")),
+            mock.patch.object(manager.egress_repair_store, "mark_healthy"),
             mock.patch.object(manager, "exit_slots", runtime),
             mock.patch.object(manager, "write_slots_state"),
         ):
@@ -898,6 +903,7 @@ class ManagedSlotFacadeTests(unittest.TestCase):
             mock.patch.object(manager, "exit_slots_supervise_lock", threading.Lock()),
             mock.patch.object(manager, "get_active_slots", return_value=[0]),
             mock.patch.object(manager, "get_paused_slots", return_value=set()),
+            mock.patch.object(manager.egress_repair_store, "get", return_value={}),
             mock.patch.object(manager, "exit_slots", {}),
             mock.patch.object(manager, "exit_slot_proxy_stops", {}),
             mock.patch.object(manager, "slot_process_alive", return_value=False),
@@ -910,29 +916,38 @@ class ManagedSlotFacadeTests(unittest.TestCase):
 
         bring_up.assert_called_once_with(0, candidate)
 
-    def test_check_managed_slot_persists_proven_egress_failure(self):
+    def test_check_managed_slot_repairs_a_proven_tunnel_egress_failure(self):
         snapshot = {
             "ok": True,
             "slot": 2,
             "node_id": "jp-stale",
+            "country": "JP",
             "port": 17930,
             "status": "up",
         }
         runtime = {2: {"node_id": "jp-stale", "status": "up"}}
+        repaired = {
+            **snapshot,
+            "node_id": "jp-new",
+            "egress_ok": True,
+            "exit_ip": "203.0.113.55",
+        }
         with (
             mock.patch.object(manager, "managed_slot_snapshot", return_value=snapshot),
             mock.patch.object(manager, "check_slot_egress", return_value=(False, "")),
             mock.patch.object(manager, "check_interface_exit_ip", return_value=(False, "")),
             mock.patch.object(manager, "slot_process_alive", return_value=True),
             mock.patch.object(manager, "mark_candidate_unavailable", return_value=True) as mark,
+            mock.patch.object(manager, "repair_slot_once", return_value=repaired) as repair,
             mock.patch.object(manager, "exit_slots", runtime),
             mock.patch.object(manager, "write_slots_state"),
         ):
             result = manager.check_managed_slot(2)
 
         mark.assert_called_once_with("jp-stale", "candidate_egress_failed")
-        self.assertEqual(result["error_code"], "candidate_egress_failed")
-        self.assertTrue(result["candidate_rejected"])
+        repair.assert_called_once_with(2, snapshot)
+        self.assertTrue(result["auto_repair_performed"])
+        self.assertEqual(result["node_id"], "jp-new")
 
     def test_check_managed_slot_keeps_candidate_when_tunnel_egress_is_healthy(self):
         snapshot = {
@@ -960,6 +975,98 @@ class ManagedSlotFacadeTests(unittest.TestCase):
         self.assertEqual(result["error_code"], "egress_check_failed")
         self.assertFalse(result["candidate_rejected"])
         mark.assert_not_called()
+
+    def test_check_managed_slot_repairs_once_when_tunnel_is_missing(self):
+        snapshot = {
+            "ok": True,
+            "slot": 0,
+            "node_id": "ru-broken",
+            "country": "RU",
+            "port": 17928,
+            "status": "up",
+        }
+        repaired = {
+            **snapshot,
+            "node_id": "ru-home",
+            "status": "up",
+            "egress_ok": True,
+            "exit_ip": "203.0.113.44",
+        }
+        with (
+            mock.patch.object(manager, "managed_slot_snapshot", return_value=snapshot),
+            mock.patch.object(manager, "slot_process_alive", return_value=False),
+            mock.patch.object(manager, "ensure_policy_routing") as ensure,
+            mock.patch.object(manager, "check_slot_egress") as proxy_probe,
+            mock.patch.object(manager, "repair_slot_once", return_value=repaired) as repair,
+        ):
+            result = manager.check_managed_slot(0)
+
+        ensure.assert_not_called()
+        proxy_probe.assert_not_called()
+        repair.assert_called_once_with(0, snapshot)
+        self.assertTrue(result["auto_repair_performed"])
+        self.assertEqual(result["node_id"], "ru-home")
+
+    def test_check_managed_slot_returns_attempt_result_when_no_candidate_exists(self):
+        snapshot = {
+            "ok": True,
+            "slot": 0,
+            "node_id": "ru-broken",
+            "country": "RU",
+            "port": 17928,
+            "status": "up",
+        }
+        disconnected = {
+            **snapshot,
+            "status": "disconnected",
+            "egress_ok": False,
+            "repair_status": "manual_required",
+            "auto_repair_attempted": True,
+            "last_error_code": "no_same_country_candidate",
+        }
+        with (
+            mock.patch.object(manager, "managed_slot_snapshot", side_effect=[snapshot, disconnected]),
+            mock.patch.object(manager, "slot_process_alive", return_value=False),
+            mock.patch.object(
+                manager,
+                "repair_slot_once",
+                return_value={
+                    "ok": False,
+                    "error_code": "no_same_country_candidate",
+                    "auto_repair_performed": True,
+                },
+            ),
+        ):
+            result = manager.check_managed_slot(0)
+
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["egress_ok"])
+        self.assertTrue(result["auto_repair_performed"])
+        self.assertEqual(result["last_error_code"], "no_same_country_candidate")
+
+    def test_check_managed_slot_marks_a_verified_healthy_failure_closed(self):
+        snapshot = {
+            "ok": True,
+            "slot": 0,
+            "node_id": "jp-live",
+            "country": "JP",
+            "port": 17928,
+            "status": "up",
+        }
+        repair_store = mock.Mock()
+        with (
+            mock.patch.object(manager, "managed_slot_snapshot", return_value=snapshot),
+            mock.patch.object(manager, "slot_process_alive", return_value=True),
+            mock.patch.object(manager, "ensure_policy_routing", return_value=True),
+            mock.patch.object(manager, "check_slot_egress", return_value=(True, "203.0.113.50")),
+            mock.patch.object(manager, "egress_repair_store", repair_store),
+            mock.patch.object(manager, "exit_slots", {0: {"node_id": "jp-live"}}),
+            mock.patch.object(manager, "write_slots_state"),
+        ):
+            result = manager.check_managed_slot(0)
+
+        self.assertTrue(result["ok"])
+        repair_store.mark_healthy.assert_called_once_with("slot:0", "jp-live")
 
     def test_assign_managed_slot_propagates_proven_candidate_failure(self):
         candidate = {

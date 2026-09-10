@@ -107,6 +107,7 @@ type Slot struct {
 	CheckedAt           float64 `json:"checked_at"`
 	RepairStatus        string  `json:"repair_status"`
 	AutoRepairAttempted bool    `json:"auto_repair_attempted"`
+	AutoRepairPerformed bool    `json:"auto_repair_performed"`
 	LastErrorCode       string  `json:"last_error_code"`
 }
 

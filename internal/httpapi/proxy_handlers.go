@@ -41,6 +41,7 @@ type proxyGroupResponse struct {
 	VLESSLatencyMS         int                     `json:"vlessLatencyMs"`
 	SOCKSLatencyMS         int                     `json:"socksLatencyMs"`
 	LastErrorCode          string                  `json:"lastErrorCode,omitempty"`
+	AutoRepairPerformed    bool                    `json:"autoRepairPerformed,omitempty"`
 	Version                int64                   `json:"version"`
 	LastCheckedAt          *time.Time              `json:"lastCheckedAt,omitempty"`
 	SlotNumber             int                     `json:"slotNumber,omitempty"`
@@ -816,7 +817,7 @@ func safeProxyGroup(group domain.ProxyGroup) proxyGroupResponse {
 		slotNumber = group.AimiliSlot + 1
 	}
 	fixed := group.EgressSource == domain.EgressSourceMain || (group.Status != domain.ProxyGroupStandby && group.AimiliSlot >= 0 && group.PublicPort > 0)
-	result := proxyGroupResponse{ID: group.ID, CountryCode: group.CountryCode, CountryName: group.CountryName, ProxyType: group.ProxyType, Status: group.Status, EgressSource: group.EgressSource, PublicPort: group.PublicPort, VLESSPort: group.PublicPort, MixedPort: group.MixedPort, CandidateIP: group.CandidateIP, ExitIP: group.ExitIP, ExitIPCheckedAt: group.ExitIPCheckedAt, CandidateLatencyMS: group.CandidateLatencyMS, VLESSLatencyMS: group.VLESSLatencyMS, SOCKSLatencyMS: group.SOCKSLatencyMS, LastErrorCode: group.LastErrorCode, Version: group.Version, SlotNumber: slotNumber, Fixed: fixed}
+	result := proxyGroupResponse{ID: group.ID, CountryCode: group.CountryCode, CountryName: group.CountryName, ProxyType: group.ProxyType, Status: group.Status, EgressSource: group.EgressSource, PublicPort: group.PublicPort, VLESSPort: group.PublicPort, MixedPort: group.MixedPort, CandidateIP: group.CandidateIP, ExitIP: group.ExitIP, ExitIPCheckedAt: group.ExitIPCheckedAt, CandidateLatencyMS: group.CandidateLatencyMS, VLESSLatencyMS: group.VLESSLatencyMS, SOCKSLatencyMS: group.SOCKSLatencyMS, LastErrorCode: group.LastErrorCode, AutoRepairPerformed: group.AutoRepairPerformed, Version: group.Version, SlotNumber: slotNumber, Fixed: fixed}
 	if group.ProtocolState.Valid() {
 		protocol := safeProtocolMode(domain.EgressProtocolMode{ActiveMode: group.ProtocolMode, DesiredMode: group.DesiredProtocolMode, State: group.ProtocolState, LastErrorCode: group.ProtocolLastErrorCode})
 		result.ProtocolMode = protocol.ProtocolMode

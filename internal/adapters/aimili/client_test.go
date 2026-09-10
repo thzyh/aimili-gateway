@@ -232,7 +232,7 @@ func TestClientListsSafeManagedSlots(t *testing.T) {
 			t.Fatalf("unexpected request %s %s", request.Method, request.URL.Path)
 		}
 		response.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(response, `{"data":[{"slot":2,"country":"JP","country_name":"Japan","proxy_type":"residential","port":17930,"status":"disconnected","node_id":"node-safe","candidate_ip":"198.51.100.10","exit_ip":"203.0.113.5","egress_ok":false,"ok":false,"latency_ms":42,"checked_at":1700000000,"repair_status":"manual_required","auto_repair_attempted":true,"last_error_code":"replacement_failed"}]}`)
+		fmt.Fprint(response, `{"data":[{"slot":2,"country":"JP","country_name":"Japan","proxy_type":"residential","port":17930,"status":"disconnected","node_id":"node-safe","candidate_ip":"198.51.100.10","exit_ip":"203.0.113.5","egress_ok":false,"ok":false,"latency_ms":42,"checked_at":1700000000,"repair_status":"manual_required","auto_repair_attempted":true,"auto_repair_performed":true,"last_error_code":"replacement_failed"}]}`)
 	}))
 	t.Cleanup(server.Close)
 	client, err := NewClient(server.URL+"/", []byte("test-token"))
@@ -243,7 +243,7 @@ func TestClientListsSafeManagedSlots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(slots) != 1 || slots[0].NodeID != "node-safe" || slots[0].OK || slots[0].RepairStatus != "manual_required" || !slots[0].AutoRepairAttempted || slots[0].LastErrorCode != "replacement_failed" {
+	if len(slots) != 1 || slots[0].NodeID != "node-safe" || slots[0].OK || slots[0].RepairStatus != "manual_required" || !slots[0].AutoRepairAttempted || !slots[0].AutoRepairPerformed || slots[0].LastErrorCode != "replacement_failed" {
 		t.Fatalf("unexpected slots: %#v", slots)
 	}
 }

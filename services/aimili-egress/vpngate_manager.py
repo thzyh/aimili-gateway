@@ -4556,7 +4556,9 @@ def check_managed_slot(i: int) -> dict[str, Any]:
     snapshot = managed_slot_snapshot(i)
     if not snapshot.get("ok"):
         return snapshot
-    route_ok = ensure_policy_routing(slot_device(i), slot_table(i))
+
+    tunnel_running = slot_process_alive(i)
+    route_ok = ensure_policy_routing(slot_device(i), slot_table(i)) if tunnel_running else False
     ok, exit_ip = check_slot_egress(parse_int(snapshot.get("port"))) if route_ok else (False, "")
     checked_at = time.time()
     with exit_slots_lock:
@@ -4566,33 +4568,58 @@ def check_managed_slot(i: int) -> dict[str, Any]:
             slot["exit_ip"] = exit_ip
             slot["egress_checked_at"] = checked_at
     write_slots_state()
-    if not ok:
+    if ok:
         candidate_id = str(snapshot.get("node_id") or "").strip()
-        tunnel_running = slot_process_alive(i)
-        tunnel_egress_ok = False
-        if tunnel_running:
-            tunnel_egress_ok, _tunnel_exit_ip = check_interface_exit_ip(
-                slot_device(i)
-            )
-        if tunnel_egress_ok or not tunnel_running:
+        if candidate_id:
+            egress_repair_store.mark_healthy(f"slot:{i}", candidate_id)
+        snapshot = managed_slot_snapshot(i)
+        snapshot["egress_ok"] = True
+        snapshot["exit_ip"] = exit_ip
+        snapshot["checked_at"] = checked_at
+        snapshot["auto_repair_performed"] = False
+        return snapshot
+
+    candidate_id = str(snapshot.get("node_id") or "").strip()
+    if tunnel_running:
+        tunnel_egress_ok, _tunnel_exit_ip = check_interface_exit_ip(slot_device(i))
+        if tunnel_egress_ok:
             return {
                 "ok": False,
                 "error_code": "egress_check_failed",
                 "candidate_rejected": False,
+                "auto_repair_performed": False,
             }
-        rejected = bool(candidate_id and mark_candidate_unavailable(
-            candidate_id, "candidate_egress_failed"
-        ))
+        if candidate_id:
+            mark_candidate_unavailable(candidate_id, "candidate_egress_failed")
+
+    print(
+        f"[多出口] 手动检测确认槽位 {i} 的隧道或真实出口失效，执行本次故障唯一一次自动修复",
+        flush=True,
+    )
+    log_to_json(
+        "WARNING",
+        "MultiExit",
+        f"手动检测确认槽位 {i} 出口失效，尝试一次同国家替换",
+    )
+    repair = repair_slot_once(i, snapshot)
+    if repair.get("ok"):
+        repair["auto_repair_performed"] = True
+        return repair
+    repair_code = str(repair.get("error_code") or "replacement_failed")
+    if repair_code == "slot_busy":
         return {
             "ok": False,
-            "error_code": "candidate_egress_failed",
-            "candidate_rejected": rejected,
+            "error_code": "operation_busy",
+            "auto_repair_performed": False,
         }
-    snapshot = managed_slot_snapshot(i)
-    snapshot["egress_ok"] = ok
-    snapshot["exit_ip"] = exit_ip
-    snapshot["checked_at"] = checked_at
-    return snapshot
+    current = managed_slot_snapshot(i)
+    if not current.get("ok"):
+        repair["auto_repair_performed"] = bool(repair.get("auto_repair_performed"))
+        return repair
+    current["egress_ok"] = False
+    current["auto_repair_performed"] = bool(repair.get("auto_repair_performed"))
+    current["last_error_code"] = repair_code
+    return current
 
 @_slot_mutation_guard({"ok": False, "error_code": "operation_busy"})
 def delete_managed_slot(i: int) -> dict[str, Any]:
@@ -4637,7 +4664,7 @@ def repair_slot_once(i: int, failed_snapshot: dict[str, Any]) -> dict[str, Any]:
     """同一次槽位故障只选一个同国候选；失败后固定为待人工处理。"""
     operation_lock = slot_operation_lock(i)
     if not operation_lock.acquire(blocking=False):
-        return {"ok": False, "error_code": "slot_busy"}
+        return {"ok": False, "error_code": "slot_busy", "auto_repair_performed": False}
     try:
         failed_id = str(failed_snapshot.get("node_id") or "").strip()
         country = str(
@@ -4648,7 +4675,11 @@ def repair_slot_once(i: int, failed_snapshot: dict[str, Any]) -> dict[str, Any]:
         ).strip().upper()
         key = f"slot:{i}"
         if not egress_repair_store.claim(key, failed_id, country):
-            return {"ok": False, "error_code": "manual_repair_required"}
+            return {
+                "ok": False,
+                "error_code": "manual_repair_required",
+                "auto_repair_performed": False,
+            }
         if failed_id:
             slot_bad_nodes[failed_id] = time.time() + SLOT_BAD_NODE_COOLDOWN
         candidates = automatic_slot_candidates(i, country)
@@ -4658,7 +4689,11 @@ def repair_slot_once(i: int, failed_snapshot: dict[str, Any]) -> dict[str, Any]:
             mark_slot_disconnected(i, reason, candidate_id=failed_id, country=country)
             egress_repair_store.require_manual(key, "no_same_country_candidate")
             write_slots_state()
-            return {"ok": False, "error_code": "no_same_country_candidate"}
+            return {
+                "ok": False,
+                "error_code": "no_same_country_candidate",
+                "auto_repair_performed": True,
+            }
 
         candidate = candidates[0]
         candidate_id = str(candidate.get("id") or "").strip()
@@ -4677,14 +4712,20 @@ def repair_slot_once(i: int, failed_snapshot: dict[str, Any]) -> dict[str, Any]:
                         exit_slots[i]["egress_checked_at"] = time.time()
                 egress_repair_store.mark_healthy(key, candidate_id)
                 write_slots_state()
-                return managed_slot_snapshot(i)
+                result = managed_slot_snapshot(i)
+                result["auto_repair_performed"] = True
+                return result
 
         tear_down_slot(i, stop_proxy=False)
         reason = f"自动替换节点 {candidate_id or '未知'} 失败，等待人工处理"
         mark_slot_disconnected(i, reason, candidate_id=failed_id, country=country)
         egress_repair_store.require_manual(key, "replacement_failed", candidate_id)
         write_slots_state()
-        return {"ok": False, "error_code": "replacement_failed"}
+        return {
+            "ok": False,
+            "error_code": "replacement_failed",
+            "auto_repair_performed": True,
+        }
     finally:
         operation_lock.release()
 

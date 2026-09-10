@@ -10,6 +10,7 @@ const checkedAt = (value?: string) => value ? new Intl.DateTimeFormat('zh-CN',{m
 const allModes: ProtocolMode[] = ['vless_tcp_reality_vision', 'vless_xhttp_reality', 'hysteria2_quic_tls']
 const protocolLabel = (mode: ProtocolMode) => ({ vless_tcp_reality_vision: 'TCP/Vision', vless_xhttp_reality: 'XHTTP/REALITY', hysteria2_quic_tls: 'Hysteria2/QUIC' })[mode]
 const protocolRecoverable = (row: ProxyGroupPayload) => row.protocolState === 'repair_required' && row.subscriptionState === 'repair_required'
+const automaticRepairFinished = (row: ProxyGroupPayload) => ['no_same_country_candidate', 'replacement_failed', 'manual_repair_required', 'manual_replacement_required'].includes(row.lastErrorCode || '')
 const protocolDisabled = (row: ProxyGroupPayload) => row.status !== 'ready' || (row.protocolState !== 'ready' && !protocolRecoverable(row)) || (row.subscriptionState !== 'ready' && !protocolRecoverable(row)) || props.busy !== ''
 const copyDisabled = (row: ProxyGroupPayload) => row.status !== 'ready' || props.busy !== '' || (props.protocol === 'vless' && (row.protocolState !== 'ready' || row.subscriptionState !== 'ready'))
 const ipSource = (row: ProxyGroupPayload) => row.exitIp ? 'exit' : row.candidateIp ? 'candidate' : 'missing'
@@ -38,7 +39,7 @@ function changeProtocol(row: ProxyGroupPayload, event: Event): void {
             <button :data-copy="row.id" class="primary-small" :disabled="copyDisabled(row)" @click="emit('copy', row)">复制{{ protocol === 'vless' ? '节点' : '代理' }}</button>
             <button v-if="row.status === 'standby'" :data-replace="row.id" class="icon-button activate-button" :disabled="busy !== ''" title="选择一个已启用出口位进行替换" @click="emit('replace', row)">替换到出口位</button>
             <button v-else-if="row.status === 'ready'" :data-check="row.id" class="icon-button" :disabled="busy !== ''" title="重新检测" @click="emit('check', row)">检测</button>
-            <button v-else-if="row.status === 'repair_required' || row.status === 'degraded'" :data-repair="row.id" class="icon-button activate-button" :disabled="busy !== ''" title="只检测运行时身份、代理和当前公网协议，不会更换 IP" @click="emit('check', row)">重新检测</button>
+            <button v-else-if="row.status === 'repair_required' || row.status === 'degraded'" :data-repair="row.id" class="icon-button activate-button" :disabled="busy !== ''" :title="automaticRepairFinished(row) ? '复核当前状态；本次故障不会再次自动更换节点' : '检测节点；确认节点失效后只自动选择一个同国家候选修复一次'" @click="emit('check', row)">{{ automaticRepairFinished(row) ? '复核状态' : '检测并自动修复' }}</button>
           </td>
         </tr>
       </tbody>
