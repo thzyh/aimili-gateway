@@ -128,6 +128,7 @@ func (o *Orchestrator) refreshAssignedGroups(ctx context.Context, groups []domai
 		for _, slot := range slots {
 			bySlot[slot.Number] = slot
 		}
+		groups = o.synchronizeManualSlotRepairs(ctx, groups, bySlot)
 	}
 	drifted := make(map[string]struct{})
 	if slotsErr == nil && len(groups) > 0 {
@@ -195,6 +196,39 @@ func (o *Orchestrator) refreshAssignedGroups(ctx context.Context, groups []domai
 		if err != nil {
 			log.Printf("reconcile assigned group refresh failed: id=%s slot=%d code=%s", group.ID, group.AimiliSlot, errorCode(err))
 		}
+	}
+	return groups
+}
+
+// synchronizeManualSlotRepairs copies a terminal repair result already recorded
+// by AimiliVPN into Gateway's durable view. This deliberately uses the passive
+// ListSlots snapshot instead of CheckSlot so reconciliation cannot claim another
+// automatic-repair attempt.
+func (o *Orchestrator) synchronizeManualSlotRepairs(ctx context.Context, groups []domain.ProxyGroup, bySlot map[int]aimili.Slot) []domain.ProxyGroup {
+	for index := range groups {
+		current := groups[index]
+		slot, ok := bySlot[current.AimiliSlot]
+		if !ok || slot.EgressOK || slot.RepairStatus != "manual_required" || current.AimiliSlot < 0 || !strings.HasPrefix(current.ID, "agw-") {
+			continue
+		}
+		updated := current
+		applySlotSnapshot(&updated, slot)
+		updated.AutoRepairPerformed = current.AutoRepairPerformed
+		updated.Status = domain.ProxyGroupDegraded
+		updated.LastErrorCode = strings.TrimSpace(slot.LastErrorCode)
+		if updated.LastErrorCode == "" {
+			updated.LastErrorCode = "manual_replacement_required"
+		}
+		if updated == current {
+			continue
+		}
+		updated.LastCheckedAt = o.config.Now().UTC()
+		updated.UpdatedAt = updated.LastCheckedAt
+		if err := o.save(ctx, &updated); err != nil {
+			log.Printf("reconcile manual repair synchronization failed: id=%s slot=%d code=%s", current.ID, current.AimiliSlot, errorCode(err))
+			continue
+		}
+		groups[index] = updated
 	}
 	return groups
 }

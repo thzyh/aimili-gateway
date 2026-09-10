@@ -218,6 +218,55 @@ func TestReconcileRefreshesDegradedGroupAfterItsSlotChangesCandidate(t *testing.
 	}
 }
 
+func TestReconcilePassivelySynchronizesManualRepairStateWithoutCheckingAgain(t *testing.T) {
+	fixture := newFixture()
+	group, err := domain.NewProxyGroupIdentity("RU", domain.ProxyTypeDatacenter, "ru-old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	group.Status = domain.ProxyGroupDegraded
+	group.LastErrorCode = "egress_check_failed"
+	group.AimiliSlot = 0
+	group.PublicPort = 20000
+	group.MixedPort = 30000
+	group.PublicInboundID = 7
+	group.MixedInboundID = 8
+	fixture.store.groups[group.ID] = group
+	fixture.aimili.candidates = []aimili.Candidate{
+		{ID: "ru-old", CountryCode: "RU", CountryName: "俄罗斯", ProxyType: "datacenter", ProbeStatus: "available"},
+	}
+	fixture.aimili.createdSlots = map[int]aimili.Slot{
+		0: {
+			Number: 0, Country: "RU", CountryName: "俄罗斯", ProxyType: "datacenter",
+			Status: "disconnected", NodeID: "ru-old", EgressOK: false,
+			RepairStatus: "manual_required", AutoRepairAttempted: true,
+			LastErrorCode: "no_same_country_candidate",
+		},
+	}
+
+	result := fixture.orchestratorWithMax(t, 3).Reconcile(context.Background())
+	refreshed := fixture.store.groups[group.ID]
+
+	if result.Ready != 0 || result.Failed != 1 {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+	if refreshed.Status != domain.ProxyGroupDegraded || refreshed.LastErrorCode != "no_same_country_candidate" {
+		t.Fatalf("manual repair state was not synchronized: %#v", refreshed)
+	}
+	if contains(fixture.calls, "slot.check") {
+		t.Fatalf("passive synchronization triggered another repair-capable check: %#v", fixture.calls)
+	}
+	version := refreshed.Version
+	fixture.calls = nil
+	fixture.orchestratorWithMax(t, 3).Reconcile(context.Background())
+	if again := fixture.store.groups[group.ID]; again.Version != version {
+		t.Fatalf("unchanged manual repair state was written again: before=%d after=%d", version, again.Version)
+	}
+	if contains(fixture.calls, "slot.check") {
+		t.Fatalf("repeat reconciliation triggered another repair-capable check: %#v", fixture.calls)
+	}
+}
+
 func TestReconcileRefreshesReadyGroupsAfterRuntimeCandidateSwap(t *testing.T) {
 	fixture := newFixture()
 	first, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter, "candidate-one")
