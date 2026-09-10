@@ -8,7 +8,7 @@ export interface UiNoticeData {
 }
 
 const codeMessages: Record<string, string> = {
-  egress_unavailable: '当前出口不可用或身份已经变化，请同步状态后重试',
+  egress_unavailable: '当前出口不可用或身份已经变化，请重新检测后重试',
   operation_busy: '当前有维护或切换任务正在进行，请稍后重试',
   maintenance_busy: '节点维护正在进行，请稍后重试',
   no_official_candidates: '该国家当前没有官方候选节点',
@@ -16,14 +16,15 @@ const codeMessages: Record<string, string> = {
   upstream_unavailable: '官方节点服务暂时不可用，请稍后重试',
   candidate_dial_failed: '候选节点无法建立 VPN 连接，已从可用缓存移除',
   candidate_egress_failed: '候选节点的真实出口检测失败，已从可用缓存移除',
-  egress_check_failed: '当前出口隧道或代理不可用，请重新检测并同步',
+  egress_check_failed: '当前出口隧道或代理不可用；系统若已自动修复会自行更新，否则请人工更换出口',
+  manual_replacement_required: '自动修复已经尝试一次但未成功，请人工选择新的出口 IP',
   slot_rotate_failed: '没有找到可恢复该出口的可用候选，当前故障状态已保留，可稍后重试',
   protocol_failed: '协议链路检测失败，请稍后重试',
   protocol_rollback_failed: '旧协议恢复事务未完成，已锁定切换以保护当前配置',
   protocol_rollback_subscription_failed: '旧协议恢复后订阅验证未通过，已锁定切换以保护当前配置',
   protocol_rollback_validation_failed: '旧协议恢复后链路验证未通过，已锁定切换以保护当前配置',
-  protocol_repair_validation_failed: '当前协议复核未通过，请先同步状态或更换健康出口',
-  config_invalid: '当前协议配置无效，请先同步或修复配置',
+  protocol_repair_validation_failed: '当前协议复核未通过，请先重新检测或更换健康出口',
+  config_invalid: '当前协议配置无效，请先重新检测或修复配置',
   subscription_incomplete: '节点订阅尚未完整更新，请稍后重试',
   not_ready: '当前节点尚未准备就绪',
   request_failed: '请求失败，请稍后重试',

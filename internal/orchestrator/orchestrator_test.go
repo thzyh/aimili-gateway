@@ -239,6 +239,33 @@ func TestPoolKeepsPersistedMainVisibleWhileRuntimeReconnects(t *testing.T) {
 	}
 }
 
+func TestPoolShowsPersistedMainAsWaitingForManualReplacement(t *testing.T) {
+	fixture := newFixture()
+	fixture.store.mainEgress = store.MainEgress{
+		ResourceName: "agw-main", CountryCode: "JP", CountryName: "日本",
+		ProxyType: domain.ProxyTypeDatacenter, CandidateID: "jp-old", ExitIP: "203.0.113.20",
+		PublicInboundID: 1, MixedInboundID: 2, PublicPort: 8443, MixedPort: 31000,
+		Enabled: true, LastCheckedAt: fixture.now(), UpdatedAt: fixture.now(),
+	}
+	fixture.aimili.mainStatus = aimili.MainStatus{
+		Port: 7928, Active: false, EgressOK: false, RepairStatus: "manual_required",
+		AutoRepairAttempted: true, LastErrorCode: "replacement_failed",
+	}
+	fixture.store.protocolModes["agw-main"] = domain.EgressProtocolMode{
+		EgressID: "agw-main", ActiveMode: domain.ProtocolVLESSTCPRealityVision,
+		DesiredMode: domain.ProtocolVLESSTCPRealityVision, State: domain.ProtocolReady,
+		Version: 1, UpdatedAt: fixture.now(),
+	}
+
+	pool, err := fixture.orchestratorWithMax(t, 3).Pool(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pool) == 0 || pool[0].ID != "agw-main" || pool[0].Status != domain.ProxyGroupDegraded || pool[0].LastErrorCode != "manual_replacement_required" || pool[0].PublicPort != 8443 {
+		t.Fatalf("manual main placeholder was not preserved: %#v", pool)
+	}
+}
+
 func TestPoolAttachesPersistedProtocolStateToLiveEgress(t *testing.T) {
 	fixture := newFixture()
 	group, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter, "node-one")
@@ -335,6 +362,53 @@ func TestCheckNeverRotatesAndRotateKeepsEntryStable(t *testing.T) {
 	}
 	if rotated.ExitIP != "203.0.113.8" || rotated.PublicPort != created.PublicPort || rotated.MixedPort != created.MixedPort || rotated.ResourceName != created.ResourceName {
 		t.Fatalf("rotate changed stable entry: before=%#v after=%#v", created, rotated)
+	}
+}
+
+func TestCheckKeepsPreviousStateForTransientControlPlaneErrors(t *testing.T) {
+	for _, code := range []string{"operation_busy", "maintenance_busy", "timeout"} {
+		t.Run(code, func(t *testing.T) {
+			fixture := newFixture()
+			orchestrator := fixture.orchestrator(t)
+			created, err := orchestrator.Enable(context.Background(), EnableRequest{CountryCode: "JP", ProxyType: domain.ProxyTypeDatacenter})
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := fixture.store.groups[created.ID]
+			fixture.aimili.checkErrors = []error{&aimili.AdapterError{Code: code}}
+
+			if _, err := orchestrator.Check(context.Background(), created.ID); codeOf(err) != code {
+				t.Fatalf("error = %v", err)
+			}
+			after := fixture.store.groups[created.ID]
+			if after.Status != before.Status || after.LastErrorCode != before.LastErrorCode || !after.LastCheckedAt.Equal(before.LastCheckedAt) {
+				t.Fatalf("transient check error changed persisted health: before=%#v after=%#v", before, after)
+			}
+		})
+	}
+}
+
+func TestCheckKeepsDisconnectedSlotVisibleForManualReplacement(t *testing.T) {
+	fixture := newFixture()
+	orchestrator := fixture.orchestrator(t)
+	created, err := orchestrator.Enable(context.Background(), EnableRequest{CountryCode: "JP", ProxyType: domain.ProxyTypeDatacenter})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.aimili.createdSlots = map[int]aimili.Slot{}
+	fixture.aimili.checkResults = []aimili.SlotCheck{{
+		Number: created.AimiliSlot, NodeID: created.CandidateID, Country: "JP", CountryName: "日本",
+		ProxyType: "datacenter", Port: 17928, Status: "disconnected", EgressOK: false,
+		RepairStatus: "manual_required", AutoRepairAttempted: true, LastErrorCode: "replacement_failed",
+	}}
+
+	checked, err := orchestrator.Check(context.Background(), created.ID)
+	if codeOf(err) != "manual_replacement_required" {
+		t.Fatalf("error = %v checked=%#v", err, checked)
+	}
+	persisted := fixture.store.groups[created.ID]
+	if persisted.Status != domain.ProxyGroupDegraded || persisted.LastErrorCode != "manual_replacement_required" || persisted.PublicPort != created.PublicPort || persisted.MixedPort != created.MixedPort || persisted.CandidateID != created.CandidateID {
+		t.Fatalf("manual replacement placeholder was not preserved: before=%#v after=%#v", created, persisted)
 	}
 }
 

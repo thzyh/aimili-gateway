@@ -356,7 +356,9 @@ func (o *Orchestrator) Pool(ctx context.Context) ([]domain.ProxyGroup, error) {
 			mixedPort = o.config.MainMixedPort
 		}
 		status, lastError := domain.ProxyGroupDegraded, "egress_unavailable"
-		if mainErr == nil && main.Active && main.EgressOK {
+		if mainErr == nil && main.RepairStatus == "manual_required" {
+			lastError = "manual_replacement_required"
+		} else if mainErr == nil && main.Active && main.EgressOK {
 			status, lastError = domain.ProxyGroupReady, ""
 		}
 		mainGroup := domain.ProxyGroup{ID: "agw-main", ResourceName: "agw-main", CountryCode: country, CountryName: countryName, ProxyType: proxyType, CandidateID: candidateID, Status: status, EgressSource: domain.EgressSourceMain, AimiliSlot: -1, PublicPort: publicPort, MixedPort: mixedPort, ExitIP: exitIP, LastErrorCode: lastError, Version: 1, LastCheckedAt: o.config.Now().UTC()}
@@ -365,7 +367,7 @@ func (o *Orchestrator) Pool(ctx context.Context) ([]domain.ProxyGroup, error) {
 			mainGroup.VLESSLatencyMS = storedMain.VLESSLatencyMS
 			mainGroup.SOCKSLatencyMS = storedMain.SOCKSLatencyMS
 			mainGroup.LastCheckedAt = storedMain.LastCheckedAt
-			if storedMain.LastErrorCode != "" {
+			if storedMain.LastErrorCode != "" && lastError != "manual_replacement_required" {
 				mainGroup.LastErrorCode = storedMain.LastErrorCode
 			}
 		}

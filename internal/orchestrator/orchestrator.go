@@ -514,8 +514,13 @@ func (o *Orchestrator) Check(ctx context.Context, id string) (domain.ProxyGroup,
 		return domain.ProxyGroup{}, credentialsErr
 	}
 	checked, err := o.aimili.CheckSlot(ctx, group.AimiliSlot)
-	if err == nil && checked.EgressOK {
+	if err != nil && transientSlotCheckError(err) {
+		return group, operationError(err)
+	}
+	if err == nil {
 		applySlotSnapshot(&group, checked)
+	}
+	if err == nil && checked.EgressOK {
 		_, err = o.validateSOCKS(ctx, group, credentials)
 		if err == nil {
 			_, err = o.validateCurrentPublic(ctx, group)
@@ -525,7 +530,11 @@ func (o *Orchestrator) Check(ctx context.Context, id string) (domain.ProxyGroup,
 	group.UpdatedAt = group.LastCheckedAt
 	if err != nil || !checked.EgressOK {
 		group.Status = domain.ProxyGroupDegraded
-		group.LastErrorCode = codeOr(err, "egress_unavailable")
+		if checked.RepairStatus == "manual_required" {
+			group.LastErrorCode = "manual_replacement_required"
+		} else {
+			group.LastErrorCode = codeOr(err, "egress_unavailable")
+		}
 	} else {
 		group.Status = domain.ProxyGroupReady
 		group.LastErrorCode = ""
@@ -536,7 +545,19 @@ func (o *Orchestrator) Check(ctx context.Context, id string) (domain.ProxyGroup,
 	if err != nil {
 		return group, operationError(err)
 	}
+	if !checked.EgressOK {
+		return group, &Error{Code: group.LastErrorCode}
+	}
 	return group, nil
+}
+
+func transientSlotCheckError(err error) bool {
+	switch errorCode(err) {
+	case "operation_busy", "maintenance_busy", "timeout":
+		return true
+	default:
+		return false
+	}
 }
 
 func (o *Orchestrator) Rotate(ctx context.Context, id string) (domain.ProxyGroup, error) {

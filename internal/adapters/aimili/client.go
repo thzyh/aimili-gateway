@@ -92,32 +92,38 @@ type AssignSlotRequest struct {
 }
 
 type Slot struct {
-	Number      int     `json:"slot"`
-	Country     string  `json:"country"`
-	CountryName string  `json:"country_name"`
-	ProxyType   string  `json:"proxy_type"`
-	Port        int     `json:"port"`
-	Status      string  `json:"status"`
-	NodeID      string  `json:"node_id"`
-	CandidateIP string  `json:"candidate_ip"`
-	ExitIP      string  `json:"exit_ip"`
-	EgressOK    bool    `json:"egress_ok"`
-	OK          bool    `json:"ok"`
-	LatencyMS   int     `json:"latency_ms"`
-	CheckedAt   float64 `json:"checked_at"`
+	Number              int     `json:"slot"`
+	Country             string  `json:"country"`
+	CountryName         string  `json:"country_name"`
+	ProxyType           string  `json:"proxy_type"`
+	Port                int     `json:"port"`
+	Status              string  `json:"status"`
+	NodeID              string  `json:"node_id"`
+	CandidateIP         string  `json:"candidate_ip"`
+	ExitIP              string  `json:"exit_ip"`
+	EgressOK            bool    `json:"egress_ok"`
+	OK                  bool    `json:"ok"`
+	LatencyMS           int     `json:"latency_ms"`
+	CheckedAt           float64 `json:"checked_at"`
+	RepairStatus        string  `json:"repair_status"`
+	AutoRepairAttempted bool    `json:"auto_repair_attempted"`
+	LastErrorCode       string  `json:"last_error_code"`
 }
 
 type SlotCheck = Slot
 
 type MainStatus struct {
-	CandidateID string `json:"candidate_id"`
-	Country     string `json:"country"`
-	CountryName string `json:"country_name"`
-	ProxyType   string `json:"proxy_type"`
-	ExitIP      string `json:"exit_ip"`
-	Port        int    `json:"port"`
-	EgressOK    bool   `json:"egress_ok"`
-	Active      bool   `json:"active"`
+	CandidateID         string `json:"candidate_id"`
+	Country             string `json:"country"`
+	CountryName         string `json:"country_name"`
+	ProxyType           string `json:"proxy_type"`
+	ExitIP              string `json:"exit_ip"`
+	Port                int    `json:"port"`
+	EgressOK            bool   `json:"egress_ok"`
+	Active              bool   `json:"active"`
+	RepairStatus        string `json:"repair_status"`
+	AutoRepairAttempted bool   `json:"auto_repair_attempted"`
+	LastErrorCode       string `json:"last_error_code"`
 }
 
 type MutationLease struct {
