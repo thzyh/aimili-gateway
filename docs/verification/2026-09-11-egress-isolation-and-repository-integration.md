@@ -67,13 +67,15 @@
 
 ### ny 部署与真实验证
 
-- Gateway：`v1.0.3`，提交 `20cc1222053a0f810d98112b78d837e18c720266`。
+- Gateway：`v1.0.4`，提交 `e3690f2dcee7cae264650b0341bd3b8c557c0b08`。
 - 签名前端：`70f70194bdc0cb1cfd9932df46da0678956af42660ac88ae7dbcf611c6b4805c`。
 - `aimilivpn.service` 的工作目录和启动文件均已切换到 `/opt/aimili-gateway/services/aimili-egress`；运行数据仍是 `/opt/aimilivpn/vpngate_data`。
 - 第一次写入因旧部署脚本向当前受限 UI 安装器传递过时参数而失败，自动回滚后 Gateway 恢复 `v1.0.2`、AimiliVPN 恢复 `/opt/aimilivpn`。确认四服务 active、旧 UI 指针不变后，改用当前 `run-id + version` spool 合约安装签名 UI，随后完成 Gateway 与出口引擎部署。
 - 精确清除出口 1 的陈旧测试记录后，同一检测请求真实返回：`status=disconnected`、`egress_ok=false`、`repair_status=manual_required`、`auto_repair_attempted=true`、`auto_repair_performed=true`、`last_error_code=no_same_country_candidate`。新 `attempted_at` 为当前故障时间，次数为 1。
 - 重启 AimiliVPN 并等待超过一个后台检查周期后，出口 1 的 `attempted_at` 不变、次数仍为 1、没有新的自动修复日志，证明服务重启不会重新计数或循环换节点。
-- 最终主连接、出口 2、出口 3 的三条 SOCKS5H 链路均能访问公网，取得三个互不重复的真实出口；出口 1 保留为未连接等待人工替换。四服务 active，Gateway/AimiliVPN `NRestarts=0`，部署后错误级日志为空，数据库 `integrity_check=ok`。
+- 出口 1 首次真实验证完成时，主连接、出口 2、出口 3 的三条 SOCKS5H 链路均能访问公网，取得三个互不重复的真实出口；出口 1 保留为未连接等待人工替换。
+- 随后增加被动同步修正：Gateway 只读取 AimiliVPN 已落盘的 `manual_required` 结果，不调用可能触发修复的 `CheckSlot`。`v1.0.4` 部署后，出口 1 在 Gateway 数据库中的错误从陈旧的 `egress_check_failed` 更新为 `no_same_country_candidate`；同步前后尝试次数和时间戳均未变化。定向测试同时验证相同状态再次同步不重复写库、不触发检查。
+- 最新只读核对时，主连接在北京时间 07:13–07:15 独立出现两次真实出口失败，并在唯一一次同国候选替换中明确报 `candidate_dial_failed`，现为 `manual_required/replacement_failed`；出口 2、出口 3 继续健康，出口 1 仍为 `manual_required/no_same_country_candidate`。四服务 active，Gateway/AimiliVPN `NRestarts=0`，Gateway 数据库 `integrity_check=ok`，证明各出口故障互不连带，也没有循环替换。
 - 生产 JS 包已核对包含“检测并自动修复”、等待过程和四类结果文案。Codex 内置浏览器因本机 Codex 授权令牌不可用，未执行真实鼠标点击；用户刷新页面后的视觉确认仍是最后一步。
 - 没有新增永久备份；既有联合备份继续是 `/var/backups/aimili-gateway/egress-isolation-20260910-bed0cbf-ed102e3`。未操作其他 VPS，未删除 `aimili-vpngate`，未推送远程。
 

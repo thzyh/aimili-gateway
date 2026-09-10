@@ -4,10 +4,11 @@
 
 ## 2026-09-11 ny 出口隔离与统一仓库
 
-- ny 当前 Gateway 已部署 `v1.0.3`，源码提交为 `20cc1222053a0f810d98112b78d837e18c720266`；签名前端版本为 `70f70194bdc0cb1cfd9932df46da0678956af42660ac88ae7dbcf611c6b4805c`。出口引擎已正式从 `/opt/aimili-gateway/services/aimili-egress` 启动，持久数据继续使用 `/opt/aimilivpn/vpngate_data`，实现“一个仓库、两个独立服务”的生产布局。
+- ny 当前 Gateway 已部署 `v1.0.4`，源码提交为 `e3690f2dcee7cae264650b0341bd3b8c557c0b08`；签名前端版本仍为 `70f70194bdc0cb1cfd9932df46da0678956af42660ac88ae7dbcf611c6b4805c`。出口引擎已正式从 `/opt/aimili-gateway/services/aimili-egress` 启动，持久数据继续使用 `/opt/aimilivpn/vpngate_data`，实现“一个仓库、两个独立服务”的生产布局。
 - 出口检测现会先区分“VPN 隧道/真实出口失效”和“本地代理或路由异常”。前者在同一个检测请求内领取本次故障唯一一次同国替换机会；后者只报告本地链路故障，不更换 IP。前端故障按钮显示“检测并自动修复”，等待期间说明一次性规则，并分别显示修复成功、无同国候选、替换失败和此前已尝试。
 - 2026-09-11 06:50（Asia/Shanghai）纠正了出口 1 属于旧受控测试的修复记录，并通过 Control API 执行当前故障的一次真实检测与修复。响应明确为 `auto_repair_performed=true`，结果为 `no_same_country_candidate`；出口 1 保留为 `disconnected/manual_required`，没有消失。随后重启 `aimilivpn.service` 并跨过后台检查周期，`attempt_count` 仍为 1、`attempted_at` 完全不变，新增自动修复日志为 0。
-- 当前主连接、出口 2、出口 3 均健康，三条 SOCKS5H 真实链路得到三个不同出口 IP；出口 1 等待人工选择新 IP。四个服务均 active，Gateway/AimiliVPN 的 `NRestarts=0`，部署后错误级日志为空，Gateway 数据库 `integrity_check=ok`。
+- `v1.0.4` 增加被动状态同步：Gateway 读取 AimiliVPN 已落盘的 `manual_required` 终态，不再为同步状态调用一次可能触发修复的检查。部署后出口 1 的 Gateway 错误已从旧的 `egress_check_failed` 收敛为真实的 `no_same_country_candidate`；同步前后 AimiliVPN 的 `attempt_count=1`、`attempted_at=1789080656.334448` 完全不变。
+- 最新现状（2026-09-11 07:25，Asia/Shanghai）：出口 2、出口 3 健康；出口 1 等待人工选择新 IP。主连接在 07:13–07:15 独立发生两次真实出网失败，唯一一次同国替换候选又明确 `candidate_dial_failed`，因此主连接也保留为 `manual_required/replacement_failed` 等待人工处理。日志和运行时均确认 `tun0` 不存在、7928 无法出网，而 `tun121/tun122` 与出口 2、3 正常，证明故障相互隔离。四服务均 active，Gateway/AimiliVPN 的 `NRestarts=0`，Gateway 数据库 `integrity_check=ok`。
 - 本次部署未新增永久备份，继续只使用既有联合备份 `/var/backups/aimili-gateway/egress-isolation-20260910-bed0cbf-ed102e3`。第一次正式写入因服务器 UI 安装器参数版本不匹配而触发自动回滚，核对 Gateway、unit 和服务均恢复后，改用当前受限 spool 安装入口完成签名前端发布；临时回滚目录已在成功后删除。
 - Codex 内置浏览器因本机 Codex 授权令牌不可用，未完成真实鼠标点击验收；已验证生产发布的 JS 包含全部新按钮和进度/结果文案，Control API 返回真实一次修复结果，前端 64 项测试覆盖等待与结果展示。用户刷新页面后可完成最终视觉验收。
 - ny 已部署 Gateway `bed0cbfb7fcfaf6d74db66b9bcfefcde659097b5` 与出口引擎 `ed102e3` 对应修复。主连接和三个普通出口分别检测、分别记录故障；`operation_busy`、`maintenance_busy` 和检测超时不再被写成节点损坏。
