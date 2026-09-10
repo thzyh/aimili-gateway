@@ -56,7 +56,6 @@ export type AccountSyncStatus = 'reset_required' | 'synced' | 'checking' | 'repa
 export type MixedPolicyApplyStatus = 'pending' | 'applying' | 'applied' | 'failed' | 'repair_required'
 export interface SettingsSummaryPayload { accountSyncStatus: AccountSyncStatus; candidateCount: number; onlineCount: number; maxOnline: number }
 export interface MixedSourcePolicyPayload { enabled: boolean; cidrs: string[]; applyStatus: MixedPolicyApplyStatus }
-export interface AimiliSettingsPayload { candidateCount: number; residentialCount: number; datacenterCount: number; managedSlotCount: number; lastRefreshedAt?: string }
 export interface CandidateCountryPayload { code: string; name: string; candidateCount: number; observedAt: number; officialCandidateTotal?: number; validNodeCount?: number; validCountryCount?: number }
 export type CountryRefreshState = 'idle' | 'running' | 'completed' | 'failed'
 export interface CountryRefreshPayload {
@@ -179,7 +178,7 @@ export async function apiDownloadText(path: string): Promise<string> {
   return response.text()
 }
 
-const backendLoginPaths = new Set(['/api/v1/backends/aimilivpn/login', '/api/v1/backends/3x-ui/login'])
+const backendLoginPaths = new Set(['/api/v1/backends/3x-ui/login'])
 
 export async function openBackend(path: string): Promise<string> {
   if (!backendLoginPaths.has(path)) {

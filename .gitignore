@@ -3,6 +3,9 @@
 /data/
 /web/node_modules/
 /internal/webassets/dist/
+/services/aimili-egress/vpngate_data/
+__pycache__/
+*.pyc
 *.db
 *.db-shm
 *.db-wal

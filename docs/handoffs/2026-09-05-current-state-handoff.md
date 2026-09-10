@@ -1,6 +1,19 @@
 # Aimili Gateway 当前状态交接
 
-日期：2026-09-10（Asia/Shanghai）。状态：当前权威入口。
+日期：2026-09-11（Asia/Shanghai）。状态：当前权威入口。
+
+## 2026-09-11 ny 出口隔离与统一仓库
+
+- ny 已部署 Gateway `bed0cbfb7fcfaf6d74db66b9bcfefcde659097b5` 与出口引擎 `ed102e3` 对应修复。主连接和三个普通出口分别检测、分别记录故障；`operation_busy`、`maintenance_busy` 和检测超时不再被写成节点损坏。
+- 受控断开单一出口后，只有该出口进入 `manual_required/disconnected`，其他三个出口继续健康；系统只自动尝试一次同国候选。重启 `aimilivpn.service` 后尝试次数仍为 1、修复记录未变化、没有再次换节点，故障行也未消失。
+- 人工替换失败的候选明确返回 `AUTH_FAILED`，没有被标成成功；完成有效替换后，主连接加三个出口均恢复。最终四服务 active、四条 TUN 存在、Gateway 有四条 ready 记录、订阅含四个入站，四个真实代理出口 IP 互不重复。
+- Gateway 的“重新检测”现只检测，不再隐式执行换 IP；受控验证前后四个候选 ID 完全一致。
+- ny 本轮只新增一个联合备份：`/var/backups/aimili-gateway/egress-isolation-20260910-bed0cbf-ed102e3`。Gateway 数据库备份在生成前修复了两个损坏索引，`PRAGMA integrity_check` 为 `ok`，各业务表行数与内容摘要未变化。
+- 本地 `aimili-gateway` 的现有 `feat/main-switch-protocol-modes` 分支已引入 `services/aimili-egress`，以后它是出口引擎唯一源码来源。运行时仍是 `aimili-gateway.service` 与 `aimilivpn.service` 两个进程，不把高权限网络操作放入 Gateway。
+- Gateway 前端不再显示 AimiliVPN 设置页和原后台入口；高级设置只保留 3x-ui 设置/专家模式。Gateway 内部的出口管理 API 保留。
+- 原 `aimili-vpngate` 仓库保留。本地 `custom` 已通过 `--ff-only` 快进到 `ed102e3`，与现有功能分支收敛到同一提交；没有创建新分支或改写历史。快进后重新执行 204 项测试，全部通过。
+
+详细验证见 `docs/verification/2026-09-11-egress-isolation-and-repository-integration.md`。
 
 ## 2026-09-10 开机启动入口与排障经验固化
 

@@ -1,8 +1,10 @@
 # Aimili Gateway
 
-Aimili Gateway 是 AimiliVPN 与 3x-ui 的轻量统一控制台项目。统一控制台负责日常管理、统一登录和跨服务编排；AimiliVPN、3x-ui 与 Xray 继续作为独立服务运行、更新和排障。
+Aimili Gateway 是 Gateway 控制台与 Aimili 出口引擎的统一源码仓库。Gateway 负责日常管理和跨服务编排；出口引擎位于 `services/aimili-egress`，仍以独立的 `aimilivpn.service` 运行并承担 OpenVPN、TUN、策略路由和本地代理。Gateway 只通过回环控制 API 调用它，不获得高权限网络能力；3x-ui 与 Xray 也继续作为独立服务运行。
 
 ## 当前阶段
+
+自 2026-09-11 起，`services/aimili-egress` 是出口引擎的唯一源码来源。原 `aimili-vpngate` 仓库保留历史和兼容用途，不删除，也不再与本目录双向开发。Gateway 前端只保留 Gateway 页面、高级设置和 3x-ui 专家模式，不再注册 AimiliVPN 设置页或原后台登录入口。融合边界与验证结果见 `docs/verification/2026-09-11-egress-isolation-and-repository-integration.md`。
 
 当前权威入口是 `docs/handoffs/2026-09-05-current-state-handoff.md`。它记录实际功能工作树路径、最新本地提交、生产摘要、回滚资产和仍未实现的发布机制；历史设计、计划和验证文档保留各自时间点的事实，不再承担“当前状态”职责。
 
@@ -59,7 +61,8 @@ Gateway 只管理 `agw-` 命名空间；不接管非受管 3x-ui/Xray 资源，�
 - `docs/superpowers/plans/2026-08-24-unified-console-v1c-3xui-binding.md`：已废止的旧 3x-ui 绑定计划，仅保留历史。
 - `cmd/aimili-gateway`：统一控制台服务进程。
 - `cmd/aimili-gateway-admin`：本地管理员初始化、账户安全管理和会话撤销命令。
-- `web`：Vue 登录页、代理池操作、紧凑高级设置页和两个原生维护页。
+- `services/aimili-egress`：独立运行的 Aimili 出口引擎源码、测试和自检脚本。
+- `web`：Vue 登录页、代理池操作、紧凑高级设置页和 3x-ui 专家维护页。
 - `deploy`：示例配置、systemd 单元和待合并的 Caddy 路由片段。
 
 ## 使用方法

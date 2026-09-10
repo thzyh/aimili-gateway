@@ -57,7 +57,7 @@ it('downloads authenticated text exports without treating them as invalid JSON',
   await expect(apiDownloadText('/api/v1/proxy-groups/export?protocol=vless')).resolves.toBe('vless://masked\n')
 })
 
-it('opens only a fixed backend login endpoint with CSRF and follows its same-origin redirect', async () => {
+it('opens only the 3x-ui backend with CSRF and follows its same-origin redirect', async () => {
 	const finalResponse = new Response('<html></html>', { status: 200, headers: { 'Content-Type': 'text/html' } })
 	Object.defineProperty(finalResponse, 'url', { value: `${window.location.origin}/native-fixture/` })
 	const fetchMock = vi.fn()
@@ -66,12 +66,13 @@ it('opens only a fixed backend login endpoint with CSRF and follows its same-ori
 	vi.stubGlobal('fetch', fetchMock)
 	const { openBackend } = await import('./client')
 
-	await expect(openBackend('/api/v1/backends/aimilivpn/login')).resolves.toBe('/native-fixture/')
+	await expect(openBackend('/api/v1/backends/3x-ui/login')).resolves.toBe('/native-fixture/')
 	const init = fetchMock.mock.calls[1][1] as RequestInit
 	expect(init.method).toBe('POST')
 	expect(init.credentials).toBe('same-origin')
 	expect(init.redirect).toBe('follow')
 	expect(new Headers(init.headers).get('X-CSRF-Token')).toBe('backend-csrf')
+	await expect(openBackend('/api/v1/backends/aimilivpn/login')).rejects.toThrow('invalid_backend_target')
 	await expect(openBackend('/api/v1/backends/arbitrary/login')).rejects.toThrow('invalid_backend_target')
 })
 

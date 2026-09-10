@@ -38,8 +38,10 @@ it('removes security confirmation and shows the disabled SOCKS5H risk state', as
   expect(wrapper.text()).toContain('任何公网来源都可以尝试认证')
   expect(wrapper.find('[data-cidr-editor]').exists()).toBe(false)
   expect(wrapper.text()).toContain('1 / 1')
-  expect(wrapper.find('[data-to="/settings/aimilivpn"]').exists()).toBe(true)
+  expect(wrapper.find('[data-to="/settings/aimilivpn"]').exists()).toBe(false)
+  expect(wrapper.text()).not.toContain('AimiliVPN 设置')
   expect(wrapper.find('[data-to="/settings/3x-ui"]').exists()).toBe(true)
+  expect(wrapper.text()).toContain('3x-ui 专家模式')
 })
 
 it('requires a CIDR when enabling the source restriction and saves only the approved contract', async () => {
