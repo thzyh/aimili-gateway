@@ -4,10 +4,16 @@
 
 ## 2026-09-11 ny 出口隔离与统一仓库
 
+- ny 当前 Gateway 已部署 `v1.0.3`，源码提交为 `20cc1222053a0f810d98112b78d837e18c720266`；签名前端版本为 `70f70194bdc0cb1cfd9932df46da0678956af42660ac88ae7dbcf611c6b4805c`。出口引擎已正式从 `/opt/aimili-gateway/services/aimili-egress` 启动，持久数据继续使用 `/opt/aimilivpn/vpngate_data`，实现“一个仓库、两个独立服务”的生产布局。
+- 出口检测现会先区分“VPN 隧道/真实出口失效”和“本地代理或路由异常”。前者在同一个检测请求内领取本次故障唯一一次同国替换机会；后者只报告本地链路故障，不更换 IP。前端故障按钮显示“检测并自动修复”，等待期间说明一次性规则，并分别显示修复成功、无同国候选、替换失败和此前已尝试。
+- 2026-09-11 06:50（Asia/Shanghai）纠正了出口 1 属于旧受控测试的修复记录，并通过 Control API 执行当前故障的一次真实检测与修复。响应明确为 `auto_repair_performed=true`，结果为 `no_same_country_candidate`；出口 1 保留为 `disconnected/manual_required`，没有消失。随后重启 `aimilivpn.service` 并跨过后台检查周期，`attempt_count` 仍为 1、`attempted_at` 完全不变，新增自动修复日志为 0。
+- 当前主连接、出口 2、出口 3 均健康，三条 SOCKS5H 真实链路得到三个不同出口 IP；出口 1 等待人工选择新 IP。四个服务均 active，Gateway/AimiliVPN 的 `NRestarts=0`，部署后错误级日志为空，Gateway 数据库 `integrity_check=ok`。
+- 本次部署未新增永久备份，继续只使用既有联合备份 `/var/backups/aimili-gateway/egress-isolation-20260910-bed0cbf-ed102e3`。第一次正式写入因服务器 UI 安装器参数版本不匹配而触发自动回滚，核对 Gateway、unit 和服务均恢复后，改用当前受限 spool 安装入口完成签名前端发布；临时回滚目录已在成功后删除。
+- Codex 内置浏览器因本机 Codex 授权令牌不可用，未完成真实鼠标点击验收；已验证生产发布的 JS 包含全部新按钮和进度/结果文案，Control API 返回真实一次修复结果，前端 64 项测试覆盖等待与结果展示。用户刷新页面后可完成最终视觉验收。
 - ny 已部署 Gateway `bed0cbfb7fcfaf6d74db66b9bcfefcde659097b5` 与出口引擎 `ed102e3` 对应修复。主连接和三个普通出口分别检测、分别记录故障；`operation_busy`、`maintenance_busy` 和检测超时不再被写成节点损坏。
 - 受控断开单一出口后，只有该出口进入 `manual_required/disconnected`，其他三个出口继续健康；系统只自动尝试一次同国候选。重启 `aimilivpn.service` 后尝试次数仍为 1、修复记录未变化、没有再次换节点，故障行也未消失。
 - 人工替换失败的候选明确返回 `AUTH_FAILED`，没有被标成成功；完成有效替换后，主连接加三个出口均恢复。最终四服务 active、四条 TUN 存在、Gateway 有四条 ready 记录、订阅含四个入站，四个真实代理出口 IP 互不重复。
-- Gateway 的“重新检测”现只检测，不再隐式执行换 IP；受控验证前后四个候选 ID 完全一致。
+- 在 `20cc122` 增量部署前，Gateway 的“重新检测”只检测、不执行换 IP；该历史行为已由上方“检测并最多自动修复一次”规则取代。
 - ny 本轮只新增一个联合备份：`/var/backups/aimili-gateway/egress-isolation-20260910-bed0cbf-ed102e3`。Gateway 数据库备份在生成前修复了两个损坏索引，`PRAGMA integrity_check` 为 `ok`，各业务表行数与内容摘要未变化。
 - 本地 `aimili-gateway` 的现有 `feat/main-switch-protocol-modes` 分支已引入 `services/aimili-egress`，以后它是出口引擎唯一源码来源。运行时仍是 `aimili-gateway.service` 与 `aimilivpn.service` 两个进程，不把高权限网络操作放入 Gateway。
 - Gateway 前端不再显示 AimiliVPN 设置页和原后台入口；高级设置只保留 3x-ui 设置/专家模式。Gateway 内部的出口管理 API 保留。

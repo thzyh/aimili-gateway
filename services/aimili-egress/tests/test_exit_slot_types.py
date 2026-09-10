@@ -1044,6 +1044,39 @@ class ManagedSlotFacadeTests(unittest.TestCase):
         self.assertTrue(result["auto_repair_performed"])
         self.assertEqual(result["last_error_code"], "no_same_country_candidate")
 
+    def test_rechecking_an_attempted_failure_logs_that_no_repair_was_repeated(self):
+        snapshot = {
+            "ok": True,
+            "slot": 0,
+            "node_id": "ru-broken",
+            "country": "RU",
+            "port": 17928,
+            "status": "disconnected",
+            "egress_ok": False,
+            "repair_status": "manual_required",
+        }
+        with (
+            mock.patch.object(manager, "managed_slot_snapshot", return_value=snapshot),
+            mock.patch.object(manager, "slot_process_alive", return_value=False),
+            mock.patch.object(
+                manager,
+                "repair_slot_once",
+                return_value={
+                    "ok": False,
+                    "error_code": "manual_repair_required",
+                    "auto_repair_performed": False,
+                },
+            ),
+            mock.patch.object(manager, "log_to_json") as log,
+            mock.patch("builtins.print") as output,
+        ):
+            result = manager.check_managed_slot(0)
+
+        self.assertFalse(result["auto_repair_performed"])
+        self.assertEqual(result["last_error_code"], "manual_repair_required")
+        self.assertIn("不重复更换节点", output.call_args.args[0])
+        self.assertIn("不重复更换节点", log.call_args.args[2])
+
     def test_check_managed_slot_marks_a_verified_healthy_failure_closed(self):
         snapshot = {
             "ok": True,

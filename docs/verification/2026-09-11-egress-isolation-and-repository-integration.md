@@ -39,10 +39,43 @@
 
 ## 未执行
 
-- 统一仓库布局尚未再次部署到 ny；ny 继续运行已通过真实故障注入验证的两服务版本，避免在稳定性验证刚完成后引入第二次无关生产变更。
 - 未操作其他 VPS。
 - 未删除原 `aimili-vpngate` 仓库。
 - 未推送任何远程分支。
+
+## 检测触发一次自动修复增量
+
+### 现场失败边界
+
+用户在 2026-09-11 06:01（Asia/Shanghai）点击出口 1“重新检测”时，ny 最新日志连续出现 `Cannot find device "tun120"` 与 `ERR_ROUTE_TABLE_ADD_FAILED`，随后 `POST /control/v1/slots/0/check` 返回 409。代码核对确认 `check_managed_slot()` 在隧道已消失时仍先添加策略路由，并且检测函数本身没有调用 `repair_slot_once()`。
+
+出口 1 当时的 `manual_required/no_same_country_candidate` 记录产生于 04:14 的上一轮受控故障测试，而不是用户 06:01 的新故障。旧故障人工恢复后没有可靠结束修复记录，导致新故障被“一次修复”保护规则误判为已经尝试过。
+
+### 实现
+
+- `check_managed_slot()` 先判断槽位 OpenVPN 进程。隧道不存在时不再向不存在的 TUN 添加路由，直接进入一次自动修复；隧道存在但真实接口也无法联网时同样修复一次。
+- 如果隧道真实出口健康、只是本地 SOCKS5H 或策略路由失败，不更换 IP，只返回本地链路错误。
+- 健康检测成功时显式 `mark_healthy()`，结束旧故障；`RepairStore.claim()` 对任何未结束的 `repairing/manual_required` 状态都拒绝重复领取，不再因候选 ID 为空或变化而重新计数。
+- 检测响应增加一次性的 `auto_repair_performed` 字段，经 Gateway API 转为 `autoRepairPerformed`。前端等待期间明确显示检测与一次修复规则；结果区分修复成功、无同国候选、候选连接失败和此前已尝试。
+
+### 本地验证
+
+- 出口引擎：Python 编译检查通过，207 项单元测试通过。
+- 前端：64 项测试通过，`vue-tsc` 与 Vite 生产构建通过。
+- Gateway：`go test ./... -race`、`go vet -buildvcs=false ./...` 通过；Windows 的 Gateway 与 admin、Linux 的 Gateway 构建通过。
+- `git diff --check` 通过；复杂度专项审查为 `Lean already. Ship.`。
+
+### ny 部署与真实验证
+
+- Gateway：`v1.0.3`，提交 `20cc1222053a0f810d98112b78d837e18c720266`。
+- 签名前端：`70f70194bdc0cb1cfd9932df46da0678956af42660ac88ae7dbcf611c6b4805c`。
+- `aimilivpn.service` 的工作目录和启动文件均已切换到 `/opt/aimili-gateway/services/aimili-egress`；运行数据仍是 `/opt/aimilivpn/vpngate_data`。
+- 第一次写入因旧部署脚本向当前受限 UI 安装器传递过时参数而失败，自动回滚后 Gateway 恢复 `v1.0.2`、AimiliVPN 恢复 `/opt/aimilivpn`。确认四服务 active、旧 UI 指针不变后，改用当前 `run-id + version` spool 合约安装签名 UI，随后完成 Gateway 与出口引擎部署。
+- 精确清除出口 1 的陈旧测试记录后，同一检测请求真实返回：`status=disconnected`、`egress_ok=false`、`repair_status=manual_required`、`auto_repair_attempted=true`、`auto_repair_performed=true`、`last_error_code=no_same_country_candidate`。新 `attempted_at` 为当前故障时间，次数为 1。
+- 重启 AimiliVPN 并等待超过一个后台检查周期后，出口 1 的 `attempted_at` 不变、次数仍为 1、没有新的自动修复日志，证明服务重启不会重新计数或循环换节点。
+- 最终主连接、出口 2、出口 3 的三条 SOCKS5H 链路均能访问公网，取得三个互不重复的真实出口；出口 1 保留为未连接等待人工替换。四服务 active，Gateway/AimiliVPN `NRestarts=0`，部署后错误级日志为空，数据库 `integrity_check=ok`。
+- 生产 JS 包已核对包含“检测并自动修复”、等待过程和四类结果文案。Codex 内置浏览器因本机 Codex 授权令牌不可用，未执行真实鼠标点击；用户刷新页面后的视觉确认仍是最后一步。
+- 没有新增永久备份；既有联合备份继续是 `/var/backups/aimili-gateway/egress-isolation-20260910-bed0cbf-ed102e3`。未操作其他 VPS，未删除 `aimili-vpngate`，未推送远程。
 
 ## 原仓库分叉处理
 

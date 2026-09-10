@@ -4592,20 +4592,31 @@ def check_managed_slot(i: int) -> dict[str, Any]:
         if candidate_id:
             mark_candidate_unavailable(candidate_id, "candidate_egress_failed")
 
-    print(
-        f"[多出口] 手动检测确认槽位 {i} 的隧道或真实出口失效，执行本次故障唯一一次自动修复",
-        flush=True,
-    )
-    log_to_json(
-        "WARNING",
-        "MultiExit",
-        f"手动检测确认槽位 {i} 出口失效，尝试一次同国家替换",
-    )
     repair = repair_slot_once(i, snapshot)
+    repair_code = str(repair.get("error_code") or "replacement_failed")
+    if repair.get("auto_repair_performed"):
+        print(
+            f"[多出口] 手动检测确认槽位 {i} 的隧道或真实出口失效，执行本次故障唯一一次自动修复",
+            flush=True,
+        )
+        log_to_json(
+            "WARNING",
+            "MultiExit",
+            f"手动检测确认槽位 {i} 出口失效，已执行一次同国家替换",
+        )
+    elif repair_code == "manual_repair_required":
+        print(
+            f"[多出口] 手动复核槽位 {i}：本次故障此前已尝试自动修复，不重复更换节点",
+            flush=True,
+        )
+        log_to_json(
+            "INFO",
+            "MultiExit",
+            f"手动复核槽位 {i}：本次故障此前已尝试，不重复更换节点",
+        )
     if repair.get("ok"):
         repair["auto_repair_performed"] = True
         return repair
-    repair_code = str(repair.get("error_code") or "replacement_failed")
     if repair_code == "slot_busy":
         return {
             "ok": False,
