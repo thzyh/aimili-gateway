@@ -80,6 +80,23 @@ function Start-VMwareTray {
     return $trayProcesses.Count -gt 0
 }
 
+function Test-SshReadiness {
+    param(
+        [Parameter(Mandatory)][string[]]$Arguments,
+        [Parameter(Mandatory)][string]$Target
+    )
+    # Windows PowerShell 5.1 会把原生命令写入 stderr 的内容转换为错误记录。
+    # 启动初期 SSH 暂不可达属于预期重试状态，不能被全局 Stop 提前终止。
+    $previousPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        & ssh.exe @Arguments $Target 'true' 2>$null
+        return $LASTEXITCODE -eq 0
+    } finally {
+        $ErrorActionPreference = $previousPreference
+    }
+}
+
 function Invoke-RouteRepair {
     param([Parameter(Mandatory)]$Inputs, [bool]$Apply)
     $script:CurrentStage = 'host-route'
@@ -181,6 +198,11 @@ function Invoke-LocalVmOperation {
         $vmStarted = $true
     }
 
+    # 托盘程序不依赖来宾 SSH 或业务探针，应尽早启动。即使来宾仍在启动，
+    # 用户也能立即看到 VMware 的运行状态，后续就绪失败不会跳过托盘启动。
+    $trayRunning = @(Get-CurrentSessionTrayProcesses).Count -gt 0
+    if ($Mode -eq 'Start') { $trayRunning = Start-VMwareTray -Inputs $inputs }
+
     $state = Get-Content -LiteralPath $inputs.StatePath -Raw | ConvertFrom-Json -ErrorAction Stop
     $sshTarget = "aimili@$($state.guestAddress)"
     $sshArguments = @(
@@ -193,8 +215,10 @@ function Invoke-LocalVmOperation {
     $sshDeadline = (Get-Date).AddSeconds($SshTimeoutSeconds)
     $sshReachable = $false
     do {
-        & ssh.exe @sshArguments $sshTarget 'true' 2>$null
-        if ($LASTEXITCODE -eq 0) { $sshReachable = $true; break }
+        if (Test-SshReadiness -Arguments $sshArguments -Target $sshTarget) {
+            $sshReachable = $true
+            break
+        }
         if ($Mode -eq 'Status' -or (Get-Date) -ge $sshDeadline) { break }
         Start-Sleep -Seconds 5
     } while ($true)
@@ -212,8 +236,6 @@ function Invoke-LocalVmOperation {
     } while ($true)
     if ($null -eq $nativeStatus -or -not $nativeStatus.nativeReady) { throw 'local_vm_native_ready_timeout' }
 
-    $trayRunning = @(Get-CurrentSessionTrayProcesses).Count -gt 0
-    if ($Mode -eq 'Start') { $trayRunning = Start-VMwareTray -Inputs $inputs }
     $script:CurrentStage = 'complete'
     return [pscustomobject][ordered]@{
         success = $true; action = $Mode; stage = 'complete'; vmStarted = $vmStarted; vmRunning = $true
@@ -251,8 +273,15 @@ function Invoke-ElevatedOperation {
         '-ResultPath', ('"{0}"' -f $diagnosticPath), '-AsJson'
     )
     try {
-        $process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -WindowStyle Hidden -ArgumentList $arguments -Wait -PassThru
+        $process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -WindowStyle Hidden -ArgumentList $arguments -PassThru
+        $startedAt = [DateTimeOffset]::Now
+        while (-not $process.WaitForExit(1000)) {
+            $elapsed = [math]::Floor(([DateTimeOffset]::Now - $startedAt).TotalSeconds)
+            Write-Progress -Activity "正在执行 AimiliGatewayLocal $Mode" -Status "管理员任务仍在运行，已等待 $elapsed 秒；完成后会自动返回结果。"
+        }
+        Write-Progress -Activity "正在执行 AimiliGatewayLocal $Mode" -Completed
     } catch {
+        Write-Progress -Activity "正在执行 AimiliGatewayLocal $Mode" -Completed
         throw "administrator_elevation_failed:$($_.Exception.Message)"
     }
     if (-not (Test-Path -LiteralPath $diagnosticPath -PathType Leaf)) {

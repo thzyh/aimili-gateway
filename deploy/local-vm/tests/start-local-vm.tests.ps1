@@ -13,13 +13,19 @@ foreach ($serviceName in @('VMAuthdService', 'VMnetDHCP', 'VMware NAT Service'))
         throw "startup script omits VMware service: $serviceName"
     }
 }
-foreach ($required in @('Start-Service', 'Stop-Service', 'repair-host-route.ps1', 'Apply = $true', 'vmrun.exe', "'start'", "'nogui'", "'stop'", "'soft'", 'status.ps1', 'nativeReady', 'ValidateOnly', 'Read-Host', 'startup-last-result.json', 'ResultPath', 'vmware-tray.exe', 'otherRunningVms')) {
+foreach ($required in @('Start-Service', 'Stop-Service', 'repair-host-route.ps1', 'Apply = $true', 'vmrun.exe', "'start'", "'nogui'", "'stop'", "'soft'", 'status.ps1', 'nativeReady', 'ValidateOnly', 'Read-Host', 'startup-last-result.json', 'ResultPath', 'vmware-tray.exe', 'otherRunningVms', 'Test-SshReadiness', 'Write-Progress', '管理员任务仍在运行')) {
     if ($source -notmatch [regex]::Escape($required)) {
         throw "startup script contract missing: $required"
     }
 }
 if ($source -notmatch 'ssh\.exe' -or $source -notmatch "'-b'\s*,\s*\[string\]\`$state\.allowedSource") {
     throw 'startup SSH readiness check does not bind the VMnet8 source address'
+}
+if ($source.IndexOf("if (`$Mode -eq 'Start') { `$trayRunning = Start-VMwareTray") -gt $source.IndexOf("`$script:CurrentStage = 'ssh-readiness'")) {
+    throw 'VMware tray startup must not wait for SSH readiness'
+}
+if ($source -notmatch "Test-SshReadiness[\s\S]*?ErrorActionPreference = 'Continue'[\s\S]*?LASTEXITCODE -eq 0") {
+    throw 'SSH readiness probe can still terminate instead of retrying transient startup errors'
 }
 if ($source -match 'taskkill|Set-ItemProperty[\s\S]*Internet Settings|Set-DnsClient|Set-NetFirewall|Remove-NetRoute') {
     throw 'startup script can disturb the active proxy or host network'
@@ -30,9 +36,24 @@ if ($source -notmatch '停止 AimiliGatewayLocal' -or $source -notmatch '启动�
 
 $tokens = $null
 $parseErrors = $null
-[System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $scriptPath), [ref]$tokens, [ref]$parseErrors) | Out-Null
+$scriptAst = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $scriptPath), [ref]$tokens, [ref]$parseErrors)
 if ($parseErrors.Count -gt 0) {
     throw ('startup script does not parse: ' + ($parseErrors[0].Message))
+}
+
+$sshProbeAst = $scriptAst.Find({
+    param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Test-SshReadiness'
+}, $true)
+if ($null -eq $sshProbeAst) { throw 'SSH readiness function was not found in the parsed script' }
+. ([scriptblock]::Create($sshProbeAst.Extent.Text))
+$previousPreference = $ErrorActionPreference
+try {
+    $ErrorActionPreference = 'Stop'
+    $unreachable = Test-SshReadiness -Arguments @('-o', 'BatchMode=yes', '-o', 'ConnectTimeout=1') -Target '192.0.2.1'
+    if ($unreachable) { throw 'unreachable SSH fixture was unexpectedly reachable' }
+} finally {
+    $ErrorActionPreference = $previousPreference
 }
 
 $startInfo = [Diagnostics.ProcessStartInfo]::new()

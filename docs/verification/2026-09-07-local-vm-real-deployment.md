@@ -3,6 +3,21 @@
 日期：2026-09-09（Asia/Shanghai）
 目标：在本机 VMware Ubuntu 中原生运行 AimiliVPN、3x-ui/Xray、Aimili Gateway 和 Caddy，并完成 Windows 外部自动数据面验证与重启复验。
 
+## 2026-09-10 启动管理器等待与托盘修复
+
+- 本次右键运行启动管理器后，VM、Gateway 页面和节点数据面已经恢复，但菜单停留在“正在执行”。`startup-last-result.json` 的最新失败边界为 `ssh-readiness`：来宾启动初期第一次 SSH 连接超时，Windows PowerShell 5.1 在全局 `ErrorActionPreference=Stop` 下把 `ssh.exe` 的 stderr 转成终止错误，导致设计中的 180 秒重试没有执行。
+- `Test-SshReadiness` 现局部按原生命令退出码判断预期的暂不可达状态，并恢复调用方错误策略；不可达 SSH fixture 已在 Windows PowerShell 5.1 中确认返回 `false` 而不是抛出终止错误。
+- `vmware-tray.exe` 原先位于 SSH 与完整业务就绪检查之后，因此上述提前退出也跳过托盘启动。托盘现于 VM 启动/确认运行后立即在当前交互会话启动，不再依赖来宾 SSH 或业务探针；管理员子任务等待期间同步显示已等待秒数，完成后自动返回中文结果。
+- 真实幂等 `-Action Start -AsJson` 返回 `success=true`、`vmStarted=false`、`nativeReady=true`、`trayRunning=true`，当前托盘位于用户 Session 1；三项 VMware 服务、VMnet8 持久 `/32` 路由、6 个 OpenVPN、1 个 Xray 和 6 个逻辑出口保持就绪。
+
+## 2026-09-10 节点延迟分段诊断
+
+- Windows 以 `192.168.88.1` 为源地址到 VM `192.168.88.4` 连续 12 次 ICMP 均小于 1 ms、0% 丢包，证明 VMware 本地链路不是截图中 `637–1036 ms` 的来源。
+- VM 同期 load average 为 `0.01/0.03/0.00`，约 2 GB 内存中仍有 1472 MB 可用；没有 CPU 或内存饱和证据。
+- v2rayN 当前 `SpeedPingTestUrl` 为 `https://www.google.com/generate_204`。从 VM 分别绑定 6 条固定 TUN 请求相同地址，TCP 建连为 `0.55–0.91 秒`，完整 TLS 至首字节为 `2.0–2.9 秒`；更换为 gstatic 与 Cloudflare 204 目标后 TCP 建连仍为 `0.49–1.27 秒`，排除单一测速网址导致的假高。
+- 当前 6 条固定 OpenVPN 配置全部使用 TCP。实际链路为“Windows 客户端 → 本机 VM → Xray 入站 → TCP OpenVPN → VPNGate 免费海外出口 → 测速目标”；高延迟主要位于 OpenVPN 远端及其公网路径，TCP 套 TCP/加密握手会进一步放大排队和丢包恢复成本。
+- 本轮没有为美化数字而修改测速 URL，也没有切换或激活 v2rayN 节点。真实优化应按端到端延迟轮换更健康的 VPNGate 候选，并在另行设计和验证后优先采用可用的 UDP OpenVPN 配置；若需要稳定低延迟，应使用质量可控的自有或付费上游，VMware 距离和扩容本机 CPU 对该瓶颈帮助有限。
+
 ## 2026-09-09 23:40 v2rayN `local` 路由冲突最终闭环
 
 - 21:27–21:30 的最新 v2rayN 测试配置把 6 个 local 节点都指向 `192.168.88.4`，且没有 `sendThrough`。故障窗口内 Windows 首选动态 `192.168.88.4/32 → qinshi`，覆盖 VMnet8 直连网段；同一配置未绑定源地址时 6/6 超时，仅绑定 `192.168.88.1` 后 6/6 成功。第一失败边界因此是宿主到来宾的错误接口选路，不是订阅、TLS“不安全”、Reality、Hysteria2 或 Caddy。
