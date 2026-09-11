@@ -913,7 +913,21 @@ def _stage_repair_main_candidate(candidate_id: str) -> dict[str, bool]:
     global is_connecting
     with lock:
         is_connecting = False
-    return _stage_main_candidate(candidate_id)
+    if str(active_openvpn_node_id or "").strip() == str(candidate_id or "").strip():
+        validation = _main_validation()
+        if all(validation.values()):
+            return validation
+    validation = _stage_main_candidate(candidate_id)
+    deadline = time.monotonic() + 20
+    while (
+        not all(validation.values())
+        and str(active_openvpn_node_id or "").strip() == str(candidate_id or "").strip()
+        and active_openvpn_running()
+        and time.monotonic() < deadline
+    ):
+        time.sleep(1)
+        validation = _main_validation()
+    return validation
 
 
 def repair_replace_main_assignment(

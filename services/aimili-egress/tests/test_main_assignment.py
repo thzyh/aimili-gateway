@@ -1193,6 +1193,50 @@ class ManagerMainAssignmentTests(unittest.TestCase):
         self.assertEqual(result["state"], "pending_gateway_validation")
         connect.assert_called_once_with("new-main")
 
+    def test_manager_repair_commit_accepts_the_healthy_active_main_after_pool_pruning(self):
+        self.assertEqual(self._start_repair_required()["state"], "repair_required")
+        manager.active_openvpn_node_id = "new-main"
+        with (
+            mock.patch.object(manager, "connect_node", side_effect=RuntimeError("candidate was pruned")) as connect,
+            mock.patch.object(manager, "active_openvpn_running", return_value=True),
+            mock.patch.object(
+                manager,
+                "check_proxy_health",
+                return_value={"ok": True, "ip": "198.51.100.90"},
+            ),
+        ):
+            result = manager.repair_commit_main_assignment("manager-op-1")
+
+        self.assertEqual(result["state"], "pending_gateway_validation")
+        self.assertTrue(result["available"])
+        connect.assert_not_called()
+
+    def test_manager_repair_commit_waits_for_the_active_main_proxy_after_reconnect(self):
+        self.assertEqual(self._start_repair_required()["state"], "repair_required")
+
+        def connect(candidate_id):
+            manager.active_openvpn_node_id = candidate_id
+
+        with (
+            mock.patch.object(manager, "connect_node", side_effect=connect) as connect_mock,
+            mock.patch.object(manager, "active_openvpn_running", return_value=True),
+            mock.patch.object(manager, "check_interface_exit_ip", return_value=(True, "198.51.100.90")),
+            mock.patch.object(
+                manager,
+                "check_proxy_health",
+                side_effect=[
+                    {"ok": False, "error": "proxy warming up"},
+                    {"ok": True, "ip": "198.51.100.90"},
+                ],
+            ),
+            mock.patch.object(manager.time, "sleep"),
+        ):
+            result = manager.repair_commit_main_assignment("manager-op-1")
+
+        self.assertEqual(result["state"], "pending_gateway_validation")
+        self.assertTrue(result["available"])
+        connect_mock.assert_called_once_with("new-main")
+
     def test_transaction_reserved_candidates_survive_unavailable_pool_sort(self):
         self.assertEqual(
             manager.main_assignment_coordinator.stage(
