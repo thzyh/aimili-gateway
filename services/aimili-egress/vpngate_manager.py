@@ -1476,11 +1476,11 @@ def mark_candidate_unavailable(
         )
         protected_ids.update(main_assignment_coordinator.reserved_candidate_ids())
         rebalanced = node_pool.rebalance_valid_pool(
-            updated, [], protected_ids, set(), limit=30
+            updated, [], protected_ids, set(), limit=TARGET_VALID_POOL_SIZE
         )
         if (
             candidate_id not in {str(item.get("id") or "") for item in rebalanced}
-            and len(rebalanced) < 30
+            and len(rebalanced) < TARGET_VALID_POOL_SIZE
         ):
             rebalanced.append(failed)
         write_json(BLACKLIST_FILE, blacklist)
@@ -2526,7 +2526,7 @@ def country_refresh_snapshot() -> dict[str, Any]:
     snapshot["countryValidCount"] = sum(
         1 for item in nodes
         if item.get("probe_status") == "available"
-        and str(item.get("country_short") or "").upper() == country
+        and (country == "ALL" or str(item.get("country_short") or "").upper() == country)
     )
     if snapshot.get("state") == "idle":
         persisted = load_pool_metadata().get("lastRefresh") or {}
@@ -2578,9 +2578,53 @@ def _country_refresh_worker(country: str, start_gate: threading.Event) -> None:
             maintenance_lock.release()
 
 
+def _all_country_refresh_worker(start_gate: threading.Event) -> None:
+    start_gate.wait()
+    main_assignment_thread.country_refresh_authorized = True
+    try:
+        message = maintain_valid_nodes(force=False)
+        with country_refresh_lock:
+            still_running = (
+                country_refresh_state.get("state") == "running"
+                and country_refresh_state.get("country") == "ALL"
+            )
+            started_at = float(country_refresh_state.get("startedAt") or 0)
+        if still_running:
+            if message == "operation_busy":
+                error_code = "operation_busy"
+            elif "正在运行" in str(message):
+                error_code = "maintenance_busy"
+            else:
+                error_code = "upstream_unavailable"
+            _replace_country_refresh(
+                state="failed",
+                country="ALL",
+                phase="",
+                startedAt=started_at,
+                finishedAt=time.time(),
+                resultCode=error_code,
+                errorCode=error_code,
+            )
+    except Exception:
+        with country_refresh_lock:
+            started_at = float(country_refresh_state.get("startedAt") or 0)
+        _replace_country_refresh(
+            state="failed",
+            country="ALL",
+            phase="",
+            startedAt=started_at,
+            finishedAt=time.time(),
+            resultCode="upstream_unavailable",
+            errorCode="upstream_unavailable",
+        )
+    finally:
+        main_assignment_thread.country_refresh_authorized = False
+
+
 def start_country_refresh(country: str) -> dict[str, Any]:
     normalized_country = str(country or "").strip().upper()
-    if not re.fullmatch(r"[A-Z]{2}", normalized_country):
+    all_countries = normalized_country == "ALL"
+    if not all_countries and not re.fullmatch(r"[A-Z]{2}", normalized_country):
         return {"state": "failed", "country": normalized_country, "errorCode": "invalid_country"}
     if not _acquire_runtime_mutation():
         return {
@@ -2594,12 +2638,14 @@ def start_country_refresh(country: str) -> dict[str, Any]:
                 "state": "failed", "country": normalized_country,
                 "resultCode": "maintenance_busy", "errorCode": "maintenance_busy",
             }
-    if not maintenance_lock.acquire(blocking=False):
+    maintenance_acquired = False
+    if maintenance_lock.locked() or (not all_countries and not maintenance_lock.acquire(blocking=False)):
         _release_runtime_mutation()
         return {
             "state": "failed", "country": normalized_country,
             "resultCode": "maintenance_busy", "errorCode": "maintenance_busy",
         }
+    maintenance_acquired = not all_countries
     accepted = _replace_country_refresh(
         state="running",
         country=normalized_country,
@@ -2619,13 +2665,14 @@ def start_country_refresh(country: str) -> dict[str, Any]:
     start_gate = threading.Event()
     try:
         threading.Thread(
-            target=_country_refresh_worker,
-            args=(normalized_country, start_gate),
+            target=_all_country_refresh_worker if all_countries else _country_refresh_worker,
+            args=(start_gate,) if all_countries else (normalized_country, start_gate),
             name=f"country-refresh-{normalized_country}",
             daemon=True,
         ).start()
     except Exception:
-        maintenance_lock.release()
+        if maintenance_acquired:
+            maintenance_lock.release()
         _release_runtime_mutation()
         return _set_country_refresh(
             state="failed",
@@ -2789,7 +2836,7 @@ def refresh_country_nodes(
         }
         metadata = load_pool_metadata()
         merged = node_pool.rebalance_valid_pool(
-            existing_nodes, selected, protected_ids, manual_ids, limit=30
+            existing_nodes, selected, protected_ids, manual_ids, limit=TARGET_VALID_POOL_SIZE
         )
         for item in merged:
             config_file = str(item.get("config_file") or "")
@@ -3218,6 +3265,13 @@ def maintain_valid_nodes(force: bool = False) -> str:
         set_state(last_check_message=msg)
         return msg
     is_connecting = True
+    with country_refresh_lock:
+        all_refresh_started_at = (
+            float(country_refresh_state.get("startedAt") or 0)
+            if country_refresh_state.get("state") == "running"
+            and country_refresh_state.get("country") == "ALL"
+            else 0.0
+        )
     try:
         if force:
             with lock:
@@ -3253,6 +3307,8 @@ def maintain_valid_nodes(force: bool = False) -> str:
 
         existing_nodes = read_nodes()
         try:
+            if all_refresh_started_at:
+                _set_country_refresh(phase="fetching")
             set_state(is_connecting=True, last_check_message="正在拉取最新的免费 VPN 节点列表...")
             candidates = fetch_candidates()
         except Exception as exc:
@@ -3280,6 +3336,12 @@ def maintain_valid_nodes(force: bool = False) -> str:
                     print(f"[维护线程] API 失败后的缓存主连接恢复失败: {recover_exc}", flush=True)
                 finally:
                     is_connecting = True
+            if all_refresh_started_at:
+                _replace_country_refresh(
+                    state="failed", country="ALL", phase="",
+                    startedAt=all_refresh_started_at, finishedAt=time.time(),
+                    resultCode="upstream_unavailable", errorCode="upstream_unavailable",
+                )
             return f"获取节点失败，保留现有有效节点 {len(existing_nodes)} 个"
 
         msg = (
@@ -3289,6 +3351,13 @@ def maintain_valid_nodes(force: bool = False) -> str:
         print(f"[周期检测] {msg}", flush=True)
         log_to_json("INFO", "Main", msg)
 
+        if all_refresh_started_at:
+            catalog = country_catalog_snapshot()
+            official_count = sum(max(0, parse_int(item.get("candidateCount"))) for item in catalog)
+            _set_country_refresh(
+                phase="probing", catalogCount=official_count,
+                officialCount=official_count, countryCandidateCount=len(candidates),
+            )
         set_state(is_connecting=True, last_check_message="正在分批复验并补充有效节点...")
         merged, blacklist, pool_stats = replenish_valid_pool(
             existing_nodes,
@@ -3309,8 +3378,10 @@ def maintain_valid_nodes(force: bool = False) -> str:
             active_openvpn_node_id, list(reserved_slot_candidate_ids())
         )
         protected_ids.update(main_assignment_coordinator.reserved_candidate_ids())
+        if all_refresh_started_at:
+            _set_country_refresh(phase="merging", testedCount=pool_stats["tested"])
         merged = node_pool.rebalance_valid_pool(
-            existing_nodes, merged, protected_ids, manual_ids, limit=30
+            existing_nodes, merged, protected_ids, manual_ids, limit=TARGET_VALID_POOL_SIZE
         )
         merged = sort_all_nodes(merged)
         for node in merged:
@@ -3397,6 +3468,34 @@ def maintain_valid_nodes(force: bool = False) -> str:
             active_openvpn_node_id=active_openvpn_node_id,
             valid_nodes=valid_nodes_count,
         )
+        if all_refresh_started_at:
+            retained_count = sum(
+                1 for item in existing_nodes
+                if str(item.get("id") or "").strip() in protected_ids
+            )
+            completed = {
+                "state": "completed",
+                "country": "ALL",
+                "phase": "",
+                "resultCode": "success" if valid_nodes_count > 0 else "no_usable_nodes",
+                "catalogCount": official_count,
+                "officialCount": official_count,
+                "countryCandidateCount": len(candidates),
+                "testedCount": pool_stats["tested"],
+                "usableCount": valid_nodes_count,
+                "retainedCount": retained_count,
+                "validCount": valid_nodes_count,
+                "preservedCount": retained_count,
+                "stopReason": pool_stats["stop_reason"],
+                "cacheTotal": len(merged),
+                "countryValidCount": valid_nodes_count,
+                "startedAt": all_refresh_started_at,
+                "finishedAt": time.time(),
+                "errorCode": "",
+            }
+            metadata["lastRefresh"] = dict(completed)
+            store_pool_metadata(metadata)
+            _replace_country_refresh(**completed)
         return message
     except Exception as e:
         raise e

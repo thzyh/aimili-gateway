@@ -537,6 +537,30 @@ func TestCountryRefreshAcceptsOnlyClosedResultCodesAndNonnegativeCounts(t *testi
 	}
 }
 
+func TestClientCountryRefreshAcceptsAllCountryScope(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		var body map[string]string
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["country"] != "ALL" {
+			t.Fatalf("refresh body = %#v", body)
+		}
+		response.Header().Set("Content-Type", "application/json")
+		response.WriteHeader(http.StatusAccepted)
+		fmt.Fprint(response, `{"data":{"state":"running","country":"ALL","phase":"fetching","testedCount":0,"validCount":0}}`)
+	}))
+	t.Cleanup(server.Close)
+	client, err := NewClient(server.URL+"/", []byte("test-token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err := client.StartCountryRefresh(context.Background(), "all")
+	if err != nil || started.Country != "ALL" || started.State != "running" {
+		t.Fatalf("started = %#v, err = %v", started, err)
+	}
+}
+
 func TestClientCountryRefreshRejectsWrongStructuredFieldTypes(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(response, `{"data":{"state":"completed","country":"JP","resultCode":"success","officialCount":"eight"}}`)

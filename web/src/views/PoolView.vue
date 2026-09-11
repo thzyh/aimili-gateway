@@ -35,13 +35,15 @@ const title = computed(() => props.protocol === 'vless' ? 'VPN 节点池' : 'SOC
 const description = computed(() => props.protocol === 'vless' ? '每个逻辑出口可独立使用 TCP/Vision、XHTTP/REALITY 或 Hysteria2；mixed/SOCKS5H 始终保持不变。' : '每个在线出口对应一个支持代理 DNS 的 SOCKS5H 地址。')
 const countries = computed(() => {
   const officialNames = new Map(candidateCountries.value.map(item => [item.code.trim().toUpperCase(), item.name.trim()]))
-  const merged = new Map(groups.value.map(row => {
+  const merged = new Map<string, { code: string; name: string; count: number }>()
+  for (const row of groups.value) {
     const code = row.countryCode.trim().toUpperCase()
-    return [code, { code, name: officialNames.get(code) || row.countryName || code }]
-  }))
+    const current = merged.get(code)
+    merged.set(code, { code, name: officialNames.get(code) || row.countryName || code, count: (current?.count ?? 0) + 1 })
+  }
   return [...merged.values()].sort((a, b) => a.code.localeCompare(b.code))
 })
-const officialCountries = computed(() => candidateCountries.value.map(item => ({ code: item.code, name: item.name })).sort((a, b) => a.code.localeCompare(b.code)))
+const officialCountries = computed(() => candidateCountries.value.map(item => ({ code: item.code, name: item.name, count: item.candidateCount })).sort((a, b) => a.code.localeCompare(b.code)))
 const poolStats = computed(() => candidateCountries.value[0])
 function runtimeRank(row: ProxyGroupPayload): number | null {
   if (row.egressSource === 'main' || row.id === 'agw-main') return 0
@@ -89,6 +91,7 @@ function localizedProtocolError(error: unknown, row: ProxyGroupPayload): string 
 }
 
 function refreshCountryName(code = supplementCountry.value): string {
+  if (code.trim().toUpperCase() === 'ALL') return '所有国家'
   return countryDisplayName(code, candidateCountries.value)
 }
 
@@ -138,16 +141,6 @@ async function pollRefreshStatus(): Promise<void> {
       await Promise.all([loadGroups(false), loadCatalog()])
     }
   } catch { refreshNotice.value = makeNotice('error', '刷新状态读取失败', '暂时无法读取节点刷新状态。') }
-}
-
-async function refreshPool(): Promise<void> {
-  busy.value = 'refresh'; topNotice.value = makeNotice('progress', '正在同步代理状态', '在线节点不会被整批中断。')
-  try {
-    await apiFetch('/api/v1/proxy-groups/reconcile', { method: 'POST' })
-    topNotice.value = makeNotice('success', '代理状态已同步', '在线节点未被整批中断。')
-    await loadGroups(false)
-  } catch (error) { topNotice.value = makeNotice('error', '同步失败', localizedError(error, '暂时无法同步代理状态。')) }
-  finally { busy.value = '' }
 }
 
 async function refreshCountry(): Promise<void> {
@@ -247,6 +240,22 @@ function openReplacement(row: ProxyGroupPayload): void {
   replacementNotice.value = null
 }
 
+async function refreshAllCountries(): Promise<void> {
+  busy.value = 'all-country-refresh'
+  refreshNoticeFingerprint.value = ''
+  refreshNotice.value = makeNotice('progress', '所有国家刷新已开始', '系统会逐个检测候选，当前在线代理不会中断。')
+  try {
+    refreshState.value = await apiFetch<CountryRefreshPayload>('/api/v1/settings/aimilivpn/refresh', {
+      method: 'POST', headers: idempotencyHeaders(), body: JSON.stringify({ country: 'ALL' }),
+    })
+    showRefreshNotice(refreshState.value)
+    if (refreshState.value.state === 'running') scheduleRefreshPoll()
+  } catch (error) {
+    refreshNoticeFingerprint.value = ''
+    refreshNotice.value = makeNotice('error', '所有国家刷新失败', localizedError(error, '全部国家节点刷新失败，请稍后重试。'))
+  } finally { busy.value = '' }
+}
+
 function closeReplacement(): void {
   replacementCandidate.value = null
   replacementCandidateID.value = ''
@@ -334,9 +343,9 @@ function refreshNoticeFor(current: CountryRefreshPayload): UiNoticeData | null {
   }
   const official = current.officialCount ?? current.catalogCount ?? 0
   const usable = current.usableCount ?? current.validCount
-  const retained = current.retainedCount ?? current.preservedCount ?? current.validCount
   const time = formatRefreshTime(current.finishedAt)
-  const counts = `官方 ${official} · 可用 ${usable} · 保留 ${retained}${time ? ` · ${time}` : ''}`
+  const poolTotal = current.cacheTotal ?? usable
+  const counts = `官方候选 ${official} · 本次检测 ${current.testedCount} · 刷新后可用 ${usable} · 节点池共 ${poolTotal}${time ? ` · ${time}` : ''}`
   if (current.state === 'completed' && (!current.resultCode || current.resultCode === 'success')) {
     return makeNotice('success', `最后刷新：${name} · 成功`, `刷新已完成 · ${counts}`)
   }
@@ -381,7 +390,7 @@ function formatRefreshTime(value?: number): string {
   <AppShell>
     <section class="page-heading">
       <div><p class="eyebrow">ONLINE EGRESS POOL</p><h1>{{ title }}</h1><p>{{ description }}</p></div>
-      <div class="heading-actions"><button data-sync-pool class="secondary" :disabled="busy !== ''" @click="refreshPool">{{ busy === 'refresh' ? '正在同步…' : '同步代理状态' }}</button><button data-refresh-country class="secondary" :disabled="busy !== '' || !supplementCountry" @click="refreshCountry">{{ busy === 'country-refresh' ? '正在刷新…' : '补充所选国家' }}</button><button v-if="protocol === 'vless'" data-copy-subscription :disabled="busy !== '' || !subscriptionReady" @click="copySubscription">复制节点订阅</button><button v-else data-rotate-socks-credentials class="secondary" :disabled="busy !== ''" @click="rotateSOCKS5HCredentials">{{ busy === 'rotate-socks-credentials' ? '正在更换…' : '随机更换用户名和密码' }}</button><button data-copy-all class="secondary" :disabled="busy !== ''" @click="copyAll">复制节点列表</button><button data-export class="secondary" :disabled="busy !== ''" @click="exportRows">导出</button></div>
+      <div class="heading-actions"><button data-refresh-all class="secondary" :disabled="busy !== ''" @click="refreshAllCountries">{{ busy === 'all-country-refresh' ? '正在刷新…' : '刷新所有国家' }}</button><button data-refresh-country class="secondary" :disabled="busy !== '' || !supplementCountry" @click="refreshCountry">{{ busy === 'country-refresh' ? '正在刷新…' : '补充所选国家' }}</button><button v-if="protocol === 'vless'" data-copy-subscription :disabled="busy !== '' || !subscriptionReady" @click="copySubscription">复制节点订阅</button><button v-else data-rotate-socks-credentials class="secondary" :disabled="busy !== ''" @click="rotateSOCKS5HCredentials">{{ busy === 'rotate-socks-credentials' ? '正在更换…' : '随机更换用户名和密码' }}</button><button data-copy-all class="secondary" :disabled="busy !== ''" @click="copyAll">复制节点列表</button><button data-export class="secondary" :disabled="busy !== ''" @click="exportRows">导出</button></div>
     </section>
     <UiNotice v-if="topNotice" :key="topNotice.id" data-top-notice :notice="topNotice" @close="topNotice=null" />
     <section class="pool-toolbar">

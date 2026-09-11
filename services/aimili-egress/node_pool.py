@@ -139,7 +139,7 @@ def rebalance_valid_pool(
     limit: int = 30,
 ) -> list[Node]:
     """Select a stable bounded pool while preserving runtime and country coverage."""
-    capacity = max(0, min(30, int(limit)))
+    capacity = max(0, min(64, int(limit)))
     existing_ids = {_node_id(node) for node in existing_nodes}
     by_id: dict[str, Node] = {}
     for item in [*refreshed_nodes, *existing_nodes]:

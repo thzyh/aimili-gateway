@@ -218,6 +218,58 @@ class PoolMaintenanceTests(unittest.TestCase):
         self.assertEqual(snapshot["testedCount"], 1)
         self.assertNotIn("exception", snapshot)
 
+    def test_all_country_refresh_runs_global_maintenance_and_exposes_aggregate_status(self):
+        existing = [country_node("jp-old", "JP", "available")]
+        refreshed = [
+            country_node(f"jp-{index}", "JP", "available")
+            for index in range(40)
+        ]
+        stored_metadata = {}
+
+        def store_metadata(document):
+            stored_metadata.update(document)
+
+        with (
+            mock.patch.object(manager, "TARGET_VALID_POOL_SIZE", 40),
+            mock.patch.object(manager, "ensure_dirs"),
+            mock.patch.object(manager, "active_openvpn_running", return_value=True),
+            mock.patch.object(manager, "read_nodes", return_value=existing),
+            mock.patch.object(manager, "fetch_candidates", return_value=refreshed),
+            mock.patch.object(
+                manager,
+                "country_catalog_snapshot",
+                return_value=[{"code": "JP", "candidateCount": 40}],
+            ),
+            mock.patch.object(
+                manager,
+                "replenish_valid_pool",
+                return_value=(refreshed, {}, {"tested": 12, "batches": 12, "stop_reason": "target_reached"}),
+            ),
+            mock.patch.object(manager, "load_blacklist", return_value={}),
+            mock.patch.object(manager, "load_pool_metadata", return_value=manager.default_pool_metadata()),
+            mock.patch.object(manager, "store_pool_metadata", side_effect=store_metadata),
+            mock.patch.object(manager, "reserved_slot_candidate_ids", return_value=set()),
+            mock.patch.object(manager.main_assignment_coordinator, "reserved_candidate_ids", return_value=set()),
+            mock.patch.object(manager, "write_json"),
+            mock.patch.object(manager, "set_state"),
+            mock.patch.object(manager, "log_to_json"),
+        ):
+            accepted = manager.start_country_refresh("ALL")
+            deadline = time.time() + 2
+            snapshot = dict(manager.country_refresh_state)
+            while snapshot.get("state") == "running" and time.time() < deadline:
+                time.sleep(0.01)
+                snapshot = dict(manager.country_refresh_state)
+
+        self.assertEqual(accepted["state"], "running")
+        self.assertEqual(snapshot["state"], "completed")
+        self.assertEqual(snapshot["country"], "ALL")
+        self.assertEqual(snapshot["officialCount"], 40)
+        self.assertEqual(snapshot["testedCount"], 12)
+        self.assertEqual(snapshot["usableCount"], 40)
+        self.assertEqual(snapshot["cacheTotal"], 40)
+        self.assertEqual(stored_metadata["lastRefresh"]["country"], "ALL")
+
     def test_country_refresh_preserves_other_countries_and_managed_slots(self):
         existing = [
             country_node("jp-old", "JP", "available"),
@@ -403,6 +455,27 @@ class PoolMaintenanceTests(unittest.TestCase):
             self.assertEqual(snapshot["state"], "failed")
             self.assertEqual(snapshot["resultCode"], "upstream_unavailable")
             self.assertEqual(snapshot["errorCode"], "upstream_unavailable")
+        finally:
+            manager._set_country_refresh(**original_state)
+
+    def test_all_country_refresh_worker_preserves_operation_busy_code(self):
+        original_state = manager.country_refresh_snapshot()
+        try:
+            manager._set_country_refresh(
+                state="running",
+                country="ALL",
+                phase="fetching",
+                startedAt=1_700_000_000,
+            )
+            gate = manager.threading.Event()
+            gate.set()
+            with mock.patch.object(manager, "maintain_valid_nodes", return_value="operation_busy"):
+                manager._all_country_refresh_worker(gate)
+
+            snapshot = manager.country_refresh_snapshot()
+            self.assertEqual(snapshot["state"], "failed")
+            self.assertEqual(snapshot["resultCode"], "operation_busy")
+            self.assertEqual(snapshot["errorCode"], "operation_busy")
         finally:
             manager._set_country_refresh(**original_state)
 

@@ -417,6 +417,12 @@ class ControlAPITests(unittest.TestCase):
         self.assertEqual(self.manager.country_refreshes, ["JP"])
         self.assertEqual(payload["data"]["state"], "running")
 
+        status, _, payload = self.request(
+            "POST", "/control/v1/candidates/refresh", {"country": "all"}
+        )
+        self.assertEqual(status, 202)
+        self.assertEqual(self.manager.country_refreshes, ["JP", "ALL"])
+
         status, _, payload = self.request("GET", "/control/v1/candidates/refresh")
         self.assertEqual(status, 200)
         self.assertEqual(payload["data"]["testedCount"], 5)

@@ -47,6 +47,16 @@ class NodePoolTests(unittest.TestCase):
 
         self.assertEqual([item["id"] for item in result], ["runtime", "manual", "old"])
 
+    def test_rebalance_supports_a_bounded_forty_node_candidate_pool(self):
+        existing = [
+            {**node(f"n{index}", "available"), "country_short": "JP", "latency_ms": index}
+            for index in range(45)
+        ]
+
+        result = rebalance_valid_pool(existing, [], set(), set(), limit=40)
+
+        self.assertEqual(len(result), 40)
+
     def test_country_filter_runs_on_raw_rows_without_global_truncation(self):
         rows = [
             {"IP": "192.0.2.1", "CountryShort": "US"},

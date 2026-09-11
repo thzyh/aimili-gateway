@@ -276,7 +276,7 @@ class ControlHandler(BaseHTTPRequestHandler):
         if self.command == "POST" and path == f"{API_PREFIX}/candidates/refresh":
             payload = self._read_object({"country"})
             country = str(payload.get("country") or "").strip().upper()
-            if not re.fullmatch(r"[A-Z]{2}", country):
+            if country != "ALL" and not re.fullmatch(r"[A-Z]{2}", country):
                 raise ValueError("invalid request")
             result = self.server.manager.start_country_refresh(country)
             if isinstance(result, dict) and result.get("state") == "failed":

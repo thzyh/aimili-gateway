@@ -297,7 +297,7 @@ func (c *Client) CandidateCountries(ctx context.Context) ([]CandidateCountry, er
 
 func (c *Client) StartCountryRefresh(ctx context.Context, country string) (CountryRefresh, error) {
 	normalized := strings.ToUpper(strings.TrimSpace(country))
-	if len(normalized) != 2 || normalized[0] < 'A' || normalized[0] > 'Z' || normalized[1] < 'A' || normalized[1] > 'Z' {
+	if normalized != "ALL" && (len(normalized) != 2 || normalized[0] < 'A' || normalized[0] > 'Z' || normalized[1] < 'A' || normalized[1] > 'Z') {
 		return CountryRefresh{}, &AdapterError{Code: "invalid_request"}
 	}
 	var result CountryRefresh
@@ -330,7 +330,7 @@ func validCountryRefresh(refresh CountryRefresh) bool {
 	default:
 		return false
 	}
-	if refresh.Country != "" && (len(refresh.Country) != 2 || refresh.Country != strings.ToUpper(refresh.Country)) {
+	if refresh.Country != "" && refresh.Country != "ALL" && (len(refresh.Country) != 2 || refresh.Country != strings.ToUpper(refresh.Country)) {
 		return false
 	}
 	if refresh.ResultCode != "" {
