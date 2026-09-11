@@ -420,6 +420,40 @@ func TestReplaceCandidateAssignsExistingSlotAndKeepsStablePorts(t *testing.T) {
 	}
 }
 
+func TestReplaceCandidateAllowsManualRecoveryOfFailedSlot(t *testing.T) {
+	for _, failedStatus := range []domain.ProxyGroupStatus{domain.ProxyGroupDegraded, domain.ProxyGroupRepairRequired} {
+		t.Run(string(failedStatus), func(t *testing.T) {
+			fixture := newFixture()
+			group, _ := domain.NewProxyGroupIdentity("RU", domain.ProxyTypeResidential, "failed-node")
+			group.Status = failedStatus
+			group.AimiliSlot = 0
+			group.PublicPort = 20000
+			group.MixedPort = 30000
+			group.PublicInboundID = 21
+			group.ExitIP = "203.0.113.7"
+			group.RealityPublicKey = "pk"
+			group.RealityShortID = "sid"
+			group.RealityServerName = "proxy.example.test"
+			group.LastErrorCode = "manual_replacement_required"
+			group.CreatedAt = fixture.now()
+			group.UpdatedAt = fixture.now()
+			fixture.store.groups[group.ID] = group
+			fixture.store.protocolModes[group.ID] = domain.EgressProtocolMode{EgressID: group.ID, ActiveMode: domain.ProtocolVLESSTCPRealityVision, DesiredMode: domain.ProtocolVLESSTCPRealityVision, State: domain.ProtocolReady, Version: 1, UpdatedAt: fixture.now()}
+			fixture.aimili.createdSlots = map[int]aimili.Slot{0: {Number: 0, NodeID: "failed-node", Country: "RU", CountryName: "俄罗斯", ProxyType: "residential", Port: 17930, Status: "down", EgressOK: false}}
+			fixture.aimili.candidates = []aimili.Candidate{{ID: "new-node", CountryCode: "US", CountryName: "美国", ProxyType: "residential", ProbeStatus: "available", IP: "198.51.100.8", LatencyMS: 45}}
+			fixture.aimili.assignedSlot = aimili.Slot{Number: 0, NodeID: "new-node", Country: "US", CountryName: "美国", ProxyType: "residential", ExitIP: "203.0.113.8", CheckedAt: 1_700_000_010.5, Port: 17930, Status: "up", EgressOK: true}
+
+			updated, err := fixture.orchestratorWithMax(t, 3).ReplaceCandidate(context.Background(), "new-node", group.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if updated.Status != domain.ProxyGroupReady || updated.CandidateID != "new-node" || updated.AimiliSlot != 0 || updated.PublicPort != 20000 || updated.MixedPort != 30000 || updated.LastErrorCode != "" {
+				t.Fatalf("updated=%#v", updated)
+			}
+		})
+	}
+}
+
 func TestReplaceCandidateReloadsCandidatesOnlyAfterPersistedRejection(t *testing.T) {
 	tests := []struct {
 		name      string

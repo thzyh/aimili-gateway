@@ -274,7 +274,7 @@ func (o *Orchestrator) ReplaceCandidate(ctx context.Context, candidateID, target
 	if err != nil {
 		return domain.ProxyGroup{}, operationError(err)
 	}
-	if group.Status != domain.ProxyGroupReady || group.AimiliSlot < 0 {
+	if (group.Status != domain.ProxyGroupReady && group.Status != domain.ProxyGroupDegraded && group.Status != domain.ProxyGroupRepairRequired) || group.AimiliSlot < 0 {
 		return domain.ProxyGroup{}, &Error{Code: "conflict"}
 	}
 	slots, err := o.aimili.ListSlots(ctx)
