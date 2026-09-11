@@ -613,6 +613,9 @@ func (o *Orchestrator) CheckMain(ctx context.Context) (store.MainEgress, error) 
 	if err != nil {
 		return store.MainEgress{}, err
 	}
+	if err := o.finalizeCheckedMainAssignment(ctx, checked); err != nil {
+		return store.MainEgress{}, err
+	}
 	// Current-public validation reads the subscription before the newly observed
 	// main identity is persisted. Refresh the four dynamic display aliases after
 	// persistence so a background main drift cannot leave a stale country label.
@@ -620,6 +623,50 @@ func (o *Orchestrator) CheckMain(ctx context.Context) (store.MainEgress, error) 
 		return store.MainEgress{}, err
 	}
 	return checked, nil
+}
+
+func (o *Orchestrator) finalizeCheckedMainAssignment(ctx context.Context, checked store.MainEgress) error {
+	manager, ok := o.aimili.(mainAssignmentAimiliClient)
+	if !ok {
+		return nil
+	}
+	assignment, err := manager.MainAssignment(ctx)
+	if err != nil {
+		return operationError(err)
+	}
+	if assignment.State == "idle" || assignment.State == "committed" || assignment.State == "rolled_back" {
+		return nil
+	}
+	if !mainCandidateMatches(checked.CandidateID, assignment.NewCandidateID, assignment.Country, assignment.ProxyType) {
+		return &Error{Code: "repair_required"}
+	}
+	pending := assignment
+	if assignment.State == "repair_required" {
+		var repairErr error
+		for attempt := 0; attempt < 2; attempt++ {
+			pending, repairErr = manager.RepairCommitMainAssignment(ctx, assignment.OperationID)
+			if repairErr == nil {
+				break
+			}
+		}
+		if repairErr != nil {
+			return operationError(repairErr)
+		}
+	}
+	if pending.State == "committed" {
+		return nil
+	}
+	if (pending.State != "pending_commit" && pending.State != "pending_gateway_validation") || !pending.DNSVerified || !pending.ExitVerified || !pending.Available {
+		return &Error{Code: "repair_required"}
+	}
+	committed, err := commitMainAssignmentIdempotently(ctx, manager, assignment.OperationID)
+	if err != nil {
+		return operationError(err)
+	}
+	if committed.State != "committed" {
+		return &Error{Code: "commit_failed"}
+	}
+	return nil
 }
 
 func (o *Orchestrator) checkMain(ctx context.Context, persist bool) (store.MainEgress, error) {

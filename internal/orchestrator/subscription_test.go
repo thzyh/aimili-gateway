@@ -582,6 +582,24 @@ func TestCheckMainStoresBothProtocolLatencies(t *testing.T) {
 	}
 }
 
+func TestCheckMainFinalizesMatchingRepairRequiredAssignment(t *testing.T) {
+	fixture := newFixture()
+	fixture.aimili.mainStatus = aimili.MainStatus{CandidateID: "current-main", Country: "JP", CountryName: "日本", ProxyType: "residential", ExitIP: "203.0.113.20", Port: 7928, EgressOK: true, Active: true}
+	fixture.aimili.stagedMainStatus = fixture.aimili.mainStatus
+	fixture.aimili.mainAssignment = aimili.MainAssignmentStatus{OperationID: "operation-safe-1", State: "repair_required", NewCandidateID: "current-main", Country: "JP", ProxyType: "residential", ErrorCode: "rollback_failed"}
+
+	main, err := fixture.orchestratorWithMax(t, 3).CheckMain(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if main.CandidateID != "current-main" || fixture.aimili.mainAssignment.State != "committed" {
+		t.Fatalf("main=%#v assignment=%#v", main, fixture.aimili.mainAssignment)
+	}
+	if fixture.aimili.repairCommitCalls != 1 || fixture.aimili.mainCommitCalls != 1 {
+		t.Fatalf("repair commits=%d commits=%d calls=%#v", fixture.aimili.repairCommitCalls, fixture.aimili.mainCommitCalls, fixture.calls)
+	}
+}
+
 func TestCheckMainRefreshesDynamicSubscriptionAfterMainIdentityDrift(t *testing.T) {
 	fixture := newFixture()
 	fixture.store.mainEgress = store.MainEgress{ResourceName: "agw-main", CandidateID: "old-main", CountryCode: "US", CountryName: "美国", ProxyType: domain.ProxyTypeResidential, ExitIP: "203.0.113.10", PublicInboundID: 1, MixedInboundID: 98, PublicPort: 8443, MixedPort: 31000, Enabled: true, UpdatedAt: fixture.now()}
