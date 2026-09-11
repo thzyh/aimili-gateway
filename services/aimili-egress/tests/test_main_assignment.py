@@ -161,6 +161,18 @@ class MainAssignmentCoordinatorTests(unittest.TestCase):
         self.assertEqual(result, {"ok": False, "error_code": "current_not_restorable"})
         self.assertEqual(self.executor.calls, [])
 
+    def test_bootstraps_a_missing_main_without_restore_material(self):
+        current = current_snapshot("")
+        current.update({"country": "", "proxy_type": "", "restorable": False, "config_text": ""})
+
+        result = self.stage(expected_current_candidate_id="", current=current)
+
+        self.assertEqual(result["state"], "pending_commit")
+        self.assertEqual(result["old_candidate_id"], "")
+        self.assertEqual(self.executor.calls, [("stage", "new-main")])
+        restarted = MainAssignmentCoordinator(self.path, now=lambda: self.clock[0])
+        self.assertEqual(restarted.snapshot()["state"], "pending_commit")
+
     def test_failed_candidate_validation_restores_previous_main(self):
         for failed_field in ("dns_verified", "exit_verified", "available"):
             with self.subTest(failed_field=failed_field):
@@ -874,6 +886,34 @@ class ManagerMainAssignmentTests(unittest.TestCase):
             status = manager.safe_main_status()
         self.assertEqual(status["candidate_id"], "new-main")
         self.assertNotIn("config_text", status)
+
+    def test_manager_bootstraps_a_missing_main(self):
+        manager.active_openvpn_node_id = ""
+        settings = {
+            "connection_enabled": True,
+            "routing_mode": "auto",
+            "routing_ip_type": "all",
+            "fixed_node_id": "",
+        }
+        with (
+            mock.patch.object(manager, "read_nodes", return_value=self.nodes),
+            mock.patch.object(manager, "load_ui_config", return_value=settings),
+            mock.patch.object(manager, "current_slot_node_ids", return_value=set()),
+            mock.patch.object(manager, "connect_node") as connect,
+            mock.patch.object(manager, "active_openvpn_running", return_value=True),
+            mock.patch.object(
+                manager,
+                "check_proxy_health",
+                return_value={"ok": True, "ip": "198.51.100.91", "latency_ms": 24},
+            ),
+        ):
+            staged = manager.stage_main_assignment(
+                "new-main", "JP", "datacenter", "", "gateway-bootstrap"
+            )
+
+        self.assertEqual(staged["state"], "pending_commit")
+        self.assertEqual(staged["old_candidate_id"], "")
+        connect.assert_called_once_with("new-main")
 
     def test_main_stage_reports_and_persists_proven_dial_failure(self):
         settings = {

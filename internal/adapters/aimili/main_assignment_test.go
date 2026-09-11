@@ -102,6 +102,36 @@ func TestClientRejectsInvalidMainAssignmentInputAndResponse(t *testing.T) {
 	}
 }
 
+func TestClientStagesAReplacementWhenTheCurrentMainIsMissing(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || request.URL.Path != "/control/v1/main/assign" {
+			t.Fatalf("request = %s %s", request.Method, request.URL.Path)
+		}
+		var input MainAssignmentRequest
+		if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
+			t.Fatal(err)
+		}
+		if input.ExpectedCurrentCandidateID != "" {
+			t.Fatalf("expected current candidate = %q", input.ExpectedCurrentCandidateID)
+		}
+		fmt.Fprint(response, `{"data":{"operation_id":"operation-safe-1","state":"pending_commit","old_candidate_id":"","new_candidate_id":"candidate-new","country":"JP","proxy_type":"residential","port":7928,"dns_verified":true,"exit_verified":true,"available":true,"error_code":"","expires_at":1700000180}}`)
+	}))
+	t.Cleanup(server.Close)
+	client, err := NewClient(server.URL+"/", []byte("test-token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	staged, err := client.StageMainAssignment(context.Background(), MainAssignmentRequest{
+		CandidateID: "candidate-new", Country: "JP", ProxyType: "residential",
+		ExpectedCurrentCandidateID: "", IdempotencyKey: "gateway-recreate-main",
+	})
+
+	if err != nil || staged.State != "pending_commit" || staged.OldCandidateID != "" || staged.NewCandidateID != "candidate-new" {
+		t.Fatalf("staged = %#v, err = %v", staged, err)
+	}
+}
+
 func TestClientMainRepairUsesClosedPendingGatewayValidationContract(t *testing.T) {
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {

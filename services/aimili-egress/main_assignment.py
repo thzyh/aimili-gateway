@@ -213,7 +213,7 @@ class MainAssignmentCoordinator:
             current_id = str(current.get("candidate_id") or "").strip()
             if request["expected_current_candidate_id"] != current_id:
                 return {"ok": False, "error_code": "current_mismatch"}
-            if current.get("restorable") is not True:
+            if current_id and current.get("restorable") is not True:
                 return {"ok": False, "error_code": "current_not_restorable"}
             if request["candidate_id"] in {str(value or "").strip() for value in slot_candidate_ids}:
                 return {"ok": False, "error_code": "candidate_in_use"}
@@ -621,7 +621,8 @@ class MainAssignmentCoordinator:
             or not cls._valid_identifier(operation["operation_id"], 128)
             or not isinstance(operation["state"], str)
             or operation["state"] not in _OPERATION_STATES
-            or not cls._valid_text(operation["old_candidate_id"], 256)
+            or not isinstance(operation["old_candidate_id"], str)
+            or len(operation["old_candidate_id"]) > 256
             or not cls._valid_text(operation["new_candidate_id"], 256)
             or not cls._valid_country(operation["country"])
             or not isinstance(operation["proxy_type"], str)
@@ -663,7 +664,8 @@ class MainAssignmentCoordinator:
             not isinstance(previous, dict)
             or "candidate_id" not in previous
             or set(previous) - _PREVIOUS_FIELDS
-            or not cls._valid_text(previous["candidate_id"], 256)
+            or not isinstance(previous["candidate_id"], str)
+            or len(previous["candidate_id"]) > 256
         ):
             return False
         if "country" in previous and not (

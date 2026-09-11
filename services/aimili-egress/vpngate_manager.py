@@ -816,7 +816,6 @@ def _stage_main_assignment_unlocked(
         or len(candidate_id) > 256
         or not re.fullmatch(r"[A-Z]{2}", country)
         or not proxy_type
-        or not expected
         or not 8 <= len(idempotency_key) <= 256
     ):
         return {"ok": False, "error_code": "invalid_request"}

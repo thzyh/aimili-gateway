@@ -468,7 +468,7 @@ func (c *Client) StageMainAssignment(ctx context.Context, input MainAssignmentRe
 	input.IdempotencyKey = strings.TrimSpace(input.IdempotencyKey)
 	if input.CandidateID == "" || len(input.CandidateID) > 256 ||
 		len(input.Country) != 2 || input.Country[0] < 'A' || input.Country[0] > 'Z' || input.Country[1] < 'A' || input.Country[1] > 'Z' ||
-		!domainProxyTypeValid(input.ProxyType) || input.ExpectedCurrentCandidateID == "" || len(input.ExpectedCurrentCandidateID) > 256 ||
+		!domainProxyTypeValid(input.ProxyType) || len(input.ExpectedCurrentCandidateID) > 256 ||
 		len(input.IdempotencyKey) < 8 || len(input.IdempotencyKey) > 256 || strings.IndexFunc(input.IdempotencyKey, func(character rune) bool { return character < 0x21 || character == 0x7f }) >= 0 {
 		return MainAssignmentStatus{}, &AdapterError{Code: "invalid_request"}
 	}
@@ -547,7 +547,7 @@ func validMainAssignmentStatus(result MainAssignmentStatus) bool {
 		}
 	}
 	return safeMainOperationID.MatchString(result.OperationID) &&
-		result.OldCandidateID != "" && len(result.OldCandidateID) <= 256 &&
+		len(result.OldCandidateID) <= 256 &&
 		result.NewCandidateID != "" && len(result.NewCandidateID) <= 256 &&
 		len(result.Country) == 2 && result.Country == strings.ToUpper(result.Country) &&
 		domainProxyTypeValid(result.ProxyType) && result.Port == 7928 &&
