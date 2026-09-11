@@ -22,6 +22,8 @@ const legacyAggregateVLESSPort = 21000
 
 type subscriptionReadOnlyKey struct{}
 type subscriptionAliasRepairKey struct{}
+type subscriptionMainOverrideKey struct{}
+type subscriptionValidationOnlyKey struct{}
 
 func (o *Orchestrator) verifySubscription(ctx context.Context) (SubscriptionResult, error) {
 	return o.Subscription(context.WithValue(ctx, subscriptionReadOnlyKey{}, true))
@@ -130,11 +132,15 @@ func (o *Orchestrator) Subscription(ctx context.Context) (SubscriptionResult, er
 	if len(ids) == 0 {
 		return SubscriptionResult{}, &Error{Code: "not_ready"}
 	}
+	validationOnly, _ := ctx.Value(subscriptionValidationOnlyKey{}).(bool)
 	var aliases map[int64]string
-	if len(groups) > 0 && len(ids) == len(groups)+1 {
+	if !validationOnly && len(groups) > 0 && len(ids) == len(groups)+1 {
 		mainStore, ok := o.store.(mainEgressStore)
 		if ok {
 			main, mainErr := mainStore.GetMainEgress(ctx)
+			if observed, observedOK := ctx.Value(subscriptionMainOverrideKey{}).(store.MainEgress); observedOK {
+				main, mainErr = observed, nil
+			}
 			if mainErr == nil && main.Enabled {
 				aliases, err = subscriptionAliases(main, groups)
 				if err != nil || len(aliases) != len(ids) {
@@ -191,8 +197,10 @@ func (o *Orchestrator) Subscription(ctx context.Context) (SubscriptionResult, er
 		return SubscriptionResult{}, &Error{Code: "invalid_response"}
 	}
 	updatedAt := o.config.Now().UTC()
-	if err := persistence.SaveGatewaySubscription(ctx, store.GatewaySubscription{ResourceName: subscription.ResourceName, ClientID: subscription.ClientID, SubscriptionID: subscription.SubscriptionID, UpdatedAt: updatedAt}); err != nil {
-		return SubscriptionResult{}, &Error{Code: "storage_failed"}
+	if !validationOnly {
+		if err := persistence.SaveGatewaySubscription(ctx, store.GatewaySubscription{ResourceName: subscription.ResourceName, ClientID: subscription.ClientID, SubscriptionID: subscription.SubscriptionID, UpdatedAt: updatedAt}); err != nil {
+			return SubscriptionResult{}, &Error{Code: "storage_failed"}
+		}
 	}
 	if len(subscription.PublicProfiles) != len(ids) {
 		return SubscriptionResult{}, &Error{Code: "subscription_incomplete"}
@@ -694,6 +702,9 @@ func (o *Orchestrator) checkMain(ctx context.Context, persist, allowStaleSnapsho
 		// both SOCKS5H and the current public protocol to use this exact IP.
 		status.ExitIP = stored.ExitIP
 	}
+	if persist && !validObservedMainIdentity(status) {
+		return store.MainEgress{}, &Error{Code: "not_ready"}
+	}
 	if protocols, ok := o.store.(protocolModeStore); ok {
 		if protocol, protocolErr := protocols.GetEgressProtocolMode(ctx, "agw-main"); protocolErr == nil && protocol.State == domain.ProtocolReady && protocol.ActiveMode.Valid() {
 			mainStore, mainOK := o.store.(mainEgressStore)
@@ -708,18 +719,20 @@ func (o *Orchestrator) checkMain(ctx context.Context, persist, allowStaleSnapsho
 			if credentialsErr != nil {
 				return store.MainEgress{}, credentialsErr
 			}
+			stored.CandidateID = status.CandidateID
+			stored.CountryCode = status.Country
+			stored.CountryName = status.CountryName
+			stored.ProxyType = domain.ProxyType(status.ProxyType)
+			stored.ExitIP = status.ExitIP
 			group := mainEgressGroup(stored)
-			group.ExitIP = status.ExitIP
-			socksResult, publicResult, validationErr := o.waitForCurrentMainValidation(ctx, group, credentials)
+			validationContext := context.WithValue(ctx, subscriptionMainOverrideKey{}, stored)
+			validationContext = context.WithValue(validationContext, subscriptionReadOnlyKey{}, true)
+			validationContext = context.WithValue(validationContext, subscriptionValidationOnlyKey{}, true)
+			socksResult, publicResult, validationErr := o.waitForCurrentMainValidation(validationContext, group, credentials)
 			if validationErr != nil {
 				return store.MainEgress{}, operationError(validationErr)
 			}
 			now := o.config.Now().UTC()
-			stored.CandidateID = status.CandidateID
-			stored.CountryCode = normalizedMainCountry(status.Country)
-			stored.CountryName = status.CountryName
-			stored.ProxyType = normalizedMainProxyType(status.ProxyType)
-			stored.ExitIP = status.ExitIP
 			stored.SOCKSLatencyMS = durationMillis(socksResult.Latency)
 			stored.VLESSLatencyMS = durationMillis(publicResult.Latency)
 			stored.LastCheckedAt = now
@@ -782,6 +795,16 @@ func normalizedMainProxyType(value string) domain.ProxyType {
 		return domain.ProxyTypeDatacenter
 	}
 	return proxyType
+}
+
+func validObservedMainIdentity(status aimili.MainStatus) bool {
+	candidateID := strings.TrimSpace(status.CandidateID)
+	country := strings.TrimSpace(status.Country)
+	countryName := strings.TrimSpace(status.CountryName)
+	proxyType := domain.ProxyType(strings.TrimSpace(status.ProxyType))
+	return candidateID != "" && candidateID == status.CandidateID && len(candidateID) <= 256 &&
+		len(country) == 2 && country != "ZZ" && country == strings.ToUpper(country) &&
+		countryName != "" && countryName == status.CountryName && proxyType.Valid()
 }
 
 func normalizedMainCountry(value string) string {

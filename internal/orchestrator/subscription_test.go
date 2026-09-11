@@ -566,7 +566,7 @@ func TestReplaceCandidateRejectsMissingTarget(t *testing.T) {
 
 func TestCheckMainStoresBothProtocolLatencies(t *testing.T) {
 	fixture := newFixture()
-	fixture.aimili.mainStatus = aimili.MainStatus{Country: "JP", CountryName: "日本", ProxyType: "datacenter", ExitIP: "203.0.113.20", Port: 7928, EgressOK: true, Active: true}
+	fixture.aimili.mainStatus = aimili.MainStatus{CandidateID: "main-node", Country: "JP", CountryName: "日本", ProxyType: "datacenter", ExitIP: "203.0.113.20", Port: 7928, EgressOK: true, Active: true}
 	fixture.validator.socksLatency = 12 * time.Millisecond
 	fixture.validator.vlessLatency = 18 * time.Millisecond
 	main, err := fixture.orchestratorWithMax(t, 3).CheckMain(context.Background())
@@ -632,17 +632,81 @@ func TestCheckMainRefreshesDynamicSubscriptionAfterMainIdentityDrift(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if main.CountryName != "加拿大" || main.ExitIP != "203.0.113.20" || fixture.xui.ensureSubscriptionCalls != 2 {
-		t.Fatalf("main=%#v subscription_writes=%d", main, fixture.xui.ensureSubscriptionCalls)
+	if main.CountryName != "加拿大" || main.ExitIP != "203.0.113.20" || fixture.xui.verifySubscriptionCalls != 1 || fixture.xui.ensureSubscriptionCalls != 1 {
+		t.Fatalf("main=%#v subscription_reads=%d subscription_writes=%d", main, fixture.xui.verifySubscriptionCalls, fixture.xui.ensureSubscriptionCalls)
 	}
 	if fixture.xui.subscriptionDesired.Aliases[1] != "主连接_加拿大" || fixture.xui.subscriptionDesired.Aliases[2] != "出口位 1_日本" {
 		t.Fatalf("aliases=%#v", fixture.xui.subscriptionDesired.Aliases)
 	}
 }
 
+func TestCheckMainRecoversIncompleteStoredMainMetadataBeforeSubscriptionValidation(t *testing.T) {
+	fixture := newFixture()
+	fixture.store.mainEgress = store.MainEgress{ResourceName: "agw-main", CandidateID: "current-main", CountryCode: "ZZ", CountryName: "", ProxyType: domain.ProxyTypeDatacenter, ExitIP: "203.0.113.20", PublicInboundID: 1, MixedInboundID: 98, PublicPort: 8443, MixedPort: 31000, Enabled: true, UpdatedAt: fixture.now()}
+	fixture.store.protocolModes["agw-main"] = domain.EgressProtocolMode{EgressID: "agw-main", ActiveMode: domain.ProtocolVLESSXHTTPReality, DesiredMode: domain.ProtocolVLESSXHTTPReality, State: domain.ProtocolReady, Version: 2, UpdatedAt: fixture.now()}
+	fixture.aimili.mainStatus = aimili.MainStatus{CandidateID: "current-main", Country: "JP", CountryName: "日本", ProxyType: "residential", ExitIP: "203.0.113.20", Port: 7928, EgressOK: true, Active: true}
+	fixture.xui.snapshot = xui.Snapshot{Inbounds: []xui.Inbound{{ID: 1, Tag: "aimili-reality", Remark: "Aimili Reality", Protocol: "vless", Port: 8443}}}
+	fixture.xui.subscriptionProfiles = []xui.PublicProfile{{InboundID: 1, Mode: domain.ProtocolVLESSXHTTPReality, ClientID: "test-client", PublicKey: "test-public", ShortID: "test-short", ServerName: "proxy.example.test", XHTTPPath: "/main-test"}}
+	for slot, country := range []string{"俄罗斯", "越南", "日本"} {
+		group, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeResidential, fmt.Sprintf("node-%d", slot))
+		group.Status, group.AimiliSlot, group.PublicInboundID, group.MixedInboundID = domain.ProxyGroupReady, slot, int64(slot+2), int64(slot+20)
+		group.CountryName, group.PublicPort, group.MixedPort = country, 20000+slot, 30000+slot
+		fixture.store.groups[group.ID] = group
+		fixture.xui.snapshot.Inbounds = append(fixture.xui.snapshot.Inbounds, xui.Inbound{ID: group.PublicInboundID, Tag: group.ResourceName + "-vless", Remark: "Aimili Gateway " + group.ResourceName + " VLESS", Protocol: "vless", Port: group.PublicPort})
+		fixture.xui.subscriptionProfiles = append(fixture.xui.subscriptionProfiles, xui.PublicProfile{InboundID: group.PublicInboundID, Mode: domain.ProtocolVLESSTCPRealityVision, ClientID: "test-client", PublicKey: "test-public", ShortID: "test-short", ServerName: "proxy.example.test"})
+	}
+
+	main, err := fixture.orchestratorWithMax(t, 3).CheckMain(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if main.CountryCode != "JP" || main.CountryName != "日本" || main.ProxyType != domain.ProxyTypeResidential {
+		t.Fatalf("main=%#v", main)
+	}
+	if fixture.xui.subscriptionDesired.Aliases[1] != "主连接_日本" {
+		t.Fatalf("aliases=%#v", fixture.xui.subscriptionDesired.Aliases)
+	}
+}
+
+func TestCheckMainRejectsIncompleteObservedMetadataBeforePersistence(t *testing.T) {
+	fixture := newFixture()
+	original := store.MainEgress{ResourceName: "agw-main", CandidateID: "current-main", CountryCode: "ZZ", CountryName: "", ProxyType: domain.ProxyTypeDatacenter, ExitIP: "203.0.113.20", PublicInboundID: 1, MixedInboundID: 98, PublicPort: 8443, MixedPort: 31000, Enabled: true, UpdatedAt: fixture.now()}
+	fixture.store.mainEgress = original
+	fixture.store.protocolModes["agw-main"] = domain.EgressProtocolMode{EgressID: "agw-main", ActiveMode: domain.ProtocolVLESSXHTTPReality, DesiredMode: domain.ProtocolVLESSXHTTPReality, State: domain.ProtocolReady, Version: 2, UpdatedAt: fixture.now()}
+	fixture.aimili.mainStatus = aimili.MainStatus{CandidateID: "current-main", ExitIP: "203.0.113.20", Port: 7928, EgressOK: true, Active: true}
+	fixture.xui.snapshot = xui.Snapshot{Inbounds: []xui.Inbound{{ID: 1, Tag: "aimili-reality", Remark: "Aimili Reality", Protocol: "vless", Port: 8443}}}
+	fixture.xui.subscriptionProfiles = []xui.PublicProfile{{InboundID: 1, Mode: domain.ProtocolVLESSXHTTPReality, ClientID: "test-client", PublicKey: "test-public", ShortID: "test-short", ServerName: "proxy.example.test", XHTTPPath: "/main-test"}}
+
+	_, err := fixture.orchestratorWithMax(t, 3).CheckMain(context.Background())
+	if codeOf(err) != "not_ready" {
+		t.Fatalf("error=%v", err)
+	}
+	if fixture.store.mainEgress != original {
+		t.Fatalf("stored main changed: %#v", fixture.store.mainEgress)
+	}
+}
+
+func TestCheckMainDoesNotPersistSubscriptionBeforePublicValidation(t *testing.T) {
+	fixture := newFixture()
+	fixture.store.mainEgress = store.MainEgress{ResourceName: "agw-main", CandidateID: "current-main", CountryCode: "JP", CountryName: "日本", ProxyType: domain.ProxyTypeResidential, ExitIP: "203.0.113.20", PublicInboundID: 1, MixedInboundID: 98, PublicPort: 8443, MixedPort: 31000, Enabled: true, UpdatedAt: fixture.now()}
+	fixture.store.protocolModes["agw-main"] = domain.EgressProtocolMode{EgressID: "agw-main", ActiveMode: domain.ProtocolVLESSXHTTPReality, DesiredMode: domain.ProtocolVLESSXHTTPReality, State: domain.ProtocolReady, Version: 2, UpdatedAt: fixture.now()}
+	fixture.aimili.mainStatus = aimili.MainStatus{CandidateID: "current-main", Country: "JP", CountryName: "日本", ProxyType: "residential", ExitIP: "203.0.113.20", Port: 7928, EgressOK: true, Active: true}
+	fixture.xui.snapshot = xui.Snapshot{Inbounds: []xui.Inbound{{ID: 1, Tag: "aimili-reality", Remark: "Aimili Reality", Protocol: "vless", Port: 8443}}}
+	fixture.xui.subscriptionProfiles = []xui.PublicProfile{{InboundID: 1, Mode: domain.ProtocolVLESSXHTTPReality, ClientID: "test-client", PublicKey: "test-public", ShortID: "test-short", ServerName: "proxy.example.test", XHTTPPath: "/main-test"}}
+	fixture.validator.publicErrors = []error{&validator.Error{Code: "invalid_configuration"}}
+
+	_, err := fixture.orchestratorWithMax(t, 3).CheckMain(context.Background())
+	if codeOf(err) != "invalid_configuration" {
+		t.Fatalf("error=%v", err)
+	}
+	if fixture.xui.ensureSubscriptionCalls != 0 || fixture.xui.verifySubscriptionCalls != 1 || fixture.store.subscriptionWrites != 0 {
+		t.Fatalf("ensure=%d verify=%d subscriptionWrites=%d", fixture.xui.ensureSubscriptionCalls, fixture.xui.verifySubscriptionCalls, fixture.store.subscriptionWrites)
+	}
+}
+
 func TestCheckMainWaitsForBothProtocolsAfterXrayReload(t *testing.T) {
 	fixture := newFixture()
-	fixture.aimili.mainStatus = aimili.MainStatus{Country: "JP", CountryName: "日本", ProxyType: "datacenter", ExitIP: "203.0.113.20", Port: 7928, EgressOK: true, Active: true}
+	fixture.aimili.mainStatus = aimili.MainStatus{CandidateID: "main-node", Country: "JP", CountryName: "日本", ProxyType: "datacenter", ExitIP: "203.0.113.20", Port: 7928, EgressOK: true, Active: true}
 	fixture.validator.socksErrors = []error{&validator.Error{Code: "connection_failed"}, nil}
 	fixture.validator.vlessErrors = []error{&validator.Error{Code: "protocol_failed"}, nil}
 	fixture.validator.socksLatency = 12 * time.Millisecond

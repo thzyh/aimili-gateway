@@ -102,6 +102,25 @@ func TestClientRejectsInvalidMainAssignmentInputAndResponse(t *testing.T) {
 	}
 }
 
+func TestClientAcceptsRepairRequiredAssignmentResolution(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet || request.URL.Path != "/control/v1/main/assignment" {
+			t.Fatalf("assignment request = %s %s", request.Method, request.URL.Path)
+		}
+		fmt.Fprint(response, `{"data":{"operation_id":"operation-safe-1","state":"repair_required","old_candidate_id":"","new_candidate_id":"candidate-new","country":"JP","proxy_type":"residential","port":7928,"dns_verified":false,"exit_verified":false,"available":false,"error_code":"rollback_failed","resolution":"repair_commit","expires_at":1700000180}}`)
+	}))
+	t.Cleanup(server.Close)
+	client, err := NewClient(server.URL+"/", []byte("test-token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := client.MainAssignment(context.Background())
+	if err != nil || status.State != "repair_required" || status.Resolution != "repair_commit" {
+		t.Fatalf("status=%#v err=%v", status, err)
+	}
+}
+
 func TestClientStagesAReplacementWhenTheCurrentMainIsMissing(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodPost || request.URL.Path != "/control/v1/main/assign" {

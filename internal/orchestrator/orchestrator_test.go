@@ -190,7 +190,7 @@ func TestReadyExitIPsNormalizesAddressesAndExcludesOneGroup(t *testing.T) {
 
 func TestPoolIncludesHealthyLegacyMainAsFourthEgress(t *testing.T) {
 	fixture := newFixture()
-	fixture.aimili.mainStatus = aimili.MainStatus{Country: "JP", CountryName: "日本", ProxyType: "datacenter", ExitIP: "203.0.113.20", Port: 7928, EgressOK: true, Active: true}
+	fixture.aimili.mainStatus = aimili.MainStatus{CandidateID: "main-node", Country: "JP", CountryName: "日本", ProxyType: "datacenter", ExitIP: "203.0.113.20", Port: 7928, EgressOK: true, Active: true}
 	pool, err := fixture.orchestratorWithMax(t, 3).Pool(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -537,6 +537,7 @@ type fakeStore struct {
 	enforceUniqueSlots   bool
 	mainEgress           store.MainEgress
 	subscription         store.GatewaySubscription
+	subscriptionWrites   int
 	aggregate            store.AggregateConfig
 	protocolModes        map[string]domain.EgressProtocolMode
 	protocolUpdates      int
@@ -717,6 +718,7 @@ func (s *fakeStore) GetMainEgress(context.Context) (store.MainEgress, error) {
 	return s.mainEgress, nil
 }
 func (s *fakeStore) SaveGatewaySubscription(_ context.Context, value store.GatewaySubscription) error {
+	s.subscriptionWrites++
 	s.subscription = value
 	return nil
 }

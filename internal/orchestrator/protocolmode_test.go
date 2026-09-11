@@ -307,12 +307,12 @@ func TestCanResumeInterruptedProtocolModeRequiresMatchingRecoveredTransactionFin
 func TestSwitchMainProtocolChecksMainTunnelAndMixedPath(t *testing.T) {
 	fixture := newFixture()
 	fixture.store.mainEgress = store.MainEgress{
-		ResourceName: "agw-main", CountryCode: "US", ProxyType: domain.ProxyTypeDatacenter,
+		ResourceName: "agw-main", CountryCode: "US", CountryName: "美国", ProxyType: domain.ProxyTypeDatacenter,
 		CandidateID: "main-node", ExitIP: "203.0.113.10", PublicInboundID: 7, MixedInboundID: 8,
 		PublicPort: 8443, MixedPort: 31000, Enabled: true, UpdatedAt: fixture.now(),
 	}
 	fixture.store.protocolModes["agw-main"] = domain.EgressProtocolMode{EgressID: "agw-main", ActiveMode: domain.ProtocolVLESSXHTTPReality, DesiredMode: domain.ProtocolVLESSXHTTPReality, State: domain.ProtocolReady, Version: 1, UpdatedAt: fixture.now()}
-	fixture.aimili.mainStatus = aimili.MainStatus{CandidateID: "main-node", Country: "US", ProxyType: "datacenter", ExitIP: "203.0.113.10", Port: 7928, EgressOK: true, Active: true}
+	fixture.aimili.mainStatus = aimili.MainStatus{CandidateID: "main-node", Country: "US", CountryName: "美国", ProxyType: "datacenter", ExitIP: "203.0.113.10", Port: 7928, EgressOK: true, Active: true}
 	fixture.xui.snapshot.Inbounds = []xui.Inbound{{ID: 7, Tag: "aimili-reality", Remark: "Aimili Reality", Protocol: "vless", Port: 8443}}
 	fixture.xui.profileSequences = [][]xui.PublicProfile{
 		{{InboundID: 7, Mode: domain.ProtocolVLESSXHTTPReality, ClientID: "client-id", PublicKey: "public-key", ShortID: "short-id", ServerName: "proxy.example.test", XHTTPPath: "/current-path"}},
@@ -644,12 +644,12 @@ func drainSignals(signals <-chan struct{}) {
 func mainProtocolFixture() *fixture {
 	fixture := newFixture()
 	fixture.store.mainEgress = store.MainEgress{
-		ResourceName: "agw-main", CountryCode: "US", ProxyType: domain.ProxyTypeDatacenter,
+		ResourceName: "agw-main", CountryCode: "US", CountryName: "美国", ProxyType: domain.ProxyTypeDatacenter,
 		CandidateID: "main-node", ExitIP: "203.0.113.10", PublicInboundID: 7, MixedInboundID: 8,
 		PublicPort: 8443, MixedPort: 31000, Enabled: true, UpdatedAt: fixture.now(),
 	}
 	fixture.store.protocolModes["agw-main"] = domain.EgressProtocolMode{EgressID: "agw-main", ActiveMode: domain.ProtocolVLESSXHTTPReality, DesiredMode: domain.ProtocolVLESSXHTTPReality, State: domain.ProtocolReady, Version: 1, UpdatedAt: fixture.now()}
-	fixture.aimili.mainStatus = aimili.MainStatus{CandidateID: "main-node", Country: "US", ProxyType: "datacenter", ExitIP: "203.0.113.10", Port: 7928, EgressOK: true, Active: true}
+	fixture.aimili.mainStatus = aimili.MainStatus{CandidateID: "main-node", Country: "US", CountryName: "美国", ProxyType: "datacenter", ExitIP: "203.0.113.10", Port: 7928, EgressOK: true, Active: true}
 	fixture.xui.snapshot.Inbounds = []xui.Inbound{{ID: 7, Tag: "aimili-reality", Remark: "Aimili Reality", Protocol: "vless", Port: 8443}}
 	fixture.xui.profileSequences = [][]xui.PublicProfile{
 		{{InboundID: 7, Mode: domain.ProtocolVLESSXHTTPReality, ClientID: "client-id", PublicKey: "public-key", ShortID: "short-id", ServerName: "proxy.example.test", XHTTPPath: "/current-path"}},

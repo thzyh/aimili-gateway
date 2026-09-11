@@ -542,7 +542,7 @@ func validMainAssignmentStatus(result MainAssignmentStatus) bool {
 	}
 	if result.Resolution != "" {
 		if (result.Resolution != "repair_commit" && result.Resolution != "repair_replace") ||
-			(result.State != "pending_gateway_validation" && result.State != "committed") {
+			(result.State != "pending_gateway_validation" && result.State != "committed" && result.State != "repair_required") {
 			return false
 		}
 	}
