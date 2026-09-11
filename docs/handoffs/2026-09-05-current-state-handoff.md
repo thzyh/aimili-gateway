@@ -4,6 +4,16 @@
 
 ## 2026-09-11 ny 出口隔离与统一仓库
 
+### 14:58 最终浏览器验收（取代本节较早快照）
+
+- ny Gateway 当前功能版本为 `v1.0.6`。人工替换后端修复提交为 `97fb97689104117a85ff589a7bdb6207345b98c1`；安全诊断日志提交为 `90347f2d6827f21f32e8dda8a8f981998f6ffebd`。诊断日志只记录操作阶段、逻辑出口 ID、槽位和安全错误码，不记录用户名或密码。
+- Codex 已接管用户现有的已登录 Edge 标签 `https://ny.zouyunhui.cc.cd/socks5h` 完成真实页面验收。此前“卡在登录”不是账号或网站故障，而是误操作了另一个空白浏览器标签；现已直接复用保存凭据的正确标签。
+- 故障出口没有隐藏：当前主连接和出口位 2 的故障行均保留，并同时提供“复核状态”和“人工更换”。出口位 1 的人工替换弹窗、固定槽位、候选选择、执行中反馈和失败回滚均已真实走通；所选美国候选未通过最终出口检查后，系统恢复原俄罗斯节点，出口位 1 当前为 `ready`。
+- SOCKS5H 页面存在“随机更换用户名和密码”。首次验收时 3x-ui 已完成四组新账号写入，但写入后的真实代理验证失败，随后完整回滚；当时旧版本未记录具体出口和错误码，因此不能把失败原因猜成某一种网络或认证错误。增加安全阶段日志并仅重启 Gateway 后，同一浏览器操作真实成功，页面提示旧地址已失效。
+- 成功后数据库中 `mixed-username` 和 `mixed-password` 的密文摘要、`updated_at` 均已变化，时间戳为 `1789109248047`，`PRAGMA integrity_check=ok`。这证明不是只有前端提示变化，新的凭据已持久保存。轮换事务自身对两个健康出口完成 SOCKS5H、代理 DNS 和预期出口 IP 验证；故障出口保留新设置但不参与健康验证。
+- 最新服务门禁：`aimili-gateway`、`aimilivpn`、`x-ui`、`caddy` 均为 active/running，四项 `NRestarts=0`。只按需重启了 Gateway；AimiliVPN、x-ui 和 Caddy 的 PID 未变化。唯一 `/usr/local/bin/aimili-gateway.previous` 继续保留，没有新建第二个永久备份。
+- 本地最新验证：前端 66/66、生产构建、`go test ./... -race -count=1`、`go vet -buildvcs=false ./...`、Windows/Linux 的 Gateway 和 admin 构建均通过。没有操作其他 VPS，没有删除 `aimili-vpngate`，没有推送远程。
+
 - ny 当前 Gateway 已部署 `v1.0.4`，源码提交为 `e3690f2dcee7cae264650b0341bd3b8c557c0b08`；签名前端版本仍为 `70f70194bdc0cb1cfd9932df46da0678956af42660ac88ae7dbcf611c6b4805c`。出口引擎已正式从 `/opt/aimili-gateway/services/aimili-egress` 启动，持久数据继续使用 `/opt/aimilivpn/vpngate_data`，实现“一个仓库、两个独立服务”的生产布局。
 - 出口检测现会先区分“VPN 隧道/真实出口失效”和“本地代理或路由异常”。前者在同一个检测请求内领取本次故障唯一一次同国替换机会；后者只报告本地链路故障，不更换 IP。前端故障按钮显示“检测并自动修复”，等待期间说明一次性规则，并分别显示修复成功、无同国候选、替换失败和此前已尝试。
 - 2026-09-11 06:50（Asia/Shanghai）纠正了出口 1 属于旧受控测试的修复记录，并通过 Control API 执行当前故障的一次真实检测与修复。响应明确为 `auto_repair_performed=true`，结果为 `no_same_country_candidate`；出口 1 保留为 `disconnected/manual_required`，没有消失。随后重启 `aimilivpn.service` 并跨过后台检查周期，`attempt_count` 仍为 1、`attempted_at` 完全不变，新增自动修复日志为 0。

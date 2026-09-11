@@ -82,3 +82,27 @@
 ## 原仓库分叉处理
 
 `aimili-vpngate` 的本地 `custom` 工作区在操作前为干净状态，随后通过 `git merge --ff-only feat/main-switch-protocol-modes` 从 `c98aa1e` 快进到 `ed102e3`。快进后 `custom` 与功能分支指向同一提交；没有创建新分支、没有产生新的合并提交、没有强制改写历史。随后 Python 编译检查和 204 项单元测试全部通过。
+
+## 故障出口人工替换与 SOCKS5H 凭据轮换
+
+### 人工替换真实验收
+
+- 前端对 `degraded`、`repair_required` 出口持续显示原逻辑槽位，不再隐藏，并提供“复核状态”和“人工更换”。
+- 现场首次点击人工替换时，前端已允许故障出口，后端却只允许 `ready`，请求返回 `conflict`。回归测试复现后，后端改为允许 `ready`、`degraded`、`repair_required` 作为人工替换目标，提交为 `97fb97689104117a85ff589a7bdb6207345b98c1`。
+- 部署后选择美国住宅候选替换出口位 1：OpenVPN、`tun120`、策略路由表 200 和临时候选槽位均成功建立，但最终 `/control/v1/slots/0/check` 返回 409。系统自动恢复原俄罗斯候选，恢复后的检查返回 200；Gateway 数据库中出口位 1 为 `RU/residential/ready`，公网端口 20000、mixed 端口 30000，错误字段为空。
+- 因此人工替换入口、执行过程和失败回滚均已真实验证；失败的美国候选没有被误标成成功。
+
+### SOCKS5H 凭据轮换真实验收
+
+- 页面新增“随机更换用户名和密码”，请求为 `POST /api/v1/settings/socks5h-credentials/rotate`。新凭据先应用到主连接和所有受管出口；只对当时健康的出口做真实 SOCKS5H、代理 DNS 和出口 IP 验证；全部通过后才原子保存密文。任何步骤失败都会恢复旧的 3x-ui 配置和数据库状态。
+- 首次浏览器操作显示执行中反馈，3x-ui 日志证明四组入站都完成了新账号写入，随后又执行了对应回滚。失败发生在“写入后的真实验证”阶段，不是登录、按钮、API 权限或 3x-ui 写入阶段。旧版本没有记录具体出口和验证错误码，因此不把这一次历史失败猜成认证、DNS、超时或出口不一致。
+- 提交 `90347f2d6827f21f32e8dda8a8f981998f6ffebd` 增加安全诊断日志，只记录阶段、逻辑出口 ID、槽位和错误码，不输出账号密码。Gateway 部署并恢复监听后，在用户已有登录信息的浏览器标签中再次执行同一操作，页面明确显示“SOCKS5H 用户名和密码已更换；旧代理地址已失效”。本次没有产生失败日志或回滚更新。
+- 成功后的数据库证据：`mixed-username` 密文 SHA-256 为 `3ce43452...50a3`，`mixed-password` 密文 SHA-256 为 `7513412e...fb15`，两者 `updated_at=1789109248047`；均不同于失败回滚后的旧摘要，且 `PRAGMA integrity_check=ok`。本文只记录截断密文摘要，不记录任何可用凭据。
+- 四服务最终均 active/running 且 `NRestarts=0`；只重启 Gateway，AimiliVPN、x-ui、Caddy PID 不变。仍只有 `/usr/local/bin/aimili-gateway.previous` 一个二进制回滚副本。
+
+### 最新本地验证
+
+- 前端：66/66 测试通过，`vue-tsc --noEmit` 与 Vite 生产构建通过。
+- Gateway：`go test ./... -race -count=1` 与 `go vet -buildvcs=false ./...` 通过。
+- Windows/Linux 的 Gateway 和 admin 四个构建均通过。
+- 未操作其他 VPS，未删除原 `aimili-vpngate`，未推送远程分支。
