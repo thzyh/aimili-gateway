@@ -600,6 +600,20 @@ func TestCheckMainFinalizesMatchingRepairRequiredAssignment(t *testing.T) {
 	}
 }
 
+func TestCheckMainUsesStoredExitForFreshValidationWhenAimiliSnapshotIsTransientlyStale(t *testing.T) {
+	fixture := newFixture()
+	fixture.store.mainEgress = store.MainEgress{ResourceName: "agw-main", CandidateID: "current-main", CountryCode: "JP", CountryName: "日本", ProxyType: domain.ProxyTypeResidential, ExitIP: "203.0.113.20", PublicInboundID: 1, MixedInboundID: 98, PublicPort: 8443, MixedPort: 31000, Enabled: true, UpdatedAt: fixture.now()}
+	fixture.aimili.mainStatus = aimili.MainStatus{CandidateID: "current-main", Country: "JP", CountryName: "日本", ProxyType: "residential", Port: 7928, EgressOK: false, Active: true}
+
+	main, err := fixture.orchestratorWithMax(t, 3).CheckMain(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if main.ExitIP != "203.0.113.20" || !main.Enabled || fixture.validator.socksCalls != 1 || fixture.validator.vlessCalls != 1 {
+		t.Fatalf("main=%#v socks=%d vless=%d", main, fixture.validator.socksCalls, fixture.validator.vlessCalls)
+	}
+}
+
 func TestCheckMainRefreshesDynamicSubscriptionAfterMainIdentityDrift(t *testing.T) {
 	fixture := newFixture()
 	fixture.store.mainEgress = store.MainEgress{ResourceName: "agw-main", CandidateID: "old-main", CountryCode: "US", CountryName: "美国", ProxyType: domain.ProxyTypeResidential, ExitIP: "203.0.113.10", PublicInboundID: 1, MixedInboundID: 98, PublicPort: 8443, MixedPort: 31000, Enabled: true, UpdatedAt: fixture.now()}

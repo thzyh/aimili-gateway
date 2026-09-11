@@ -708,7 +708,7 @@ func (o *Orchestrator) syncProtocolTargetEgress(ctx context.Context, target prot
 		applySlotSnapshot(&target.group, checked)
 		return target, nil
 	}
-	if _, err := o.checkMain(ctx, true); err != nil {
+	if _, err := o.checkMain(ctx, true, false); err != nil {
 		return protocolTarget{}, err
 	}
 	return o.protocolTarget(ctx, target.egressID)

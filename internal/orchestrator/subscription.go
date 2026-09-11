@@ -377,7 +377,7 @@ func (o *Orchestrator) replaceMainCandidate(ctx context.Context, candidateID str
 		return domain.ProxyGroup{}, operationError(err)
 	}
 	if current.Active && current.EgressOK && current.CandidateID != "" && mainCandidateMatches(candidateID, current.CandidateID, current.Country, current.ProxyType) {
-		checked, checkErr := o.checkMain(ctx, false)
+		checked, checkErr := o.checkMain(ctx, false, false)
 		if checkErr != nil {
 			return domain.ProxyGroup{}, checkErr
 		}
@@ -416,7 +416,7 @@ func (o *Orchestrator) replaceMainCandidate(ctx context.Context, candidateID str
 	if staged.State != "pending_commit" || !staged.DNSVerified || !staged.ExitVerified || !staged.Available {
 		return o.rollbackMainCandidate(ctx, manager, staged.OperationID, &Error{Code: "egress_unavailable"})
 	}
-	checked, err := o.checkMain(ctx, false)
+	checked, err := o.checkMain(ctx, false, false)
 	if err != nil {
 		return o.rollbackMainCandidate(ctx, manager, staged.OperationID, err)
 	}
@@ -496,7 +496,7 @@ func (o *Orchestrator) repairMainCandidate(ctx context.Context, manager mainAssi
 	if pending.State != "committed" && (!pending.DNSVerified || !pending.ExitVerified || !pending.Available) {
 		return domain.ProxyGroup{}, &Error{Code: "egress_unavailable"}
 	}
-	checked, err := o.checkMain(ctx, false)
+	checked, err := o.checkMain(ctx, false, false)
 	if err != nil {
 		return domain.ProxyGroup{}, operationError(err)
 	}
@@ -549,7 +549,7 @@ func (o *Orchestrator) rollbackMainCandidate(ctx context.Context, manager mainAs
 	if rollbackErr != nil || rolled.State != "rolled_back" {
 		return domain.ProxyGroup{}, &Error{Code: "repair_required"}
 	}
-	if _, verifyErr := o.checkMain(ctx, true); verifyErr != nil {
+	if _, verifyErr := o.checkMain(ctx, true, false); verifyErr != nil {
 		return domain.ProxyGroup{}, &Error{Code: "repair_required"}
 	}
 	if subscriptionErr := o.refreshDynamicSubscription(ctx); subscriptionErr != nil {
@@ -609,7 +609,7 @@ func (o *Orchestrator) rollbackCandidateReplacement(ctx context.Context, group d
 }
 
 func (o *Orchestrator) CheckMain(ctx context.Context) (store.MainEgress, error) {
-	checked, err := o.checkMain(ctx, true)
+	checked, err := o.checkMain(ctx, true, true)
 	if err != nil {
 		return store.MainEgress{}, err
 	}
@@ -669,13 +669,30 @@ func (o *Orchestrator) finalizeCheckedMainAssignment(ctx context.Context, checke
 	return nil
 }
 
-func (o *Orchestrator) checkMain(ctx context.Context, persist bool) (store.MainEgress, error) {
+func (o *Orchestrator) checkMain(ctx context.Context, persist, allowStaleSnapshot bool) (store.MainEgress, error) {
 	status, err := o.aimili.MainStatus(ctx)
 	if err != nil {
 		return store.MainEgress{}, operationError(err)
 	}
-	if !status.Active || !status.EgressOK || status.Port != 7928 || net.ParseIP(status.ExitIP) == nil {
+	if !status.Active || status.Port != 7928 {
 		return store.MainEgress{}, &Error{Code: "not_ready"}
+	}
+	if !status.EgressOK || net.ParseIP(status.ExitIP) == nil {
+		if !allowStaleSnapshot {
+			return store.MainEgress{}, &Error{Code: "not_ready"}
+		}
+		mainStore, ok := o.store.(mainEgressStore)
+		if !ok {
+			return store.MainEgress{}, &Error{Code: "not_configured"}
+		}
+		stored, storedErr := mainStore.GetMainEgress(ctx)
+		if storedErr != nil || !stored.Enabled || strings.TrimSpace(stored.CandidateID) != strings.TrimSpace(status.CandidateID) || net.ParseIP(stored.ExitIP) == nil {
+			return store.MainEgress{}, &Error{Code: "not_ready"}
+		}
+		// AimiliVPN's background snapshot may briefly lag behind a recovered
+		// tunnel. The validations below are authoritative and still require
+		// both SOCKS5H and the current public protocol to use this exact IP.
+		status.ExitIP = stored.ExitIP
 	}
 	if protocols, ok := o.store.(protocolModeStore); ok {
 		if protocol, protocolErr := protocols.GetEgressProtocolMode(ctx, "agw-main"); protocolErr == nil && protocol.State == domain.ProtocolReady && protocol.ActiveMode.Valid() {
