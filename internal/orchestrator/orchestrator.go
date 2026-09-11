@@ -146,6 +146,10 @@ type protocolModeStore interface {
 	UpdateEgressProtocolMode(context.Context, domain.EgressProtocolMode, int64) error
 }
 
+type mixedCredentialStore interface {
+	ReplaceMixedCredentials(context.Context, []byte, []byte, []byte) error
+}
+
 type protocolTransactionClient interface {
 	Apply(context.Context, protocoltxn.Request) (protocoltxn.Result, error)
 	Renew(context.Context, string) (protocoltxn.Result, error)

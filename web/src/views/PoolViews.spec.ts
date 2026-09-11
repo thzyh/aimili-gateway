@@ -182,7 +182,7 @@ it('offers a degraded runtime slot the same safe recheck and synchronization act
 it('keeps a failed automatic repair visible and tells the user to replace it manually', async () => {
 	const manualRow = { ...rows[1], id: 'manual-slot', status: 'degraded', lastErrorCode: 'manual_replacement_required' }
 	mocks.apiFetch.mockImplementation((path: string) => {
-		if (path === '/api/v1/proxy-groups') return Promise.resolve([manualRow])
+		if (path === '/api/v1/proxy-groups') return Promise.resolve([manualRow, rows[3]])
 		if (path === '/api/v1/settings/aimilivpn/countries') return Promise.resolve([])
 		if (path === '/api/v1/settings/aimilivpn/refresh') return Promise.resolve({ state: 'idle', country: '', phase: '', testedCount: 0, validCount: 0 })
 		return Promise.resolve(undefined)
@@ -193,6 +193,45 @@ it('keeps a failed automatic repair visible and tells the user to replace it man
 	expect(wrapper.get('[data-row-id="manual-slot"]').attributes('data-row-id')).toBe('manual-slot')
 	expect(wrapper.get('[data-row-detail="manual-slot"]').text()).toContain('自动修复已失败，等待人工更换')
 	expect(wrapper.get('[data-repair="manual-slot"]').text()).toBe('复核状态')
+	expect(wrapper.get('[data-manual-replace="manual-slot"]').text()).toBe('人工更换')
+
+	await wrapper.get('[data-manual-replace="manual-slot"]').trigger('click')
+	expect(wrapper.get('[data-replace-dialog]').text()).toContain('人工更换出口位 1')
+	expect(wrapper.get('[data-replace-fixed-target]').text()).toContain('出口位 1')
+	expect(wrapper.get('[data-replace-candidate]').text()).toContain('美国')
+	await wrapper.get('[data-confirm-replace]').trigger('click')
+	await flushPromises()
+	expect(mocks.apiFetch).toHaveBeenCalledWith('/api/v1/proxy-groups/us-standby/replace', {
+		method: 'POST', headers: { 'Idempotency-Key': 'test-key' }, body: JSON.stringify({ targetGroupId: 'manual-slot' }),
+	})
+})
+
+it('rotates SOCKS5H credentials with visible progress and a safe success message', async () => {
+	let finishRotation!: () => void
+	const pendingRotation = new Promise<void>(resolve => { finishRotation = resolve })
+	mocks.apiFetch.mockImplementation((path: string, init?: RequestInit) => {
+		if (path === '/api/v1/proxy-groups') return Promise.resolve(rows)
+		if (path === '/api/v1/settings/aimilivpn/countries') return Promise.resolve([])
+		if (path === '/api/v1/settings/aimilivpn/refresh') return Promise.resolve({ state: 'idle', country: '', phase: '', testedCount: 0, validCount: 0 })
+		if (path === '/api/v1/settings/socks5h-credentials/rotate' && init?.method === 'POST') return pendingRotation
+		return Promise.resolve(undefined)
+	})
+	const wrapper = mount(SocksPoolView)
+	await flushPromises()
+
+	await wrapper.get('[data-rotate-socks-credentials]').trigger('click')
+	await wrapper.vm.$nextTick()
+	expect(wrapper.get('[data-top-notice]').attributes('data-notice-kind')).toBe('progress')
+	expect(wrapper.get('[data-top-notice]').text()).toContain('正在随机更换 SOCKS5H 用户名和密码')
+	expect(mocks.apiFetch).toHaveBeenCalledWith('/api/v1/settings/socks5h-credentials/rotate', {
+		method: 'POST', headers: { 'Idempotency-Key': 'test-key' },
+	})
+
+	finishRotation()
+	await flushPromises()
+	expect(wrapper.get('[data-top-notice]').attributes('data-notice-kind')).toBe('success')
+	expect(wrapper.get('[data-top-notice]').text()).toContain('旧代理地址已失效')
+	expect(wrapper.text()).not.toContain('proxy-password')
 })
 
 it('shows closable progress and success feedback when a ready exit passes detection', async () => {

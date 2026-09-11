@@ -610,6 +610,33 @@ type mixedPolicyResponse struct {
 	ApplyStatus string   `json:"applyStatus"`
 }
 
+type mixedCredentialRotationResponse struct {
+	RotatedAt time.Time `json:"rotatedAt"`
+}
+
+func (s *server) handleRotateMixedCredentials(response http.ResponseWriter, request *http.Request) {
+	session, ok := s.authorizeMutation(response, request)
+	if !ok {
+		return
+	}
+	key, hit, ok := s.idempotencyKey(response, request, session)
+	if !ok {
+		return
+	}
+	if hit != nil {
+		writeCached(response, *hit)
+		return
+	}
+	rotatedAt, err := s.proxyManager.RotateMixedCredentials(request.Context())
+	if err != nil {
+		writeProxyError(response, err)
+		return
+	}
+	result := mixedCredentialRotationResponse{RotatedAt: rotatedAt}
+	s.storeIdempotent(key, http.StatusOK, result)
+	writeJSON(response, http.StatusOK, result)
+}
+
 func (s *server) handleGetMixedPolicy(response http.ResponseWriter, request *http.Request) {
 	if _, ok := s.authenticateOrWrite(response, request); !ok {
 		return

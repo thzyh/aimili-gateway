@@ -69,6 +69,43 @@ func TestConnectionsRequireOnlyAnAuthenticatedSession(t *testing.T) {
 	}
 }
 
+func TestRotateMixedCredentialsRequiresMutationGuardsIsIdempotentAndReturnsNoSecret(t *testing.T) {
+	manager := &fakeProxyManager{}
+	environment := newAuthTestEnvironmentConfigured(t, true, func(dependencies *Dependencies) { dependencies.ProxyManager = manager })
+	path := "/api/v1/settings/socks5h-credentials/rotate"
+	assertResponseStatus(t, environment.request(t, http.MethodPost, path, nil, "", ""), http.StatusUnauthorized)
+	assertResponseStatus(t, environment.login(t), http.StatusNoContent)
+	csrf := environment.session(t).CSRFToken
+	assertResponseStatus(t, environment.request(t, http.MethodPost, path, nil, environment.origin, csrf), http.StatusPreconditionRequired)
+	first := environment.requestWithHeaders(t, http.MethodPost, path, nil, environment.origin, csrf, map[string]string{"Idempotency-Key": "rotate-mixed-safe"})
+	defer first.Body.Close()
+	if first.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", first.StatusCode)
+	}
+	var payload map[string]any
+	if err := json.NewDecoder(first.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ := json.Marshal(payload)
+	if payload["rotatedAt"] == nil || string(encoded) == "" || containsSensitiveCredentialField(payload) {
+		t.Fatalf("unsafe response = %s", encoded)
+	}
+	second := environment.requestWithHeaders(t, http.MethodPost, path, nil, environment.origin, csrf, map[string]string{"Idempotency-Key": "rotate-mixed-safe"})
+	assertResponseStatus(t, second, http.StatusOK)
+	if manager.rotateMixedCredentialsCalls != 1 {
+		t.Fatalf("rotation calls=%d", manager.rotateMixedCredentialsCalls)
+	}
+}
+
+func containsSensitiveCredentialField(payload map[string]any) bool {
+	for _, key := range []string{"username", "password", "mixedUsername", "mixedPassword"} {
+		if _, exists := payload[key]; exists {
+			return true
+		}
+	}
+	return false
+}
+
 func TestLegacyAggregateConnectionsAreGoneAndCannotRecreateResources(t *testing.T) {
 	manager := &fakeProxyManager{}
 	environment := newAuthTestEnvironmentConfigured(t, true, func(dependencies *Dependencies) { dependencies.ProxyManager = manager })
@@ -633,20 +670,26 @@ func (e *authTestEnvironment) requestWithHeaders(t *testing.T, method, path stri
 }
 
 type fakeProxyManager struct {
-	enableCalls           int
-	activateCalls         int
-	activatedID           string
-	groups                []domain.ProxyGroup
-	mixedPolicy           store.MixedSourcePolicy
-	replaceCalls          int
-	replacedCandidate     string
-	checkMainCalls        int
-	cleanupCalls          int
-	protocolCalls         int
-	protocolTarget        domain.ProtocolMode
-	protocolExpected      domain.ProtocolMode
-	protocolError         error
-	protocolResumeAllowed bool
+	enableCalls                 int
+	activateCalls               int
+	activatedID                 string
+	groups                      []domain.ProxyGroup
+	mixedPolicy                 store.MixedSourcePolicy
+	replaceCalls                int
+	replacedCandidate           string
+	checkMainCalls              int
+	cleanupCalls                int
+	protocolCalls               int
+	protocolTarget              domain.ProtocolMode
+	protocolExpected            domain.ProtocolMode
+	protocolError               error
+	protocolResumeAllowed       bool
+	rotateMixedCredentialsCalls int
+}
+
+func (m *fakeProxyManager) RotateMixedCredentials(context.Context) (time.Time, error) {
+	m.rotateMixedCredentialsCalls++
+	return time.Unix(1700000000, 0).UTC(), nil
 }
 
 func (m *fakeProxyManager) SwitchProtocolModeExpected(_ context.Context, egressID string, target, expected domain.ProtocolMode) (domain.EgressProtocolMode, error) {

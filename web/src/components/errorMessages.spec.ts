@@ -12,6 +12,12 @@ describe('messageForCode', () => {
   it('uses a safe fallback for unknown codes', () => {
     expect(messageForCode('unrecognized_internal_code', '刷新失败')).toBe('刷新失败')
   })
+
+  it('explains that a failed SOCKS5H rotation kept the old credential pair', () => {
+    const message = messageForCode('mixed_credentials_apply_failed', '更换失败')
+    expect(message).toContain('已恢复原来的账号密码')
+    expect(message).not.toContain('mixed_credentials_apply_failed')
+  })
 })
 
 describe('countryDisplayName', () => {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"strings"
 	"testing"
 
 	"github.com/thzyh/aimili-gateway/internal/adapters/aimili"
@@ -12,6 +13,90 @@ import (
 	"github.com/thzyh/aimili-gateway/internal/store"
 	"github.com/thzyh/aimili-gateway/internal/validator"
 )
+
+func TestRotateMixedCredentialsUpdatesFaultedGroupsAndValidatesOnlyHealthyExits(t *testing.T) {
+	fixture := newFixture()
+	healthy := mixedPolicyGroup("agw-jp-dc-a", 20001, 30001, 1)
+	faulted := mixedPolicyGroup("agw-us-res-b", 20002, 30002, 2)
+	faulted.Status = domain.ProxyGroupDegraded
+	fixture.store.groups = map[string]domain.ProxyGroup{healthy.ID: healthy, faulted.ID: faulted}
+	fixture.store.mainEgress = store.MainEgress{
+		ResourceName: "agw-main", CountryCode: "SG", ProxyType: domain.ProxyTypeDatacenter,
+		ExitIP: "203.0.113.9", PublicInboundID: 91, MixedInboundID: 92, PublicPort: 8443, MixedPort: 31000,
+		Enabled: true, UpdatedAt: fixture.now(),
+	}
+	fixture.aimili.createdSlots = map[int]aimili.Slot{
+		1: {Number: 1, Port: 17931, EgressOK: true, Status: "up"},
+		2: {Number: 2, Port: 17932, EgressOK: false, Status: "disconnected"},
+	}
+
+	rotatedAt, err := fixture.orchestratorWithMax(t, 2).RotateMixedCredentials(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rotatedAt.Equal(fixture.now()) {
+		t.Fatalf("rotatedAt = %v", rotatedAt)
+	}
+	username := string(fixture.store.credentials[credentialMixedUsername])
+	password := string(fixture.store.credentials[credentialMixedPassword])
+	if !strings.HasPrefix(username, "agw-") || len(username) != 20 || len(password) != 48 || username == "proxy-user" || password == "proxy-password" {
+		t.Fatalf("unexpected generated credential shape: username length=%d password length=%d", len(username), len(password))
+	}
+	if !equalStrings(fixture.xui.updateNames, []string{healthy.ID, faulted.ID}) || fixture.validator.socksCalls != 1 {
+		t.Fatalf("updates=%#v validations=%d", fixture.xui.updateNames, fixture.validator.socksCalls)
+	}
+	if fixture.xui.ensureLegacyMainCalls != 1 || fixture.xui.legacyMainDesired.MixedUsername != username || fixture.xui.legacyMainDesired.MixedPassword != password {
+		t.Fatal("faulted main mixed inbound did not receive the rotated credentials")
+	}
+	for _, desired := range fixture.xui.updated {
+		if desired.MixedUsername != username || desired.MixedPassword != password {
+			t.Fatal("3x-ui did not receive the committed credential pair")
+		}
+	}
+}
+
+func TestRotateMixedCredentialsRollsBackEveryAppliedInboundBeforeKeepingOldPair(t *testing.T) {
+	fixture := newFixture()
+	fixture.store.groups = mixedPolicyGroups()
+	fixture.aimili.createdSlots = map[int]aimili.Slot{
+		1: {Number: 1, Port: 17931, EgressOK: true, Status: "up"},
+		2: {Number: 2, Port: 17932, EgressOK: true, Status: "up"},
+	}
+	fixture.xui.updateErrors = map[int]error{2: errors.New("second update failed")}
+
+	err := func() error {
+		_, err := fixture.orchestratorWithMax(t, 2).RotateMixedCredentials(context.Background())
+		return err
+	}()
+	if codeOf(err) != "mixed_credentials_apply_failed" {
+		t.Fatalf("error = %v", err)
+	}
+	if string(fixture.store.credentials[credentialMixedUsername]) != "proxy-user" || string(fixture.store.credentials[credentialMixedPassword]) != "proxy-password" {
+		t.Fatal("failed rotation changed stored credentials")
+	}
+	if !equalStrings(fixture.xui.updateNames, []string{"agw-jp-dc-a", "agw-us-res-b", "agw-us-res-b", "agw-jp-dc-a"}) {
+		t.Fatalf("apply and rollback order = %#v", fixture.xui.updateNames)
+	}
+}
+
+func TestRotateMixedCredentialsRollsBackWhenAHealthyExitRejectsTheNewPair(t *testing.T) {
+	fixture := newFixture()
+	group := mixedPolicyGroup("agw-jp-dc-a", 20001, 30001, 1)
+	fixture.store.groups = map[string]domain.ProxyGroup{group.ID: group}
+	fixture.aimili.createdSlots = map[int]aimili.Slot{1: {Number: 1, Port: 17931, EgressOK: true, Status: "up"}}
+	fixture.validator.socksErrors = []error{&validator.Error{Code: "proxy_auth_failed"}}
+
+	_, err := fixture.orchestrator(t).RotateMixedCredentials(context.Background())
+	if codeOf(err) != "mixed_credentials_apply_failed" {
+		t.Fatalf("error = %v", err)
+	}
+	if !equalStrings(fixture.xui.updateNames, []string{group.ID, group.ID}) {
+		t.Fatalf("apply and rollback order = %#v", fixture.xui.updateNames)
+	}
+	if string(fixture.store.credentials[credentialMixedUsername]) != "proxy-user" || string(fixture.store.credentials[credentialMixedPassword]) != "proxy-password" {
+		t.Fatal("failed validation changed stored credentials")
+	}
+}
 
 func TestSetMixedPolicyAppliesEveryGroupInStableOrder(t *testing.T) {
 	fixture := newFixture()

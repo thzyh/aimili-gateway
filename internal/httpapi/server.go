@@ -67,6 +67,7 @@ type ProxyManager interface {
 	SwitchProtocolModeExpected(context.Context, string, domain.ProtocolMode, domain.ProtocolMode) (domain.EgressProtocolMode, error)
 	MixedPolicy(context.Context) (store.MixedSourcePolicy, error)
 	SetMixedPolicy(context.Context, store.MixedSourcePolicy) error
+	RotateMixedCredentials(context.Context) (time.Time, error)
 	Reconcile(context.Context) orchestrator.ReconcileResult
 }
 
@@ -148,6 +149,7 @@ func NewServer(dependencies Dependencies) http.Handler {
 	mux.HandleFunc("GET /api/v1/settings/mixed-source-policy", server.handleGetMixedPolicy)
 	mux.HandleFunc("PUT /api/v1/settings/mixed-source-policy", server.handleSetMixedPolicy)
 	mux.HandleFunc("POST /api/v1/settings/mixed-source-policy/authorize-current", server.handleAuthorizeCurrentMixedPolicy)
+	mux.HandleFunc("POST /api/v1/settings/socks5h-credentials/rotate", server.handleRotateMixedCredentials)
 	mux.HandleFunc("GET /api/v1/settings/summary", server.handleSettingsSummary)
 	mux.HandleFunc("GET /api/v1/settings/aimilivpn", server.handleAimiliSettings)
 	mux.HandleFunc("GET /api/v1/settings/aimilivpn/countries", server.handleAimiliCountries)

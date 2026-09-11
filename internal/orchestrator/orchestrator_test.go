@@ -676,6 +676,14 @@ func (s *fakeStore) GetCredential(_ context.Context, purpose string, _ []byte) (
 	}
 	return append([]byte(nil), value...), nil
 }
+func (s *fakeStore) ReplaceMixedCredentials(_ context.Context, username, password, _ []byte) error {
+	if len(username) == 0 || len(password) == 0 {
+		return errors.New("credentials required")
+	}
+	s.credentials[credentialMixedUsername] = append([]byte(nil), username...)
+	s.credentials[credentialMixedPassword] = append([]byte(nil), password...)
+	return nil
+}
 func (s *fakeStore) ListMixedCIDRs(context.Context) ([]netip.Prefix, error) {
 	return append([]netip.Prefix(nil), s.cidrs...), nil
 }

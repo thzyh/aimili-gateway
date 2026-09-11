@@ -23,7 +23,9 @@ const topNotice = ref<UiNoticeData | null>(null)
 const refreshNotice = ref<UiNoticeData | null>(null)
 const replacementNotice = ref<UiNoticeData | null>(null)
 const replacementCandidate = ref<ProxyGroupPayload | null>(null)
+const replacementCandidateID = ref('')
 const replacementTarget = ref('')
+const replacementTargetRow = ref<ProxyGroupPayload | null>(null)
 const refreshNoticeFingerprint = ref('')
 let refreshTimer: ReturnType<typeof setTimeout> | undefined
 let noticeSequence = 0
@@ -60,10 +62,22 @@ const rows = computed(() => groups.value.filter(row => {
   const right = props.protocol === 'vless' ? b.vlessLatencyMs : b.socksLatencyMs
   return (left || Number.MAX_SAFE_INTEGER) - (right || Number.MAX_SAFE_INTEGER)
 }))
-const replacementTargets = computed(() => groups.value.filter(row => row.status === 'ready' && (row.egressSource === 'main' || (row.slotNumber ?? 0) > 0)).sort((a, b) => {
+const replacementTargets = computed(() => groups.value.filter(row => row.status !== 'standby' && (row.egressSource === 'main' || (row.slotNumber ?? 0) > 0)).sort((a, b) => {
   if (a.egressSource === 'main') return -1
   if (b.egressSource === 'main') return 1
   return (a.slotNumber ?? 0) - (b.slotNumber ?? 0)
+}))
+const replacementCandidates = computed(() => groups.value.filter(row => row.status === 'standby').sort((a, b) => {
+  const target = replacementTargetRow.value
+  if (target) {
+    const leftCountry = a.countryCode === target.countryCode ? 0 : 1
+    const rightCountry = b.countryCode === target.countryCode ? 0 : 1
+    if (leftCountry !== rightCountry) return leftCountry - rightCountry
+    const leftResidential = a.proxyType === 'residential' ? 0 : 1
+    const rightResidential = b.proxyType === 'residential' ? 0 : 1
+    if (leftResidential !== rightResidential) return leftResidential - rightResidential
+  }
+  return (a.candidateLatencyMs || Number.MAX_SAFE_INTEGER) - (b.candidateLatencyMs || Number.MAX_SAFE_INTEGER)
 }))
 const subscriptionReady = computed(() => groups.value.some(row => row.status === 'ready' && row.protocolState === 'ready' && row.subscriptionState === 'ready'))
 
@@ -236,19 +250,34 @@ async function mutate(row: ProxyGroupPayload, action: 'activate' | 'check' | 'ro
 
 function openReplacement(row: ProxyGroupPayload): void {
   replacementCandidate.value = row
+  replacementCandidateID.value = row.id
+  replacementTargetRow.value = null
   replacementTarget.value = replacementTargets.value[0]?.id ?? ''
   replacementNotice.value = null
 }
 
+function openManualReplacement(row: ProxyGroupPayload): void {
+  replacementTargetRow.value = row
+  replacementTarget.value = row.id
+  replacementCandidate.value = null
+  replacementCandidateID.value = replacementCandidates.value[0]?.id ?? ''
+  replacementNotice.value = replacementCandidateID.value
+    ? null
+    : makeNotice('info', '当前没有可选节点', '请先补充一个国家的可用节点，再返回这里人工更换。')
+}
+
 function closeReplacement(): void {
   replacementCandidate.value = null
+  replacementCandidateID.value = ''
   replacementTarget.value = ''
+  replacementTargetRow.value = null
   replacementNotice.value = null
 }
 
 async function confirmReplacement(): Promise<void> {
-  if (!replacementCandidate.value || !replacementTarget.value) return
-  const candidate = replacementCandidate.value
+  if (!replacementCandidateID.value || !replacementTarget.value) return
+  const candidate = groups.value.find(row => row.id === replacementCandidateID.value)
+  if (!candidate || candidate.status !== 'standby') return
   const target = replacementTarget.value
   busy.value = `replace-${candidate.id}`
   replacementNotice.value = makeNotice('progress', '正在替换出口', '将保留原端口和入站，失败时自动回滚。')
@@ -302,6 +331,18 @@ async function checkRow(row: ProxyGroupPayload): Promise<void> {
       repairResult ? `${subject} 自动修复未成功` : alreadyAttempted ? `${subject} 等待人工更换` : `${subject} 检测失败`,
       localizedError(error, '节点检测失败，当前代理数据面保持不变，请稍后重试。'),
     )
+  } finally { busy.value = '' }
+}
+
+async function rotateSOCKS5HCredentials(): Promise<void> {
+  busy.value = 'rotate-socks-credentials'
+  topNotice.value = makeNotice('progress', '正在随机更换 SOCKS5H 用户名和密码', '正在更新全部出口；故障出口也会保留新设置，健康出口会逐一验证。')
+  try {
+    await apiFetch('/api/v1/settings/socks5h-credentials/rotate', { method: 'POST', headers: idempotencyHeaders() })
+    topNotice.value = makeNotice('success', 'SOCKS5H 用户名和密码已更换', '旧代理地址已失效，请重新复制新的 SOCKS5H 地址。')
+    await loadGroups(false)
+  } catch (error) {
+    topNotice.value = makeNotice('error', 'SOCKS5H 凭据更换失败', localizedError(error, '系统已尝试恢复原用户名和密码，请稍后重试。'))
   } finally { busy.value = '' }
 }
 
@@ -360,7 +401,7 @@ function formatRefreshTime(value?: number): string {
   <AppShell>
     <section class="page-heading">
       <div><p class="eyebrow">ONLINE EGRESS POOL</p><h1>{{ title }}</h1><p>{{ description }}</p></div>
-      <div class="heading-actions"><button data-sync-pool class="secondary" :disabled="busy !== ''" @click="refreshPool">{{ busy === 'refresh' ? '正在同步…' : '同步代理状态' }}</button><button data-refresh-country class="secondary" :disabled="busy !== '' || !supplementCountry" @click="refreshCountry">{{ busy === 'country-refresh' ? '正在刷新…' : '补充所选国家' }}</button><button v-if="protocol === 'vless'" data-copy-subscription :disabled="busy !== '' || !subscriptionReady" @click="copySubscription">复制节点订阅</button><button data-copy-all class="secondary" :disabled="busy !== ''" @click="copyAll">复制节点列表</button><button data-export class="secondary" :disabled="busy !== ''" @click="exportRows">导出</button></div>
+      <div class="heading-actions"><button data-sync-pool class="secondary" :disabled="busy !== ''" @click="refreshPool">{{ busy === 'refresh' ? '正在同步…' : '同步代理状态' }}</button><button data-refresh-country class="secondary" :disabled="busy !== '' || !supplementCountry" @click="refreshCountry">{{ busy === 'country-refresh' ? '正在刷新…' : '补充所选国家' }}</button><button v-if="protocol === 'vless'" data-copy-subscription :disabled="busy !== '' || !subscriptionReady" @click="copySubscription">复制节点订阅</button><button v-else data-rotate-socks-credentials class="secondary" :disabled="busy !== ''" @click="rotateSOCKS5HCredentials">{{ busy === 'rotate-socks-credentials' ? '正在更换…' : '随机更换用户名和密码' }}</button><button data-copy-all class="secondary" :disabled="busy !== ''" @click="copyAll">复制节点列表</button><button data-export class="secondary" :disabled="busy !== ''" @click="exportRows">导出</button></div>
     </section>
     <UiNotice v-if="topNotice" :key="topNotice.id" data-top-notice :notice="topNotice" @close="topNotice=null" />
     <section class="pool-toolbar">
@@ -369,15 +410,18 @@ function formatRefreshTime(value?: number): string {
     </section>
     <UiNotice v-if="refreshNotice" :key="refreshNotice.id" data-refresh-notice class="refresh-notice" :notice="refreshNotice" @close="dismissRefreshNotice" />
     <div v-if="loading" class="loading">正在读取代理池…</div>
-    <PoolTable v-else :rows="rows" :protocol="protocol" :busy="busy" @copy="copyAddress" @replace="openReplacement" @check="checkRow" @protocol="switchProtocol" />
-    <div v-if="replacementCandidate" class="dialog-backdrop" @click.self="closeReplacement">
+    <PoolTable v-else :rows="rows" :protocol="protocol" :busy="busy" @copy="copyAddress" @replace="openReplacement" @manual-replace="openManualReplacement" @check="checkRow" @protocol="switchProtocol" />
+    <div v-if="replacementCandidate || replacementTargetRow" class="dialog-backdrop" @click.self="closeReplacement">
       <section data-replace-dialog class="replace-dialog" role="dialog" aria-modal="true" aria-labelledby="replace-title">
         <button class="dialog-close" type="button" aria-label="关闭" @click="closeReplacement">×</button>
-        <p class="eyebrow">REPLACE EGRESS SLOT</p><h2 id="replace-title">替换到出口位</h2>
-        <p>将 {{ replacementCandidate.countryName || replacementCandidate.countryCode }} {{ replacementCandidate.proxyType === 'residential' ? '住宅' : '机房' }}候选装载到现有出口位。原端口和 VLESS/SOCKS5H 入站保持不变，失败时自动回滚。</p>
-        <label>目标逻辑出口<select v-model="replacementTarget" data-replace-target><option v-for="target in replacementTargets" :key="target.id" :value="target.id">{{ target.egressSource === 'main' ? '主连接' : `出口位 ${target.slotNumber}` }} · {{ target.countryName || target.countryCode }} · {{ target.exitIp }}</option></select></label>
+        <p class="eyebrow">REPLACE EGRESS SLOT</p><h2 id="replace-title">{{ replacementTargetRow ? `人工更换${replacementTargetRow.egressSource === 'main' ? '主连接' : `出口位 ${replacementTargetRow.slotNumber}`}` : '替换到出口位' }}</h2>
+        <p v-if="replacementTargetRow">选择一个可选节点替换当前故障出口。原端口和 VLESS/SOCKS5H 入站保持不变，失败时自动回滚。</p>
+        <p v-else-if="replacementCandidate">将 {{ replacementCandidate.countryName || replacementCandidate.countryCode }} {{ replacementCandidate.proxyType === 'residential' ? '住宅' : '机房' }}候选装载到现有出口位。原端口和 VLESS/SOCKS5H 入站保持不变，失败时自动回滚。</p>
+        <p v-if="replacementTargetRow" data-replace-fixed-target class="fixed-target">目标：{{ replacementTargetRow.egressSource === 'main' ? '主连接' : `出口位 ${replacementTargetRow.slotNumber}` }} · {{ replacementTargetRow.countryName || replacementTargetRow.countryCode }}</p>
+        <label v-if="replacementTargetRow">选择新出口 IP<select v-model="replacementCandidateID" data-replace-candidate><option v-for="candidate in replacementCandidates" :key="candidate.id" :value="candidate.id">{{ candidate.countryName || candidate.countryCode }} · {{ candidate.proxyType === 'residential' ? '住宅' : '机房' }} · {{ candidate.exitIp || candidate.candidateIp }}</option></select></label>
+        <label v-else>目标逻辑出口<select v-model="replacementTarget" data-replace-target><option v-for="target in replacementTargets" :key="target.id" :value="target.id">{{ target.egressSource === 'main' ? '主连接' : `出口位 ${target.slotNumber}` }} · {{ target.countryName || target.countryCode }} · {{ target.exitIp }}</option></select></label>
         <UiNotice v-if="replacementNotice" :key="replacementNotice.id" data-replace-notice class="replacement-notice" :notice="replacementNotice" @close="replacementNotice=null" />
-        <div class="dialog-actions"><button class="secondary" type="button" @click="closeReplacement">取消</button><button data-confirm-replace type="button" :disabled="!replacementTarget || busy !== ''" @click="confirmReplacement">{{ busy.startsWith('replace-') ? '正在替换…' : '确认替换' }}</button></div>
+        <div class="dialog-actions"><button class="secondary" type="button" @click="closeReplacement">取消</button><button data-confirm-replace type="button" :disabled="!replacementTarget || !replacementCandidateID || busy !== ''" @click="confirmReplacement">{{ busy.startsWith('replace-') ? '正在替换…' : '确认替换' }}</button></div>
       </section>
     </div>
   </AppShell>

@@ -254,6 +254,76 @@ func TestCredentialEncryptionUsesPurposeContextAndNeverStoresPlaintext(t *testin
 	}
 }
 
+func TestReplaceMixedCredentialsCommitsUsernameAndPasswordTogether(t *testing.T) {
+	database := openTestStore(t)
+	ctx := context.Background()
+	key := bytes.Repeat([]byte{0x43}, 32)
+	if err := database.PutCredential(ctx, "mixed-username", []byte("old-user"), key); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.PutCredential(ctx, "mixed-password", []byte("old-password"), key); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := database.ReplaceMixedCredentials(ctx, []byte("new-user"), []byte("new-password"), key); err != nil {
+		t.Fatal(err)
+	}
+	for purpose, want := range map[string]string{"mixed-username": "new-user", "mixed-password": "new-password"} {
+		got, err := database.GetCredential(ctx, purpose, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != want {
+			t.Fatalf("%s = %q", purpose, got)
+		}
+	}
+
+	if err := database.ReplaceMixedCredentials(ctx, []byte("partial-user"), nil, key); err == nil {
+		t.Fatal("partial credential replacement was accepted")
+	}
+	for purpose, want := range map[string]string{"mixed-username": "new-user", "mixed-password": "new-password"} {
+		got, err := database.GetCredential(ctx, purpose, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != want {
+			t.Fatalf("%s changed after rejected pair = %q", purpose, got)
+		}
+	}
+}
+
+func TestReplaceMixedCredentialsRollsBackUsernameWhenPasswordWriteFails(t *testing.T) {
+	database := openTestStore(t)
+	ctx := context.Background()
+	key := bytes.Repeat([]byte{0x44}, 32)
+	if err := database.PutCredential(ctx, "mixed-username", []byte("old-user"), key); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.PutCredential(ctx, "mixed-password", []byte("old-password"), key); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.db.ExecContext(ctx, `
+		CREATE TRIGGER reject_mixed_password_update
+		BEFORE UPDATE OF ciphertext ON encrypted_credentials
+		WHEN OLD.purpose = 'mixed-password'
+		BEGIN SELECT RAISE(ABORT, 'blocked'); END`); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := database.ReplaceMixedCredentials(ctx, []byte("new-user"), []byte("new-password"), key); err == nil {
+		t.Fatal("injected password write failure was not returned")
+	}
+	for purpose, want := range map[string]string{"mixed-username": "old-user", "mixed-password": "old-password"} {
+		got, err := database.GetCredential(ctx, purpose, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != want {
+			t.Fatalf("%s changed despite transaction rollback = %q", purpose, got)
+		}
+	}
+}
+
 func TestMixedCIDRsRejectFullInternetAndRoundTripSpecificNetworks(t *testing.T) {
 	database := openTestStore(t)
 	ctx := context.Background()
