@@ -2520,6 +2520,8 @@ def replenish_valid_pool(
 def country_refresh_snapshot() -> dict[str, Any]:
     with country_refresh_lock:
         snapshot = dict(country_refresh_state)
+    if snapshot.get("state") in {"completed", "failed"}:
+        return snapshot
     nodes = read_nodes()
     snapshot["cacheTotal"] = len(nodes)
     country = str(snapshot.get("country") or "").upper()

@@ -31,6 +31,30 @@ def country_node(node_id, country, status="not_checked"):
 
 
 class PoolMaintenanceTests(unittest.TestCase):
+    def test_completed_country_refresh_keeps_its_final_counts_after_pool_changes(self):
+        original_state = dict(manager.country_refresh_state)
+        try:
+            manager._replace_country_refresh(
+                state="completed",
+                country="ALL",
+                cacheTotal=40,
+                countryValidCount=40,
+                usableCount=40,
+                finishedAt=1_700_000_000,
+            )
+            current_nodes = [
+                country_node(f"jp-{index}", "JP", "available")
+                for index in range(38)
+            ]
+
+            with mock.patch.object(manager, "read_nodes", return_value=current_nodes):
+                snapshot = manager.country_refresh_snapshot()
+
+            self.assertEqual(snapshot["cacheTotal"], 40)
+            self.assertEqual(snapshot["countryValidCount"], 40)
+        finally:
+            manager._replace_country_refresh(**original_state)
+
     def test_pool_exhaustion_recovery_waits_for_current_mutation_to_finish(self):
         original_thread = threading.Thread
         worker_entered = threading.Event()
