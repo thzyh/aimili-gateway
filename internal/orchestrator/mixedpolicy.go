@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"log"
 	"net"
 	"net/netip"
 	"sort"
@@ -92,6 +93,7 @@ func (o *Orchestrator) RotateMixedCredentials(ctx context.Context) (time.Time, e
 		updates[index].updated = updates[index].managed
 		updated, updateErr := o.xui.UpdateManagedMixedPolicy(ctx, updates[index].desired, updates[index].managed)
 		if updateErr != nil {
+			log.Printf("mixed credential rotation failed: stage=update_managed id=%s slot=%d code=%s", updates[index].group.ID, updates[index].group.AimiliSlot, errorCode(updateErr))
 			return time.Time{}, o.rollbackMixedCredentialRotation(ctx, append(applied, updates[index]), nil, nil)
 		}
 		updates[index].updated = updated
@@ -100,6 +102,7 @@ func (o *Orchestrator) RotateMixedCredentials(ctx context.Context) (time.Time, e
 	}
 	if mainUpdate != nil {
 		if updateErr := o.xui.UpdateLegacyMainMixedPolicy(ctx, mainUpdate.desired); updateErr != nil {
+			log.Printf("mixed credential rotation failed: stage=update_main id=%s code=%s", mainUpdate.group.ID, errorCode(updateErr))
 			return time.Time{}, o.rollbackMixedCredentialRotation(ctx, applied, nil, mainUpdate)
 		}
 	}
@@ -108,6 +111,7 @@ func (o *Orchestrator) RotateMixedCredentials(ctx context.Context) (time.Time, e
 		slot := slotsByNumber[update.group.AimiliSlot]
 		if update.group.Status == domain.ProxyGroupReady && slot.EgressOK {
 			if _, validateErr := o.validateSOCKS(ctx, update.group, newCredentials); validateErr != nil {
+				log.Printf("mixed credential rotation failed: stage=validate_managed id=%s slot=%d code=%s", update.group.ID, update.group.AimiliSlot, errorCode(validateErr))
 				return time.Time{}, o.rollbackMixedCredentialRotation(ctx, applied, nil, mainUpdate)
 			}
 		}
@@ -115,11 +119,13 @@ func (o *Orchestrator) RotateMixedCredentials(ctx context.Context) (time.Time, e
 	if mainUpdate != nil {
 		mainStatus, statusErr := o.aimili.MainStatus(ctx)
 		if statusErr != nil {
+			log.Printf("mixed credential rotation failed: stage=main_status id=%s code=%s", mainUpdate.group.ID, errorCode(statusErr))
 			return time.Time{}, o.rollbackMixedCredentialRotation(ctx, applied, nil, mainUpdate)
 		}
 		if mainStatus.Active && mainStatus.EgressOK {
 			mainUpdate.group.ExitIP = mainStatus.ExitIP
 			if _, validateErr := o.validateSOCKS(ctx, mainUpdate.group, newCredentials); validateErr != nil {
+				log.Printf("mixed credential rotation failed: stage=validate_main id=%s code=%s", mainUpdate.group.ID, errorCode(validateErr))
 				return time.Time{}, o.rollbackMixedCredentialRotation(ctx, applied, nil, mainUpdate)
 			}
 		}
@@ -133,11 +139,13 @@ func (o *Orchestrator) RotateMixedCredentials(ctx context.Context) (time.Time, e
 		changed.MixedInboundID = update.updated.MixedInboundID
 		changed.UpdatedAt = o.config.Now().UTC()
 		if err := o.save(ctx, &changed); err != nil {
+			log.Printf("mixed credential rotation failed: stage=save_managed id=%s slot=%d code=%s", update.group.ID, update.group.AimiliSlot, errorCode(err))
 			return time.Time{}, o.rollbackMixedCredentialRotation(ctx, applied, saved, mainUpdate)
 		}
 		saved = append(saved, update)
 	}
 	if err := persistence.ReplaceMixedCredentials(ctx, newCredentials.mixedUsername, newCredentials.mixedPassword, o.masterKey); err != nil {
+		log.Printf("mixed credential rotation failed: stage=save_credentials code=%s", errorCode(err))
 		return time.Time{}, o.rollbackMixedCredentialRotation(ctx, applied, saved, mainUpdate)
 	}
 	return o.config.Now().UTC(), nil
