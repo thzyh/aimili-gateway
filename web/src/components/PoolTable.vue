@@ -3,7 +3,7 @@ import type { ProtocolMode, ProxyGroupPayload } from '../api/client'
 import { poolStatusDetail, poolStatusGroup, poolStatusLabel } from './poolStatus'
 
 const props = defineProps<{ rows: ProxyGroupPayload[]; protocol: 'vless' | 'socks5h'; busy: string }>()
-const emit = defineEmits<{ copy: [row: ProxyGroupPayload]; replace: [row: ProxyGroupPayload]; manualReplace: [row: ProxyGroupPayload]; check: [row: ProxyGroupPayload]; protocol: [row: ProxyGroupPayload, mode: ProtocolMode] }>()
+const emit = defineEmits<{ copy: [row: ProxyGroupPayload]; replace: [row: ProxyGroupPayload]; check: [row: ProxyGroupPayload]; protocol: [row: ProxyGroupPayload, mode: ProtocolMode] }>()
 const typeLabel = (value: string) => value === 'residential' ? '住宅' : '机房'
 const latency = (row: ProxyGroupPayload) => props.protocol === 'vless' ? row.vlessLatencyMs : row.socksLatencyMs
 const checkedAt = (value?: string) => value ? new Intl.DateTimeFormat('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}).format(new Date(value)) : '尚未检测'
@@ -41,7 +41,6 @@ function changeProtocol(row: ProxyGroupPayload, event: Event): void {
             <button v-else-if="row.status === 'ready'" :data-check="row.id" class="icon-button" :disabled="busy !== ''" title="重新检测" @click="emit('check', row)">检测</button>
             <template v-else-if="row.status === 'repair_required' || row.status === 'degraded'">
               <button :data-repair="row.id" class="icon-button" :disabled="busy !== ''" :title="automaticRepairFinished(row) ? '复核当前状态；本次故障不会再次自动更换节点' : '检测节点；确认节点失效后只自动选择一个同国家候选修复一次'" @click="emit('check', row)">{{ automaticRepairFinished(row) ? '复核状态' : '检测并自动修复' }}</button>
-              <button v-if="automaticRepairFinished(row)" :data-manual-replace="row.id" class="icon-button activate-button" :disabled="busy !== ''" title="人工选择一个可选节点替换当前故障出口" @click="emit('manualReplace', row)">人工更换</button>
             </template>
           </td>
         </tr>

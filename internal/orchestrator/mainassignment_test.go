@@ -46,6 +46,37 @@ func TestReplaceCandidateCanCommitMainAfterEndToEndValidation(t *testing.T) {
 	}
 }
 
+func TestReplaceCandidateCanRecoverAnOfflineMainWithARestorableAssignment(t *testing.T) {
+	fixture := newFixture()
+	fixture.aimili.candidates = []aimili.Candidate{{
+		ID: "new-main", CountryCode: "JP", CountryName: "日本",
+		ProxyType: "residential", ProbeStatus: "available",
+	}}
+	fixture.aimili.mainStatus = aimili.MainStatus{
+		CandidateID: "old-main", Country: "US", CountryName: "United States",
+		ProxyType: "datacenter", ExitIP: "203.0.113.10", Port: 7928,
+		EgressOK: false, Active: false,
+	}
+	fixture.aimili.stagedMainStatus = aimili.MainStatus{
+		CandidateID: "new-main", Country: "JP", CountryName: "日本",
+		ProxyType: "residential", ExitIP: "203.0.113.20", Port: 7928,
+		EgressOK: true, Active: true,
+	}
+
+	group, err := fixture.orchestrator(t).ReplaceCandidate(context.Background(), "new-main", "agw-main")
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if group.CandidateID != "new-main" || group.ExitIP != "203.0.113.20" || group.Status != domain.ProxyGroupReady {
+		t.Fatalf("main group = %#v", group)
+	}
+	want := []string{"main.stage", "validate.socks", "validate.vless", "main.commit"}
+	if !equalStrings(fixture.calls, want) {
+		t.Fatalf("calls = %#v, want %#v", fixture.calls, want)
+	}
+}
+
 func TestReplaceCandidateRollsBackMainWhenPublicValidationFails(t *testing.T) {
 	fixture := newFixture()
 	fixture.aimili.candidates = []aimili.Candidate{{

@@ -386,7 +386,7 @@ func (o *Orchestrator) replaceMainCandidate(ctx context.Context, candidateID str
 		}
 		return mainEgressGroup(checked), nil
 	}
-	if !current.Active || !current.EgressOK || current.CandidateID == "" {
+	if current.CandidateID == "" {
 		return domain.ProxyGroup{}, &Error{Code: "not_ready"}
 	}
 	candidates, err := o.aimili.Candidates(ctx)

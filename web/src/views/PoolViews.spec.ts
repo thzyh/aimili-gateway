@@ -179,10 +179,11 @@ it('offers a degraded runtime slot the same safe recheck and synchronization act
 	expect(wrapper.get('[data-top-notice]').text()).toContain('出口 1 自动修复成功')
 })
 
-it('keeps a failed automatic repair visible and tells the user to replace it manually', async () => {
+it('keeps failed automatic repairs selectable in the unified replacement flow', async () => {
+	const manualMain = { ...rows[0], status: 'degraded', lastErrorCode: 'manual_repair_required' }
 	const manualRow = { ...rows[1], id: 'manual-slot', status: 'degraded', lastErrorCode: 'manual_replacement_required' }
 	mocks.apiFetch.mockImplementation((path: string) => {
-		if (path === '/api/v1/proxy-groups') return Promise.resolve([manualRow, rows[3]])
+		if (path === '/api/v1/proxy-groups') return Promise.resolve([manualMain, manualRow, rows[3]])
 		if (path === '/api/v1/settings/aimilivpn/countries') return Promise.resolve([])
 		if (path === '/api/v1/settings/aimilivpn/refresh') return Promise.resolve({ state: 'idle', country: '', phase: '', testedCount: 0, validCount: 0 })
 		return Promise.resolve(undefined)
@@ -193,12 +194,18 @@ it('keeps a failed automatic repair visible and tells the user to replace it man
 	expect(wrapper.get('[data-row-id="manual-slot"]').attributes('data-row-id')).toBe('manual-slot')
 	expect(wrapper.get('[data-row-detail="manual-slot"]').text()).toContain('自动修复已失败，等待人工更换')
 	expect(wrapper.get('[data-repair="manual-slot"]').text()).toBe('复核状态')
-	expect(wrapper.get('[data-manual-replace="manual-slot"]').text()).toBe('人工更换')
+	expect(wrapper.find('[data-manual-replace]').exists()).toBe(false)
 
-	await wrapper.get('[data-manual-replace="manual-slot"]').trigger('click')
-	expect(wrapper.get('[data-replace-dialog]').text()).toContain('人工更换出口位 1')
-	expect(wrapper.get('[data-replace-fixed-target]').text()).toContain('出口位 1')
-	expect(wrapper.get('[data-replace-candidate]').text()).toContain('美国')
+	await wrapper.get('[data-replace="us-standby"]').trigger('click')
+	expect(wrapper.get('[data-replace-dialog]').text()).toContain('替换到出口位')
+	const targets = wrapper.findAll('[data-replace-target] option')
+	expect(targets[0].text()).toContain('【故障·自动修复失败】主连接')
+	expect(targets[1].text()).toContain('【故障·自动修复失败】出口位 1')
+	expect(wrapper.get('[data-replace-target]').classes()).toContain('fault-target')
+	expect(wrapper.get('[data-replace-target-warning]').text()).toContain('主连接自动修复已失败')
+
+	await wrapper.get('[data-replace-target]').setValue('manual-slot')
+	expect(wrapper.get('[data-replace-target-warning]').text()).toContain('出口位 1 自动修复已失败')
 	await wrapper.get('[data-confirm-replace]').trigger('click')
 	await flushPromises()
 	expect(mocks.apiFetch).toHaveBeenCalledWith('/api/v1/proxy-groups/us-standby/replace', {
