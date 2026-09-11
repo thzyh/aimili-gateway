@@ -323,6 +323,28 @@ class ControlAPITests(unittest.TestCase):
         )
         self.assertEqual(status, 404)
 
+    def test_main_assignment_accepts_empty_expected_candidate_when_main_is_missing(self):
+        self.manager.main_assignment_result = dict(
+            self.manager.main_assignment_result,
+            old_candidate_id="",
+        )
+        request = {
+            "candidateId": "node-safe",
+            "country": "JP",
+            "proxyType": "datacenter",
+            "expectedCurrentCandidateId": "",
+            "idempotencyKey": "gateway-bootstrap-main",
+        }
+
+        status, _, payload = self.request("POST", "/control/v1/main/assign", request)
+
+        self.assertEqual(status, 202)
+        self.assertEqual(
+            self.manager.main_assignments,
+            [("node-safe", "JP", "datacenter", "", "gateway-bootstrap-main")],
+        )
+        self.assertEqual(payload["data"]["old_candidate_id"], "")
+
     def test_main_assignment_read_exposes_repair_state_as_data(self):
         self.manager.main_assignment_result = {
             "ok": False,

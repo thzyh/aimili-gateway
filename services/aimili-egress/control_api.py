@@ -220,7 +220,6 @@ class ControlHandler(BaseHTTPRequestHandler):
                 or len(candidate_id) > 256
                 or not re.fullmatch(r"[A-Z]{2}", country)
                 or proxy_type not in ("residential", "datacenter")
-                or not expected
                 or len(expected) > 256
                 or not 8 <= len(idempotency_key) <= 256
                 or any(ord(character) < 0x21 or ord(character) == 0x7F for character in idempotency_key)
