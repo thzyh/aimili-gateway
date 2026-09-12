@@ -117,9 +117,10 @@ FETCH_INTERVAL_SECONDS = env_int("FETCH_INTERVAL_SECONDS", 1260, 1)
 CHECK_INTERVAL_SECONDS = env_int("CHECK_INTERVAL_SECONDS", 1260, 1)
 _legacy_max_scan_rows = env_int("MAX_SCAN_ROWS", 300, 1)
 MAX_FETCH_ROWS = env_int("MAX_FETCH_ROWS", _legacy_max_scan_rows, 1)
-_legacy_target_valid_nodes = env_int("TARGET_VALID_NODES", 50, 1)
-TARGET_VALID_POOL_SIZE = env_int("TARGET_VALID_POOL_SIZE", _legacy_target_valid_nodes, 1)
+_legacy_target_valid_nodes = env_int("TARGET_VALID_NODES", 64, 1, 80)
+TARGET_VALID_POOL_SIZE = env_int("TARGET_VALID_POOL_SIZE", _legacy_target_valid_nodes, 1, 80)
 TARGET_VALID_NODES = TARGET_VALID_POOL_SIZE
+MAX_VALID_POOL_SIZE = env_int("MAX_VALID_POOL_SIZE", 80, TARGET_VALID_POOL_SIZE, 80)
 NODE_TEST_BATCH_SIZE = env_int("NODE_TEST_BATCH_SIZE", 10, 1)
 PROBE_FAILURE_COOLDOWN_SECONDS = env_int("PROBE_FAILURE_COOLDOWN_SECONDS", 1800, 1)
 OPENVPN_TEST_TIMEOUT_SECONDS = env_int("OPENVPN_TEST_TIMEOUT_SECONDS", 35, 1)
@@ -129,6 +130,7 @@ TCP_PRESCREEN_CONCURRENCY = env_int("TCP_PRESCREEN_CONCURRENCY", 100, 1, 512)
 TEST_ROUTE_TABLE_BASE = 61000
 COLLECTOR_INITIAL_DELAY_SECONDS = env_int("COLLECTOR_INITIAL_DELAY_SECONDS", 0, 0)
 COLLECTOR_FAILURE_BACKOFF_SECONDS = env_int("COLLECTOR_FAILURE_BACKOFF_SECONDS", 30, 30)
+COLLECTOR_BUSY_RETRY_SECONDS = env_int("COLLECTOR_BUSY_RETRY_SECONDS", 600, 30)
 
 # ---- 多出口（住宅 IP 槽位）配置 ----
 # 每个槽位 = 一条独立 OpenVPN 隧道(tun{DEV_BASE+i}) + 独立策略路由表({TABLE_BASE+i}) + 独立本地代理端口({PORT_BASE+i})
@@ -1387,6 +1389,8 @@ def country_catalog_snapshot() -> list[dict[str, Any]]:
                 "officialCandidateTotal": official_total,
                 "validNodeCount": len(valid_nodes),
                 "validCountryCount": valid_country_count,
+                "targetValidNodeCount": TARGET_VALID_POOL_SIZE,
+                "maxValidNodeCount": MAX_VALID_POOL_SIZE,
             }
         )
     return result
@@ -2765,6 +2769,13 @@ def refresh_country_nodes(
             if str(item.get("country_short") or "").strip().upper() == normalized_country
             and str(item.get("id") or "").strip() in protected_ids
         ]
+        existing_country_available_ids = {
+            str(item.get("id") or "").strip()
+            for item in existing_nodes
+            if str(item.get("country_short") or "").strip().upper() == normalized_country
+            and item.get("probe_status") == "available"
+            and str(item.get("id") or "").strip()
+        }
         preferred_ids = {
             str(item.get("id") or "").strip()
             for item in existing_nodes
@@ -2830,15 +2841,16 @@ def refresh_country_nodes(
 
         if _lock_held:
             _set_country_refresh(phase="merging")
-        manual_ids = {
+        selected_available_ids = {
             str(item.get("id") or "").strip()
             for item in selected
             if item.get("probe_status") == "available"
             and str(item.get("id") or "").strip() not in protected_ids
         }
+        manual_ids = selected_available_ids - existing_country_available_ids
         metadata = load_pool_metadata()
         merged = node_pool.rebalance_valid_pool(
-            existing_nodes, selected, protected_ids, manual_ids, limit=TARGET_VALID_POOL_SIZE
+            existing_nodes, selected, protected_ids, manual_ids, limit=MAX_VALID_POOL_SIZE
         )
         for item in merged:
             config_file = str(item.get("config_file") or "")
@@ -2850,12 +2862,16 @@ def refresh_country_nodes(
                 config_path.write_text(config_text, encoding="utf-8")
         write_json(BLACKLIST_FILE, blacklist)
         write_json(NODES_FILE, merged)
-        valid_count = sum(
-            1
+        country_available_ids = {
+            str(item.get("id") or "").strip()
             for item in merged
             if str(item.get("country_short") or "").strip().upper() == normalized_country
             and item.get("probe_status") == "available"
-        )
+            and str(item.get("id") or "").strip()
+        }
+        valid_count = len(country_available_ids)
+        new_usable_count = len(country_available_ids - existing_country_available_ids)
+        retained_count = len(country_available_ids & existing_country_available_ids)
         result = {
             "state": "completed",
             "country": normalized_country,
@@ -2869,12 +2885,15 @@ def refresh_country_nodes(
             "countryCandidateCount": len(candidates),
             "testedCount": tested_count,
             "usableCount": valid_count,
-            "retainedCount": len(protected_country_nodes),
+            "newUsableCount": new_usable_count,
+            "retainedCount": retained_count,
             "validCount": valid_count,
             "preservedCount": len(protected_country_nodes),
             "stopReason": stop_reason,
             "cacheTotal": len(merged),
             "countryValidCount": valid_count,
+            "targetValidNodeCount": TARGET_VALID_POOL_SIZE,
+            "maxValidNodeCount": MAX_VALID_POOL_SIZE,
             "finishedAt": time.time(),
             "errorCode": "",
         }
@@ -3500,6 +3519,8 @@ def maintain_valid_nodes(force: bool = False) -> str:
                 "stopReason": pool_stats["stop_reason"],
                 "cacheTotal": len(merged),
                 "countryValidCount": valid_nodes_count,
+                "targetValidNodeCount": TARGET_VALID_POOL_SIZE,
+                "maxValidNodeCount": MAX_VALID_POOL_SIZE,
                 "startedAt": all_refresh_started_at,
                 "finishedAt": time.time(),
                 "errorCode": "",
@@ -4924,6 +4945,7 @@ def collector_loop() -> None:
     while True:
         last_collector_heartbeat = time.time()
         success = False
+        res = ""
         try:
             print("[守护线程] 开始执行节点拉取与可用性检测周期任务...", flush=True)
             log_to_json("INFO", "Main", "开始执行节点拉取与可用性检测周期任务...")
@@ -4936,7 +4958,9 @@ def collector_loop() -> None:
             log_to_json("ERROR", "Main", err_msg)
             set_state(last_check_at=time.time(), last_check_message=f"check error: {exc}")
 
-        if not active_openvpn_running() and not success:
+        if res == "operation_busy":
+            sleep_time = COLLECTOR_BUSY_RETRY_SECONDS
+        elif not active_openvpn_running() and not success:
             sleep_time = COLLECTOR_FAILURE_BACKOFF_SECONDS
         else:
             sleep_time = CHECK_INTERVAL_SECONDS

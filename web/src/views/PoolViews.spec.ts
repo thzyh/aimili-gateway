@@ -43,8 +43,8 @@ beforeEach(() => {
   mocks.apiFetch.mockImplementation((path: string) => {
     if (path === '/api/v1/proxy-groups') return Promise.resolve(rows)
     if (path === '/api/v1/settings/aimilivpn/countries') return Promise.resolve([
-      { code: 'JP', name: '日本', candidateCount: 8, observedAt: 1_700_000_000, officialCandidateTotal: 100, validNodeCount: 25, validCountryCount: 5 },
-      { code: 'SG', name: '新加坡', candidateCount: 6, observedAt: 1_700_000_000, officialCandidateTotal: 100, validNodeCount: 25, validCountryCount: 5 },
+      { code: 'JP', name: '日本', candidateCount: 8, observedAt: 1_700_000_000, officialCandidateTotal: 100, validNodeCount: 66, validCountryCount: 5, targetValidNodeCount: 64, maxValidNodeCount: 80 },
+      { code: 'SG', name: '新加坡', candidateCount: 6, observedAt: 1_700_000_000, officialCandidateTotal: 100, validNodeCount: 66, validCountryCount: 5, targetValidNodeCount: 64, maxValidNodeCount: 80 },
     ])
     if (path === '/api/v1/settings/aimilivpn/refresh') return Promise.resolve({ state: 'idle', country: '', phase: '', testedCount: 0, validCount: 0 })
     if (path === '/api/v1/proxy-groups/jp-one/connections') return Promise.resolve({ protocolMode: 'vless_xhttp_reality', publicUri: 'vless://masked-public', vlessUri: 'vless://masked-public', socks5hUri: 'socks5h://masked-test' })
@@ -523,6 +523,7 @@ it('separates cached-country filtering from official-country supplementation', a
 	expect(wrapper.get('[data-country-supplement]').text()).toContain('补充国家')
 	expect(wrapper.get('[data-country-supplement]').text()).toContain('日本（8 个官方节点）')
 	expect(wrapper.get('[data-refresh-country]').attributes('disabled')).toBeDefined()
+	expect(wrapper.get('[data-refresh-country]').text()).toContain('优先检测该国家')
 	await wrapper.get('[data-country-supplement]').setValue('JP')
 	await wrapper.get('[data-refresh-country]').trigger('click')
 	await flushPromises()
@@ -535,7 +536,9 @@ it('separates cached-country filtering from official-country supplementation', a
 	expect(wrapper.find('[data-sync-pool]').exists()).toBe(false)
 	expect(wrapper.get('[data-refresh-all]').text()).toContain('刷新所有国家')
 	expect(wrapper.get('[data-pool-stats-official]').text()).toContain('官方 100')
-	expect(wrapper.get('[data-pool-stats-valid]').text()).toContain('当前有效 25')
+	expect(wrapper.get('[data-pool-stats-target]').text()).toContain('常规目标 64')
+	expect(wrapper.get('[data-pool-stats-valid]').text()).toContain('当前有效 66')
+	expect(wrapper.get('[data-pool-stats-maximum]').text()).toContain('临时上限 80')
 	expect(wrapper.get('[data-pool-stats-countries]').text()).toContain('5 国')
 })
 
@@ -592,7 +595,7 @@ it('shows the last structured refresh result, counts, and time', async () => {
 	mocks.apiFetch.mockImplementation((path: string) => {
 		if (path === '/api/v1/proxy-groups') return Promise.resolve(rows)
 		if (path === '/api/v1/settings/aimilivpn/countries') return Promise.resolve([{ code: 'US', name: '美国', candidateCount: 4, observedAt: 1_700_000_000 }])
-		if (path === '/api/v1/settings/aimilivpn/refresh') return Promise.resolve({ state: 'completed', country: 'US', phase: '', resultCode: 'success', officialCount: 12, usableCount: 5, retainedCount: 4, testedCount: 6, validCount: 5, cacheTotal: 30, finishedAt: 1_700_000_000 })
+		if (path === '/api/v1/settings/aimilivpn/refresh') return Promise.resolve({ state: 'completed', country: 'US', phase: '', resultCode: 'success', officialCount: 12, usableCount: 5, newUsableCount: 1, retainedCount: 4, testedCount: 6, validCount: 5, cacheTotal: 66, countryValidCount: 5, targetValidNodeCount: 64, maxValidNodeCount: 80, finishedAt: 1_700_000_000 })
 		return Promise.resolve(undefined)
 	})
 	const wrapper = mount(VpnPoolView)
@@ -604,9 +607,10 @@ it('shows the last structured refresh result, counts, and time', async () => {
 	expect(summary.text()).toContain('成功')
 	expect(summary.text()).toContain('官方候选 12')
 	expect(summary.text()).toContain('本次检测 6')
-	expect(summary.text()).toContain('刷新后可用 5')
-	expect(summary.text()).toContain('节点池共 30')
-	expect(summary.text()).not.toContain('保留 4')
+	expect(summary.text()).toContain('新通过 1')
+	expect(summary.text()).toContain('原有保留 4')
+	expect(summary.text()).toContain('该国现有 5')
+	expect(summary.text()).toContain('节点池临时增加至 66')
 	expect(summary.text()).toMatch(/11\/|11月/)
 	await summary.get('[aria-label="关闭提示"]').trigger('click')
 	expect(wrapper.find('[data-refresh-notice]').exists()).toBe(false)

@@ -56,6 +56,8 @@ type CandidateCountry struct {
 	OfficialCandidateTotal int     `json:"officialCandidateTotal"`
 	ValidNodeCount         int     `json:"validNodeCount"`
 	ValidCountryCount      int     `json:"validCountryCount"`
+	TargetValidNodeCount   int     `json:"targetValidNodeCount"`
+	MaxValidNodeCount      int     `json:"maxValidNodeCount"`
 }
 
 type CountryRefresh struct {
@@ -68,6 +70,7 @@ type CountryRefresh struct {
 	CountryCandidateCount int     `json:"countryCandidateCount"`
 	TestedCount           int     `json:"testedCount"`
 	UsableCount           int     `json:"usableCount"`
+	NewUsableCount        int     `json:"newUsableCount"`
 	RetainedCount         int     `json:"retainedCount"`
 	ValidCount            int     `json:"validCount"`
 	PreservedCount        int     `json:"preservedCount"`
@@ -77,6 +80,8 @@ type CountryRefresh struct {
 	StopReason            string  `json:"stopReason"`
 	CacheTotal            int     `json:"cacheTotal"`
 	CountryValidCount     int     `json:"countryValidCount"`
+	TargetValidNodeCount  int     `json:"targetValidNodeCount"`
+	MaxValidNodeCount     int     `json:"maxValidNodeCount"`
 }
 
 type CreateSlotRequest struct {
@@ -288,7 +293,7 @@ func (c *Client) CandidateCountries(ctx context.Context) ([]CandidateCountry, er
 		return nil, err
 	}
 	for _, country := range result {
-		if len(country.Code) != 2 || country.Code != strings.ToUpper(country.Code) || country.CandidateCount < 0 || country.ObservedAt < 0 || country.OfficialCandidateTotal < 0 || country.ValidNodeCount < 0 || country.ValidCountryCount < 0 {
+		if len(country.Code) != 2 || country.Code != strings.ToUpper(country.Code) || country.CandidateCount < 0 || country.ObservedAt < 0 || country.OfficialCandidateTotal < 0 || country.ValidNodeCount < 0 || country.ValidCountryCount < 0 || country.TargetValidNodeCount < 0 || country.MaxValidNodeCount < 0 {
 			return nil, &AdapterError{Code: "invalid_response"}
 		}
 	}
@@ -341,9 +346,9 @@ func validCountryRefresh(refresh CountryRefresh) bool {
 		}
 	}
 	return refresh.CatalogCount >= 0 && refresh.OfficialCount >= 0 && refresh.CountryCandidateCount >= 0 && refresh.TestedCount >= 0 &&
-		refresh.UsableCount >= 0 && refresh.RetainedCount >= 0 &&
+		refresh.UsableCount >= 0 && refresh.NewUsableCount >= 0 && refresh.RetainedCount >= 0 &&
 		refresh.ValidCount >= 0 && refresh.PreservedCount >= 0 && refresh.StartedAt >= 0 && refresh.FinishedAt >= 0 &&
-		refresh.CacheTotal >= 0 && refresh.CountryValidCount >= 0
+		refresh.CacheTotal >= 0 && refresh.CountryValidCount >= 0 && refresh.TargetValidNodeCount >= 0 && refresh.MaxValidNodeCount >= 0
 }
 
 func (c *Client) CreateSlot(ctx context.Context, input CreateSlotRequest) (Slot, error) {

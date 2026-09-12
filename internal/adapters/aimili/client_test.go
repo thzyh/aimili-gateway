@@ -519,7 +519,7 @@ func TestClientCountryRefreshUsesVersionedClosedRequests(t *testing.T) {
 			if request.Method != http.MethodGet || request.URL.Path != "/control/v1/candidates/countries" {
 				t.Fatalf("unexpected countries request %s %s", request.Method, request.URL.Path)
 			}
-			fmt.Fprint(response, `{"data":[{"code":"JP","name":"日本","candidateCount":8,"observedAt":1700000000,"officialCandidateTotal":100,"validNodeCount":25,"validCountryCount":5,"futureField":"ignored"}]}`)
+			fmt.Fprint(response, `{"data":[{"code":"JP","name":"日本","candidateCount":8,"observedAt":1700000000,"officialCandidateTotal":100,"validNodeCount":25,"validCountryCount":5,"targetValidNodeCount":64,"maxValidNodeCount":80,"futureField":"ignored"}]}`)
 		case 2:
 			if request.Method != http.MethodPost || request.URL.Path != "/control/v1/candidates/refresh" {
 				t.Fatalf("unexpected refresh request %s %s", request.Method, request.URL.Path)
@@ -537,7 +537,7 @@ func TestClientCountryRefreshUsesVersionedClosedRequests(t *testing.T) {
 			if request.Method != http.MethodGet || request.URL.Path != "/control/v1/candidates/refresh" {
 				t.Fatalf("unexpected status request %s %s", request.Method, request.URL.Path)
 			}
-			fmt.Fprint(response, `{"data":{"state":"completed","country":"JP","phase":"","resultCode":"success","catalogCount":20,"officialCount":8,"countryCandidateCount":8,"testedCount":5,"usableCount":4,"retainedCount":1,"validCount":4,"preservedCount":1,"startedAt":1700000000,"finishedAt":1700000010,"errorCode":""}}`)
+			fmt.Fprint(response, `{"data":{"state":"completed","country":"JP","phase":"","resultCode":"success","catalogCount":20,"officialCount":8,"countryCandidateCount":8,"testedCount":5,"usableCount":4,"newUsableCount":3,"retainedCount":1,"validCount":4,"preservedCount":1,"cacheTotal":66,"countryValidCount":4,"targetValidNodeCount":64,"maxValidNodeCount":80,"startedAt":1700000000,"finishedAt":1700000010,"errorCode":""}}`)
 		default:
 			t.Fatalf("unexpected extra request %d", requests)
 		}
@@ -548,7 +548,7 @@ func TestClientCountryRefreshUsesVersionedClosedRequests(t *testing.T) {
 		t.Fatal(err)
 	}
 	countries, err := client.CandidateCountries(context.Background())
-	if err != nil || len(countries) != 1 || countries[0].Code != "JP" || countries[0].CandidateCount != 8 || countries[0].OfficialCandidateTotal != 100 || countries[0].ValidNodeCount != 25 || countries[0].ValidCountryCount != 5 {
+	if err != nil || len(countries) != 1 || countries[0].Code != "JP" || countries[0].CandidateCount != 8 || countries[0].OfficialCandidateTotal != 100 || countries[0].ValidNodeCount != 25 || countries[0].ValidCountryCount != 5 || countries[0].TargetValidNodeCount != 64 || countries[0].MaxValidNodeCount != 80 {
 		t.Fatalf("countries = %#v, err = %v", countries, err)
 	}
 	started, err := client.StartCountryRefresh(context.Background(), "jp")
@@ -556,7 +556,7 @@ func TestClientCountryRefreshUsesVersionedClosedRequests(t *testing.T) {
 		t.Fatalf("started = %#v, err = %v", started, err)
 	}
 	status, err := client.CountryRefresh(context.Background())
-	if err != nil || status.State != "completed" || status.ResultCode != "success" || status.OfficialCount != 8 || status.TestedCount != 5 || status.UsableCount != 4 || status.RetainedCount != 1 || status.ValidCount != 4 {
+	if err != nil || status.State != "completed" || status.ResultCode != "success" || status.OfficialCount != 8 || status.TestedCount != 5 || status.UsableCount != 4 || status.NewUsableCount != 3 || status.RetainedCount != 1 || status.ValidCount != 4 || status.TargetValidNodeCount != 64 || status.MaxValidNodeCount != 80 {
 		t.Fatalf("status = %#v, err = %v", status, err)
 	}
 }
@@ -575,6 +575,9 @@ func TestCountryRefreshAcceptsOnlyClosedResultCodesAndNonnegativeCounts(t *testi
 		{State: "completed", Country: "JP", OfficialCount: -1},
 		{State: "completed", Country: "JP", UsableCount: -1},
 		{State: "completed", Country: "JP", RetainedCount: -1},
+		{State: "completed", Country: "JP", NewUsableCount: -1},
+		{State: "completed", Country: "JP", TargetValidNodeCount: -1},
+		{State: "completed", Country: "JP", MaxValidNodeCount: -1},
 		{State: "completed", Country: "JP", StartedAt: -1},
 	}
 	for _, refresh := range invalid {

@@ -56,15 +56,15 @@ export type AccountSyncStatus = 'reset_required' | 'synced' | 'checking' | 'repa
 export type MixedPolicyApplyStatus = 'pending' | 'applying' | 'applied' | 'failed' | 'repair_required'
 export interface SettingsSummaryPayload { accountSyncStatus: AccountSyncStatus; candidateCount: number; onlineCount: number; maxOnline: number }
 export interface MixedSourcePolicyPayload { enabled: boolean; cidrs: string[]; applyStatus: MixedPolicyApplyStatus }
-export interface CandidateCountryPayload { code: string; name: string; candidateCount: number; observedAt: number; officialCandidateTotal?: number; validNodeCount?: number; validCountryCount?: number }
+export interface CandidateCountryPayload { code: string; name: string; candidateCount: number; observedAt: number; officialCandidateTotal?: number; validNodeCount?: number; validCountryCount?: number; targetValidNodeCount?: number; maxValidNodeCount?: number }
 export type CountryRefreshState = 'idle' | 'running' | 'completed' | 'failed'
 export interface CountryRefreshPayload {
   state: CountryRefreshState; country: string; phase: string
   resultCode?: 'success' | 'no_official_candidates' | 'no_usable_nodes' | 'operation_busy' | 'maintenance_busy' | 'upstream_unavailable'
-  officialCount?: number; usableCount?: number; retainedCount?: number
+  officialCount?: number; usableCount?: number; newUsableCount?: number; retainedCount?: number
   catalogCount?: number; countryCandidateCount?: number; testedCount: number; validCount: number; preservedCount?: number
   startedAt?: number; finishedAt?: number; errorCode?: string
-  stopReason?: string; cacheTotal?: number; countryValidCount?: number
+  stopReason?: string; cacheTotal?: number; countryValidCount?: number; targetValidNodeCount?: number; maxValidNodeCount?: number
 }
 export interface XUISettingsPayload { managedPublicCount: number; managedVlessCount: number; managedMixedCount: number; managedOutboundCount: number; ownershipMatches: boolean; lastCheckedAt?: string }
 export type UpdateKind = 'ui' | 'gateway'

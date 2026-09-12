@@ -31,6 +31,24 @@ def country_node(node_id, country, status="not_checked"):
 
 
 class PoolMaintenanceTests(unittest.TestCase):
+    def test_country_catalog_reports_regular_target_and_temporary_limit(self):
+        with (
+            mock.patch.object(
+                manager,
+                "read_json",
+                return_value=[{"code": "JP", "name": "日本", "candidateCount": 3, "observedAt": 1}],
+            ),
+            mock.patch.object(
+                manager,
+                "read_nodes",
+                return_value=[country_node("jp-one", "JP", "available")],
+            ),
+        ):
+            catalog = manager.country_catalog_snapshot()
+
+        self.assertEqual(catalog[0]["targetValidNodeCount"], 64)
+        self.assertEqual(catalog[0]["maxValidNodeCount"], 80)
+
     def test_completed_country_refresh_keeps_its_final_counts_after_pool_changes(self):
         original_state = dict(manager.country_refresh_state)
         try:
@@ -341,6 +359,55 @@ class PoolMaintenanceTests(unittest.TestCase):
         refreshed = [item for item in stored_nodes if item["id"].startswith("jp-new-")]
         self.assertTrue(all(item.get("exit_ip") for item in refreshed))
 
+    def test_country_refresh_temporarily_grows_full_pool_and_reports_new_and_retained_counts(self):
+        existing = [country_node("jp-old", "JP", "available")]
+        existing.extend(
+            country_node(f"us-old-{index:02d}", "US", "available")
+            for index in range(63)
+        )
+        candidates = [country_node(f"jp-new-{index}", "JP") for index in range(2)]
+        stored_nodes = []
+        stored_metadata = {}
+
+        def store(path, payload):
+            if path == manager.NODES_FILE:
+                stored_nodes[:] = payload
+
+        def store_metadata(payload):
+            stored_metadata.update(payload)
+
+        with (
+            mock.patch.object(manager, "read_nodes", return_value=existing),
+            mock.patch.object(manager, "fetch_candidates", return_value=candidates),
+            mock.patch.object(
+                manager,
+                "country_catalog_snapshot",
+                return_value=[{"code": "JP", "candidateCount": 2}],
+            ),
+            mock.patch.object(manager, "current_slot_node_ids", return_value=set()),
+            mock.patch.object(manager.main_assignment_coordinator, "reserved_candidate_ids", return_value=set()),
+            mock.patch.object(
+                manager,
+                "probe_nodes",
+                side_effect=lambda batch: [dict(item, probe_status="available") for item in batch],
+            ),
+            mock.patch.object(manager, "load_blacklist", return_value={}),
+            mock.patch.object(manager, "load_pool_metadata", return_value=manager.default_pool_metadata()),
+            mock.patch.object(manager, "store_pool_metadata", side_effect=store_metadata),
+            mock.patch.object(manager, "write_json", side_effect=store),
+            mock.patch.object(manager, "set_state"),
+        ):
+            result = manager.refresh_country_nodes("JP", target_size=2, max_probes=2)
+
+        self.assertEqual(len(stored_nodes), 66)
+        self.assertEqual(result["cacheTotal"], 66)
+        self.assertEqual(result["newUsableCount"], 2)
+        self.assertEqual(result["retainedCount"], 1)
+        self.assertEqual(result["countryValidCount"], 3)
+        self.assertEqual(result["targetValidNodeCount"], 64)
+        self.assertEqual(result["maxValidNodeCount"], 80)
+        self.assertEqual(stored_metadata["manualProtectedIds"], ["jp-new-0", "jp-new-1"])
+
     def test_country_refresh_stops_after_twenty_failed_real_probes(self):
         candidates = [country_node(f"jp-{index}", "JP") for index in range(30)]
 
@@ -557,6 +624,30 @@ class PoolMaintenanceTests(unittest.TestCase):
                 manager.collector_loop()
 
         self.assertEqual(sleeps, [120, 600])
+
+    def test_collector_retries_operation_busy_after_ten_minutes(self):
+        sleeps = []
+
+        class StopLoop(Exception):
+            pass
+
+        def record_sleep(seconds):
+            sleeps.append(seconds)
+            raise StopLoop()
+
+        with (
+            mock.patch.object(manager, "COLLECTOR_INITIAL_DELAY_SECONDS", 0),
+            mock.patch.object(manager, "COLLECTOR_BUSY_RETRY_SECONDS", 600),
+            mock.patch.object(manager, "CHECK_INTERVAL_SECONDS", 21600),
+            mock.patch.object(manager, "maintain_valid_nodes", return_value="operation_busy"),
+            mock.patch.object(manager, "active_openvpn_running", return_value=True),
+            mock.patch.object(manager, "log_to_json"),
+            mock.patch.object(manager.time, "sleep", side_effect=record_sleep),
+        ):
+            with self.assertRaises(StopLoop):
+                manager.collector_loop()
+
+        self.assertEqual(sleeps, [600])
 
     def test_storage_sort_excludes_unavailable_and_untested_nodes(self):
         manager.active_openvpn_node_id = "live"
