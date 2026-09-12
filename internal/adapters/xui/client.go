@@ -1147,7 +1147,7 @@ func mergeManagedXray(setting map[string]any, desired DesiredGroup, vlessTag, mi
 }
 
 func mixedSourceRestrictionEnabled(desired DesiredGroup) bool {
-	return desired.MixedSourceRestrictionEnabled || len(desired.MixedSourceCIDRs) > 0
+	return desired.MixedSourceRestrictionEnabled
 }
 
 func managedSocksOutboundMatches(outbound map[string]any, port int) bool {

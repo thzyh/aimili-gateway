@@ -259,6 +259,7 @@ PY
         ensure_udp_rule 20000/udp
         ensure_udp_rule 20001/udp
         ensure_udp_rule 20002/udp
+        ensure_udp_rule 20003/udp
         systemctl daemon-reload
         systemctl enable --now aimili-xui-protocol-transaction.path aimili-xui-protocol-transaction.timer
         systemctl try-restart aimili-gateway.service

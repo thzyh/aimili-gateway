@@ -588,6 +588,7 @@ func TestMainSwitchProtocolDeploymentHasBoundedStagesAndRollback(t *testing.T) {
 		"20000/udp",
 		"20001/udp",
 		"20002/udp",
+		"20003/udp",
 	} {
 		if !strings.Contains(script, required) {
 			t.Fatalf("main switch deployment missing %q", required)
@@ -596,9 +597,9 @@ func TestMainSwitchProtocolDeploymentHasBoundedStagesAndRollback(t *testing.T) {
 	for _, forbidden := range []string{
 		"set -x",
 		"ufw allow 443/udp",
-		"20000:20002/udp",
-		"20000-20002/udp",
-		"ufw allow 20000:20002",
+		"20000:20003/udp",
+		"20000-20003/udp",
+		"ufw allow 20000:20003",
 		"systemctl restart x-ui.service", // 在线协议级不得全局重载 Xray。
 		"reset --hard",
 		"rm -rf /opt/aimilivpn",

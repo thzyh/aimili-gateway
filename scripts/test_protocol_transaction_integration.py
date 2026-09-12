@@ -47,16 +47,16 @@ class ProtocolDeploymentIntegrationTest(unittest.TestCase):
                 {"MemAvailable": 200 * 1024, "SwapFree": 512 * 1024 - 1}
             )
 
-    def test_udp_rules_accept_only_four_exact_public_ports(self) -> None:
-        exact = ["8443/udp", "20000/udp", "20001/udp", "20002/udp"]
+    def test_udp_rules_accept_only_five_exact_public_ports(self) -> None:
+        exact = ["8443/udp", "20000/udp", "20001/udp", "20002/udp", "20003/udp"]
         self.assertEqual(
             self.verifier.validate_udp_rules(exact),
-            {"ports": [8443, 20000, 20001, 20002], "status": "pass"},
+            {"ports": [8443, 20000, 20001, 20002, 20003], "status": "pass"},
         )
         for unsafe in (
             exact + ["443/udp"],
-            ["8443/udp", "20000:20002/udp"],
-            ["8443/udp", "20000-20002/udp"],
+            ["8443/udp", "20000:20003/udp"],
+            ["8443/udp", "20000-20003/udp"],
             exact[:-1],
         ):
             with self.subTest(unsafe=unsafe):
@@ -70,17 +70,19 @@ Status: active
 20000/udp                 ALLOW       Anywhere
 20001/udp                 ALLOW       Anywhere
 20002/udp                 ALLOW       Anywhere
+20003/udp                 ALLOW       Anywhere
 8443/udp (v6)             ALLOW       Anywhere (v6)
 20000/udp (v6)            ALLOW       Anywhere (v6)
 20001/udp (v6)            ALLOW       Anywhere (v6)
 20002/udp (v6)            ALLOW       Anywhere (v6)
+20003/udp (v6)            ALLOW       Anywhere (v6)
 """
         self.assertEqual(
             self.verifier.parse_ufw_udp_rules(contents),
-            ["8443/udp", "20000/udp", "20001/udp", "20002/udp"],
+            ["8443/udp", "20000/udp", "20001/udp", "20002/udp", "20003/udp"],
         )
         with self.assertRaisesRegex(ValueError, "udp_rules_invalid"):
-            self.verifier.parse_ufw_udp_rules("20000:20002/udp ALLOW Anywhere")
+            self.verifier.parse_ufw_udp_rules("20000:20003/udp ALLOW Anywhere")
 
     def test_unmanaged_fingerprint_detects_any_non_gateway_change(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

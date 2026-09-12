@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Safely change ny Gateway capacity between the approved levels 1..3."""
+"""Safely change ny Gateway capacity between the approved levels 1..4."""
 
 from __future__ import annotations
 
@@ -23,8 +23,8 @@ BACKUP_ROOT = pathlib.Path("/var/backups/aimili-gateway")
 
 
 def updated_config(document: dict[str, object], capacity: int) -> dict[str, object]:
-    if capacity not in (1, 2, 3):
-        raise ValueError("capacity must be 1, 2, or 3")
+    if capacity not in (1, 2, 3, 4):
+        raise ValueError("capacity must be 1, 2, 3, or 4")
     result = copy.deepcopy(document)
     result["maxProxyGroups"] = capacity
     return result
@@ -52,7 +52,7 @@ def backup_database(source: pathlib.Path, destination: pathlib.Path) -> None:
 
 def main() -> int:
     if os.geteuid() != 0 or len(sys.argv) != 2:
-        raise SystemExit("usage: sudo set-capacity-safe-remote.py <1|2|3>")
+        raise SystemExit("usage: sudo set-capacity-safe-remote.py <1|2|3|4>")
     capacity = int(sys.argv[1])
     before = json.loads(CONFIG.read_text(encoding="utf-8"))
     after = updated_config(before, capacity)

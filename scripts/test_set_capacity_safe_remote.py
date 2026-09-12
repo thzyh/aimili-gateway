@@ -38,9 +38,12 @@ class CapacityConfigTests(unittest.TestCase):
         self.assertEqual({"listen": "127.0.0.1:9080", "maxProxyGroups": 2}, updated)
         self.assertEqual(1, original["maxProxyGroups"])
 
-    def test_rejects_capacity_four(self):
-        with self.assertRaisesRegex(ValueError, "1, 2, or 3"):
-            MODULE.updated_config({"maxProxyGroups": 1}, 4)
+    def test_accepts_capacity_four_for_one_step_expansion(self):
+        self.assertEqual(4, MODULE.updated_config({"maxProxyGroups": 3}, 4)["maxProxyGroups"])
+
+    def test_rejects_capacity_five(self):
+        with self.assertRaisesRegex(ValueError, "1, 2, 3, or 4"):
+            MODULE.updated_config({"maxProxyGroups": 1}, 5)
 
 
 if __name__ == "__main__":
