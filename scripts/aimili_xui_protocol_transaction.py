@@ -77,7 +77,7 @@ class ProtocolTransactionConfig:
     private_key_path: pathlib.Path
     xray_binary: pathlib.Path
     api_server: str
-    allowed_ports: tuple[int, ...] = (8443, 20000, 20001, 20002)
+    allowed_ports: tuple[int, ...] = (8443, 20000, 20001, 20002, 20003)
     profile_dir: pathlib.Path | None = None
     tls_server_name: str = ""
     spool_request_dir: pathlib.Path | None = None
@@ -961,7 +961,12 @@ class ProtocolTransactionManager:
                 current_client_ids = [
                     int(row[0])
                     for row in database.execute(
-                        "SELECT client_id FROM client_inbounds WHERE inbound_id=? ORDER BY client_id",
+                        """
+                        SELECT ci.client_id
+                        FROM client_inbounds ci
+                        JOIN clients c ON c.id=ci.client_id
+                        WHERE ci.inbound_id=? ORDER BY ci.client_id
+                        """,
                         (int(row_id),),
                     ).fetchall()
                 ]
@@ -1006,7 +1011,12 @@ class ProtocolTransactionManager:
                 current_client_ids = [
                     int(item[0])
                     for item in database.execute(
-                        "SELECT client_id FROM client_inbounds WHERE inbound_id=? ORDER BY client_id",
+                        """
+                        SELECT ci.client_id
+                        FROM client_inbounds ci
+                        JOIN clients c ON c.id=ci.client_id
+                        WHERE ci.inbound_id=? ORDER BY ci.client_id
+                        """,
                         (row["id"],),
                     ).fetchall()
                 ]
@@ -1093,7 +1103,12 @@ class ProtocolTransactionManager:
                 current_client_ids = [
                     int(item[0])
                     for item in database.execute(
-                        "SELECT client_id FROM client_inbounds WHERE inbound_id=? ORDER BY client_id",
+                        """
+                        SELECT ci.client_id
+                        FROM client_inbounds ci
+                        JOIN clients c ON c.id=ci.client_id
+                        WHERE ci.inbound_id=? ORDER BY ci.client_id
+                        """,
                         (row["id"],),
                     ).fetchall()
                 ]

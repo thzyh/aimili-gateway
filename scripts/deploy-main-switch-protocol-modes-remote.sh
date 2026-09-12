@@ -235,6 +235,29 @@ case "$CURRENT_STAGE" in
         install -o root -g root -m 0644 "$ASSET_ROOT/aimili-xui-protocol-transaction.service" /etc/systemd/system/aimili-xui-protocol-transaction.service
         install -o root -g root -m 0644 "$ASSET_ROOT/aimili-xui-protocol-transaction.timer" /etc/systemd/system/aimili-xui-protocol-transaction.timer
         install -o root -g root -m 0640 "$ASSET_ROOT/protocol-transaction.json" /etc/aimili-gateway/protocol-transaction.json
+        python3 - /etc/aimili-gateway/config.json /etc/aimili-gateway/protocol-transaction.json <<'PY'
+import json, os, pathlib, tempfile, sys
+gateway_path = pathlib.Path(sys.argv[1])
+path = pathlib.Path(sys.argv[2])
+gateway = json.loads(gateway_path.read_text(encoding="utf-8"))
+slots = int(gateway["maxProxyGroups"])
+if slots < 1 or slots > 64:
+    raise SystemExit("invalid_max_proxy_groups")
+config = json.loads(path.read_text(encoding="utf-8"))
+config["allowedPorts"] = [8443, *range(20000, 20000 + slots)]
+stat = path.stat()
+descriptor, temporary = tempfile.mkstemp(prefix=".protocol-transaction-", dir=path.parent)
+try:
+    with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+        json.dump(config, output, ensure_ascii=False, indent=2)
+        output.write("\n")
+        output.flush(); os.fsync(output.fileno())
+    os.chmod(temporary, stat.st_mode & 0o777)
+    os.chown(temporary, stat.st_uid, stat.st_gid)
+    os.replace(temporary, path)
+finally:
+    if os.path.exists(temporary): os.unlink(temporary)
+PY
         python3 - /etc/aimili-gateway/config.json <<'PY'
 import json, os, pathlib, tempfile, sys
 path = pathlib.Path(sys.argv[1])

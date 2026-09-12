@@ -704,6 +704,29 @@ class ProtocolTransactionTests(unittest.TestCase):
         self.assertEqual(before_by_key[(1, 44)], after_by_key[(1, 44)])
         self.assertEqual(before_by_key[(2, 43)], after_by_key[(2, 43)])
 
+    def test_protocol_apply_ignores_orphaned_client_inbound_rows(self):
+        with closing(sqlite3.connect(self.database_path)) as database, database:
+            database.execute(
+                "INSERT INTO client_inbounds(client_id,inbound_id,flow_override) VALUES(99,41,'')"
+            )
+
+        result = self._manager().apply(self._request(newMode=XHTTP))
+
+        self.assertEqual(
+            {"operationId": OPERATION_ID, "status": "applied", "errorCode": ""},
+            result,
+        )
+        rollback = self._manager().rollback(OPERATION_ID)
+        self.assertEqual(
+            {"operationId": OPERATION_ID, "status": "rolled_back", "errorCode": ""},
+            rollback,
+        )
+        with closing(sqlite3.connect(self.database_path)) as database:
+            orphan = database.execute(
+                "SELECT client_id,inbound_id,flow_override FROM client_inbounds WHERE client_id=99"
+            ).fetchone()
+        self.assertEqual((99, 41, ""), orphan)
+
     def test_protocol_persist_rejects_concurrent_subscription_flow_change(self):
         manager = self._manager()
         source = manager.load_target(self._request())

@@ -10,5 +10,5 @@
   "spoolResultDir": "/var/lib/aimili-gateway/protocol-spool/results",
   "xrayBinary": "/usr/local/x-ui/bin/xray-linux-amd64",
   "apiServer": "127.0.0.1:62789",
-  "allowedPorts": [8443, 20000, 20001, 20002]
+  "allowedPorts": [8443, 20000, 20001, 20002, 20003]
 }

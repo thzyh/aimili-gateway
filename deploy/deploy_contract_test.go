@@ -610,6 +610,22 @@ func TestMainSwitchProtocolDeploymentHasBoundedStagesAndRollback(t *testing.T) {
 	}
 }
 
+func TestProtocolTransactionConfigAndDeploymentIncludeExpandedExitPort(t *testing.T) {
+	config := readAsset(t, "../deploy/config/protocol-transaction.example.json")
+	if !strings.Contains(config, `"allowedPorts": [8443, 20000, 20001, 20002, 20003]`) {
+		t.Fatal("protocol transaction config template does not include exit port 20003")
+	}
+	script := readAsset(t, "../scripts/deploy-main-switch-protocol-modes-remote.sh")
+	for _, required := range []string{
+		`config["allowedPorts"]`,
+		`range(20000, 20000 + slots)`,
+	} {
+		if !strings.Contains(script, required) {
+			t.Fatalf("main switch deployment does not derive protocol ports from capacity: missing %q", required)
+		}
+	}
+}
+
 func TestMainSwitchLocalVerifierRunsBothRepositoriesAndSafeRemoteChecks(t *testing.T) {
 	script := readAsset(t, "../scripts/verify-main-switch-protocol-modes.ps1")
 	for _, required := range []string{
