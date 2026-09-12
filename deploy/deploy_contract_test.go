@@ -523,6 +523,7 @@ func TestV1CFreshGatewayBootstrapPreservesServiceBoundaries(t *testing.T) {
 		"caddy validate",
 		"systemctl enable --now aimili-gateway.service",
 		"aimili-gateway-account",
+		"ufw allow 31000/tcp",
 	} {
 		if !strings.Contains(script, required) {
 			t.Fatalf("V1-C fresh bootstrap missing %q", required)

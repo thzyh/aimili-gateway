@@ -373,8 +373,14 @@ class ProtocolTransactionTests(unittest.TestCase):
                 "INSERT INTO clients(id,email,sub_id,uuid,password,auth,flow,security,enable,comment) VALUES(1,?,?,?,?,?,?,?,?,?)",
                 (CLIENT_EMAIL, "stable-sub-id", CLIENT_UUID, "unrelated-password", EXISTING_AUTH, "xtls-rprx-vision", "auto", 1, "unchanged"),
             )
-            database.execute("INSERT INTO client_inbounds(client_id,inbound_id) VALUES(1,41)")
-            database.execute("INSERT INTO client_inbounds(client_id,inbound_id) VALUES(1,44)")
+            database.execute(
+                "INSERT INTO client_inbounds(client_id,inbound_id,flow_override) VALUES(1,41,?)",
+                ("xtls-rprx-vision",),
+            )
+            database.execute(
+                "INSERT INTO client_inbounds(client_id,inbound_id,flow_override) VALUES(1,44,?)",
+                ("xtls-rprx-vision",),
+            )
             database.execute(
                 "INSERT INTO clients(id,email,sub_id,uuid,password,auth,flow,security,enable,comment) VALUES(2,?,?,?,?,?,?,?,?,?)",
                 ("unmanaged-client", "other-sub-id", "22222222-2222-4222-8222-222222222222", "keep-password", "keep-auth", "", "auto", 1, "must stay byte-identical"),
@@ -440,6 +446,12 @@ class ProtocolTransactionTests(unittest.TestCase):
     def _client_row(self, client_id):
         with closing(sqlite3.connect(self.database_path)) as database, database:
             return database.execute("SELECT * FROM clients WHERE id=?", (client_id,)).fetchone()
+
+    def _client_inbound_rows(self):
+        with closing(sqlite3.connect(self.database_path)) as database, database:
+            return database.execute(
+                "SELECT client_id,inbound_id,flow_override,created_at FROM client_inbounds ORDER BY client_id,inbound_id"
+            ).fetchall()
 
     def test_request_contract_rejects_unknown_fields_paths_credentials_and_bad_ids(self):
         manager = self._manager()
@@ -564,11 +576,11 @@ class ProtocolTransactionTests(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.TransactionError, "managed_resource_drift|expected_state_mismatch"):
             self._manager().validate_request(self._request())
 
-    def test_tcp_mode_rejects_missing_global_vision_flow(self):
+    def test_tcp_mode_does_not_require_shared_client_global_vision_flow(self):
         with closing(sqlite3.connect(self.database_path)) as database, database:
             database.execute("UPDATE clients SET flow='' WHERE id=1")
-        with self.assertRaisesRegex(MODULE.TransactionError, "managed_resource_drift"):
-            self._manager().validate_request(self._request())
+
+        self._manager().validate_request(self._request())
 
     def test_load_target_composes_3xui_template_with_database_inbounds(self):
         template = json.loads(self.runtime_config_path.read_text(encoding="utf-8"))
@@ -669,6 +681,146 @@ class ProtocolTransactionTests(unittest.TestCase):
             managed = database.execute("SELECT uuid,password,auth,flow,security,enable,comment FROM clients WHERE id=1").fetchone()
         self.assertEqual((CLIENT_UUID, "unrelated-password", "generated-independent-auth", "xtls-rprx-vision", "auto", 1, "unchanged"), managed)
         self.assertEqual(before_unmanaged, self._client_row(2))
+
+    def test_protocol_apply_updates_only_target_subscription_flow_override(self):
+        with closing(sqlite3.connect(self.database_path)) as database, database:
+            database.execute(
+                "INSERT INTO clients(id,email,sub_id,uuid,password,auth,flow,security,enable,comment) VALUES(3,?,?,?,?,?,?,?,?,?)",
+                ("second-managed", "third-sub-id", "33333333-3333-4333-8333-333333333333", "", "second-auth", "", "auto", 1, "second target client"),
+            )
+            database.execute(
+                "INSERT INTO client_inbounds(client_id,inbound_id,flow_override) VALUES(3,41,?)",
+                ("xtls-rprx-vision",),
+            )
+        before = self._client_inbound_rows()
+
+        self._manager().apply(self._request(newMode=XHTTP))
+
+        after = self._client_inbound_rows()
+        before_by_key = {(row[0], row[1]): row for row in before}
+        after_by_key = {(row[0], row[1]): row for row in after}
+        self.assertEqual("", after_by_key[(1, 41)][2])
+        self.assertEqual("", after_by_key[(3, 41)][2])
+        self.assertEqual(before_by_key[(1, 44)], after_by_key[(1, 44)])
+        self.assertEqual(before_by_key[(2, 43)], after_by_key[(2, 43)])
+
+    def test_protocol_persist_rejects_concurrent_subscription_flow_change(self):
+        manager = self._manager()
+        source = manager.load_target(self._request())
+        template = manager.build_template(source, XHTTP)
+        with closing(sqlite3.connect(self.database_path)) as database, database:
+            database.execute(
+                "UPDATE client_inbounds SET flow_override='concurrent-operator-value' WHERE client_id=1 AND inbound_id=41"
+            )
+
+        with self.assertRaisesRegex(MODULE.TransactionError, "database_concurrent_change"):
+            manager.persist_template(source, template)
+
+        self.assertEqual((1, 41, "concurrent-operator-value", 0), self._client_inbound_rows()[0])
+
+    def test_tcp_apply_sets_target_subscription_flow_override(self):
+        manager = self._manager()
+        source = manager.load_target(self._request())
+        manager.persist_template(source, manager.build_template(source, XHTTP))
+
+        manager.apply(self._request(oldMode=XHTTP, newMode=TCP))
+
+        self.assertEqual((1, 41, "xtls-rprx-vision", 0), self._client_inbound_rows()[0])
+
+    def test_hysteria_apply_clears_target_subscription_flow_override(self):
+        self._manager().apply(self._request(newMode=HYSTERIA2))
+
+        self.assertEqual((1, 41, "", 0), self._client_inbound_rows()[0])
+
+    def test_rollback_restores_target_subscription_flow_override(self):
+        manager = self._manager()
+        before = self._client_inbound_rows()
+        manager.apply(self._request(newMode=XHTTP))
+
+        manager.rollback(OPERATION_ID)
+
+        self.assertEqual(before, self._client_inbound_rows())
+
+    def test_rollback_preserves_concurrent_auth_when_transaction_did_not_change_it(self):
+        manager = self._manager()
+        manager.apply(self._request(newMode=XHTTP))
+        with closing(sqlite3.connect(self.database_path)) as database, database:
+            database.execute("UPDATE clients SET auth='concurrent-auth-value' WHERE id=1")
+
+        manager.rollback(OPERATION_ID)
+
+        self.assertEqual("concurrent-auth-value", self._client_row(1)[5])
+
+    def test_recovery_quarantines_concurrent_auth_changed_after_hysteria_generation(self):
+        with closing(sqlite3.connect(self.database_path)) as database, database:
+            database.execute("UPDATE clients SET auth='' WHERE id=1")
+        manager = self._manager(token_factory=lambda: "generated-independent-auth")
+        manager.apply(self._request(newMode=HYSTERIA2))
+        snapshot_path = self.snapshot_dir / OPERATION_ID / "snapshot.json"
+        with closing(sqlite3.connect(self.database_path)) as database, database:
+            database.execute("UPDATE clients SET auth='concurrent-auth-value' WHERE id=1")
+        current_inbound = self._inbound_row(41)
+
+        recovered = manager.recover_pending()
+
+        self.assertEqual(
+            [{"operationId": OPERATION_ID, "status": "repair_required", "errorCode": "rollback_failed"}],
+            recovered,
+        )
+        self.assertEqual("concurrent-auth-value", self._client_row(1)[5])
+        self.assertEqual(current_inbound, self._inbound_row(41))
+        self.assertEqual("repair_required", json.loads(snapshot_path.read_text(encoding="utf-8"))["phase"])
+
+    def test_rollback_restores_auth_generated_by_hysteria_transaction(self):
+        with closing(sqlite3.connect(self.database_path)) as database, database:
+            database.execute("UPDATE clients SET auth='' WHERE id=1")
+        manager = self._manager(token_factory=lambda: "generated-independent-auth")
+        manager.apply(self._request(newMode=HYSTERIA2))
+        self.assertEqual("generated-independent-auth", self._client_row(1)[5])
+
+        manager.rollback(OPERATION_ID)
+
+        self.assertEqual("", self._client_row(1)[5])
+
+    def test_recovery_quarantines_legacy_snapshot_without_subscription_flow(self):
+        manager = self._manager()
+        manager.apply(self._request(newMode=XHTTP))
+        snapshot_path = self.snapshot_dir / OPERATION_ID / "snapshot.json"
+        snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        for client in snapshot["clients"]:
+            client.pop("inbound_flow_override", None)
+        snapshot_path.write_text(json.dumps(snapshot), encoding="utf-8")
+        current = self._client_inbound_rows()
+
+        recovered = manager.recover_pending()
+
+        self.assertEqual(
+            [{"operationId": OPERATION_ID, "status": "repair_required", "errorCode": "rollback_failed"}],
+            recovered,
+        )
+        self.assertEqual(current, self._client_inbound_rows())
+        self.assertEqual("repair_required", json.loads(snapshot_path.read_text(encoding="utf-8"))["phase"])
+
+    def test_recovery_quarantines_concurrent_target_client_set_change(self):
+        manager = self._manager()
+        manager.apply(self._request(newMode=XHTTP))
+        snapshot_path = self.snapshot_dir / OPERATION_ID / "snapshot.json"
+        with closing(sqlite3.connect(self.database_path)) as database, database:
+            database.execute(
+                "INSERT INTO client_inbounds(client_id,inbound_id,flow_override) VALUES(2,41,'')"
+            )
+        current = self._client_inbound_rows()
+        runtime_calls = list(manager.runner.calls)
+
+        recovered = manager.recover_pending()
+
+        self.assertEqual(
+            [{"operationId": OPERATION_ID, "status": "repair_required", "errorCode": "rollback_failed"}],
+            recovered,
+        )
+        self.assertEqual(current, self._client_inbound_rows())
+        self.assertEqual(runtime_calls, manager.runner.calls)
+        self.assertEqual("repair_required", json.loads(snapshot_path.read_text(encoding="utf-8"))["phase"])
 
     def test_apply_keeps_snapshot_with_root_only_permissions_until_finalize(self):
         manager = self._manager()

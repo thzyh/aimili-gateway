@@ -297,6 +297,12 @@ class VerificationHelperTests(unittest.TestCase):
         self.assertIn("/opt/aimilivpn/vpngate_data/ui_auth.json", MODULE.REMOTE_HELPER)
         self.assertNotIn("/etc/aimili-gateway/admin-credentials.json", MODULE.REMOTE_HELPER)
 
+    def test_remote_collection_uses_the_current_gateway_group_limit(self):
+        self.assertIn("slot_count=int(base.get('maxProxyGroups',1))", MODULE.REMOTE_HELPER)
+        self.assertIn("if slot_count<1 or slot_count>64: raise RuntimeError('invalid_gateway_group_limit')", MODULE.REMOTE_HELPER)
+        self.assertIn("WHERE key='subPort'", MODULE.REMOTE_HELPER)
+        self.assertNotIn("/etc/aimili-local/deployment.json", MODULE.REMOTE_HELPER)
+
     def test_remote_collection_rechecks_groups_before_collecting_connections(self):
         check = "call('POST','/api/v1/proxy-groups/'+urllib.parse.quote(group_id,safe='')+'/check',{},csrf,True)"
         self.assertIn(check, MODULE.REMOTE_HELPER)

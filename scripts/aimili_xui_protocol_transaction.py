@@ -533,10 +533,6 @@ class ProtocolTransactionManager:
         current_mode = self._mode_for_row(row)
         if current_mode != request["oldMode"]:
             raise TransactionError("expected_state_mismatch")
-        if current_mode == VLESS_TCP_REALITY_VISION:
-            enabled = [client for client in clients if int(client.get("enable", 0)) == 1]
-            if not enabled or any(client.get("flow") != "xtls-rprx-vision" for client in enabled):
-                raise TransactionError("managed_resource_drift")
         profile = self._load_or_capture_profile(request["egressId"], row, current_mode)
         return {
             "request": dict(request),
@@ -634,7 +630,7 @@ class ProtocolTransactionManager:
             try:
                 rows = database.execute(
                     """
-                    SELECT c.* FROM clients c
+                    SELECT c.*, ci.flow_override AS inbound_flow_override FROM clients c
                     JOIN client_inbounds ci ON ci.client_id=c.id
                     WHERE ci.inbound_id=? ORDER BY c.id
                     """,
@@ -768,10 +764,12 @@ class ProtocolTransactionManager:
             "sniffing": _json_object(row["sniffing"]),
             "disableFlow": False,
             "_clientAuthUpdates": {},
+            "_clientInboundFlowOverride": "",
         }
         if mode in {VLESS_TCP_REALITY_VISION, VLESS_XHTTP_REALITY}:
             reality = copy.deepcopy(source["profile"]["realitySettings"])
             flow = "xtls-rprx-vision" if mode == VLESS_TCP_REALITY_VISION else ""
+            template["_clientInboundFlowOverride"] = flow
             client_settings = []
             for client in clients:
                 client_id = str(client.get("uuid") or "")
@@ -959,6 +957,31 @@ class ProtocolTransactionManager:
                     )
                     if updated.rowcount != 1:
                         raise TransactionError("database_concurrent_change")
+                expected_client_ids = [int(client["id"]) for client in source["clients"]]
+                current_client_ids = [
+                    int(row[0])
+                    for row in database.execute(
+                        "SELECT client_id FROM client_inbounds WHERE inbound_id=? ORDER BY client_id",
+                        (int(row_id),),
+                    ).fetchall()
+                ]
+                if current_client_ids != expected_client_ids:
+                    raise TransactionError("database_concurrent_change")
+                for client in source["clients"]:
+                    updated = database.execute(
+                        """
+                        UPDATE client_inbounds SET flow_override=?
+                        WHERE client_id=? AND inbound_id=? AND flow_override IS ?
+                        """,
+                        (
+                            template["_clientInboundFlowOverride"],
+                            int(client["id"]),
+                            int(row_id),
+                            client["inbound_flow_override"],
+                        ),
+                    )
+                    if updated.rowcount != 1:
+                        raise TransactionError("database_concurrent_change")
                 database.commit()
             except TransactionError:
                 database.rollback()
@@ -969,10 +992,26 @@ class ProtocolTransactionManager:
 
     def _restore_database(self, snapshot: dict[str, Any]) -> None:
         row = snapshot["row"]
-        clients = snapshot["clients"]
+        clients = self._validated_snapshot_clients(snapshot)
+        desired_template = snapshot.get("desiredTemplate")
+        if not isinstance(desired_template, dict):
+            raise TransactionError("snapshot_invalid")
+        desired_flow = desired_template.get("_clientInboundFlowOverride")
+        if not isinstance(desired_flow, str):
+            raise TransactionError("snapshot_invalid")
+        auth_updates = self._snapshot_auth_updates(snapshot, clients)
         with closing(self._connect()) as database:
             try:
                 database.execute("BEGIN IMMEDIATE")
+                current_client_ids = [
+                    int(item[0])
+                    for item in database.execute(
+                        "SELECT client_id FROM client_inbounds WHERE inbound_id=? ORDER BY client_id",
+                        (row["id"],),
+                    ).fetchall()
+                ]
+                if current_client_ids != [int(client["id"]) for client in clients]:
+                    raise TransactionError("database_concurrent_change")
                 cursor = database.execute(
                     """
                     UPDATE inbounds SET protocol=?,settings=?,stream_settings=?,sniffing=?,disable_flow=?
@@ -992,7 +1031,46 @@ class ProtocolTransactionManager:
                 if cursor.rowcount != 1:
                     raise TransactionError("database_concurrent_change")
                 for client in clients:
-                    updated = database.execute("UPDATE clients SET auth=? WHERE id=?", (client.get("auth", ""), client["id"]))
+                    client_id = int(client["id"])
+                    if client_id in auth_updates:
+                        old_auth = client.get("auth", "")
+                        desired_auth = auth_updates[client_id]
+                        current_auth = database.execute(
+                            "SELECT auth FROM clients WHERE id=?", (client_id,)
+                        ).fetchone()
+                        if current_auth is None:
+                            raise TransactionError("database_concurrent_change")
+                        if current_auth[0] != old_auth:
+                            if current_auth[0] != desired_auth:
+                                raise TransactionError("database_concurrent_change")
+                            updated = database.execute(
+                                "UPDATE clients SET auth=? WHERE id=? AND auth IS ?",
+                                (old_auth, client_id, desired_auth),
+                            )
+                            if updated.rowcount != 1:
+                                raise TransactionError("database_concurrent_change")
+                    current_flow = database.execute(
+                        "SELECT flow_override FROM client_inbounds WHERE client_id=? AND inbound_id=?",
+                        (client["id"], row["id"]),
+                    ).fetchone()
+                    if current_flow is None:
+                        raise TransactionError("database_concurrent_change")
+                    if current_flow[0] == client["inbound_flow_override"]:
+                        continue
+                    if current_flow[0] != desired_flow:
+                        raise TransactionError("database_concurrent_change")
+                    updated = database.execute(
+                        """
+                        UPDATE client_inbounds SET flow_override=?
+                        WHERE client_id=? AND inbound_id=? AND flow_override IS ?
+                        """,
+                        (
+                            client["inbound_flow_override"],
+                            client["id"],
+                            row["id"],
+                            desired_flow,
+                        ),
+                    )
                     if updated.rowcount != 1:
                         raise TransactionError("database_concurrent_change")
                 database.commit()
@@ -1005,21 +1083,106 @@ class ProtocolTransactionManager:
 
     def _database_matches_snapshot(self, snapshot: dict[str, Any]) -> bool:
         row = snapshot["row"]
-        clients = snapshot["clients"]
+        clients = self._validated_snapshot_clients(snapshot)
+        auth_updates = self._snapshot_auth_updates(snapshot, clients)
         current = self._load_inbound_row(row["id"])
         if any(current[column] != row[column] for column in MUTATED_INBOUND_COLUMNS):
             return False
         with closing(self._connect()) as database:
             try:
+                current_client_ids = [
+                    int(item[0])
+                    for item in database.execute(
+                        "SELECT client_id FROM client_inbounds WHERE inbound_id=? ORDER BY client_id",
+                        (row["id"],),
+                    ).fetchall()
+                ]
+                if current_client_ids != [int(client["id"]) for client in clients]:
+                    return False
                 for client in clients:
                     stored = database.execute(
-                        "SELECT auth FROM clients WHERE id=?", (client["id"],)
+                        """
+                        SELECT c.auth,ci.flow_override FROM clients c
+                        JOIN client_inbounds ci ON ci.client_id=c.id
+                        WHERE c.id=? AND ci.inbound_id=?
+                        """,
+                        (client["id"], row["id"]),
                     ).fetchone()
-                    if stored is None or stored[0] != client.get("auth", ""):
+                    if (
+                        stored is None
+                        or stored[1] != client["inbound_flow_override"]
+                    ):
+                        return False
+                    if int(client["id"]) in auth_updates and stored[0] != client.get("auth", ""):
                         return False
             except sqlite3.Error as error:
                 raise TransactionError("database_read_failed") from error
         return True
+
+    @staticmethod
+    def _validated_snapshot_clients(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+        clients = snapshot.get("clients")
+        if not isinstance(clients, list) or not clients:
+            raise TransactionError("snapshot_invalid")
+        for client in clients:
+            if (
+                not isinstance(client, dict)
+                or not isinstance(client.get("id"), int)
+                or not isinstance(client.get("inbound_flow_override"), str)
+            ):
+                raise TransactionError("snapshot_invalid")
+        return clients
+
+    @staticmethod
+    def _snapshot_auth_updates(snapshot: dict[str, Any], clients: list[dict[str, Any]]) -> dict[int, str]:
+        desired_template = snapshot.get("desiredTemplate")
+        if not isinstance(desired_template, dict):
+            raise TransactionError("snapshot_invalid")
+        raw_updates = desired_template.get("_clientAuthUpdates")
+        if not isinstance(raw_updates, dict):
+            raise TransactionError("snapshot_invalid")
+        client_ids = {int(client["id"]) for client in clients}
+        updates: dict[int, str] = {}
+        for raw_id, auth in raw_updates.items():
+            try:
+                client_id = int(raw_id)
+            except (TypeError, ValueError) as error:
+                raise TransactionError("snapshot_invalid") from error
+            if client_id not in client_ids or not isinstance(auth, str):
+                raise TransactionError("snapshot_invalid")
+            updates[client_id] = auth
+        return updates
+
+    def _validate_rollback_database_boundary(self, snapshot: dict[str, Any]) -> None:
+        clients = self._validated_snapshot_clients(snapshot)
+        desired_template = snapshot.get("desiredTemplate")
+        row = snapshot.get("row")
+        if not isinstance(desired_template, dict) or not isinstance(row, dict):
+            raise TransactionError("snapshot_invalid")
+        desired_flow = desired_template.get("_clientInboundFlowOverride")
+        if not isinstance(desired_flow, str):
+            raise TransactionError("snapshot_invalid")
+        auth_updates = self._snapshot_auth_updates(snapshot, clients)
+        with closing(self._connect()) as database:
+            try:
+                current = database.execute(
+                    """
+                    SELECT ci.client_id,ci.flow_override,c.auth FROM client_inbounds ci
+                    JOIN clients c ON c.id=ci.client_id
+                    WHERE ci.inbound_id=? ORDER BY ci.client_id
+                    """,
+                    (row.get("id"),),
+                ).fetchall()
+            except sqlite3.Error as error:
+                raise TransactionError("database_read_failed") from error
+        if [int(item[0]) for item in current] != [int(client["id"]) for client in clients]:
+            raise TransactionError("database_concurrent_change")
+        for stored, client in zip(current, clients):
+            if stored[1] not in {client["inbound_flow_override"], desired_flow}:
+                raise TransactionError("database_concurrent_change")
+            client_id = int(client["id"])
+            if client_id in auth_updates and stored[2] not in {client.get("auth", ""), auth_updates[client_id]}:
+                raise TransactionError("database_concurrent_change")
 
     def _verify_applied(self, source: dict[str, Any], template: dict[str, Any]) -> None:
         tags = self.runner.list_inbound_tags()
@@ -1047,6 +1210,14 @@ class ProtocolTransactionManager:
                 row = database.execute("SELECT auth FROM clients WHERE id=?", (int(client_id),)).fetchone()
             if row is None or row[0] != auth:
                 raise TransactionError("database_verification_failed")
+        with closing(self._connect()) as database:
+            for client in source["clients"]:
+                row = database.execute(
+                    "SELECT flow_override FROM client_inbounds WHERE client_id=? AND inbound_id=?",
+                    (int(client["id"]), int(source["row"]["id"])),
+                ).fetchone()
+                if row is None or row[0] != template["_clientInboundFlowOverride"]:
+                    raise TransactionError("database_verification_failed")
 
     def apply(self, request: dict[str, Any]) -> dict[str, str]:
         request = self.validate_request(request)
@@ -1174,6 +1345,7 @@ class ProtocolTransactionManager:
         old_runtime = snapshot.get("oldRuntimeInbound")
         if not isinstance(request, dict) or not isinstance(old_runtime, dict):
             raise TransactionError("snapshot_invalid")
+        self._validate_rollback_database_boundary(snapshot)
         runtime_may_have_changed = phase not in {"snapshot"}
         if runtime_may_have_changed:
             operation_dir = snapshot_path.parent

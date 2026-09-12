@@ -206,6 +206,7 @@ caddy validate --config /etc/caddy/Caddyfile >/dev/null
 
 ufw allow 20000:20999/tcp >/dev/null
 ufw allow 30000:30999/tcp >/dev/null
+ufw allow 31000/tcp >/dev/null
 systemctl daemon-reload
 systemctl enable --now aimili-gateway.service >/dev/null
 systemctl reload caddy

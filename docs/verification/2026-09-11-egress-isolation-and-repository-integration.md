@@ -76,7 +76,7 @@
 - 出口 1 首次真实验证完成时，主连接、出口 2、出口 3 的三条 SOCKS5H 链路均能访问公网，取得三个互不重复的真实出口；出口 1 保留为未连接等待人工替换。
 - 随后增加被动同步修正：Gateway 只读取 AimiliVPN 已落盘的 `manual_required` 结果，不调用可能触发修复的 `CheckSlot`。`v1.0.4` 部署后，出口 1 在 Gateway 数据库中的错误从陈旧的 `egress_check_failed` 更新为 `no_same_country_candidate`；同步前后尝试次数和时间戳均未变化。定向测试同时验证相同状态再次同步不重复写库、不触发检查。
 - 最新只读核对时，主连接在北京时间 07:13–07:15 独立出现两次真实出口失败，并在唯一一次同国候选替换中明确报 `candidate_dial_failed`，现为 `manual_required/replacement_failed`；出口 2、出口 3 继续健康，出口 1 仍为 `manual_required/no_same_country_candidate`。四服务 active，Gateway/AimiliVPN `NRestarts=0`，Gateway 数据库 `integrity_check=ok`，证明各出口故障互不连带，也没有循环替换。
-- 生产 JS 包已核对包含“检测并自动修复”、等待过程和四类结果文案。Codex 内置浏览器因本机 Codex 授权令牌不可用，未执行真实鼠标点击；用户刷新页面后的视觉确认仍是最后一步。
+- 生产 JS 包已核对包含“检测并自动修复”、等待过程和四类结果文案。后续已在 Codex 内置浏览器完成真实登录、点击和状态验收，最终结果见本文末尾的“内置浏览器与 40 节点池最终验收”。
 - 没有新增永久备份；既有联合备份继续是 `/var/backups/aimili-gateway/egress-isolation-20260910-bed0cbf-ed102e3`。未操作其他 VPS，未删除 `aimili-vpngate`，未推送远程。
 
 ## 原仓库分叉处理
@@ -106,3 +106,51 @@
 - Gateway：`go test ./... -race -count=1` 与 `go vet -buildvcs=false ./...` 通过。
 - Windows/Linux 的 Gateway 和 admin 四个构建均通过。
 - 未操作其他 VPS，未删除原 `aimili-vpngate`，未推送远程分支。
+
+## 40 节点池、订阅关联与公网 SOCKS5H 收尾（2026-09-12）
+
+### 节点池与刷新结果
+
+- ny 运行 Gateway `v1.0.10` / `fb50cc6`，`TARGET_VALID_POOL_SIZE=40`，但 `maxProxyGroups=3` 未变；40 表示候选池目标，不会创建 40 个 OpenVPN 隧道。
+- “现有国家”“补充国家”、国家节点数量、“刷新所有国家”和 SOCKS5H 随机凭据按钮均已进入签名前端；旧“同步代理状态”入口已删除。
+- 完成态刷新快照不再被后续实时池数量覆盖。出口引擎 216 项测试通过，提交为 `e4cb26f`；ny 的 `vpngate_manager.py` SHA-256 为 `77018cd7f36964a9dbaceb778d9d68ad2f166bbe70121e783aa7ad284a682aba`。
+- VN 定向刷新真实返回：官方 2、可用 2、保留 1、节点池共 40。“保留 1”表示在 40 上限内最终进入池中的新增/更新候选，不是刷新失败。
+
+### 订阅 Vision 标记根因与修复
+
+- 外部验收最初发现 20002 入站在 3x-ui 中为 TCP/REALITY/Vision，但 `client_inbounds.flow_override` 为空，因此 v2rayN 订阅条目缺少 `flow=xtls-rprx-vision`。协议事务此前只更新 `inbounds`，没有同步订阅关联表。
+- 事务现在把目标入站所有关联的 `flow_override` 一并纳入快照、写入、应用后校验和回滚；TCP/Vision 写入 `xtls-rprx-vision`，XHTTP 与 Hysteria2 清空。非目标入站、客户端和关联保持不变。
+- 生产现场还证明客户端全局 `flow` 不能代表某个入站：同一客户端可关联多个不同协议出口。旧校验因此会错误返回 `managed_resource_drift`；现已取消这一错误的全局前置条件，由每个入站自己的 `flow_override` 决定订阅协议。
+- 新增测试先复现失败，再完成最小实现；代码审查后又加入关联旧值 CAS、关联集合校验、旧快照隔离，以及“只回滚本事务实际生成的 auth”约束，避免覆盖并发人工修改、用旧快照清空 Vision 或覆盖共享客户端凭据。协议事务与外部验收脚本合计 101 项通过。ny 事务脚本 SHA-256 为 `72b94bbf8b3a5d2b7dea075548332b5ec88ad4279e475feba0da7a635b773ce6`。
+- 出口 3 通过正式协议事务真实切换并恢复 TCP/Vision，两次操作均 `applied`、`finalized`；20002 的两个受管订阅关联最终都带 Vision 标记，没有直接裸改生产数据库。
+
+### 故障出口与主 SOCKS5H 恢复
+
+- 全链路复核时 `tun120`、`tun121` 确实不存在，出口 1、2 是真实故障而非前端误报。出口 1 使用同国 JP 住宅候选恢复；出口 2 先刷新得到 VN 住宅候选，再按同国原则恢复。两者最终均为 `ready`，协议和固定端口未改变。
+- 主 SOCKS5H 的 VPS 本机认证通过、公网 TCP 可建连，但 Windows 外部握手超时；对照出口 1–3 后确认 UFW 只允许 `30000:30999/tcp`，遗漏主端口 `31000/tcp`。单独增加 `31000/tcp` 后，主 SOCKS5H、代理 DNS 和出口 IP 外部验证立即通过。
+- 新安装脚本已增加 `ufw allow 31000/tcp`，部署合约测试先失败后通过，避免以后重装再次遗漏。
+- 最终外部验证为 4/4：四个 SOCKS5H、四个真实公网协议、代理 DNS、唯一出口 IP、订阅四条覆盖、四个 mixed 与四个公网入站、单一 Xray 全部通过。
+
+### 最终运行状态与浏览器验收
+
+- `aimili-gateway`、`aimilivpn`、`x-ui`、`caddy` 均 active，`NRestarts=0`；`tun0/tun120/tun121/tun122` 与 `7928/17928/17929/17930` 全部存在，最近两小时没有 OOM。收尾期间出口 3 的上游隧道曾再次消失并进入单次修复后的人工等待；正式协议事务没有因此执行或误报成功。使用剩余同国 JP 住宅候选人工替换后恢复为 `ready`，随后 4/4 外部验收再次通过。
+- VPS 约 458 MiB 内存，验证时可用约 177 MiB；1 GiB Swap 余约 855 MiB。没有增加实际运行出口数量。
+- ny 只保留 `/var/backups/aimili-gateway/pool-refresh-fb50cc6` 一份正式联合备份；旧备份和 `/tmp/aimili-pool-refresh-fb50cc6` 已删除。
+- Codex 内置浏览器实际一直保存着登录信息；直接点击登录即可进入。验收过程没有读取、猜测或输出账号密码，也没有切换到 Edge 或其他外部浏览器。
+
+### 主连接最终恢复复验
+
+- 最终收尾期间，原 TH 住宅主节点再次真实失效：`7928` 对 `api.ipify.org` 与 `ip.sb` 均超时，随后 `tun0` 消失；Gateway 同时把 `agw-main` 标记为 `degraded/egress_unavailable`，出口 1–3 仍保持 `ready`。因此本次失败边界是主上游节点，不是浏览器、订阅或主 SOCKS5H 防火墙。
+- 节点池维护期间发起替换得到 `operation_busy`，没有执行节点变更。维护结束后，同国 TH 候选明确返回 `candidate_dial_failed`，事务进入 `repair_required`，没有把失败结果误标为成功或继续循环尝试。
+- 人工从现有候选池选择低延迟 RU 住宅节点，通过正式 `/replace` 修复流程完成主连接恢复。修复后 AimiliVPN 主状态为 `active/egress_ok/healthy`，主事务回到 `idle`，`tun0` 恢复。
+- 最新 `scripts/verify-external-client-v1c.py` 返回 `status=pass`：主连接加出口 1–3 共 4 条 SOCKS5H、4 条公网协议、代理 DNS、订阅 4/4、四个不同出口 IP、四个 mixed 与公网入站、单一 Xray 均通过。
+- 最终复核确认四服务均 `active/running` 且 `NRestarts=0`，四个 TUN 与 `7928/30000/30001/30002/31000` 均存在，最近两小时无 OOM；ny 仍只保留 `/var/backups/aimili-gateway/pool-refresh-fb50cc6` 一份正式备份。
+
+### 内置浏览器与 40 节点池最终验收
+
+- 在 Codex 内置浏览器真实确认“现有国家”“补充国家”及其国家节点数量、“刷新所有国家”和“随机更换用户名和密码”均已上线；VPN 与 SOCKS5H 两个页面均能显示主连接和出口 1–3。
+- 真实点击 SOCKS5H 凭据轮换后，页面显示“SOCKS5H 用户名和密码已更换；旧代理地址已失效”；轮换后再次执行外部验收，4/4 全部通过。
+- 真实点击“刷新所有国家”后，页面先显示刷新过程，随后显示“最后刷新：所有国家 · 成功”：官方候选 100、本次检测 76、刷新后可用 40、节点池共 40。低内存配置保持 `OPENVPN_TEST_CONCURRENCY=1` 和 `NODE_TEST_BATCH_SIZE=1`，没有把 40 个候选变成 40 条同时运行的隧道。
+- 刷新期间免费主节点真实失效，系统只自动尝试一次同国替换，失败后前端保留主连接并显示“自动修复已失败，等待人工更换”；随后通过候选行的“替换到出口位”把住宅节点装载到主连接，页面显示“主连接替换成功”。该节点后来再次失效时，系统只处理这一条主连接，出口 1–3 始终保持在线。
+- 最后一次前端“检测并自动修复”完整显示了检测过程，结束时显示“主连接检测成功；真实出口、SOCKS5H 和当前公网协议链路正常”；主连接和出口 1–3 均回到“已启用”。基于当时实际主节点再次运行 `scripts/verify-external-client-v1c.py`，结果仍为 `status=pass`、`ready_groups=4`、`verified_groups=4`、`unique_exit_ips=true`。
+- 主节点失效会先从候选池移除坏节点，使“当前有效”短暂从 40 变为 39；后台随后按单并发补回目标 40。刷新完成提示记录的是那次刷新结束时的快照，不代表免费节点此后永不失效。

@@ -85,9 +85,13 @@ class RollbackConflict(RuntimeError):
 
 REMOTE_HELPER = r'''
 import base64, http.cookiejar, json, pathlib, re, socket, sqlite3, subprocess, sys, time, urllib.error, urllib.parse, urllib.request, uuid
-base=json.load(open('/etc/aimili-gateway/config.json',encoding='utf-8'))['publicOrigin']
+base=json.load(open('/etc/aimili-gateway/config.json',encoding='utf-8'))
+slot_count=int(base.get('maxProxyGroups',1))
+if slot_count<1 or slot_count>64: raise RuntimeError('invalid_gateway_group_limit')
+expected_groups=1+slot_count
+xui_settings=sqlite3.connect('file:/etc/x-ui/x-ui.db?mode=ro',uri=True); subscription_port=int(xui_settings.execute("SELECT value FROM settings WHERE key='subPort'").fetchone()[0]); xui_settings.close()
+base=base['publicOrigin']
 endpoint='http://127.0.0.1:9080'
-manifest=json.load(open('/etc/aimili-local/deployment.json',encoding='utf-8')); slot_count=int(manifest['expected']['exitSlots']); expected_groups=1+slot_count
 # ui_auth.json is atomically updated by the unified-account transaction.  The
 # install-time admin-credentials.json is only a bootstrap recovery artifact and
 # intentionally becomes stale after the operator rotates the shared account.
@@ -204,7 +208,7 @@ try:
   alias=('\u4e3b\u8fde\u63a5_' if group.get('egressSource')=='main' else '\u51fa\u53e3\u4f4d '+str(int(group.get('slotNumber') or 0))+'_')+str(group.get('countryName') or '')
   materials.append({'exitIp':group['exitIp'],'protocolMode':group['protocolMode'],'publicUri':connections['publicUri'],'socks5hUri':connections['socks5hUri'],'subscriptionAlias':alias,'slotNumber':int(group.get('slotNumber') or 0),'publicPort':int(group.get('publicPort') or group.get('vlessPort') or 0),'mixedPort':int(group.get('mixedPort') or 0),'authorizedSocks5h':authorized_socks(connections['socks5hUri'],group['exitIp'])})
  subscription=call('GET','/api/v1/proxy-groups/subscription'); subscription_url=urllib.parse.urlsplit(subscription['url'])
- request=urllib.request.Request('http://127.0.0.1:'+str(int(manifest['ports']['xuiSubscription']))+subscription_url.path,headers={'Accept':'text/plain','User-Agent':'v2rayN/7.24.4','Host':subscription_url.hostname})
+ request=urllib.request.Request('http://127.0.0.1:'+str(subscription_port)+subscription_url.path,headers={'Accept':'text/plain','User-Agent':'v2rayN/7.24.4','Host':subscription_url.hostname})
  with op.open(request,timeout=30) as response: subscription_raw=response.read(1<<20)
  expected=pathlib.Path('/usr/local/x-ui/bin/xray-linux-amd64').resolve(); pids=[]
  for item in pathlib.Path('/proc').iterdir():
