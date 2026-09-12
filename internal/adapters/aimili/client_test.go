@@ -47,6 +47,53 @@ func TestClientCandidatesSendsBearerTokenAndDecodesSafeFields(t *testing.T) {
 	}
 }
 
+func TestClientCandidatesAcceptsFiftyNodePoolResponse(t *testing.T) {
+	candidates := make([]Candidate, 50)
+	for index := range candidates {
+		candidates[index] = Candidate{
+			ID:              fmt.Sprintf("US_198.51.100.%d_443_tcp", index+1),
+			CountryCode:     "US",
+			CountryName:     "United States",
+			IP:              fmt.Sprintf("198.51.100.%d", index+1),
+			ExitIP:          fmt.Sprintf("203.0.113.%d", index+1),
+			ExitIPCheckedAt: 1_700_000_005,
+			ProxyType:       "residential",
+			Owner:           strings.Repeat("Example owner ", 5),
+			ASN:             "AS64500",
+			ASName:          strings.Repeat("Example network ", 5),
+			LatencyMS:       42,
+			Score:           9,
+			ProbeStatus:     "available",
+			LastProbeAt:     1_700_000_000,
+		}
+	}
+	payload, err := json.Marshal(struct {
+		Data []Candidate `json:"data"`
+	}{Data: candidates})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(payload) <= 16<<10 || len(payload) > 64<<10 {
+		t.Fatalf("fixture size = %d, want a realistic expanded-pool response", len(payload))
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		_, _ = response.Write(payload)
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewClient(server.URL+"/", []byte("test-token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := client.Candidates(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result) != 50 {
+		t.Fatalf("candidate count = %d, want 50", len(result))
+	}
+}
+
 func TestClientCandidatesRejectsInvalidExitMetadata(t *testing.T) {
 	tests := []struct {
 		name string
@@ -314,7 +361,7 @@ func TestClientRejectsOversizedAndUnknownResponses(t *testing.T) {
 		name string
 		body string
 	}{
-		{name: "oversized", body: `{"data":[]}` + strings.Repeat(" ", 17<<10)},
+		{name: "oversized", body: `{"data":[]}` + strings.Repeat(" ", 65<<10)},
 		{name: "unknown field", body: `{"data":[],"unexpected":true}`},
 	}
 	for _, test := range tests {

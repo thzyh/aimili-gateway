@@ -22,7 +22,7 @@ const (
 	controlReadTimeout      = 8 * time.Second
 	controlOperationTimeout = 75 * time.Second
 	mainAssignmentTimeout   = 195 * time.Second
-	controlResponseLimit    = 16 << 10
+	controlResponseLimit    = 64 << 10
 )
 
 type Capabilities struct {

@@ -368,6 +368,24 @@ func (o *Orchestrator) ReplaceCandidate(ctx context.Context, candidateID, target
 	return group, nil
 }
 
+type mainAssignmentOperationKeyContextKey struct{}
+
+// WithMainAssignmentOperationKey keeps the HTTP operation identity attached to
+// the AimiliVPN assignment so separate manual replacements cannot replay an
+// older assignment that happened to use the same candidate.
+func WithMainAssignmentOperationKey(ctx context.Context, operationKey string) context.Context {
+	return context.WithValue(ctx, mainAssignmentOperationKeyContextKey{}, strings.TrimSpace(operationKey))
+}
+
+func MainAssignmentOperationKey(ctx context.Context) string {
+	value, _ := ctx.Value(mainAssignmentOperationKeyContextKey{}).(string)
+	value = strings.TrimSpace(value)
+	if len(value) < 8 || len(value) > 256 || strings.IndexFunc(value, func(character rune) bool { return character < 0x21 || character > 0x7e }) >= 0 {
+		return ""
+	}
+	return value
+}
+
 func (o *Orchestrator) replaceMainCandidate(ctx context.Context, candidateID string) (domain.ProxyGroup, error) {
 	manager, ok := o.aimili.(mainAssignmentAimiliClient)
 	if !ok {
@@ -410,13 +428,17 @@ func (o *Orchestrator) replaceMainCandidate(ctx context.Context, candidateID str
 	if candidate == nil {
 		return domain.ProxyGroup{}, &Error{Code: "not_found"}
 	}
-	digest := sha256.Sum256([]byte(strings.Join([]string{current.CandidateID, candidate.ID, candidate.CountryCode, candidate.ProxyType}, "\x00")))
+	idempotencyKey := MainAssignmentOperationKey(ctx)
+	if idempotencyKey == "" {
+		digest := sha256.Sum256([]byte(strings.Join([]string{current.CandidateID, candidate.ID, candidate.CountryCode, candidate.ProxyType}, "\x00")))
+		idempotencyKey = fmt.Sprintf("gateway-%x", digest[:])
+	}
 	staged, err := manager.StageMainAssignment(ctx, aimili.MainAssignmentRequest{
 		CandidateID:                candidate.ID,
 		Country:                    candidate.CountryCode,
 		ProxyType:                  candidate.ProxyType,
 		ExpectedCurrentCandidateID: current.CandidateID,
-		IdempotencyKey:             fmt.Sprintf("gateway-%x", digest[:]),
+		IdempotencyKey:             idempotencyKey,
 	})
 	if err != nil {
 		return domain.ProxyGroup{}, operationError(err)

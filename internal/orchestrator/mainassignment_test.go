@@ -104,6 +104,37 @@ func TestReplaceCandidateCanRecreateAMissingMain(t *testing.T) {
 	}
 }
 
+func TestSeparateHTTPMainReplacementOperationsUseSeparateAimiliIdempotencyKeys(t *testing.T) {
+	fixture := newFixture()
+	fixture.aimili.candidates = []aimili.Candidate{{
+		ID: "new-main", CountryCode: "JP", CountryName: "日本",
+		ProxyType: "residential", ProbeStatus: "available",
+	}}
+	fixture.aimili.stagedMainStatus = aimili.MainStatus{
+		CandidateID: "new-main", Country: "JP", CountryName: "日本",
+		ProxyType: "residential", ExitIP: "203.0.113.20", Port: 7928,
+		EgressOK: true, Active: true,
+	}
+	orchestrator := fixture.orchestrator(t)
+
+	for _, operationKey := range []string{"http-main-first-operation", "http-main-second-operation"} {
+		fixture.aimili.mainStatus = aimili.MainStatus{}
+		fixture.aimili.mainAssignment = aimili.MainAssignmentStatus{}
+		ctx := WithMainAssignmentOperationKey(context.Background(), operationKey)
+		if _, err := orchestrator.ReplaceCandidate(ctx, "new-main", "agw-main"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if len(fixture.aimili.mainStageRequests) != 2 {
+		t.Fatalf("stage requests = %d", len(fixture.aimili.mainStageRequests))
+	}
+	if fixture.aimili.mainStageRequests[0].IdempotencyKey != "http-main-first-operation" ||
+		fixture.aimili.mainStageRequests[1].IdempotencyKey != "http-main-second-operation" {
+		t.Fatalf("idempotency keys = %q, %q", fixture.aimili.mainStageRequests[0].IdempotencyKey, fixture.aimili.mainStageRequests[1].IdempotencyKey)
+	}
+}
+
 func TestReplaceCandidateRollsBackMainWhenPublicValidationFails(t *testing.T) {
 	fixture := newFixture()
 	fixture.aimili.candidates = []aimili.Candidate{{

@@ -228,7 +228,11 @@ func (s *server) handleReplaceProxyGroup(response http.ResponseWriter, request *
 			}
 		}
 	}
-	group, err := s.proxyManager.ReplaceCandidate(request.Context(), request.PathValue("id"), strings.TrimSpace(input.TargetGroupID))
+	operationContext := request.Context()
+	if persistentOperationID != "" {
+		operationContext = orchestrator.WithMainAssignmentOperationKey(operationContext, persistentOperationID)
+	}
+	group, err := s.proxyManager.ReplaceCandidate(operationContext, request.PathValue("id"), strings.TrimSpace(input.TargetGroupID))
 	if err != nil {
 		writeProxyError(response, err)
 		return

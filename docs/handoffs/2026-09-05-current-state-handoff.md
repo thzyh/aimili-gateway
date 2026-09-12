@@ -1,6 +1,15 @@
 # Aimili Gateway 当前状态交接
 
-日期：2026-09-11（Asia/Shanghai）。状态：当前权威入口。
+日期：2026-09-12（Asia/Shanghai）。状态：当前权威入口。
+
+## 2026-09-12 ny 50 节点池最终状态
+
+- 候选池目标已由 40 扩到 50，实际运行连接仍固定为主连接加出口 1–3。生产继续使用单并发检测和既有 CPU、内存上限；全国家刷新峰值约 63 MiB，没有 OOM，Gateway 与 AimiliVPN 的 `NRestarts=0`。
+- Codex 内置浏览器真实显示官方候选 99、当前有效 50、20 个国家。刷新期间原日本主节点真实失效并只自动修复一次；失败后主连接行没有消失，出口 1–3 始终独立在线。
+- 首次从候选行人工替换主连接时，AimiliVPN 没有拨号，Gateway 显示“服务返回了无法识别的结果”。日志和 `main_assignment.json` 证明本次请求误命中了同候选的旧提交记录；根因是 Gateway 只按候选组合生成 AimiliVPN 幂等编号，不同人工操作可能重复。
+- Gateway 现把持久 HTTP 操作编号传给 AimiliVPN。同一个候选在不同故障轮次再次被选择时会生成独立事务，HTTP 请求重放仍复用同一编号。部署后二次选择泰国住宅候选，OpenVPN 完整完成握手、`tun0` 和策略路由恢复，前端显示“主连接替换成功”。
+- 最终主连接和出口 1–3 均为“已启用”，`tun0/tun120/tun121/tun122` 同时存在。`scripts/verify-external-client-v1c.py` 返回 `status=pass`、`ready_groups=4`、`verified_groups=4`、`unique_exit_ips=true`，四个 SOCKS5H、四个公网协议、代理 DNS 和订阅全部通过。
+- ny 仍只保留 `/var/backups/aimili-gateway/pool-refresh-fb50cc6` 一份正式联合备份；未操作其他 VPS，未删除 `aimili-vpngate`，未推送远程。
 
 ## 2026-09-11 ny 出口隔离与统一仓库
 

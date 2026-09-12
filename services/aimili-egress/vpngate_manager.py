@@ -117,7 +117,7 @@ FETCH_INTERVAL_SECONDS = env_int("FETCH_INTERVAL_SECONDS", 1260, 1)
 CHECK_INTERVAL_SECONDS = env_int("CHECK_INTERVAL_SECONDS", 1260, 1)
 _legacy_max_scan_rows = env_int("MAX_SCAN_ROWS", 300, 1)
 MAX_FETCH_ROWS = env_int("MAX_FETCH_ROWS", _legacy_max_scan_rows, 1)
-_legacy_target_valid_nodes = env_int("TARGET_VALID_NODES", 40, 1)
+_legacy_target_valid_nodes = env_int("TARGET_VALID_NODES", 50, 1)
 TARGET_VALID_POOL_SIZE = env_int("TARGET_VALID_POOL_SIZE", _legacy_target_valid_nodes, 1)
 TARGET_VALID_NODES = TARGET_VALID_POOL_SIZE
 NODE_TEST_BATCH_SIZE = env_int("NODE_TEST_BATCH_SIZE", 10, 1)
@@ -3382,8 +3382,17 @@ def maintain_valid_nodes(force: bool = False) -> str:
         protected_ids.update(main_assignment_coordinator.reserved_candidate_ids())
         if all_refresh_started_at:
             _set_country_refresh(phase="merging", testedCount=pool_stats["tested"])
+        eligible_existing_nodes = [
+            item
+            for item in existing_nodes
+            if str(item.get("id") or "").strip() not in blacklist
+        ]
         merged = node_pool.rebalance_valid_pool(
-            existing_nodes, merged, protected_ids, manual_ids, limit=TARGET_VALID_POOL_SIZE
+            eligible_existing_nodes,
+            merged,
+            protected_ids,
+            manual_ids,
+            limit=TARGET_VALID_POOL_SIZE,
         )
         merged = sort_all_nodes(merged)
         for node in merged:

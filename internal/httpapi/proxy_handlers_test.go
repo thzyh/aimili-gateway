@@ -215,6 +215,9 @@ func TestMainReplacementResumesStartedPersistentOperation(t *testing.T) {
 	if manager.replaceCalls != 1 {
 		t.Fatalf("started main assignment was not resumed: %d", manager.replaceCalls)
 	}
+	if manager.mainAssignmentOperationKey != "http-started-main" {
+		t.Fatalf("main assignment operation key = %q", manager.mainAssignmentOperationKey)
+	}
 }
 
 func TestProtocolModeUpdateRequiresMutationGuardsAndIsIdempotent(t *testing.T) {
@@ -677,6 +680,7 @@ type fakeProxyManager struct {
 	mixedPolicy                 store.MixedSourcePolicy
 	replaceCalls                int
 	replacedCandidate           string
+	mainAssignmentOperationKey  string
 	checkMainCalls              int
 	cleanupCalls                int
 	protocolCalls               int
@@ -709,9 +713,10 @@ func (m *fakeProxyManager) CanResumeInterruptedProtocolMode(context.Context, str
 func (*fakeProxyManager) Subscription(context.Context) (orchestrator.SubscriptionResult, error) {
 	return orchestrator.SubscriptionResult{URL: "https://example.test/sub/masked", InboundCount: 4, UpdatedAt: time.Unix(1700000000, 0).UTC()}, nil
 }
-func (m *fakeProxyManager) ReplaceCandidate(_ context.Context, candidateID, targetID string) (domain.ProxyGroup, error) {
+func (m *fakeProxyManager) ReplaceCandidate(ctx context.Context, candidateID, targetID string) (domain.ProxyGroup, error) {
 	m.replaceCalls++
 	m.replacedCandidate = candidateID
+	m.mainAssignmentOperationKey = orchestrator.MainAssignmentOperationKey(ctx)
 	return domain.ProxyGroup{ID: targetID, Status: domain.ProxyGroupReady, CountryCode: "JP", ProxyType: domain.ProxyTypeDatacenter}, nil
 }
 func (m *fakeProxyManager) CheckMain(context.Context) (store.MainEgress, error) {

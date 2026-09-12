@@ -759,6 +759,7 @@ type fakeAimili struct {
 	mainCommitCalls           int
 	repairCommitCalls         int
 	repairReplaceRequests     []aimili.MainRepairRequest
+	mainStageRequests         []aimili.MainAssignmentRequest
 	repairCommitErrors        []error
 	repairReplaceErrors       []error
 	rotateEntered             chan struct{}
@@ -778,6 +779,7 @@ func (a *fakeAimili) MainAssignment(context.Context) (aimili.MainAssignmentStatu
 
 func (a *fakeAimili) StageMainAssignment(_ context.Context, request aimili.MainAssignmentRequest) (aimili.MainAssignmentStatus, error) {
 	*a.calls = append(*a.calls, "main.stage")
+	a.mainStageRequests = append(a.mainStageRequests, request)
 	a.mainStatus = a.stagedMainStatus
 	return aimili.MainAssignmentStatus{OperationID: "operation-safe-1", State: "pending_commit", OldCandidateID: request.ExpectedCurrentCandidateID, NewCandidateID: request.CandidateID, Country: request.Country, ProxyType: request.ProxyType, Port: 7928, DNSVerified: true, ExitVerified: true, Available: true}, nil
 }

@@ -681,6 +681,39 @@ class PoolMaintenanceTests(unittest.TestCase):
         self.assertIn("n1", blacklist)
         self.assertEqual(stats["tested"], 1)
 
+    def test_maintenance_does_not_restore_an_existing_node_that_just_failed(self):
+        existing = [node(1, "available")]
+        stored_nodes = []
+        stored_blacklist = {}
+
+        def store(path, payload):
+            if path == manager.NODES_FILE:
+                stored_nodes[:] = payload
+            elif path == manager.BLACKLIST_FILE:
+                stored_blacklist.update(payload)
+
+        with (
+            mock.patch.object(manager, "TARGET_VALID_POOL_SIZE", 1),
+            mock.patch.object(manager, "NODE_TEST_BATCH_SIZE", 1),
+            mock.patch.object(manager, "ensure_dirs"),
+            mock.patch.object(manager, "active_openvpn_running", return_value=True),
+            mock.patch.object(manager, "read_nodes", return_value=existing),
+            mock.patch.object(manager, "fetch_candidates", return_value=[node(1)]),
+            mock.patch.object(manager, "probe_nodes", return_value=[node(1, "unavailable")]),
+            mock.patch.object(manager, "load_blacklist", return_value={}),
+            mock.patch.object(manager, "load_pool_metadata", return_value=manager.default_pool_metadata()),
+            mock.patch.object(manager, "store_pool_metadata"),
+            mock.patch.object(manager, "reserved_slot_candidate_ids", return_value=set()),
+            mock.patch.object(manager.main_assignment_coordinator, "reserved_candidate_ids", return_value=set()),
+            mock.patch.object(manager, "write_json", side_effect=store),
+            mock.patch.object(manager, "set_state"),
+            mock.patch.object(manager, "log_to_json"),
+        ):
+            manager.maintain_valid_nodes()
+
+        self.assertEqual(stored_nodes, [])
+        self.assertIn("n1", stored_blacklist)
+
     def test_api_failure_keeps_the_existing_pool(self):
         existing = [node(1, "available")]
         with (

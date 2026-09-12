@@ -97,7 +97,7 @@ install -d -m 0700 "$(dirname "$env_file")"
 touch "$env_file"
 chmod 0600 "$env_file"
 sed -i '/^MULTI_EXIT_SLOTS=/d;/^MAX_EXIT_SLOTS=/d;/^TARGET_VALID_POOL_SIZE=/d;/^UI_HOST=/d' "$env_file"
-printf 'MULTI_EXIT_SLOTS=%s\nMAX_EXIT_SLOTS=%s\nTARGET_VALID_POOL_SIZE=40\nUI_HOST=127.0.0.1\n' "$slot_count" "$max_slots" >> "$env_file"
+printf 'MULTI_EXIT_SLOTS=%s\nMAX_EXIT_SLOTS=%s\nTARGET_VALID_POOL_SIZE=50\nUI_HOST=127.0.0.1\n' "$slot_count" "$max_slots" >> "$env_file"
 ui_config="${AIMILI_UI_CONFIG:-/opt/aimilivpn/vpngate_data/ui_auth.json}"
 AIMILI_SLOT_COUNT="$slot_count" python3 - "$ui_config" <<'PY'
 import json, os, pathlib, tempfile, sys

@@ -154,3 +154,25 @@
 - 刷新期间免费主节点真实失效，系统只自动尝试一次同国替换，失败后前端保留主连接并显示“自动修复已失败，等待人工更换”；随后通过候选行的“替换到出口位”把住宅节点装载到主连接，页面显示“主连接替换成功”。该节点后来再次失效时，系统只处理这一条主连接，出口 1–3 始终保持在线。
 - 最后一次前端“检测并自动修复”完整显示了检测过程，结束时显示“主连接检测成功；真实出口、SOCKS5H 和当前公网协议链路正常”；主连接和出口 1–3 均回到“已启用”。基于当时实际主节点再次运行 `scripts/verify-external-client-v1c.py`，结果仍为 `status=pass`、`ready_groups=4`、`verified_groups=4`、`unique_exit_ips=true`。
 - 主节点失效会先从候选池移除坏节点，使“当前有效”短暂从 40 变为 39；后台随后按单并发补回目标 40。刷新完成提示记录的是那次刷新结束时的快照，不代表免费节点此后永不失效。
+
+## 50 节点扩容验收（2026-09-12）
+
+### 容量与资源边界
+
+- ny 的候选池目标由 40 调整为 50；`maxProxyGroups=3`、主连接和三个普通出口的实际运行数量没有增加。生产三处配置均为 `TARGET_VALID_POOL_SIZE=50`，继续保持 `OPENVPN_TEST_CONCURRENCY=1`、`NODE_TEST_BATCH_SIZE=1`、`CPUQuota=50%`、`MemoryHigh=180M`、`MemoryMax=220M`。
+- Codex 内置浏览器真实显示官方候选 99、当前有效 50、20 个国家，刷新完成提示为“官方候选 99、本次检测 62、刷新后可用 50、节点池共 50”。
+- 全国家刷新期间 AimiliVPN 内存峰值约 63 MiB，`NRestarts=0`，没有 OOM。主连接现场失效时，出口 1–3 及 `tun120/tun121/tun122` 全程保持在线，单次自动修复保护也没有因服务重启或补池循环重复领取。
+
+### 扩容后暴露并修复的问题
+
+- 重新平衡前会把本轮刚失败的旧记录重新混入有效池。现在先排除本轮黑名单节点，再执行保留和补齐；新增回归测试证明失败节点不会被旧记录恢复。
+- 50 节点安全响应约 17 KiB，超过 Gateway 原 16 KiB 读取上限。本机受认证的 AimiliVPN 控制接口响应上限调整为 64 KiB，字段白名单和异常响应校验保持不变；测试同时覆盖 50 节点正常响应和超过 64 KiB 继续拒绝。
+- 主连接人工恢复时，Gateway 原先只按“旧主节点 + 新候选”生成 AimiliVPN 幂等编号。主连接为空且再次选择历史上用过的同一候选时，会命中旧的已提交记录，AimiliVPN 不会拨号，Gateway 因收到旧状态显示“服务返回了无法识别的结果”。日志证明失败请求只有一次 `POST /control/v1/main/assign`，没有 OpenVPN 拨号；`main_assignment.json` 同时存在该候选的旧提交记录。
+- 修复后，Gateway 将当前 HTTP 人工替换操作的持久唯一编号传给 AimiliVPN；同一次请求重放仍保持幂等，不同故障批次即使选择相同候选也会创建新操作。新增测试覆盖“两个独立 HTTP 操作使用两个不同 AimiliVPN 幂等编号”和“中断后的 HTTP 操作继续传递原编号”。
+
+### 生产恢复与最终验收
+
+- 新 Gateway 部署后，在 Codex 内置浏览器再次选择泰国住宅候选替换主连接。AimiliVPN 最新日志显示实际连接 `27.145.187.221:4013`、创建 `tun0`、完成策略路由、验证代理出口，并提交新的主连接事务；前端显示“主连接替换成功”。
+- 最终页面同时显示主连接和出口 1–3 四条“已启用”，候选池仍为当前有效 50。服务器上 `tun0/tun120/tun121/tun122` 同时存在；主状态为 `active=true`、`egress_ok=true`、`repair_status=healthy`，Gateway 与 AimiliVPN 均 active 且 `NRestarts=0`。
+- `scripts/verify-external-client-v1c.py` 最新结果为 `status=pass`、`ready_groups=4`、`verified_groups=4`、`unique_exit_ips=true`：四个 SOCKS5H、四个公网协议、代理 DNS、订阅覆盖和四个不同出口 IP 全部通过。
+- 最新本地验证：全部 Go 测试通过；AimiliVPN 218 项测试通过；前端 67 项测试、`vue-tsc --noEmit` 和 Vite 生产构建通过；WSL root 安装器夹具通过。
