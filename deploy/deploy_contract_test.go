@@ -32,12 +32,13 @@ func TestSystemdUnitIsUnprivilegedAndHardened(t *testing.T) {
 		"MemoryHigh=64M",
 		"MemoryMax=96M",
 		"TasksMax=64",
+		"MemoryDenyWriteExecute=false",
 	} {
 		if !strings.Contains(unit, required) {
 			t.Fatalf("systemd unit missing %q", required)
 		}
 	}
-	for _, forbidden := range []string{"User=root", "/bin/sh", "/bin/bash", "systemctl", "caddy reload", "sudo"} {
+	for _, forbidden := range []string{"User=root", "/bin/sh", "/bin/bash", "systemctl", "caddy reload", "sudo", "MemoryDenyWriteExecute=true"} {
 		if strings.Contains(unit, forbidden) {
 			t.Fatalf("systemd unit contains forbidden capability %q", forbidden)
 		}

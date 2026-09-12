@@ -48,7 +48,9 @@ RestrictNamespaces=true
 RestrictRealtime=true
 RestrictSUIDSGID=true
 LockPersonality=true
-MemoryDenyWriteExecute=true
+# Go's modernc SQLite runtime needs executable memory mappings. Keeping this
+# enabled makes the Gateway crash during startup on current production builds.
+MemoryDenyWriteExecute=false
 CapabilityBoundingSet=
 AmbientCapabilities=
 SystemCallArchitectures=native
