@@ -218,6 +218,43 @@ func TestReconcileRefreshesDegradedGroupAfterItsSlotChangesCandidate(t *testing.
 	}
 }
 
+func TestReconcileRefreshesStaleManagedResourceFailureAfterSlotRecovers(t *testing.T) {
+	for _, errorCode := range []string{"managed_resource_drift", "rollback_failed"} {
+		t.Run(errorCode, func(t *testing.T) {
+			fixture := newFixture()
+			group, err := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter, "jp-node")
+			if err != nil {
+				t.Fatal(err)
+			}
+			group.Status = domain.ProxyGroupDegraded
+			group.LastErrorCode = errorCode
+			group.AimiliSlot = 1
+			group.PublicPort = 20001
+			group.MixedPort = 30001
+			group.PublicInboundID = 7
+			group.MixedInboundID = 8
+			fixture.store.groups[group.ID] = group
+			fixture.store.protocolModes[group.ID] = domain.EgressProtocolMode{
+				EgressID: group.ID, ActiveMode: domain.ProtocolVLESSTCPRealityVision,
+				DesiredMode: domain.ProtocolVLESSTCPRealityVision, State: domain.ProtocolReady,
+			}
+			fixture.aimili.candidates = []aimili.Candidate{{ID: "jp-node", CountryCode: "JP", CountryName: "日本", ProxyType: "datacenter", ProbeStatus: "available"}}
+			fixture.aimili.createdSlots = map[int]aimili.Slot{
+				1: {Number: 1, Country: "JP", CountryName: "日本", ProxyType: "datacenter", Port: 17929, Status: "up", NodeID: "jp-node", ExitIP: "203.0.113.21", EgressOK: true},
+			}
+
+			result := fixture.orchestratorWithMax(t, 3).Reconcile(context.Background())
+			refreshed := fixture.store.groups[group.ID]
+			if result.Ready != 1 || result.Failed != 0 || refreshed.Status != domain.ProxyGroupReady || refreshed.LastErrorCode != "" {
+				t.Fatalf("healthy runtime did not clear stale failure: result=%#v group=%#v", result, refreshed)
+			}
+			if !contains(fixture.calls, "slot.check") {
+				t.Fatalf("healthy runtime was not revalidated: %#v", fixture.calls)
+			}
+		})
+	}
+}
+
 func TestReconcilePassivelySynchronizesManualRepairStateWithoutCheckingAgain(t *testing.T) {
 	fixture := newFixture()
 	group, err := domain.NewProxyGroupIdentity("RU", domain.ProxyTypeDatacenter, "ru-old")

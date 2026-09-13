@@ -171,7 +171,12 @@ func (o *Orchestrator) refreshAssignedGroups(ctx context.Context, groups []domai
 		group := groups[index]
 		missingManagedResources := group.PublicInboundID <= 0 || group.MixedInboundID <= 0
 		_, assignmentDrift := drifted[group.ID]
-		refreshable := assignmentDrift || group.LastErrorCode == "slot_not_found" || (group.LastErrorCode == "protocol_failed" && missingManagedResources)
+		runtimeRecovered := false
+		if slot, ok := bySlot[group.AimiliSlot]; ok {
+			runtimeRecovered = slot.EgressOK && (slot.Status == "up" || slot.Status == "ready") &&
+				(group.LastErrorCode == "managed_resource_drift" || group.LastErrorCode == "rollback_failed")
+		}
+		refreshable := assignmentDrift || runtimeRecovered || group.LastErrorCode == "slot_not_found" || (group.LastErrorCode == "protocol_failed" && missingManagedResources)
 		if (group.Status == domain.ProxyGroupReady && !assignmentDrift) || !refreshable || group.AimiliSlot < 0 || !strings.HasPrefix(group.ID, "agw-") {
 			continue
 		}
@@ -363,7 +368,7 @@ func (o *Orchestrator) Pool(ctx context.Context) ([]domain.ProxyGroup, error) {
 	if source, ok := o.store.(mainEgressStore); ok {
 		storedMain, storedMainErr = source.GetMainEgress(ctx)
 	}
-	if (mainErr == nil && main.Active) || (storedMainErr == nil && storedMain.Enabled) {
+	if (mainErr == nil && (main.Active || main.RepairStatus == "manual_required")) || (storedMainErr == nil && storedMain.Enabled) {
 		proxyType := storedMain.ProxyType
 		country, countryName := storedMain.CountryCode, storedMain.CountryName
 		candidateID, exitIP := storedMain.CandidateID, storedMain.ExitIP
@@ -433,6 +438,9 @@ func (o *Orchestrator) attachProtocolModes(ctx context.Context, groups []domain.
 		if err != nil {
 			if !errors.Is(err, store.ErrEgressProtocolNotFound) {
 				return &Error{Code: "storage_failed"}
+			}
+			if group.ID == "agw-main" && group.LastErrorCode == "manual_replacement_required" {
+				continue
 			}
 			group.Status = domain.ProxyGroupRepairRequired
 			group.ProtocolState = domain.ProtocolRepairRequired

@@ -395,6 +395,46 @@ func TestEnsureLegacyMainPreserves8443AndAddsOnlyMixedInbound(t *testing.T) {
 	}
 }
 
+func TestEnsureLegacyMainAcceptsExistingRealityWithMultipleServerNamesAndShortIDs(t *testing.T) {
+	fixture := &xuiFixture{
+		initialXray: map[string]any{
+			"outbounds": []any{map[string]any{
+				"tag": "aimili-socks", "protocol": "socks",
+				"settings": map[string]any{"servers": []any{map[string]any{"address": "127.0.0.1", "port": 7928}}},
+			}},
+			"routing": map[string]any{"rules": []any{map[string]any{"type": "field", "inboundTag": []any{"aimili-reality"}, "outboundTag": "aimili-socks"}}},
+		},
+		inbounds: []map[string]any{{
+			"id": float64(1), "tag": "aimili-reality", "remark": "Aimili Reality", "protocol": "vless", "port": float64(8443),
+			"settings": mustJSONString(map[string]any{"clients": []any{
+				map[string]any{"id": "legacy-client", "email": "test", "flow": "xtls-rprx-vision"},
+				map[string]any{"id": "subscription-client", "email": "aimili-gateway-subscription", "flow": "xtls-rprx-vision"},
+			}}),
+			"streamSettings": mustJSONString(map[string]any{
+				"network": "tcp", "security": "reality",
+				"realitySettings": map[string]any{
+					"target": "www.amazon.com:443", "serverNames": []any{"www.amazon.com", "proxy.example.test"}, "privateKey": "private",
+					"shortIds": []any{"short-one", "short-two"}, "settings": map[string]any{"publicKey": "public"},
+				},
+			}),
+		}},
+	}
+	client := newXUIFixtureClient(t, fixture)
+	managed, err := client.EnsureLegacyMain(context.Background(), LegacyMainDesired{
+		VLESSPort: 8443, MixedPort: 31000, SOCKSPort: 7928, VLESSClientID: "11111111-2222-4333-8444-555555555555", MixedUsername: "user", MixedPassword: "password",
+		RealityTarget: "127.0.0.1:443", RealityServerName: "proxy.example.test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if managed.ServerName != "proxy.example.test" || managed.ShortID != "short-one" || managed.PublicKey != "public" {
+		t.Fatalf("legacy Reality selection=%#v", managed)
+	}
+	if len(fixture.updatedInboundIDs) != 0 {
+		t.Fatalf("existing legacy Reality was unexpectedly rewritten: %v", fixture.updatedInboundIDs)
+	}
+}
+
 func TestEnsureLegacyMainBootstrapsAnEmptyOwnedChain(t *testing.T) {
 	fixture := &xuiFixture{}
 	client := newXUIFixtureClient(t, fixture)

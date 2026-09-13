@@ -1427,11 +1427,13 @@ func (c *Client) EnsureLegacyMain(ctx context.Context, desired LegacyMainDesired
 		names, ids := stringValues(reality["serverNames"]), stringValues(reality["shortIds"])
 		clientSettings, ok := decodeObject(reality["settings"])
 		privateKey := stringValue(reality["privateKey"])
-		if !ok || len(names) != 1 || len(ids) != 1 || !validRealityValue(privateKey, 256) ||
-			!validRealityValue(stringValue(clientSettings["publicKey"]), 256) || !validRealityValue(ids[0], 64) {
+		selectedName, namesOK := selectLegacyRealityServerName(names, desired.RealityServerName)
+		selectedShortID, idsOK := selectLegacyRealityShortID(ids)
+		if !ok || !namesOK || !idsOK || !validRealityValue(privateKey, 256) ||
+			!validRealityValue(stringValue(clientSettings["publicKey"]), 256) || !validLegacyRealityTarget(stringValue(reality["target"])) {
 			return LegacyMain{}, &AdapterError{Code: "managed_resource_drift"}
 		}
-		result.PublicKey, result.ShortID, result.ServerName = stringValue(clientSettings["publicKey"]), ids[0], names[0]
+		result.PublicKey, result.ShortID, result.ServerName = stringValue(clientSettings["publicKey"]), selectedShortID, selectedName
 		result.MLDSA65Verify = stringValue(clientSettings["mldsa65Verify"])
 		if result.MLDSA65Verify != "" && !validRealityValue(result.MLDSA65Verify, 4096) {
 			return LegacyMain{}, &AdapterError{Code: "managed_resource_drift"}
@@ -1439,8 +1441,8 @@ func (c *Client) EnsureLegacyMain(ctx context.Context, desired LegacyMainDesired
 		legacyPrivateKey = privateKey
 		currentTarget := stringValue(reality["target"])
 		switch {
-		case currentTarget == desired.RealityTarget && names[0] == desired.RealityServerName:
-		case currentTarget == "www.microsoft.com:443" && names[0] == "www.microsoft.com":
+		case currentTarget == desired.RealityTarget:
+		case currentTarget == "www.microsoft.com:443" && selectedName == "www.microsoft.com" && len(names) == 1:
 			legacyOriginal = cloneObject(inbound.Raw)
 			legacyMigrated = cloneObject(inbound.Raw)
 			migratedStream := cloneObject(stream)
@@ -1450,7 +1452,9 @@ func (c *Client) EnsureLegacyMain(ctx context.Context, desired LegacyMainDesired
 			migratedStream["realitySettings"] = migratedReality
 			legacyMigrated["streamSettings"] = mustJSONString(migratedStream)
 		default:
-			return LegacyMain{}, &AdapterError{Code: "managed_resource_drift"}
+			// Existing deployments may use a different valid Reality cover target
+			// and multiple SNI/short-ID values. Preserve that user-owned key and
+			// camouflage material; Gateway only selects one valid public profile.
 		}
 	}
 	if result.VLESSInboundID == 0 || result.ClientID == "" || result.PublicKey == "" || result.ShortID == "" || result.ServerName == "" {
@@ -1634,6 +1638,42 @@ func validateLegacyMainDesired(desired LegacyMainDesired) error {
 		}
 	}
 	return nil
+}
+
+func selectLegacyRealityServerName(values []string, preferred string) (string, bool) {
+	if len(values) == 0 {
+		return "", false
+	}
+	selected := ""
+	for _, value := range values {
+		if !validRealityValue(value, 256) || net.ParseIP(value) != nil || strings.ContainsAny(value, "/:") {
+			return "", false
+		}
+		if selected == "" || value == preferred {
+			selected = value
+		}
+	}
+	return selected, true
+}
+
+func selectLegacyRealityShortID(values []string) (string, bool) {
+	if len(values) == 0 {
+		return "", false
+	}
+	for _, value := range values {
+		if !validRealityValue(value, 64) {
+			return "", false
+		}
+	}
+	return values[0], true
+}
+
+func validLegacyRealityTarget(value string) bool {
+	if !validRealityValue(value, 512) {
+		return false
+	}
+	host, port, err := net.SplitHostPort(value)
+	return err == nil && strings.TrimSpace(host) != "" && port == "443"
 }
 
 func vlessInbound(desired DesiredGroup, tag, privateKey, publicKey, shortID string) map[string]any {

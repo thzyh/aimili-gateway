@@ -266,6 +266,29 @@ func TestPoolShowsPersistedMainAsWaitingForManualReplacement(t *testing.T) {
 	}
 }
 
+func TestPoolShowsRuntimeManualMainWithoutPersistedMain(t *testing.T) {
+	fixture := newFixture()
+	fixture.aimili.mainStatus = aimili.MainStatus{
+		Port: 7928, Active: false, EgressOK: false, RepairStatus: "manual_required",
+		AutoRepairAttempted: true, LastErrorCode: "replacement_failed",
+	}
+
+	pool, err := fixture.orchestratorWithMax(t, 3).Pool(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pool) == 0 || pool[0].ID != "agw-main" {
+		t.Fatalf("runtime manual main placeholder disappeared: %#v", pool)
+	}
+	main := pool[0]
+	if main.Status != domain.ProxyGroupDegraded || main.LastErrorCode != "manual_replacement_required" || main.PublicPort != 8443 || main.MixedPort != 31000 {
+		t.Fatalf("runtime manual main placeholder was misreported: %#v", main)
+	}
+	if main.CandidateID != "" || main.CountryCode != "ZZ" || main.ExitIP != "" {
+		t.Fatalf("runtime manual main placeholder fabricated stale identity: %#v", main)
+	}
+}
+
 func TestPoolAttachesPersistedProtocolStateToLiveEgress(t *testing.T) {
 	fixture := newFixture()
 	group, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter, "node-one")
