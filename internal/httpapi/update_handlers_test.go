@@ -19,15 +19,14 @@ func TestUpdateGETRequiresAuthenticatedAdmin(t *testing.T) {
 	assertResponseStatus(t, response, http.StatusUnauthorized)
 }
 
-func TestUpdatePOSTRequiresCSRFAndFreshPassword(t *testing.T) {
+func TestUpdatePOSTRequiresCSRFAndAuthenticatedSession(t *testing.T) {
 	manager := &fakeUpdateManager{summary: updateSummaryFixture()}
 	environment := newAuthTestEnvironmentConfigured(t, true, func(dependencies *Dependencies) { dependencies.Updates = manager })
 	assertResponseStatus(t, environment.login(t), http.StatusNoContent)
 	session := environment.session(t)
 	path := "/api/v1/system/updates/gateway/v1.2.3/apply"
-	assertResponseStatus(t, environment.request(t, http.MethodPost, path, map[string]string{"password": "local-only-test-password", "runId": strings.Repeat("a", 64)}, environment.origin, ""), http.StatusForbidden)
-	assertResponseStatus(t, environment.request(t, http.MethodPost, path, map[string]string{"password": "wrong", "runId": strings.Repeat("a", 64)}, environment.origin, session.CSRFToken), http.StatusForbidden)
-	response := environment.request(t, http.MethodPost, path, map[string]string{"password": "local-only-test-password", "runId": strings.Repeat("a", 64)}, environment.origin, session.CSRFToken)
+	assertResponseStatus(t, environment.request(t, http.MethodPost, path, map[string]string{"runId": strings.Repeat("a", 64)}, environment.origin, ""), http.StatusForbidden)
+	response := environment.request(t, http.MethodPost, path, map[string]string{"runId": strings.Repeat("a", 64)}, environment.origin, session.CSRFToken)
 	assertResponseStatus(t, response, http.StatusAccepted)
 }
 
@@ -37,7 +36,7 @@ func TestUpdateApplyRejectsURLPathVersions(t *testing.T) {
 	assertResponseStatus(t, environment.login(t), http.StatusNoContent)
 	session := environment.session(t)
 	for _, version := range []string{"https:%2F%2Fevil.test", "..%2Fv1.2.3"} {
-		response := environment.request(t, http.MethodPost, "/api/v1/system/updates/gateway/"+version+"/apply", map[string]string{"password": "local-only-test-password", "runId": strings.Repeat("a", 64)}, environment.origin, session.CSRFToken)
+		response := environment.request(t, http.MethodPost, "/api/v1/system/updates/gateway/"+version+"/apply", map[string]string{"runId": strings.Repeat("a", 64)}, environment.origin, session.CSRFToken)
 		assertResponseStatus(t, response, http.StatusBadRequest)
 	}
 }
@@ -62,7 +61,7 @@ func TestUpdateApplyIsIdempotentByRunID(t *testing.T) {
 	environment := newAuthTestEnvironmentConfigured(t, true, func(dependencies *Dependencies) { dependencies.Updates = manager })
 	assertResponseStatus(t, environment.login(t), http.StatusNoContent)
 	session := environment.session(t)
-	body := map[string]string{"password": "local-only-test-password", "runId": strings.Repeat("a", 64)}
+	body := map[string]string{"runId": strings.Repeat("a", 64)}
 	path := "/api/v1/system/updates/gateway/v1.2.3/apply"
 	for range 2 {
 		response := environment.request(t, http.MethodPost, path, body, environment.origin, session.CSRFToken)
@@ -78,7 +77,7 @@ func TestRollbackRequiresAvailableCapabilityBeforeSubmit(t *testing.T) {
 	environment := newAuthTestEnvironmentConfigured(t, true, func(deps *Dependencies) { deps.Updates = manager })
 	assertResponseStatus(t, environment.login(t), http.StatusNoContent)
 	session := environment.session(t)
-	response := environment.request(t, http.MethodPost, "/api/v1/system/updates/ui/rollback", map[string]string{"password": "local-only-test-password", "runId": strings.Repeat("a", 64)}, environment.origin, session.CSRFToken)
+	response := environment.request(t, http.MethodPost, "/api/v1/system/updates/ui/rollback", map[string]string{"runId": strings.Repeat("a", 64)}, environment.origin, session.CSRFToken)
 	assertResponseStatus(t, response, http.StatusServiceUnavailable)
 	if manager.submitCalls != 0 {
 		t.Fatal("disabled rollback wrote a request")
@@ -91,8 +90,8 @@ func TestUpdateMutationAuditUsesClosedRedactedFields(t *testing.T) {
 	assertResponseStatus(t, environment.login(t), http.StatusNoContent)
 	session := environment.session(t)
 	runID := strings.Repeat("a", 64)
-	for _, password := range []string{"wrong-secret-value", "local-only-test-password"} {
-		response := environment.request(t, http.MethodPost, "/api/v1/system/updates/gateway/v1.2.3/apply", map[string]string{"password": password, "runId": runID}, environment.origin, session.CSRFToken)
+	for _, body := range []map[string]string{{}, {"runId": runID}} {
+		response := environment.request(t, http.MethodPost, "/api/v1/system/updates/gateway/v1.2.3/apply", body, environment.origin, session.CSRFToken)
 		response.Body.Close()
 	}
 	db, err := sql.Open("sqlite", environment.databasePath)
@@ -127,7 +126,7 @@ func TestUIRollbackAPIHasDedicatedRolledBackResult(t *testing.T) {
 	env := newAuthTestEnvironmentConfigured(t, true, func(d *Dependencies) { d.Updates = manager })
 	assertResponseStatus(t, env.login(t), http.StatusNoContent)
 	session := env.session(t)
-	response := env.request(t, http.MethodPost, "/api/v1/system/updates/ui/rollback", map[string]string{"password": "local-only-test-password", "runId": runID}, env.origin, session.CSRFToken)
+	response := env.request(t, http.MethodPost, "/api/v1/system/updates/ui/rollback", map[string]string{"runId": runID}, env.origin, session.CSRFToken)
 	assertResponseStatus(t, response, http.StatusAccepted)
 	if manager.lastRequest.Kind != "ui" || manager.lastRequest.Action != "rollback" || manager.lastRequest.Version != "" {
 		t.Fatalf("UI rollback misrouted: %+v", manager.lastRequest)
@@ -143,7 +142,7 @@ func TestDisabledAPIRejectsAllRoutesWithoutSpool(t *testing.T) {
 	assertResponseStatus(t, env.login(t), http.StatusNoContent)
 	session := env.session(t)
 	for _, route := range []struct{ method, path string }{{http.MethodGet, "/api/v1/system/updates"}, {http.MethodGet, "/api/v1/system/updates/" + strings.Repeat("a", 64)}, {http.MethodPost, "/api/v1/system/updates/ui/rollback"}, {http.MethodPost, "/api/v1/system/updates/gateway/rollback"}, {http.MethodPost, "/api/v1/system/updates/gateway/v1.2.3/apply"}} {
-		response := env.request(t, route.method, route.path, map[string]string{"password": "local-only-test-password", "runId": strings.Repeat("a", 64)}, env.origin, session.CSRFToken)
+		response := env.request(t, route.method, route.path, map[string]string{"runId": strings.Repeat("a", 64)}, env.origin, session.CSRFToken)
 		body, _ := io.ReadAll(response.Body)
 		response.Body.Close()
 		if response.StatusCode != 503 || !strings.Contains(string(body), "updates_disabled") {

@@ -137,7 +137,7 @@ it('explains the component boundary for ordinary Gateway updates', async () => {
 	expect(wrapper.text()).toContain('涉及 AimiliVPN、3x-ui/Xray 或 Caddy 的版本会拒绝普通更新')
 })
 
-it('requires password reauthentication and submits only a closed version plus run id', async () => {
+it('starts an update directly and submits only a closed version plus run id', async () => {
 	let submittedRunId = ''
 	mocks.apiFetch.mockImplementation((path: string, options?: { method?: string; body?: string }) => {
 		if (path === '/api/v1/settings/summary') return Promise.resolve({ accountSyncStatus: 'synced', candidateCount: 24, onlineCount: 1, maxOnline: 1 })
@@ -153,15 +153,11 @@ it('requires password reauthentication and submits only a closed version plus ru
 	const wrapper = mount(SettingsView)
 	await flushPromises()
 	await wrapper.get('[data-gateway-update]').trigger('click')
-	expect(wrapper.find('[data-update-password]').exists()).toBe(true)
-	await wrapper.get('[data-update-password]').setValue('test-password')
-	await wrapper.get('[data-update-confirm]').trigger('click')
 	await flushPromises()
 	const call = mocks.apiFetch.mock.calls.find(([path]) => path === '/api/v1/system/updates/gateway/v1.2.3/apply')
 	expect(call?.[1]).toMatchObject({ method: 'POST' })
 	const body = JSON.parse(call?.[1].body)
-	expect(Object.keys(body).sort()).toEqual(['password', 'runId'])
-	expect(body.password).toBe('test-password')
+	expect(Object.keys(body)).toEqual(['runId'])
 	expect(body.runId).toMatch(/^[0-9a-f]{64}$/)
 })
 
@@ -185,8 +181,6 @@ it('retries transient polling errors for the original run and shows a closable n
 	const wrapper = mount(SettingsView)
 	await flushPromises()
 	await wrapper.get('[data-gateway-update]').trigger('click')
-	await wrapper.get('[data-update-password]').setValue('test-password')
-	await wrapper.get('[data-update-confirm]').trigger('click')
 	await new Promise(resolve => setTimeout(resolve, 1100))
 	await flushPromises()
 	expect(statusReads).toBe(2)
@@ -206,7 +200,7 @@ it('renders repair-required updates in Chinese without exposing the internal err
   expect(wrapper.get('[data-update-notice]').text()).not.toContain('internal_secret_detail')
 })
 
-it('reauthenticates before starting a Gateway rollback and follows its run id', async () => {
+it('starts a Gateway rollback directly and follows its run id', async () => {
   let submittedRunId = ''
   mocks.apiFetch.mockImplementation((path: string, options?: { method?: string; body?: string }) => {
     if (path === '/api/v1/settings/summary') return Promise.resolve({ accountSyncStatus: 'synced', candidateCount: 24, onlineCount: 1, maxOnline: 1 })
@@ -223,14 +217,11 @@ it('reauthenticates before starting a Gateway rollback and follows its run id', 
   await flushPromises()
 
   await wrapper.get('[data-gateway-rollback]').trigger('click')
-  expect(wrapper.find('[data-update-password]').exists()).toBe(true)
-  await wrapper.get('[data-update-password]').setValue('test-password')
-  await wrapper.get('[data-update-confirm]').trigger('click')
   await flushPromises()
 
   const call = mocks.apiFetch.mock.calls.find(([path]) => path === '/api/v1/system/updates/gateway/rollback')
   expect(call?.[1]).toMatchObject({ method: 'POST' })
-  expect(JSON.parse(call?.[1].body)).toMatchObject({ password: 'test-password', runId: expect.stringMatching(/^[0-9a-f]{64}$/) })
+  expect(JSON.parse(call?.[1].body)).toMatchObject({ runId: expect.stringMatching(/^[0-9a-f]{64}$/) })
   expect(mocks.apiFetch).toHaveBeenCalledWith(`/api/v1/system/updates/${submittedRunId}`)
   const notice = wrapper.get('[data-update-notice]')
   expect(notice.text()).toContain('Gateway 控制面已回滚')
@@ -255,8 +246,6 @@ it('continues polling the generated run id when an update POST response is lost'
   await flushPromises()
 
   await wrapper.get('[data-gateway-update]').trigger('click')
-  await wrapper.get('[data-update-password]').setValue('test-password')
-  await wrapper.get('[data-update-confirm]').trigger('click')
   await flushPromises()
 
   expect(submittedRunId).toMatch(/^[0-9a-f]{64}$/)
@@ -278,7 +267,7 @@ it('disables every update mutation when capability is unavailable', async () => 
     expect(wrapper.get(selector).attributes('disabled')).toBeDefined()
     await wrapper.get(selector).trigger('click')
   }
-  expect(wrapper.find('[data-update-password]').exists()).toBe(false)
+  expect(wrapper.find('[data-update-resume]').exists()).toBe(false)
   expect(mocks.apiFetch.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(0)
 })
 
@@ -303,7 +292,8 @@ it('detects a newer signed Gateway release from GitHub before offering update', 
     await wrapper.get('[data-check-update]').trigger('click')
     await flushPromises()
     expect(wrapper.get('[data-gateway-update]').text()).toContain('v1.2.3')
-    expect(wrapper.get('[data-update-notice]').text()).toContain('发现新版本 v1.2.3')
+    const updateSection = wrapper.get('.update-section')
+    expect(updateSection.get('[data-update-notice]').text()).toContain('发现新版本 v1.2.3')
     expect(wrapper.text()).toContain('修复出口状态显示')
   } finally {
     vi.unstubAllGlobals()
@@ -334,8 +324,6 @@ it('keeps the confirmed terminal notice when refreshing versions fails', async (
     const wrapper = mount(SettingsView)
     await flushPromises()
     await wrapper.get('[data-gateway-update]').trigger('click')
-    await wrapper.get('[data-update-password]').setValue('test-password')
-    await wrapper.get('[data-update-confirm]').trigger('click')
     await vi.runAllTimersAsync()
     await flushPromises()
 

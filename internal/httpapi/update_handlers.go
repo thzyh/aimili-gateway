@@ -9,7 +9,6 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/thzyh/aimili-gateway/internal/auth"
 	"github.com/thzyh/aimili-gateway/internal/store"
 )
 
@@ -51,8 +50,7 @@ type UpdateManager interface {
 }
 
 type updateMutationInput struct {
-	Password string `json:"password"`
-	RunID    string `json:"runId"`
+	RunID string `json:"runId"`
 }
 
 func (s *server) handleListUpdates(response http.ResponseWriter, request *http.Request) {
@@ -126,21 +124,11 @@ func (s *server) handleUpdateMutation(response http.ResponseWriter, request *htt
 		return
 	}
 	var input updateMutationInput
-	if err := decodeJSON(request, &input); err != nil || input.Password == "" || !updateRunIDPattern.MatchString(input.RunID) {
+	if err := decodeJSON(request, &input); err != nil || !updateRunIDPattern.MatchString(input.RunID) {
 		writeAPIError(response, http.StatusBadRequest, "invalid_request")
 		return
 	}
 	update.RunID = input.RunID
-	valid, err := s.verifyPasswordOnly(request, input.Password)
-	input.Password = ""
-	if err != nil {
-		writeAPIError(response, http.StatusInternalServerError, "internal_error")
-		return
-	}
-	if !valid {
-		writeAPIError(response, http.StatusForbidden, "reauthentication_failed")
-		return
-	}
 	summary, listErr := s.updates.List(request.Context())
 	if listErr != nil || !summary.Enabled {
 		writeAPIError(response, http.StatusServiceUnavailable, "updates_disabled")
@@ -196,19 +184,6 @@ func (s *server) handleUpdateStatus(response http.ResponseWriter, request *http.
 		return
 	}
 	writeJSON(response, http.StatusOK, result)
-}
-
-func (s *server) verifyPasswordOnly(request *http.Request, password string) (bool, error) {
-	admin, err := s.store.GetAdmin(request.Context())
-	if errors.Is(err, store.ErrAdminNotFound) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	passwordBytes := []byte(password)
-	defer clear(passwordBytes)
-	return auth.VerifyPassword(string(admin.PasswordHash), passwordBytes)
 }
 
 func validUpdateKind(kind string) bool { return kind == "ui" || kind == "gateway" }
