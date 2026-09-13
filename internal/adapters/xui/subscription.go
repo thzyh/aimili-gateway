@@ -800,13 +800,26 @@ func publicProfile(detail inboundDetail, client subscriptionClient) (PublicProfi
 	clientSettings, clientSettingsOK := decodeObject(reality["settings"])
 	serverNames := stringValues(reality["serverNames"])
 	shortIDs := stringValues(reality["shortIds"])
-	if !ok || !clientSettingsOK || len(serverNames) != 1 || len(shortIDs) != 1 {
+	serverName, shortID := "", ""
+	if detail.Tag == "aimili-reality" {
+		var namesOK, idsOK bool
+		serverName, namesOK = selectLegacyRealityServerName(serverNames, "")
+		shortID, idsOK = selectLegacyRealityShortID(shortIDs)
+		if !namesOK || !idsOK {
+			return PublicProfile{}, &AdapterError{Code: "managed_resource_drift"}
+		}
+	} else if len(serverNames) == 1 && len(shortIDs) == 1 {
+		serverName, shortID = serverNames[0], shortIDs[0]
+	} else {
+		return PublicProfile{}, &AdapterError{Code: "managed_resource_drift"}
+	}
+	if !ok || !clientSettingsOK {
 		return PublicProfile{}, &AdapterError{Code: "managed_resource_drift"}
 	}
 	profile.PublicKey = stringValue(clientSettings["publicKey"])
 	profile.MLDSA65Verify = stringValue(clientSettings["mldsa65Verify"])
-	profile.ShortID = shortIDs[0]
-	profile.ServerName = serverNames[0]
+	profile.ShortID = shortID
+	profile.ServerName = serverName
 	if profile.PublicKey == "" || profile.ShortID == "" || profile.ServerName == "" {
 		return PublicProfile{}, &AdapterError{Code: "managed_resource_drift"}
 	}

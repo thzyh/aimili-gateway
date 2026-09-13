@@ -152,6 +152,28 @@ func (f *subscriptionFixture) handler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func TestPublicProfileAcceptsLegacyMainWithMultipleRealityValues(t *testing.T) {
+	detail := inboundDetail{
+		ID: 1, Tag: "aimili-reality", Remark: "Aimili Reality", Protocol: "vless", Port: 8443,
+		Settings: mustJSONString(map[string]any{"clients": []any{map[string]any{"id": "stable-client", "email": managedSubscriptionEmail}}}),
+		StreamSettings: mustJSONString(map[string]any{
+			"network": "tcp", "security": "reality",
+			"realitySettings": map[string]any{
+				"serverNames": []any{"www.amazon.com", "proxy.example.test"},
+				"shortIds":    []any{"short-one", "short-two"},
+				"settings":    map[string]any{"publicKey": "public-one"},
+			},
+		}),
+	}
+	profile, err := publicProfile(detail, subscriptionClient{uuid: "stable-client", email: managedSubscriptionEmail})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.Mode != "vless_tcp_reality_vision" || profile.ServerName != "www.amazon.com" || profile.ShortID != "short-one" || profile.PublicKey != "public-one" {
+		t.Fatalf("legacy main profile=%#v", profile)
+	}
+}
+
 func TestOwnedPublicIDsPreservesRequestedOrder(t *testing.T) {
 	inbounds := []Inbound{
 		{ID: 1, Tag: "aimili-reality", Remark: "Aimili Reality", Protocol: "vless"},
