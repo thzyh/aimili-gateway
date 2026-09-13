@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,6 +45,17 @@ func TestFetcherUsesOnlyConfiguredOriginAndExactAssetNames(t *testing.T) {
 	defer mu.Unlock()
 	if strings.Join(paths, "\n") != strings.Join(want, "\n") || result.StagingDir == "" {
 		t.Fatalf("paths=%q result=%#v", paths, result)
+	}
+}
+
+func TestGitHubReleaseAssetsUseThePublicReleaseTagLayout(t *testing.T) {
+	origin, err := url.Parse("https://github.com/thzyh/aimili-gateway/releases/download")
+	if err != nil {
+		t.Fatal(err)
+	}
+	actual := releaseAssetURL(origin, "stable", gatewayRequest(), "manifest.json")
+	if actual.String() != "https://github.com/thzyh/aimili-gateway/releases/download/v1.2.3/manifest.json" {
+		t.Fatalf("asset URL = %s", actual.String())
 	}
 }
 

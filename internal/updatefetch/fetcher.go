@@ -105,8 +105,7 @@ func (f *Fetcher) Fetch(ctx context.Context, request updatetxn.Request) (Preflig
 	}
 	assets := make([][]byte, len(assetNames))
 	for index, name := range assetNames {
-		assetURL := *origin
-		assetURL.Path = path.Join(origin.Path, channel, string(request.Kind), request.Version, name)
+		assetURL := releaseAssetURL(origin, channel, request, name)
 		body, err := download(ctx, client, assetURL.String(), credential, f.Config.MaxAssetBytes)
 		if err != nil {
 			return PreflightResult{}, err
@@ -133,6 +132,16 @@ func (f *Fetcher) Fetch(ctx context.Context, request updatetxn.Request) (Preflig
 	}
 	keep = true
 	return result, nil
+}
+
+func releaseAssetURL(origin *url.URL, channel string, request updatetxn.Request, name string) url.URL {
+	assetURL := *origin
+	if strings.EqualFold(origin.Hostname(), "github.com") {
+		assetURL.Path = path.Join(origin.Path, request.Version, name)
+	} else {
+		assetURL.Path = path.Join(origin.Path, channel, string(request.Kind), request.Version, name)
+	}
+	return assetURL
 }
 
 func Downloaded(root string, request updatetxn.Request) (PreflightResult, error) {

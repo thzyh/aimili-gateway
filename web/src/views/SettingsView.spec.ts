@@ -121,7 +121,7 @@ it('explains why the current network source cannot be identified', async () => {
   expect(wrapper.find('[data-policy-notice]').exists()).toBe(false)
 })
 
-it('distinguishes no-restart UI updates from control-plane restart', async () => {
+it('explains the component boundary for ordinary Gateway updates', async () => {
 	mocks.apiFetch.mockImplementation((path: string) => {
 		if (path === '/api/v1/settings/summary') return Promise.resolve({ accountSyncStatus: 'synced', candidateCount: 24, onlineCount: 1, maxOnline: 1 })
 		if (path === '/api/v1/settings/mixed-source-policy') return Promise.resolve({ enabled: false, cidrs: [], applyStatus: 'applied' })
@@ -133,8 +133,8 @@ it('distinguishes no-restart UI updates from control-plane restart', async () =>
 	})
 	const wrapper = mount(SettingsView)
 	await flushPromises()
-	expect(wrapper.text()).toContain('仅更新界面，不影响节点')
-	expect(wrapper.text()).toContain('控制面将短暂重启，代理节点继续运行')
+	expect(wrapper.text()).toContain('只短暂重启 Gateway，代理节点继续运行')
+	expect(wrapper.text()).toContain('涉及 AimiliVPN、3x-ui/Xray 或 Caddy 的版本会拒绝普通更新')
 })
 
 it('requires password reauthentication and submits only a closed version plus run id', async () => {
@@ -190,7 +190,7 @@ it('retries transient polling errors for the original run and shows a closable n
 	await new Promise(resolve => setTimeout(resolve, 1100))
 	await flushPromises()
 	expect(statusReads).toBe(2)
-	expect(wrapper.get('[data-update-notice]').text()).toContain('Gateway 控制面更新成功')
+	expect(wrapper.get('[data-update-notice]').text()).toContain('Aimili Gateway 更新成功')
 	expect(wrapper.get('[data-update-notice]').text()).not.toContain('temporary disconnect')
 	await wrapper.get('[data-update-notice] [aria-label="关闭提示"]').trigger('click')
 	expect(wrapper.find('[data-update-notice]').exists()).toBe(false)
@@ -262,7 +262,7 @@ it('continues polling the generated run id when an update POST response is lost'
   expect(submittedRunId).toMatch(/^[0-9a-f]{64}$/)
   expect(mocks.apiFetch.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(1)
   expect(mocks.apiFetch).toHaveBeenCalledWith(`/api/v1/system/updates/${submittedRunId}`)
-  expect(wrapper.get('[data-update-notice]').text()).toContain('Gateway 控制面更新成功')
+  expect(wrapper.get('[data-update-notice]').text()).toContain('Aimili Gateway 更新成功')
 })
 
 it('disables every update mutation when capability is unavailable', async () => {
@@ -274,7 +274,7 @@ it('disables every update mutation when capability is unavailable', async () => 
   })
   const wrapper = mount(SettingsView)
   await flushPromises()
-  for (const selector of ['[data-ui-update]', '[data-ui-rollback]', '[data-gateway-update]', '[data-gateway-rollback]']) {
+  for (const selector of ['[data-check-update]', '[data-gateway-rollback]']) {
     expect(wrapper.get(selector).attributes('disabled')).toBeDefined()
     await wrapper.get(selector).trigger('click')
   }
@@ -282,31 +282,32 @@ it('disables every update mutation when capability is unavailable', async () => 
   expect(mocks.apiFetch.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(0)
 })
 
-it('shows UI rollback semantics instead of new UI applied', async () => {
-  let runId = ''
+it('detects a newer signed Gateway release from GitHub before offering update', async () => {
   mocks.apiFetch.mockImplementation((path: string, options?: { method?: string; body?: string }) => {
     if (path === '/api/v1/settings/summary') return Promise.resolve({ accountSyncStatus: 'synced' })
     if (path === '/api/v1/settings/mixed-source-policy') return Promise.resolve({ enabled: false, cidrs: [], applyStatus: 'applied' })
-    if (path === '/api/v1/system/updates') return Promise.resolve({ enabled: true, currentGateway: 'v1.2.3', available: [] })
-    if (path === '/api/v1/system/updates/ui/rollback' && options?.method === 'POST') {
-      runId = JSON.parse(options.body ?? '{}').runId
-      return Promise.resolve({ runId, kind: 'ui', state: 'pending' })
-    }
-    if (path === `/api/v1/system/updates/${runId}`) return Promise.resolve({ runId, kind: 'ui', state: 'rolled_back' })
+    if (path === '/api/v1/system/updates') return Promise.resolve({ enabled: true, currentGateway: 'v1.2.2', available: [] })
     return Promise.resolve(undefined)
   })
-  const wrapper = mount(SettingsView)
-  await flushPromises()
-  await wrapper.get('[data-ui-rollback]').trigger('click')
-  await wrapper.get('[data-update-password]').setValue('test-password')
-  await wrapper.get('[data-update-confirm]').trigger('click')
-  await flushPromises()
-  const notice = wrapper.get('[data-update-notice]')
-  expect(notice.text()).toContain('界面已回滚')
-  expect(notice.text()).not.toContain('新界面已生效')
-  expect(mocks.apiFetch.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(1)
-  await notice.get('[aria-label="关闭提示"]').trigger('click')
-  expect(wrapper.find('[data-update-notice]').exists()).toBe(false)
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+    ok: true,
+    json: async () => ({
+      tag_name: 'v1.2.3', draft: false, prerelease: false, body: '修复出口状态显示',
+      assets: [{ name: 'manifest.json' }, { name: 'manifest.sig' }, { name: 'aimili-gateway' }],
+    }),
+  }))
+  try {
+    const wrapper = mount(SettingsView)
+    await flushPromises()
+    expect(wrapper.find('[data-gateway-update]').exists()).toBe(false)
+    await wrapper.get('[data-check-update]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-gateway-update]').text()).toContain('v1.2.3')
+    expect(wrapper.get('[data-update-notice]').text()).toContain('发现新版本 v1.2.3')
+    expect(wrapper.text()).toContain('修复出口状态显示')
+  } finally {
+    vi.unstubAllGlobals()
+  }
 })
 
 it('keeps the confirmed terminal notice when refreshing versions fails', async () => {
@@ -338,7 +339,7 @@ it('keeps the confirmed terminal notice when refreshing versions fails', async (
     await vi.runAllTimersAsync()
     await flushPromises()
 
-    expect(wrapper.get('[data-update-notice]').text()).toContain('Gateway 控制面更新成功')
+    expect(wrapper.get('[data-update-notice]').text()).toContain('Aimili Gateway 更新成功')
     expect(wrapper.get('[data-update-notice]').text()).not.toContain('状态未确认')
   } finally {
     vi.useRealTimers()

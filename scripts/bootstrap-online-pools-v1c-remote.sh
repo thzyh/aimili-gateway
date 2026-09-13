@@ -181,7 +181,7 @@ if 'reverse_proxy 127.0.0.1:9080' not in text:
             X-Content-Type-Options nosniff
             X-Frame-Options DENY
             Referrer-Policy no-referrer
-            Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+            Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' https://api.github.com; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
         }
         reverse_proxy 127.0.0.1:9080
     }
@@ -191,7 +191,7 @@ if 'reverse_proxy 127.0.0.1:9080' not in text:
             X-Content-Type-Options nosniff
             X-Frame-Options DENY
             Referrer-Policy no-referrer
-            Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+            Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' https://api.github.com; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
         }
         reverse_proxy 127.0.0.1:9080
     }'''

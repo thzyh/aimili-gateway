@@ -81,7 +81,7 @@ func (s *server) handleApplyUpdate(response http.ResponseWriter, request *http.R
 		writeAPIError(response, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	s.handleUpdateMutation(response, request, UpdateRequest{Kind: kind, Version: version, Action: "apply"}, true)
+	s.handleUpdateMutation(response, request, UpdateRequest{Kind: kind, Version: version, Action: "apply"}, kind == "ui")
 }
 
 func (s *server) handleRollbackUpdate(response http.ResponseWriter, request *http.Request) {

@@ -16,6 +16,9 @@ const saving = ref(false)
 const updates = ref<UpdateSummaryPayload | null>(null)
 const updateNotice = ref<UiNoticeData | null>(null)
 const updatePassword = ref('')
+const gatewayCandidate = ref<UpdateVersionPayload | null>(null)
+const checkingUpdates = ref(false)
+const releaseNotes = ref('')
 type UpdateAction = 'apply' | 'rollback'
 type PendingUpdate = { action: 'apply'; candidate: UpdateVersionPayload } | { action: 'rollback'; kind: UpdateKind }
 const pendingUpdate = ref<PendingUpdate | null>(null)
@@ -43,6 +46,7 @@ onMounted(async () => {
     enabled.value = loadedPolicy.enabled
     cidrs.value = loadedPolicy.cidrs.join('\n')
     updates.value = loadedUpdates
+    gatewayCandidate.value = loadedUpdates?.available.find(item => item.kind === 'gateway' && item.compatible) ?? null
   } catch (error) {
     notice.value = makeNotice('error', '高级设置读取失败', messageFor(error, '高级设置暂时不可用'))
   } finally {
@@ -51,8 +55,62 @@ onMounted(async () => {
 })
 
 const updatesEnabled = computed(() => updates.value?.enabled === true)
-const availableUI = computed(() => updatesEnabled.value ? updates.value?.available.find(item => item.kind === 'ui' && item.compatible) ?? null : null)
-const availableGateway = computed(() => updatesEnabled.value ? updates.value?.available.find(item => item.kind === 'gateway' && item.compatible) ?? null : null)
+const availableGateway = computed(() => updatesEnabled.value ? gatewayCandidate.value : null)
+
+async function checkGatewayUpdate(): Promise<void> {
+  if (!updatesEnabled.value || checkingUpdates.value || updating.value || activeUpdate.value) return
+  checkingUpdates.value = true
+  gatewayCandidate.value = null
+  releaseNotes.value = ''
+  updateNotice.value = makeUpdateNotice('progress', '正在检测更新', '正在查询 Aimili Gateway 的 GitHub 正式发布版本。')
+  try {
+    const response = await fetch('https://api.github.com/repos/thzyh/aimili-gateway/releases/latest', {
+      headers: { Accept: 'application/vnd.github+json' },
+    })
+    if (!response.ok) throw new Error(response.status === 404 ? 'release_missing' : 'github_unavailable')
+    const release: unknown = await response.json()
+    if (!isGatewayRelease(release)) throw new Error('release_invalid')
+    const current = updates.value?.currentGateway ?? ''
+    const comparison = compareGatewayVersions(release.tag_name, current)
+    if (comparison <= 0) {
+      updateNotice.value = makeUpdateNotice('success', '已是最新版本', `当前 Aimili Gateway ${current}，暂无可用更新。`)
+      return
+    }
+    gatewayCandidate.value = { kind: 'gateway', version: release.tag_name, compatible: true }
+    releaseNotes.value = typeof release.body === 'string' ? release.body.trim().slice(0, 500) : ''
+    updateNotice.value = makeUpdateNotice('success', `发现新版本 ${release.tag_name}`, '签名发布文件齐全，可以执行安全更新。')
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : ''
+    const message = reason === 'release_missing' ? 'GitHub 暂无正式发布版本。'
+      : reason === 'release_invalid' ? 'GitHub 最新发布缺少签名文件，已拒绝提供更新。'
+        : reason === 'version_invalid' ? '当前版本号或 GitHub 发布版本不规范，无法安全比较。'
+          : '暂时无法连接 GitHub，请稍后重试。'
+    updateNotice.value = makeUpdateNotice('error', '检测更新失败', message)
+  } finally {
+    checkingUpdates.value = false
+  }
+}
+
+function isGatewayRelease(value: unknown): value is { tag_name: string; body?: string; draft: boolean; prerelease: boolean; assets: Array<{ name: string }> } {
+  if (typeof value !== 'object' || value === null) return false
+  const release = value as Record<string, unknown>
+  if (release.draft !== false || release.prerelease !== false || typeof release.tag_name !== 'string' || !Array.isArray(release.assets)) return false
+  if (!/^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(release.tag_name)) return false
+  const names = new Set(release.assets.flatMap(asset => typeof asset === 'object' && asset !== null && typeof (asset as Record<string, unknown>).name === 'string' ? [(asset as Record<string, string>).name] : []))
+  return ['manifest.json', 'manifest.sig', 'aimili-gateway'].every(name => names.has(name))
+}
+
+function compareGatewayVersions(left: string, right: string): number {
+  const pattern = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
+  const l = pattern.exec(left)
+  const r = pattern.exec(right)
+  if (!l || !r) throw new Error('version_invalid')
+  for (let index = 1; index <= 3; index += 1) {
+    const difference = Number(l[index]) - Number(r[index])
+    if (difference !== 0) return difference
+  }
+  return 0
+}
 
 function requestUpdate(candidate: UpdateVersionPayload | null): void {
   if (!candidate || updating.value || activeUpdate.value) return
@@ -132,6 +190,7 @@ async function pollUpdate(runId: string, kind: UpdateKind, action: UpdateAction)
       activeUpdate.value = null
       try {
         updates.value = await apiFetch<UpdateSummaryPayload>('/api/v1/system/updates')
+        if (result.kind === 'gateway' && result.state === 'success') gatewayCandidate.value = null
       } catch {
         // 已确认的终态是权威结果；列表刷新失败只保留该结果。
       }
@@ -158,7 +217,7 @@ function makeUpdateNotice(kind: NoticeKind, title: string, message: string): UiN
   return { id: `update-notice-${noticeSequence}`, kind, title, message }
 }
 
-function updateSubject(kind: UpdateKind): string { return kind === 'ui' ? '界面更新' : 'Gateway 控制面更新' }
+function updateSubject(kind: UpdateKind): string { return kind === 'ui' ? '界面更新' : 'Aimili Gateway 更新' }
 function terminalUpdateState(state: UpdateResultPayload['state']): boolean { return ['success', 'failed', 'rolled_back', 'repair_required'].includes(state) }
 function updateProgressMessage(state: UpdateResultPayload['state'], kind: UpdateKind): string {
   if (state === 'downloading') return '正在从固定可信来源下载签名文件。'
@@ -326,10 +385,9 @@ function messageFor(error: unknown, fallback: string): string {
       </section>
 
       <section class="services-section update-section">
-        <div class="section-title"><p class="section-kicker">SIGNED UPDATES</p><h2>安全更新</h2><p>只接受固定可信来源、有效签名且兼容的版本。</p></div>
-        <div class="update-grid">
-          <article class="update-card"><strong>界面资源</strong><span>当前：{{ updates?.currentUi ? updates.currentUi.slice(0, 12) : '内嵌兜底' }}</span><p>仅更新界面，不影响节点，也不重启 Gateway。</p><div class="update-actions"><button data-ui-update :disabled="!availableUI || updating || !!activeUpdate" type="button" @click="requestUpdate(availableUI)">{{ availableUI ? `更新到 ${availableUI.version.slice(0, 12)}` : '暂无可用更新' }}</button><button data-ui-rollback class="secondary" :disabled="!updatesEnabled || updating || !!activeUpdate" type="button" @click="requestRollback('ui')">回滚上一版</button></div></article>
-          <article class="update-card"><strong>Gateway 控制面</strong><span>当前：{{ updates?.currentGateway ?? '未知' }}</span><p>控制面将短暂重启，代理节点继续运行。</p><div class="update-actions"><button data-gateway-update :disabled="!availableGateway || updating || !!activeUpdate" type="button" @click="requestUpdate(availableGateway)">{{ availableGateway ? `更新到 ${availableGateway.version}` : '暂无可用更新' }}</button><button data-gateway-rollback class="secondary" :disabled="!updatesEnabled || updating || !!activeUpdate" type="button" @click="requestRollback('gateway')">回滚上一版</button></div></article>
+        <div class="section-title"><p class="section-kicker">GATEWAY UPDATE</p><h2>检测更新</h2><p>从公开 GitHub 正式版本检测更新；安装前仍会校验签名、文件摘要和兼容性。</p></div>
+        <div class="update-grid single">
+          <article class="update-card"><strong>Aimili Gateway</strong><span>当前：{{ updates?.currentGateway ?? '未知' }}</span><p>普通更新同时更新 Gateway 程序和内嵌前端，只短暂重启 Gateway，代理节点继续运行。涉及 AimiliVPN、3x-ui/Xray 或 Caddy 的版本会拒绝普通更新并要求完整部署。</p><p v-if="releaseNotes" class="release-notes">更新说明：{{ releaseNotes }}</p><div class="update-actions"><button data-check-update :disabled="!updatesEnabled || checkingUpdates || updating || !!activeUpdate" type="button" @click="checkGatewayUpdate">{{ checkingUpdates ? '正在检测' : '检测更新' }}</button><button v-if="availableGateway" data-gateway-update :disabled="updating || !!activeUpdate" type="button" @click="requestUpdate(availableGateway)">更新到 {{ availableGateway.version }}</button><button data-gateway-rollback class="secondary" :disabled="!updatesEnabled || updating || !!activeUpdate" type="button" @click="requestRollback('gateway')">回滚上一版</button></div></article>
         </div>
         <form v-if="pendingUpdate" class="reauth-panel" @submit.prevent="confirmUpdate"><label>当前 Gateway 密码<input v-model="updatePassword" data-update-password type="password" autocomplete="current-password"></label><p>密码仅随本次重新认证请求发送，不会保存或写入日志。</p><div><button class="secondary" type="button" :disabled="updating" @click="cancelUpdate">取消</button><button data-update-confirm type="button" :disabled="updating || !updatePassword" @click="confirmUpdate">{{ updating ? '正在提交' : '确认' + (pendingUpdate.action === 'rollback' ? '回滚' : '更新') }}</button></div></form>
         <div v-else-if="activeUpdate" class="reauth-panel"><p>本次请求的响应尚未确认；将继续查询原事务，不会创建新的更新或回滚请求。</p><button data-update-resume type="button" :disabled="updating" @click="resumeUpdate">继续查询</button></div>
@@ -340,5 +398,5 @@ function messageFor(error: unknown, fallback: string): string {
 
 <style scoped>
 .settings-header{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;margin-bottom:20px}.eyebrow,.section-kicker{margin:0 0 6px;color:var(--accent);font-size:10px;font-weight:850;letter-spacing:.16em}.settings-header h1{margin:0;font-size:30px;letter-spacing:-.03em}.settings-header>div>p:last-child,.section-title>p:last-child{margin:8px 0 0;color:var(--muted-text);font-size:14px}.account-chip{padding:7px 10px;border:1px solid var(--border);border-radius:999px;background:var(--panel);color:var(--muted-text);font-size:12px;font-weight:750}.account-chip.synced{border-color:color-mix(in srgb,var(--healthy) 28%,var(--border));color:var(--healthy);background:color-mix(in srgb,var(--healthy) 8%,var(--panel))}.policy-notice,.loading-panel{margin:0 0 16px}.loading-panel{padding:11px 13px;border:1px solid var(--border);border-radius:10px;background:var(--panel);color:var(--muted-text);font-size:13px}.settings-layout{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(260px,.75fr);gap:16px}.panel,.services-section{border:1px solid var(--border);border-radius:14px;background:var(--panel);box-shadow:var(--shadow-soft)}.policy-panel{padding:20px}.panel-heading{display:flex;justify-content:space-between;gap:20px}.panel h2,.section-title h2{margin:0;font-size:18px}.panel-heading p:last-child{margin:6px 0 0;color:var(--muted-text);font-size:13px}.switch{display:flex;align-items:center;gap:8px;align-self:flex-start;cursor:pointer}.switch input{position:absolute;opacity:0;pointer-events:none}.switch span{position:relative;width:38px;height:22px;border-radius:999px;background:var(--muted-bg);box-shadow:inset 0 0 0 1px var(--border);transition:.2s}.switch span::after{content:"";position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:var(--panel);box-shadow:0 1px 3px rgba(0,0,0,.18);transition:.2s}.switch input:checked+span{background:var(--accent);box-shadow:none}.switch input:checked+span::after{transform:translateX(16px);background:#fff}.switch b{min-width:42px;font-size:12px}.risk-note{display:grid;gap:4px;margin-top:18px;padding:12px;border:1px solid color-mix(in srgb,var(--warning) 35%,var(--border));border-radius:10px;background:color-mix(in srgb,var(--warning) 8%,var(--panel));font-size:12px}.risk-note strong{color:var(--warning)}.risk-note span{color:var(--muted-text);line-height:1.55}.policy-form{display:grid;gap:14px;margin-top:18px}.field{display:grid;gap:7px;font-size:12px;font-weight:750}.field textarea{width:100%;resize:vertical;padding:11px 12px;border:1px solid var(--border);border-radius:9px;background:var(--input);color:var(--text);font:13px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace}.field small{color:var(--muted-text);font-weight:500}.form-footer{display:flex;align-items:center;justify-content:space-between;gap:12px}.apply-state{color:var(--muted-text);font-size:12px}.apply-state[data-apply-status=applied]{color:var(--healthy);font-weight:750}.apply-state[data-apply-status=failed],.apply-state[data-apply-status=repair_required]{color:var(--danger);font-weight:750}.policy-actions{display:flex;gap:8px}.capacity-panel{padding:20px}.capacity-value{display:grid;gap:2px;margin:20px 0}.capacity-value strong{font-size:32px;letter-spacing:-.05em}.capacity-value span{color:var(--muted-text);font-size:12px}.capacity-panel dl{display:grid;gap:8px;margin:0}.capacity-panel dl div{display:flex;justify-content:space-between;padding:9px 0;border-top:1px solid var(--border-soft);font-size:13px}.capacity-panel dt{color:var(--muted-text)}.capacity-panel dd{margin:0;font-weight:800}.capacity-help{margin:14px 0 0;color:var(--muted-text);font-size:12px;line-height:1.6}.services-section{grid-column:1/-1;padding:20px}.section-title{margin-bottom:14px}.service-grid{display:grid;grid-template-columns:1fr;gap:12px}.service-card{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:12px;padding:14px;border:1px solid var(--border);border-radius:11px;color:var(--text);text-decoration:none;transition:.15s}.service-card:hover{border-color:color-mix(in srgb,var(--accent) 35%,var(--border));background:var(--hover);transform:translateY(-1px)}.service-icon{display:grid;place-items:center;width:36px;height:36px;border-radius:10px;background:var(--accent-soft);color:var(--accent);font-weight:850}.service-icon.xui{font-size:11px}.service-card span:nth-child(2){display:grid;gap:4px}.service-card strong{font-size:14px}.service-card small{color:var(--muted-text);font-size:12px}.service-card>b{color:var(--muted-text)}.boundary-note{margin:14px 0 0;color:var(--muted-text);font-size:11px;line-height:1.55}@media(max-width:820px){.settings-layout{grid-template-columns:1fr}.services-section{grid-column:auto}.service-grid{grid-template-columns:1fr}}@media(max-width:560px){.settings-header,.panel-heading{align-items:flex-start;flex-direction:column}.account-chip{align-self:flex-start}.service-card{padding:12px}.form-footer{align-items:stretch;flex-direction:column}.policy-actions{flex-direction:column}.form-footer button{width:100%}}
-.update-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.update-card{display:grid;gap:8px;padding:14px;border:1px solid var(--border);border-radius:11px}.update-card>span,.update-card>p{color:var(--muted-text);font-size:12px}.update-card>p{margin:0;line-height:1.5}.update-actions{display:flex;flex-wrap:wrap;gap:8px}.reauth-panel{display:grid;gap:10px;margin-top:14px;padding:14px;border:1px solid var(--border);border-radius:11px;background:var(--subtle)}.reauth-panel label{display:grid;gap:6px;font-size:12px;font-weight:750}.reauth-panel input{max-width:360px;padding:9px 10px;border:1px solid var(--border);border-radius:8px;background:var(--input);color:var(--text)}.reauth-panel p{margin:0;color:var(--muted-text);font-size:11px}.reauth-panel>div{display:flex;gap:8px}@media(max-width:650px){.update-grid{grid-template-columns:1fr}}
+.update-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.update-grid.single{grid-template-columns:minmax(0,1fr)}.update-card{display:grid;gap:8px;padding:14px;border:1px solid var(--border);border-radius:11px}.update-card>span,.update-card>p{color:var(--muted-text);font-size:12px}.update-card>p{margin:0;line-height:1.5}.release-notes{white-space:pre-line}.update-actions{display:flex;align-items:center;flex-wrap:wrap;gap:8px}.reauth-panel{display:grid;gap:10px;margin-top:14px;padding:14px;border:1px solid var(--border);border-radius:11px;background:var(--subtle)}.reauth-panel label{display:grid;gap:6px;font-size:12px;font-weight:750}.reauth-panel input{max-width:360px;padding:9px 10px;border:1px solid var(--border);border-radius:8px;background:var(--input);color:var(--text)}.reauth-panel p{margin:0;color:var(--muted-text);font-size:11px}.reauth-panel>div{display:flex;gap:8px}@media(max-width:650px){.update-grid{grid-template-columns:1fr}}
 </style>

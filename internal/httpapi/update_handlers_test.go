@@ -31,12 +31,12 @@ func TestUpdatePOSTRequiresCSRFAndFreshPassword(t *testing.T) {
 	assertResponseStatus(t, response, http.StatusAccepted)
 }
 
-func TestUpdateApplyRejectsURLPathOrUnknownVersion(t *testing.T) {
+func TestUpdateApplyRejectsURLPathVersions(t *testing.T) {
 	manager := &fakeUpdateManager{summary: updateSummaryFixture()}
 	environment := newAuthTestEnvironmentConfigured(t, true, func(dependencies *Dependencies) { dependencies.Updates = manager })
 	assertResponseStatus(t, environment.login(t), http.StatusNoContent)
 	session := environment.session(t)
-	for _, version := range []string{"https:%2F%2Fevil.test", "..%2Fv1.2.3", "v9.9.9"} {
+	for _, version := range []string{"https:%2F%2Fevil.test", "..%2Fv1.2.3"} {
 		response := environment.request(t, http.MethodPost, "/api/v1/system/updates/gateway/"+version+"/apply", map[string]string{"password": "local-only-test-password", "runId": strings.Repeat("a", 64)}, environment.origin, session.CSRFToken)
 		assertResponseStatus(t, response, http.StatusBadRequest)
 	}

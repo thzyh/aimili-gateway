@@ -14,7 +14,7 @@ ny VPS 已于 2026-09-11 切换到统一仓库布局：Gateway 仍作为独立�
 
 外部 UI Stage A 使用 `scripts/build-ui-release.ps1` 生成 `manifest.json`、`manifest.sig` 和 `ui.tar.gz`，由离线 `aimili-gateway-update-install` 校验并原子切换 `current`/`previous`。首次启用需要随 Gateway 二进制部署并只重启 Gateway；启用后日常签名 UI 发布和回退不重启 Gateway，也不触碰 AimiliVPN、x-ui/Xray 或 Caddy。
 
-两层发布机制的正式设计已写入 `docs/superpowers/specs/2026-09-05-zero-downtime-ui-and-safe-self-update-design.md`。低权限 fetcher、固定受限 installer、持久恢复和网页更新入口已实现；生产保持网页更新禁用，尚无已验证的 HTTPS 发布源/catalog。当前阻断、私有副本上的修复验证和下一步授权边界详见最新验证记录。
+两层发布机制的正式设计已写入 `docs/superpowers/specs/2026-09-05-zero-downtime-ui-and-safe-self-update-design.md`。高级设置中的“检测更新”读取本仓库公开 GitHub Release；真正安装仍由低权限 fetcher 下载，并由无网络 root installer 离线复验 Ed25519 签名、SHA256、平台、数据库兼容性和 `control-plane-only` 影响范围。普通更新只替换并重启 Gateway；涉及 AimiliVPN、3x-ui/Xray、Caddy、端口或数据库迁移的发布必须走完整部署，不能伪装成普通更新。
 
 后端更新的逐文件实施计划是 `docs/superpowers/plans/2026-09-05-safe-gateway-self-update.md`，当前验证入口是 `docs/verification/2026-09-05-safe-gateway-self-update.md`。网页更新必须具有已验证的发布来源与可用版本，未配置时保持禁用。普通 UI 发布只切换静态资源；后端发布会短暂重启 Gateway 控制台，代理数据面需通过部署前后检查。
 
@@ -79,6 +79,15 @@ go build ./cmd/aimili-gateway-admin
 ```
 
 `npm run build --prefix web` 会先生成 Git 忽略的 `internal/webassets/dist`；干净检出后必须先执行该步骤，Go 才能嵌入生产前端。
+
+正式 Gateway 发布包使用仓库外的 Ed25519 私钥生成；私钥不得进入 Git、GitHub Release 或 VPS：
+
+```powershell
+.\scripts\build-gateway-release.ps1 -Version v1.2.3 -PrivateKey C:\secure\aimili-gateway-release.key -OutputDirectory C:\release\v1.2.3
+gh release create v1.2.3 C:\release\v1.2.3\manifest.json C:\release\v1.2.3\manifest.sig C:\release\v1.2.3\aimili-gateway --title "Aimili Gateway v1.2.3" --notes "本版本更新说明"
+```
+
+更新页只识别非草稿、非预发布且同时具有 `manifest.json`、`manifest.sig`、`aimili-gateway` 三项资产的最新正式版本。
 
 本地管理员只能通过交互式命令初始化。密码和 TOTP 秘钥不能通过命令行参数传入：
 

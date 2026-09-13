@@ -123,13 +123,12 @@ func TestGatewayUpdaterSeparatesNetworkFetcherFromRootInstaller(t *testing.T) {
 		"ReadOnlyPaths=/etc/aimili-gateway",
 		"ReadOnlyPaths=/var/lib/aimili-gateway/update-spool/requests",
 		"ReadWritePaths=/var/lib/aimili-gateway-update/staging",
-		"LoadCredential=release-download:/etc/aimili-gateway/release-download.credential",
 	} {
 		if !strings.Contains(fetchService, required) {
 			t.Fatalf("fetch service missing %q", required)
 		}
 	}
-	for _, forbidden := range []string{"User=root", "systemctl", "/bin/sh", "curl", "wget", "CAP_DAC_OVERRIDE"} {
+	for _, forbidden := range []string{"User=root", "systemctl", "/bin/sh", "curl", "wget", "CAP_DAC_OVERRIDE", "LoadCredential="} {
 		if strings.Contains(fetchService, forbidden) {
 			t.Fatalf("fetch service contains forbidden capability %q", forbidden)
 		}

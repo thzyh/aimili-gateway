@@ -1,7 +1,8 @@
 {
-  "manifestOrigin": "https://updates.example.invalid/aimili-gateway",
+  "manifestOrigin": "https://github.com/thzyh/aimili-gateway/releases/download",
   "redirectHosts": [
-    "updates.example.invalid"
+    "github.com",
+    "release-assets.githubusercontent.com"
   ],
   "channels": [
     "stable"

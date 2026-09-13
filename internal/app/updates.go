@@ -12,6 +12,7 @@ import (
 	"github.com/thzyh/aimili-gateway/internal/buildinfo"
 	"github.com/thzyh/aimili-gateway/internal/config"
 	"github.com/thzyh/aimili-gateway/internal/httpapi"
+	"github.com/thzyh/aimili-gateway/internal/releaseverify"
 	"github.com/thzyh/aimili-gateway/internal/updatetxn"
 )
 
@@ -31,9 +32,6 @@ func newUpdateManager(cfg config.Config) httpapi.UpdateManager {
 		client.TrustedResultUID = &trustedResultUID
 	}
 	manager := &updateManager{client: client, uiRoot: cfg.ExternalUIRoot, catalogPath: cfg.UpdateCatalogFile}
-	if _, err := manager.catalog(); err != nil {
-		return nil
-	}
 	return manager
 }
 
@@ -60,13 +58,10 @@ func (m *updateManager) catalog() (updateCatalog, error) {
 }
 
 func (m *updateManager) List(context.Context) (httpapi.UpdateSummary, error) {
-	summary := httpapi.UpdateSummary{CurrentGateway: buildinfo.Current().Version, Available: []httpapi.UpdateVersion{}}
-	catalog, err := m.catalog()
-	if err != nil {
-		return summary, err
+	summary := httpapi.UpdateSummary{Enabled: true, CurrentGateway: buildinfo.Current().Version, Available: []httpapi.UpdateVersion{}}
+	if catalog, err := m.catalog(); err == nil {
+		summary.Available = catalog.Available
 	}
-	summary.Enabled = true
-	summary.Available = catalog.Available
 	if m.uiRoot == "" {
 		return summary, nil
 	}
@@ -80,19 +75,26 @@ func (m *updateManager) List(context.Context) (httpapi.UpdateSummary, error) {
 }
 
 func (m *updateManager) Submit(ctx context.Context, request httpapi.UpdateRequest) (httpapi.UpdateResult, error) {
-	catalog, err := m.catalog()
-	if err != nil {
-		return httpapi.UpdateResult{}, err
-	}
 	if request.Action == "apply" {
-		found := false
-		for _, v := range catalog.Available {
-			if v.Kind == request.Kind && v.Version == request.Version && v.Compatible {
-				found = true
+		if request.Kind == "gateway" {
+			comparison, err := releaseverify.CompareVersions(request.Version, buildinfo.Current().Version)
+			if err != nil || comparison <= 0 {
+				return httpapi.UpdateResult{}, httpapi.ErrUpdatesDisabled
 			}
-		}
-		if !found {
-			return httpapi.UpdateResult{}, httpapi.ErrUpdatesDisabled
+		} else {
+			catalog, err := m.catalog()
+			if err != nil {
+				return httpapi.UpdateResult{}, err
+			}
+			found := false
+			for _, v := range catalog.Available {
+				if v.Kind == request.Kind && v.Version == request.Version && v.Compatible {
+					found = true
+				}
+			}
+			if !found {
+				return httpapi.UpdateResult{}, httpapi.ErrUpdatesDisabled
+			}
 		}
 	}
 	transaction := updatetxn.Request{
@@ -103,9 +105,6 @@ func (m *updateManager) Submit(ctx context.Context, request httpapi.UpdateReques
 }
 
 func (m *updateManager) Get(ctx context.Context, runID string) (httpapi.UpdateResult, error) {
-	if _, err := m.catalog(); err != nil {
-		return httpapi.UpdateResult{}, err
-	}
 	result, err := m.client.Get(ctx, runID)
 	return publicUpdateResult(result), err
 }
