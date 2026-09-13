@@ -190,7 +190,7 @@ func (f *Fetcher) secureClient(originHost string) *http.Client {
 	}
 	client.CheckRedirect = func(request *http.Request, via []*http.Request) error {
 		host := strings.ToLower(strings.TrimSuffix(request.URL.Hostname(), "."))
-		if request.URL.Scheme != "https" || request.URL.User != nil || request.URL.RawQuery != "" {
+		if request.URL.Scheme != "https" || request.URL.User != nil || request.URL.Fragment != "" {
 			return &codedError{code: "blocked_redirect", err: errors.New("redirect URL is not allowed")}
 		}
 		if _, ok := allowed[host]; !ok || len(via) >= 5 {

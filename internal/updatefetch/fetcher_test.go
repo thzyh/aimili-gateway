@@ -77,14 +77,37 @@ func TestDownloadedRequestDoesNotDownloadTwice(t *testing.T) {
 func TestFetcherRejectsRedirectOutsideAllowlist(t *testing.T) {
 	target := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	defer target.Close()
-	targetURL := strings.Replace(target.URL, "127.0.0.1", "localhost", 1)
+	targetURL := strings.Replace(target.URL, "127.0.0.1", "localhost", 1) + "/stolen?signature=fixture"
 	origin := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		http.Redirect(response, request, targetURL+"/stolen", http.StatusFound)
+		http.Redirect(response, request, targetURL, http.StatusFound)
 	}))
 	defer origin.Close()
 	fetcher := newTestFetcher(t, origin)
 	if _, err := fetcher.Fetch(context.Background(), gatewayRequest()); ErrorCode(err) != "blocked_redirect" {
 		t.Fatalf("redirect error = %v", err)
+	}
+}
+
+func TestFetcherAllowsQueryOnAllowlistedHTTPSRedirect(t *testing.T) {
+	target := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.RawQuery != "signature=fixture" {
+			t.Fatalf("redirect query = %q", request.URL.RawQuery)
+		}
+		_, _ = io.WriteString(response, "fixture")
+	}))
+	defer target.Close()
+	targetURL := strings.Replace(target.URL, "127.0.0.1", "localhost", 1)
+	origin := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		http.Redirect(response, request, targetURL+"/asset?signature=fixture", http.StatusFound)
+	}))
+	defer origin.Close()
+	fetcher := newTestFetcher(t, origin)
+	fetcher.Config.RedirectHosts = append(fetcher.Config.RedirectHosts, "localhost")
+	client := origin.Client()
+	client.Transport.(*http.Transport).TLSClientConfig.InsecureSkipVerify = true
+	fetcher.Client = client
+	if _, err := fetcher.Fetch(context.Background(), gatewayRequest()); err != nil {
+		t.Fatal(err)
 	}
 }
 
