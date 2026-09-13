@@ -18,6 +18,7 @@ const proxyType = ref<'' | ProxyType>('')
 const status = ref<'' | PoolStatusGroup>('')
 const sort = ref('latency')
 const busy = ref('')
+const checkProgress = ref('')
 const loading = ref(true)
 const topNotice = ref<UiNoticeData | null>(null)
 const refreshNotice = ref<UiNoticeData | null>(null)
@@ -34,16 +35,16 @@ const dismissedRefreshStorageKey = 'aimili-gateway:pool-refresh-notice-dismissed
 const title = computed(() => props.protocol === 'vless' ? 'VPN 节点池' : 'SOCKS5H 代理池')
 const description = computed(() => props.protocol === 'vless' ? '每个逻辑出口可独立使用 TCP/Vision、XHTTP/REALITY 或 Hysteria2；mixed/SOCKS5H 始终保持不变。' : '每个在线出口对应一个支持代理 DNS 的 SOCKS5H 地址。')
 const countries = computed(() => {
-  const officialNames = new Map(candidateCountries.value.map(item => [item.code.trim().toUpperCase(), item.name.trim()]))
+  const officialNames = new Map(candidateCountries.value.map(item => [item.code.trim().toUpperCase(), countryDisplayName(item.code, [item])]))
   const merged = new Map<string, { code: string; name: string; count: number }>()
   for (const row of groups.value) {
     const code = row.countryCode.trim().toUpperCase()
     const current = merged.get(code)
-    merged.set(code, { code, name: officialNames.get(code) || row.countryName || code, count: (current?.count ?? 0) + 1 })
+    merged.set(code, { code, name: officialNames.get(code) || countryDisplayName(code, [{ code, name: row.countryName || code }]), count: (current?.count ?? 0) + 1 })
   }
   return [...merged.values()].sort((a, b) => a.code.localeCompare(b.code))
 })
-const officialCountries = computed(() => candidateCountries.value.map(item => ({ code: item.code, name: item.name, count: item.candidateCount })).sort((a, b) => a.code.localeCompare(b.code)))
+const officialCountries = computed(() => candidateCountries.value.map(item => ({ code: item.code, name: countryDisplayName(item.code, [item]), count: item.candidateCount })).sort((a, b) => a.code.localeCompare(b.code)))
 const poolStats = computed(() => candidateCountries.value[0])
 function runtimeRank(row: ProxyGroupPayload): number | null {
   if (row.egressSource === 'main' || row.id === 'agw-main') return 0
@@ -72,7 +73,7 @@ const automaticRepairFailed = (row: ProxyGroupPayload) => ['no_same_country_cand
 const selectedReplacementTarget = computed(() => replacementTargets.value.find(row => row.id === replacementTarget.value) ?? null)
 const replacementTargetWarning = computed(() => selectedReplacementTarget.value && automaticRepairFailed(selectedReplacementTarget.value) ? selectedReplacementTarget.value : null)
 const replacementTargetName = (row: ProxyGroupPayload) => row.egressSource === 'main' ? '主连接' : `出口位 ${row.slotNumber}`
-const replacementTargetLabel = (row: ProxyGroupPayload) => `${automaticRepairFailed(row) ? '【故障·自动修复失败】' : ''}${replacementTargetName(row)} · ${row.countryName || row.countryCode} · ${row.exitIp || '当前无可用出口 IP'}`
+const replacementTargetLabel = (row: ProxyGroupPayload) => `${automaticRepairFailed(row) ? '【故障·自动修复失败】' : ''}${replacementTargetName(row)} · ${countryDisplayName(row.countryCode, [{ code: row.countryCode, name: row.countryName || row.countryCode }])} · ${row.exitIp || '当前无可用出口 IP'}`
 const subscriptionReady = computed(() => groups.value.some(row => row.status === 'ready' && row.protocolState === 'ready' && row.subscriptionState === 'ready'))
 
 function makeNotice(kind: NoticeKind, title: string, message = ''): UiNoticeData {
@@ -323,6 +324,37 @@ async function checkRow(row: ProxyGroupPayload): Promise<void> {
   } finally { busy.value = '' }
 }
 
+async function checkAllRows(): Promise<void> {
+  const targets = groups.value
+    .filter(row => row.egressSource === 'main' || (typeof row.slotNumber === 'number' && row.slotNumber > 0))
+    .sort((a, b) => (runtimeRank(a) ?? 100) - (runtimeRank(b) ?? 100))
+  if (!targets.length) {
+    topNotice.value = makeNotice('info', '没有可检测的出口', '当前没有已配置的固定出口。')
+    return
+  }
+  busy.value = 'check-all'
+  checkProgress.value = `1/${targets.length}`
+  topNotice.value = makeNotice('progress', `正在检测出口 1/${targets.length}`, '系统会逐个检测，单个出口失败不会影响后续出口。')
+  let passed = 0
+  const failures: string[] = []
+  for (let index = 0; index < targets.length; index += 1) {
+    const row = targets[index]
+    const subject = row.egressSource === 'main' ? '主连接' : `出口 ${row.slotNumber}`
+    checkProgress.value = `${index + 1}/${targets.length}`
+    topNotice.value = makeNotice('progress', `正在检测出口 ${index + 1}/${targets.length}`, `${subject} · 单个出口失败不会影响后续检测。`)
+    const path = row.egressSource === 'main' ? '/api/v1/proxy-groups/agw-main/check' : `/api/v1/proxy-groups/${row.id}/check`
+    try {
+      await apiFetch<ProxyGroupPayload>(path, { method: 'POST', ...(row.egressSource === 'main' ? { headers: idempotencyHeaders() } : {}) })
+      passed += 1
+    } catch { failures.push(subject) }
+  }
+  await loadGroups(false)
+  const failed = failures.length
+  topNotice.value = makeNotice(failed ? 'error' : 'success', '全部出口检测完成', `正常 ${passed} · 故障 ${failed}${failed ? ` · ${failures.join('、')}` : ''}`)
+  checkProgress.value = ''
+  busy.value = ''
+}
+
 async function rotateSOCKS5HCredentials(): Promise<void> {
   busy.value = 'rotate-socks-credentials'
   topNotice.value = makeNotice('progress', '正在随机更换 SOCKS5H 用户名和密码', '正在更新全部出口；故障出口也会保留新设置，健康出口会逐一验证。')
@@ -392,7 +424,7 @@ function formatRefreshTime(value?: number): string {
   <AppShell>
     <section class="page-heading">
       <div><p class="eyebrow">ONLINE EGRESS POOL</p><h1>{{ title }}</h1><p>{{ description }}</p></div>
-      <div class="heading-actions"><button data-refresh-all class="secondary" :disabled="busy !== ''" @click="refreshAllCountries">{{ busy === 'all-country-refresh' ? '正在刷新…' : '刷新所有国家' }}</button><button data-refresh-country class="secondary" :disabled="busy !== '' || !supplementCountry" @click="refreshCountry">{{ busy === 'country-refresh' ? '正在检测…' : '优先检测该国家' }}</button><button v-if="protocol === 'vless'" data-copy-subscription :disabled="busy !== '' || !subscriptionReady" @click="copySubscription">复制节点订阅</button><button v-else data-rotate-socks-credentials class="secondary" :disabled="busy !== ''" @click="rotateSOCKS5HCredentials">{{ busy === 'rotate-socks-credentials' ? '正在更换…' : '随机更换用户名和密码' }}</button><button data-copy-all class="secondary" :disabled="busy !== ''" @click="copyAll">复制节点列表</button><button data-export class="secondary" :disabled="busy !== ''" @click="exportRows">导出</button></div>
+      <div class="heading-actions"><button data-refresh-all class="secondary" :disabled="busy !== ''" @click="refreshAllCountries">{{ busy === 'all-country-refresh' ? '正在刷新…' : '刷新所有国家' }}</button><button data-check-all class="secondary" :disabled="busy !== ''" @click="checkAllRows">{{ busy === 'check-all' ? `检测中 ${checkProgress}` : '检测全部出口' }}</button><button data-refresh-country class="secondary" :disabled="busy !== '' || !supplementCountry" @click="refreshCountry">{{ busy === 'country-refresh' ? '正在检测…' : '优先检测该国家' }}</button><button v-if="protocol === 'vless'" data-copy-subscription :disabled="busy !== '' || !subscriptionReady" @click="copySubscription">复制节点订阅</button><button v-else data-rotate-socks-credentials class="secondary" :disabled="busy !== ''" @click="rotateSOCKS5HCredentials">{{ busy === 'rotate-socks-credentials' ? '正在更换…' : '随机更换用户名和密码' }}</button><button data-copy-all class="secondary" :disabled="busy !== ''" @click="copyAll">复制节点列表</button><button data-export class="secondary" :disabled="busy !== ''" @click="exportRows">导出</button></div>
     </section>
     <UiNotice v-if="topNotice" :key="topNotice.id" data-top-notice :notice="topNotice" @close="topNotice=null" />
     <section class="pool-toolbar">
@@ -406,7 +438,7 @@ function formatRefreshTime(value?: number): string {
       <section data-replace-dialog class="replace-dialog" role="dialog" aria-modal="true" aria-labelledby="replace-title">
         <button class="dialog-close" type="button" aria-label="关闭" @click="closeReplacement">×</button>
         <p class="eyebrow">REPLACE EGRESS SLOT</p><h2 id="replace-title">替换到出口位</h2>
-        <p>将 {{ replacementCandidate.countryName || replacementCandidate.countryCode }} {{ replacementCandidate.proxyType === 'residential' ? '住宅' : '机房' }}候选装载到现有出口位。原端口和 VLESS/SOCKS5H 入站保持不变，失败时自动回滚。</p>
+        <p>将 {{ countryDisplayName(replacementCandidate.countryCode, [{ code: replacementCandidate.countryCode, name: replacementCandidate.countryName || replacementCandidate.countryCode }]) }} {{ replacementCandidate.proxyType === 'residential' ? '住宅' : '机房' }}候选装载到现有出口位。原端口和 VLESS/SOCKS5H 入站保持不变，失败时自动回滚。</p>
         <label>目标逻辑出口<select v-model="replacementTarget" data-replace-target :class="{ 'fault-target': replacementTargetWarning }"><option v-for="target in replacementTargets" :key="target.id" :value="target.id" :class="{ 'fault-target-option': automaticRepairFailed(target) }">{{ replacementTargetLabel(target) }}</option></select></label>
         <p v-if="replacementTargetWarning" data-replace-target-warning class="fault-target-warning">{{ replacementTargetName(replacementTargetWarning) }}{{ replacementTargetWarning.egressSource === 'main' ? '' : ' ' }}自动修复已失败；你仍可将当前候选替换到这里，系统会重新验证完整链路。</p>
         <UiNotice v-if="replacementNotice" :key="replacementNotice.id" data-replace-notice class="replacement-notice" :notice="replacementNotice" @close="replacementNotice=null" />

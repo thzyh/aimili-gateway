@@ -47,5 +47,19 @@ export function messageForCode(code: string, fallback: string): string {
 export function countryDisplayName(code: string, catalog: ReadonlyArray<{ code: string; name: string }>): string {
   const normalized = code.trim().toUpperCase()
   const match = catalog.find(item => item.code.trim().toUpperCase() === normalized)
-  return match?.name.trim() || '所选国家'
+  const known: Record<string, string> = {
+    AU: '澳大利亚', BR: '巴西', CA: '加拿大', CL: '智利', CN: '中国', CO: '哥伦比亚', DE: '德国',
+    ES: '西班牙', FR: '法国', GD: '格林纳达', HK: '香港', HR: '克罗地亚', HU: '匈牙利', IN: '印度',
+    JP: '日本', KR: '韩国', LA: '老挝', MP: '北马里亚纳群岛', MX: '墨西哥', NL: '荷兰', PL: '波兰',
+    RO: '罗马尼亚', RU: '俄罗斯', TH: '泰国', UA: '乌克兰', US: '美国', VN: '越南',
+  }
+  if (known[normalized]) return known[normalized]
+  const raw = (match?.name || '').trim().replace(/\s*\([^)]*\)\s*$/u, '').trim()
+  if (raw && /[\u3400-\u9fff]/u.test(raw)) return raw
+  try {
+    const localized = new Intl.DisplayNames(['zh-CN'], { type: 'region' }).of(normalized)
+    if (localized && localized !== normalized && !/^未知(?:地区|区域|国家)$/u.test(localized)) return localized
+  } catch { /* 不支持 Intl.DisplayNames 时回退代码 */ }
+  // 有代码但无法本地化时保留代码，便于用户识别并后续补充字典；仅完全缺失时才使用中性提示。
+  return raw || normalized || '所选国家'
 }

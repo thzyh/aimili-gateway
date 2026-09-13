@@ -25,7 +25,7 @@ describe('countryDisplayName', () => {
     expect(countryDisplayName('us', [{ code: 'US', name: '美国' }])).toBe('美国')
   })
 
-  it('uses a neutral label when the country is absent from the catalog', () => {
-    expect(countryDisplayName('ZZ', [])).toBe('所选国家')
+  it('falls back to the country code when localization is unavailable', () => {
+    expect(countryDisplayName('ZZ', [])).toBe('ZZ')
   })
 })

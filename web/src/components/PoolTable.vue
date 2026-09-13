@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { ProtocolMode, ProxyGroupPayload } from '../api/client'
+import { countryDisplayName } from './errorMessages'
 import { poolStatusDetail, poolStatusGroup, poolStatusLabel } from './poolStatus'
 
 const props = defineProps<{ rows: ProxyGroupPayload[]; protocol: 'vless' | 'socks5h'; busy: string }>()
@@ -11,6 +12,7 @@ const allModes: ProtocolMode[] = ['vless_tcp_reality_vision', 'vless_xhttp_reali
 const protocolLabel = (mode: ProtocolMode) => ({ vless_tcp_reality_vision: 'TCP/Vision', vless_xhttp_reality: 'XHTTP/REALITY', hysteria2_quic_tls: 'Hysteria2/QUIC' })[mode]
 const protocolRecoverable = (row: ProxyGroupPayload) => row.protocolState === 'repair_required' && row.subscriptionState === 'repair_required'
 const automaticRepairFinished = (row: ProxyGroupPayload) => ['no_same_country_candidate', 'replacement_failed', 'manual_repair_required', 'manual_replacement_required'].includes(row.lastErrorCode || '')
+const countryName = (row: ProxyGroupPayload) => countryDisplayName(row.countryCode, [{ code: row.countryCode, name: row.countryName || row.countryCode }])
 const protocolDisabled = (row: ProxyGroupPayload) => row.status !== 'ready' || (row.protocolState !== 'ready' && !protocolRecoverable(row)) || (row.subscriptionState !== 'ready' && !protocolRecoverable(row)) || props.busy !== ''
 const copyDisabled = (row: ProxyGroupPayload) => row.status !== 'ready' || props.busy !== '' || (props.protocol === 'vless' && (row.protocolState !== 'ready' || row.subscriptionState !== 'ready'))
 const ipSource = (row: ProxyGroupPayload) => row.exitIp ? 'exit' : row.candidateIp ? 'candidate' : 'missing'
@@ -27,7 +29,7 @@ function changeProtocol(row: ProxyGroupPayload, event: Event): void {
       <thead><tr><th>国家</th><th>IP 类型</th><th>出口 IP</th><th>端口</th><th>实测延迟</th><th v-if="protocol === 'vless'">公网协议</th><th>状态</th><th>最近检测</th><th class="actions-head">操作</th></tr></thead>
       <tbody>
         <tr v-for="row in rows" :key="row.id" data-pool-row :data-row-id="row.id">
-          <td class="country-cell"><span class="country-code">{{ row.countryCode }}</span><strong>{{ row.countryName || row.countryCode }}</strong><span v-if="row.egressSource === 'main'" class="slot-chip">主连接</span><span v-else-if="row.slotNumber" class="slot-chip">出口位 {{ row.slotNumber }}</span></td>
+          <td class="country-cell"><span class="country-code">{{ row.countryCode }}</span><strong>{{ countryName(row) }}</strong><span v-if="row.egressSource === 'main'" class="slot-chip">主连接</span><span v-else-if="row.slotNumber" class="slot-chip">出口位 {{ row.slotNumber }}</span></td>
           <td class="type-cell"><span class="type-chip" :data-type="row.proxyType">{{ typeLabel(row.proxyType) }}</span></td>
           <td class="ip-cell" :data-row-ip="row.id" :data-ip-source="ipSource(row)"><code>{{ ipText(row) }}</code></td>
           <td class="port-cell" :data-row-ports="row.id"><code v-if="row.egressSource === 'main' || row.slotNumber">{{ portText(row) }}</code><span v-else>—</span></td>

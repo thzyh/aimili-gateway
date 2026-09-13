@@ -271,6 +271,55 @@ it('shows closable progress and success feedback when a ready exit passes detect
 	expect(wrapper.find('[data-top-notice]').exists()).toBe(false)
 })
 
+it('checks every fixed egress sequentially and reports failures without stopping', async () => {
+	const slotFour = { ...rows[1], id: 'slot-four', slotNumber: 4, publicPort: 20003, mixedPort: 30003 }
+	const runtimeRows = [rows[0], rows[1], rows[2], rows[5], slotFour]
+	let releaseMain!: () => void
+	const mainPending = new Promise<void>(resolve => { releaseMain = resolve })
+	let activeChecks = 0
+	let maximumActiveChecks = 0
+	const checkPaths: string[] = []
+	mocks.apiFetch.mockImplementation(async (path: string) => {
+		if (path === '/api/v1/proxy-groups') return runtimeRows
+		if (path === '/api/v1/settings/aimilivpn/countries') return []
+		if (path === '/api/v1/settings/aimilivpn/refresh') return { state: 'idle', country: '', phase: '', testedCount: 0, validCount: 0 }
+		if (path.endsWith('/check')) {
+			checkPaths.push(path)
+			activeChecks++
+			maximumActiveChecks = Math.max(maximumActiveChecks, activeChecks)
+			if (path === '/api/v1/proxy-groups/agw-main/check') await mainPending
+			activeChecks--
+			if (path === '/api/v1/proxy-groups/kr-one/check') throw new Error('egress_unavailable')
+			return runtimeRows.find(row => path.includes(row.id)) ?? rows[0]
+		}
+		return undefined
+	})
+	const wrapper = mount(VpnPoolView)
+	await flushPromises()
+
+	await wrapper.get('[data-check-all]').trigger('click')
+	await wrapper.vm.$nextTick()
+	expect(wrapper.get('[data-check-all]').text()).toContain('1/5')
+	expect(checkPaths).toEqual(['/api/v1/proxy-groups/agw-main/check'])
+	releaseMain()
+	await flushPromises()
+
+	expect(checkPaths).toEqual([
+		'/api/v1/proxy-groups/agw-main/check',
+		'/api/v1/proxy-groups/jp-one/check',
+		'/api/v1/proxy-groups/kr-one/check',
+		'/api/v1/proxy-groups/de-rotating/check',
+		'/api/v1/proxy-groups/slot-four/check',
+	])
+	expect(maximumActiveChecks).toBe(1)
+	const notice = wrapper.get('[data-top-notice]')
+	expect(notice.attributes('data-notice-kind')).toBe('error')
+	expect(notice.text()).toContain('全部出口检测完成')
+	expect(notice.text()).toContain('正常 4')
+	expect(notice.text()).toContain('故障 1')
+	expect(notice.text()).toContain('出口 2')
+})
+
 it('runs detection and at most one automatic repair in a single request', async () => {
 	const degradedRow = { ...rows[1], id: 'degraded-slot', status: 'degraded', slotNumber: 3 }
 	mocks.apiFetch.mockImplementation((path: string) => {
@@ -540,6 +589,36 @@ it('separates cached-country filtering from official-country supplementation', a
 	expect(wrapper.get('[data-pool-stats-valid]').text()).toContain('当前有效 66')
 	expect(wrapper.get('[data-pool-stats-maximum]').text()).toContain('临时上限 80')
 	expect(wrapper.get('[data-pool-stats-countries]').text()).toContain('5 国')
+})
+
+it('shows compact Chinese country names for known and future ISO codes', async () => {
+	const englishRows = [
+		{ ...rows[3], id: 'gd-node', countryCode: 'GD', countryName: 'Grenada' },
+		{ ...rows[3], id: 'hr-node', countryCode: 'HR', countryName: 'Croatia (LOCAL Name: Hrvatska)' },
+		{ ...rows[3], id: 'la-node', countryCode: 'LA', countryName: "Lao People's Democratic Republic" },
+		{ ...rows[3], id: 'mp-node', countryCode: 'MP', countryName: 'Northern Mariana Islands' },
+		{ ...rows[3], id: 'br-node', countryCode: 'BR', countryName: 'Brazil' },
+	]
+	mocks.apiFetch.mockImplementation((path: string) => {
+		if (path === '/api/v1/proxy-groups') return Promise.resolve(englishRows)
+		if (path === '/api/v1/settings/aimilivpn/countries') return Promise.resolve([
+			{ code: 'HR', name: 'Croatia (LOCAL Name: Hrvatska)', candidateCount: 2, observedAt: 1_700_000_000 },
+			{ code: 'MP', name: 'Northern Mariana Islands', candidateCount: 1, observedAt: 1_700_000_000 },
+			{ code: 'BR', name: 'Brazil', candidateCount: 1, observedAt: 1_700_000_000 },
+		])
+		if (path === '/api/v1/settings/aimilivpn/refresh') return Promise.resolve({ state: 'idle', country: '', phase: '', testedCount: 0, validCount: 0 })
+		return Promise.resolve(undefined)
+	})
+	const wrapper = mount(VpnPoolView)
+	await flushPromises()
+
+	const existing = wrapper.get('[data-country-filter]').text()
+	const supplement = wrapper.get('[data-country-supplement]').text()
+	for (const name of ['格林纳达', '克罗地亚', '老挝', '北马里亚纳群岛', '巴西']) expect(existing).toContain(name)
+	for (const name of ['克罗地亚', '北马里亚纳群岛', '巴西']) expect(supplement).toContain(name)
+	for (const english of ['Grenada', 'Croatia', 'Hrvatska', "Lao People's Democratic Republic", 'Northern Mariana Islands', 'Brazil']) {
+		expect(existing + supplement).not.toContain(english)
+	}
 })
 
 it('starts a durable all-country refresh from the pool page', async () => {
