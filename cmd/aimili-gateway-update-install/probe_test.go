@@ -131,3 +131,12 @@ func TestProbeFingerprintIncludesInboundExpiryAndClientFlow(t *testing.T) {
 		})
 	}
 }
+
+func TestProbeAcceptsExpandedTopologyWithFaultedSlot(t *testing.T) {
+	probe, gateway, _ := invariantProbeFixture(t)
+	mustExec(t, gateway, `INSERT INTO proxy_groups VALUES('agw-slot4', 'fault', 3, 20003, 30003, 'stable')`)
+	mustExec(t, gateway, `INSERT INTO egress_protocol_modes VALUES('agw-slot4', 'vless_tcp_reality_vision','vless_tcp_reality_vision','ready')`)
+	if _, err := probe.Capture(context.Background()); err != nil {
+		t.Fatal("expanded topology rejected", err)
+	}
+}

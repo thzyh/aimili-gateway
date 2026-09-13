@@ -145,7 +145,7 @@ func (p *productionProbe) fingerprint(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if counts[0] != 4 || counts[1] != 1 {
+	if counts[0] < 1 || counts[1] != 1 {
 		return "", errors.New("required process inventory is unavailable")
 	}
 	fmt.Fprintf(hash, "openvpn=%d,xray=%d\n", counts[0], counts[1])
@@ -158,21 +158,25 @@ func (p *productionProbe) fingerprint(ctx context.Context) (string, error) {
 	if err := database.QueryRowContext(ctx, `PRAGMA quick_check`).Scan(&quickCheck); err != nil || quickCheck != "ok" {
 		return "", errors.New("Gateway database quick check failed")
 	}
+	var modeCount, readyModeCount, groupCount, validGroupCount, distinctPortCount, matchedModeCount, mainCount int
 	for _, gate := range []struct {
 		query string
-		want  int
+		value *int
 	}{
-		{`SELECT count(*) FROM egress_protocol_modes`, 4},
-		{`SELECT count(*) FROM egress_protocol_modes WHERE state='ready' AND active_mode=desired_mode`, 4},
-		{`SELECT count(*) FROM proxy_groups`, 3},
-		{`SELECT count(*) FROM proxy_groups WHERE status='ready' AND public_port BETWEEN 20000 AND 20002 AND mixed_port=public_port+10000`, 3},
-		{`SELECT count(DISTINCT public_port) FROM proxy_groups`, 3},
-		{`SELECT count(*) FROM main_egress WHERE resource_name='agw-main' AND enabled=1 AND public_port=8443 AND mixed_port=31000`, 1},
+		{`SELECT count(*) FROM egress_protocol_modes`, &modeCount},
+		{`SELECT count(*) FROM egress_protocol_modes WHERE state='ready' AND active_mode=desired_mode`, &readyModeCount},
+		{`SELECT count(*) FROM proxy_groups`, &groupCount},
+		{`SELECT count(*) FROM proxy_groups WHERE public_port BETWEEN 20000 AND 20099 AND mixed_port=public_port+10000`, &validGroupCount},
+		{`SELECT count(DISTINCT public_port) FROM proxy_groups`, &distinctPortCount},
+		{`SELECT count(*) FROM egress_protocol_modes AS mode WHERE mode.egress_id='agw-main' OR EXISTS(SELECT 1 FROM proxy_groups AS groups WHERE groups.id=mode.egress_id)`, &matchedModeCount},
+		{`SELECT count(*) FROM main_egress WHERE resource_name='agw-main' AND enabled=1 AND public_port=8443 AND mixed_port=31000`, &mainCount},
 	} {
-		var got int
-		if err := database.QueryRowContext(ctx, gate.query).Scan(&got); err != nil || got != gate.want {
-			return "", errors.New("Gateway logical inventory is not ready")
+		if err := database.QueryRowContext(ctx, gate.query).Scan(gate.value); err != nil {
+			return "", errors.New("Gateway logical inventory is unavailable")
 		}
+	}
+	if groupCount < 1 || modeCount != groupCount+1 || readyModeCount != modeCount || validGroupCount != groupCount || distinctPortCount != groupCount || matchedModeCount != modeCount || mainCount != 1 {
+		return "", errors.New("Gateway logical inventory is not ready")
 	}
 	queries := []string{
 		`SELECT egress_id, active_mode, desired_mode, state FROM egress_protocol_modes ORDER BY egress_id`,
