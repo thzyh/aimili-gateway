@@ -113,8 +113,10 @@ def bounded_int(value: Any, default: int, min_value: int | None = None, max_valu
     return parsed
 
 API_URL = "https://www.vpngate.net/api/iphone/"
-FETCH_INTERVAL_SECONDS = env_int("FETCH_INTERVAL_SECONDS", 1260, 1)
-CHECK_INTERVAL_SECONDS = env_int("CHECK_INTERVAL_SECONDS", 1260, 1)
+# 正常情况下每 6 小时维护一次候选池；维护与协议切换冲突时由
+# COLLECTOR_BUSY_RETRY_SECONDS 在 10 分钟后重试，避免高频维护长期占用变更窗口。
+FETCH_INTERVAL_SECONDS = env_int("FETCH_INTERVAL_SECONDS", 21600, 1)
+CHECK_INTERVAL_SECONDS = env_int("CHECK_INTERVAL_SECONDS", 21600, 1)
 _legacy_max_scan_rows = env_int("MAX_SCAN_ROWS", 300, 1)
 MAX_FETCH_ROWS = env_int("MAX_FETCH_ROWS", _legacy_max_scan_rows, 1)
 _legacy_target_valid_nodes = env_int("TARGET_VALID_NODES", 64, 1, 80)

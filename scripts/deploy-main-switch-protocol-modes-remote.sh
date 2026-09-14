@@ -95,13 +95,13 @@ restore_optional_asset() {
     fi
 }
 
-rollback_added_udp_rules() {
+rollback_added_firewall_rules() {
     while IFS= read -r rule; do
         [[ -n "$rule" ]] && ufw --force delete allow "$rule" >/dev/null 2>&1 || true
     done < "$BACKUP_ROOT/ufw-added.txt"
 }
 
-ensure_udp_rule() {
+ensure_firewall_rule() {
     local rule="$1"
     if ! ufw status | awk -v rule="$rule" '$1 == rule && $2 == "ALLOW" { found=1 } END { exit(found ? 0 : 1) }'; then
         ufw allow "$rule"
@@ -195,7 +195,7 @@ rollback_current_stage() {
             restore_optional_asset /etc/systemd/system/aimili-xui-protocol-transaction.path
             restore_optional_asset /etc/systemd/system/aimili-xui-protocol-transaction.service
             restore_optional_asset /etc/systemd/system/aimili-xui-protocol-transaction.timer
-            rollback_added_udp_rules
+            rollback_added_firewall_rules
             systemctl daemon-reload
             systemctl start aimili-gateway.service
             ;;
@@ -278,11 +278,15 @@ try:
 finally:
     if os.path.exists(temporary): os.unlink(temporary)
 PY
-        ensure_udp_rule 8443/udp
-        ensure_udp_rule 20000/udp
-        ensure_udp_rule 20001/udp
-        ensure_udp_rule 20002/udp
-        ensure_udp_rule 20003/udp
+        ensure_firewall_rule 8443/udp
+        ensure_firewall_rule 20000/tcp
+        ensure_firewall_rule 20001/tcp
+        ensure_firewall_rule 20002/tcp
+        ensure_firewall_rule 20003/tcp
+        ensure_firewall_rule 20000/udp
+        ensure_firewall_rule 20001/udp
+        ensure_firewall_rule 20002/udp
+        ensure_firewall_rule 20003/udp
         systemctl daemon-reload
         systemctl enable --now aimili-xui-protocol-transaction.path aimili-xui-protocol-transaction.timer
         systemctl try-restart aimili-gateway.service

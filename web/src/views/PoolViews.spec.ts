@@ -511,6 +511,25 @@ it('shows a closable Chinese protocol error without exposing backend codes', asy
 	expect(wrapper.find('[data-refresh-notice]').exists()).toBe(false)
 })
 
+it('does not claim rollback when maintenance rejects a protocol switch before mutation', async () => {
+	mocks.apiFetch.mockImplementation((path: string, init?: RequestInit) => {
+		if (path === '/api/v1/proxy-groups') return Promise.resolve(rows)
+		if (path === '/api/v1/settings/aimilivpn/countries') return Promise.resolve([])
+		if (path === '/api/v1/settings/aimilivpn/refresh') return Promise.resolve({ state: 'idle', country: '', phase: '', testedCount: 0, validCount: 0 })
+		if (path.endsWith('/protocol-mode') && init?.method === 'PUT') return Promise.reject(new Error('operation_busy'))
+		return Promise.resolve(undefined)
+	})
+	const wrapper = mount(VpnPoolView)
+	await flushPromises()
+	await wrapper.get('[data-protocol="jp-one"]').setValue('hysteria2_quic_tls')
+	await flushPromises()
+
+	const notice = wrapper.get('[data-top-notice]')
+	expect(notice.text()).toContain('协议未更改')
+	expect(notice.text()).toContain('当前有维护或切换任务正在进行')
+	expect(notice.text()).not.toContain('恢复旧协议')
+})
+
 it('shows the recorded rollback validation reason when a protected protocol switch is rejected', async () => {
 	let groupReads = 0
 	mocks.apiFetch.mockImplementation((path: string, init?: RequestInit) => {

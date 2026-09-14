@@ -296,7 +296,10 @@ async function switchProtocol(row: ProxyGroupPayload, protocolMode: ProtocolMode
   } catch (error) {
     await loadGroups(false)
     const current = groups.value.find(item => item.id === row.id) ?? row
-    topNotice.value = makeNotice('error', '协议切换失败，已请求恢复旧协议', localizedProtocolError(error, current))
+    const code = codeFromError(error)
+    topNotice.value = code === 'operation_busy' || code === 'maintenance_busy'
+      ? makeNotice('info', '协议未更改', localizedProtocolError(error, current))
+      : makeNotice('error', '协议切换失败，已请求恢复旧协议', localizedProtocolError(error, current))
   } finally { busy.value = '' }
 }
 

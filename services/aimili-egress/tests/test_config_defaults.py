@@ -14,6 +14,8 @@ class ConfigDefaultsTests(unittest.TestCase):
         environment.pop("TARGET_VALID_POOL_SIZE", None)
         environment.pop("MAX_VALID_POOL_SIZE", None)
         environment.pop("COLLECTOR_BUSY_RETRY_SECONDS", None)
+        environment.pop("FETCH_INTERVAL_SECONDS", None)
+        environment.pop("CHECK_INTERVAL_SECONDS", None)
         command = """
 import json
 import vpngate_manager as manager
@@ -24,6 +26,8 @@ print(json.dumps({
     "state": manager.get_state(),
     "maximum": getattr(manager, "MAX_VALID_POOL_SIZE", 0),
     "busyRetry": getattr(manager, "COLLECTOR_BUSY_RETRY_SECONDS", 0),
+    "fetchInterval": getattr(manager, "FETCH_INTERVAL_SECONDS", 0),
+    "checkInterval": getattr(manager, "CHECK_INTERVAL_SECONDS", 0),
 }))
 """
 
@@ -40,6 +44,8 @@ print(json.dumps({
         self.assertEqual(result["state"]["target_valid_nodes"], 64)
         self.assertEqual(result["maximum"], 80)
         self.assertEqual(result["busyRetry"], 600)
+        self.assertEqual(result["fetchInterval"], 21600)
+        self.assertEqual(result["checkInterval"], 21600)
 
 
 if __name__ == "__main__":
