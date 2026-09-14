@@ -525,10 +525,7 @@ func (o *Orchestrator) Check(ctx context.Context, id string) (domain.ProxyGroup,
 		applySlotSnapshot(&group, checked)
 	}
 	if err == nil && checked.EgressOK {
-		_, err = o.validateSOCKS(ctx, group, credentials)
-		if err == nil {
-			_, err = o.validateCurrentPublic(ctx, group)
-		}
+		_, _, err = o.validateGroupPathsWithExitResync(ctx, &group, credentials)
 	}
 	group.LastCheckedAt = o.config.Now().UTC()
 	group.UpdatedAt = group.LastCheckedAt
@@ -590,10 +587,7 @@ func (o *Orchestrator) Rotate(ctx context.Context, id string) (domain.ProxyGroup
 	}
 	if err == nil && slot.EgressOK {
 		applySlotSnapshot(&group, slot)
-		_, err = o.validateSOCKS(ctx, group, credentials)
-		if err == nil {
-			_, err = o.validateCurrentPublic(ctx, group)
-		}
+		_, _, err = o.validateGroupPathsWithExitResync(ctx, &group, credentials)
 	}
 	group.LastRotatedAt = o.config.Now().UTC()
 	group.LastCheckedAt = group.LastRotatedAt
@@ -919,6 +913,34 @@ func (o *Orchestrator) validateCurrentPublic(ctx context.Context, group domain.P
 		})
 	}
 	return validator.Result{}, &Error{Code: "subscription_incomplete"}
+}
+
+// validateGroupPathsWithExitResync handles the narrow race where a VPN Gate
+// node changes its observed public IP between CheckSlot and protocol
+// validation. A real routing mismatch remains a failure: the retry only runs
+// when a fresh slot snapshot reports a different, healthy public IP.
+func (o *Orchestrator) validateGroupPathsWithExitResync(ctx context.Context, group *domain.ProxyGroup, credentials runtimeCredentials) (validator.Result, validator.Result, error) {
+	socksResult, err := o.validateSOCKS(ctx, *group, credentials)
+	var publicResult validator.Result
+	if err == nil {
+		publicResult, err = o.validateCurrentPublic(ctx, *group)
+	}
+	if errorCode(err) != "egress_mismatch" {
+		return socksResult, publicResult, err
+	}
+	previousExitIP, previousOK := normalizeExitIP(group.ExitIP)
+	checked, checkErr := o.aimili.CheckSlot(ctx, group.AimiliSlot)
+	refreshedExitIP, refreshedOK := normalizeExitIP(checked.ExitIP)
+	if checkErr != nil || !checked.EgressOK || !previousOK || !refreshedOK || refreshedExitIP == previousExitIP {
+		return socksResult, publicResult, err
+	}
+	applySlotSnapshot(group, checked)
+	socksResult, err = o.validateSOCKS(ctx, *group, credentials)
+	if err != nil {
+		return socksResult, validator.Result{}, err
+	}
+	publicResult, err = o.validateCurrentPublic(ctx, *group)
+	return socksResult, publicResult, err
 }
 
 func validPublicEndpointHost(value string) bool {

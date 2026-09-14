@@ -488,6 +488,79 @@ func TestCheckSynchronizesRuntimeCandidateIdentity(t *testing.T) {
 	}
 }
 
+func TestCheckResynchronizesAnExitThatDriftsDuringValidation(t *testing.T) {
+	fixture := newFixture()
+	group, _ := domain.NewProxyGroupIdentity("ID", domain.ProxyTypeResidential, "id-node")
+	group.Status = domain.ProxyGroupReady
+	group.AimiliSlot = 3
+	group.PublicInboundID = 24
+	group.PublicPort = 20003
+	group.MixedPort = 30003
+	group.ExitIP = "203.0.113.7"
+	group.CreatedAt = fixture.now()
+	group.UpdatedAt = fixture.now()
+	fixture.store.groups[group.ID] = group
+	fixture.store.protocolModes[group.ID] = domain.EgressProtocolMode{
+		EgressID: group.ID, ActiveMode: domain.ProtocolVLESSTCPRealityVision,
+		DesiredMode: domain.ProtocolVLESSTCPRealityVision, State: domain.ProtocolReady,
+		Version: 1, UpdatedAt: fixture.now(),
+	}
+	fixture.aimili.createdSlots = map[int]aimili.Slot{}
+	fixture.aimili.checkResults = []aimili.SlotCheck{
+		{Number: 3, NodeID: "id-node", Country: "ID", CountryName: "印度尼西亚", ProxyType: "residential", ExitIP: "203.0.113.7", Port: 17931, Status: "up", EgressOK: true},
+		{Number: 3, NodeID: "id-node", Country: "ID", CountryName: "印度尼西亚", ProxyType: "residential", ExitIP: "203.0.113.8", Port: 17931, Status: "up", EgressOK: true},
+	}
+	fixture.validator.socksErrors = []error{&validator.Error{Code: "egress_mismatch"}, nil}
+	fixture.xui.subscriptionProfiles = []xui.PublicProfile{{
+		InboundID: 24, Mode: domain.ProtocolVLESSTCPRealityVision, ClientID: "test-client",
+		PublicKey: "test-public", ShortID: "test-short", ServerName: "proxy.example.test",
+	}}
+
+	checked, err := fixture.orchestratorWithMax(t, 4).Check(context.Background(), group.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checked.Status != domain.ProxyGroupReady || checked.ExitIP != "203.0.113.8" || checked.LastErrorCode != "" {
+		t.Fatalf("drifted exit was not resynchronized: %#v", checked)
+	}
+	if !equalStrings(fixture.validator.socksExpectedIPs, []string{"203.0.113.7", "203.0.113.8"}) || len(fixture.validator.publicTargets) != 1 || fixture.validator.publicTargets[0].ExpectedExitIP != "203.0.113.8" {
+		t.Fatalf("validation did not retry against the refreshed exit: socks=%#v public=%#v", fixture.validator.socksExpectedIPs, fixture.validator.publicTargets)
+	}
+}
+
+func TestCheckDoesNotHideARealEgressMismatch(t *testing.T) {
+	fixture := newFixture()
+	group, _ := domain.NewProxyGroupIdentity("ID", domain.ProxyTypeResidential, "id-node")
+	group.Status = domain.ProxyGroupReady
+	group.AimiliSlot = 3
+	group.PublicInboundID = 24
+	group.PublicPort = 20003
+	group.MixedPort = 30003
+	group.ExitIP = "203.0.113.7"
+	group.CreatedAt = fixture.now()
+	group.UpdatedAt = fixture.now()
+	fixture.store.groups[group.ID] = group
+	fixture.store.protocolModes[group.ID] = domain.EgressProtocolMode{
+		EgressID: group.ID, ActiveMode: domain.ProtocolVLESSTCPRealityVision,
+		DesiredMode: domain.ProtocolVLESSTCPRealityVision, State: domain.ProtocolReady,
+		Version: 1, UpdatedAt: fixture.now(),
+	}
+	fixture.aimili.createdSlots = map[int]aimili.Slot{}
+	fixture.aimili.checkResults = []aimili.SlotCheck{
+		{Number: 3, NodeID: "id-node", Country: "ID", ProxyType: "residential", ExitIP: "203.0.113.7", Port: 17931, Status: "up", EgressOK: true},
+		{Number: 3, NodeID: "id-node", Country: "ID", ProxyType: "residential", ExitIP: "203.0.113.7", Port: 17931, Status: "up", EgressOK: true},
+	}
+	fixture.validator.socksErrors = []error{&validator.Error{Code: "egress_mismatch"}}
+
+	checked, err := fixture.orchestratorWithMax(t, 4).Check(context.Background(), group.ID)
+	if codeOf(err) != "egress_mismatch" || checked.Status != domain.ProxyGroupDegraded || checked.LastErrorCode != "egress_mismatch" {
+		t.Fatalf("real mismatch was hidden: checked=%#v err=%v", checked, err)
+	}
+	if fixture.validator.socksCalls != 1 {
+		t.Fatalf("unchanged exit was unnecessarily retried: calls=%d", fixture.validator.socksCalls)
+	}
+}
+
 func TestPoolKeepsVerifiedCandidateExitSeparateAndDoesNotFabricateMissingExit(t *testing.T) {
 	fixture := newFixture()
 	fixture.aimili.candidates = []aimili.Candidate{

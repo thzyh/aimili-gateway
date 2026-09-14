@@ -322,6 +322,7 @@ func (o *Orchestrator) Pool(ctx context.Context) ([]domain.ProxyGroup, error) {
 		return nil, &Error{Code: "storage_failed"}
 	}
 	byCandidate := make(map[string]domain.ProxyGroup, len(groups))
+	byIdentity := make(map[string]domain.ProxyGroup, len(groups))
 	legacy := make([]domain.ProxyGroup, 0)
 	for _, group := range groups {
 		if strings.TrimSpace(group.CandidateID) == "" {
@@ -329,9 +330,21 @@ func (o *Orchestrator) Pool(ctx context.Context) ([]domain.ProxyGroup, error) {
 			continue
 		}
 		byCandidate[group.CandidateID] = group
+		byIdentity[group.ID] = group
 	}
 	result := make([]domain.ProxyGroup, 0, len(candidates)+len(legacy))
 	seen := make(map[string]struct{}, len(candidates))
+	seenGroups := make(map[string]struct{}, len(groups))
+	appendUnique := func(group domain.ProxyGroup) {
+		if _, ok := seenGroups[group.ID]; ok {
+			return
+		}
+		seenGroups[group.ID] = struct{}{}
+		result = append(result, group)
+	}
+	for _, group := range legacy {
+		appendUnique(group)
+	}
 	for _, candidate := range candidates {
 		candidate.ID = strings.TrimSpace(candidate.ID)
 		proxyType := domain.ProxyType(candidate.ProxyType)
@@ -340,11 +353,15 @@ func (o *Orchestrator) Pool(ctx context.Context) ([]domain.ProxyGroup, error) {
 		}
 		seen[candidate.ID] = struct{}{}
 		if group, ok := byCandidate[candidate.ID]; ok {
-			result = append(result, group)
+			appendUnique(group)
 			continue
 		}
 		standby, identityErr := domain.NewProxyGroupIdentity(candidate.CountryCode, proxyType, candidate.ID)
 		if identityErr != nil {
+			continue
+		}
+		if group, ok := byIdentity[standby.ID]; ok {
+			appendUnique(group)
 			continue
 		}
 		standby.CountryName = candidate.CountryName
@@ -355,14 +372,13 @@ func (o *Orchestrator) Pool(ctx context.Context) ([]domain.ProxyGroup, error) {
 		}
 		standby.CandidateLatencyMS = candidate.LatencyMS
 		standby.Status = domain.ProxyGroupStandby
-		result = append(result, standby)
+		appendUnique(standby)
 	}
 	for candidateID, group := range byCandidate {
 		if _, ok := seen[candidateID]; !ok {
-			result = append(result, group)
+			appendUnique(group)
 		}
 	}
-	result = append(legacy, result...)
 	main, mainErr := o.aimili.MainStatus(ctx)
 	storedMain, storedMainErr := store.MainEgress{}, error(store.ErrProxyGroupNotFound)
 	if source, ok := o.store.(mainEgressStore); ok {

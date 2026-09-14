@@ -346,10 +346,7 @@ func (o *Orchestrator) ReplaceCandidate(ctx context.Context, candidateID, target
 	_, credentials, inputErr := o.runtimeInputs(ctx)
 	if inputErr == nil {
 		var socksResult, vlessResult validator.Result
-		socksResult, inputErr = o.validateSOCKS(ctx, group, credentials)
-		if inputErr == nil {
-			vlessResult, inputErr = o.validateCurrentPublic(ctx, group)
-		}
+		socksResult, vlessResult, inputErr = o.validateGroupPathsWithExitResync(ctx, &group, credentials)
 		if inputErr == nil {
 			group.SOCKSLatencyMS = durationMillis(socksResult.Latency)
 			group.VLESSLatencyMS = durationMillis(vlessResult.Latency)

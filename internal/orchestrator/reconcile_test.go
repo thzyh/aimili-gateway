@@ -61,6 +61,32 @@ func TestReconcileLeavesCandidatesBeyondCapacityOnStandby(t *testing.T) {
 	}
 }
 
+func TestPoolPrefersLiveGroupWhenReplacementIdentityMatchesCatalogCandidate(t *testing.T) {
+	fixture := newFixture()
+	fixture.aimili.candidates = []aimili.Candidate{{
+		ID: "th-new", CountryCode: "TH", CountryName: "泰国", IP: "198.51.100.22",
+		ProxyType: "residential", LatencyMS: 4, ProbeStatus: "available",
+	}}
+	identity, err := domain.NewProxyGroupIdentity("TH", domain.ProxyTypeResidential, "th-new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.store.groups[identity.ID] = domain.ProxyGroup{
+		ID: identity.ID, ResourceName: identity.ID, CandidateID: "th-old",
+		CountryCode: "TH", CountryName: "泰国", ProxyType: domain.ProxyTypeResidential,
+		Status: domain.ProxyGroupReady, ExitIP: "203.0.113.22", PublicPort: 20001,
+		MixedPort: 30001, Version: 2,
+	}
+
+	pool, err := fixture.orchestratorWithMax(t, 4).Pool(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pool) != 1 || pool[0].ID != identity.ID || pool[0].CandidateID != "th-old" || pool[0].Status == domain.ProxyGroupStandby {
+		t.Fatalf("replacement identity emitted duplicate standby: %#v", pool)
+	}
+}
+
 func TestActivateStandbyCandidateReplacesTheSingleActiveGroup(t *testing.T) {
 	fixture := newFixture()
 	fixture.aimili.candidates = []aimili.Candidate{
