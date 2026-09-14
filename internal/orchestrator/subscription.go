@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/url"
 	"sort"
@@ -86,6 +87,9 @@ func (o *Orchestrator) refreshDynamicSubscription(ctx context.Context) error {
 		return nil
 	}
 	_, err = o.Subscription(ctx)
+	if err != nil {
+		log.Printf("dynamic subscription refresh failed: code=%s", errorCode(err))
+	}
 	return err
 }
 
