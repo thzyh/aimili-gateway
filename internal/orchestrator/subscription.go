@@ -300,6 +300,17 @@ func (o *Orchestrator) ReplaceCandidate(ctx context.Context, candidateID, target
 			break
 		}
 	}
+	// A disconnected/manual-required slot deliberately keeps its candidate ID,
+	// but AimiliVPN cannot always rediscover the old node's country/type after a
+	// failed restart.  The Gateway row is the durable identity for that slot, so
+	// use it to complete the rollback snapshot instead of rejecting every manual
+	// replacement before the new candidate is even dialled.
+	if len(strings.TrimSpace(previousSlot.Country)) != 2 {
+		previousSlot.Country = strings.ToUpper(strings.TrimSpace(group.CountryCode))
+	}
+	if !domain.ProxyType(strings.ToLower(strings.TrimSpace(previousSlot.ProxyType))).Valid() {
+		previousSlot.ProxyType = string(group.ProxyType)
+	}
 	if strings.TrimSpace(previousSlot.NodeID) == "" || len(strings.TrimSpace(previousSlot.Country)) != 2 || !domain.ProxyType(strings.ToLower(strings.TrimSpace(previousSlot.ProxyType))).Valid() {
 		return domain.ProxyGroup{}, &Error{Code: "conflict"}
 	}

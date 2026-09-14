@@ -454,6 +454,34 @@ func TestReplaceCandidateAllowsManualRecoveryOfFailedSlot(t *testing.T) {
 	}
 }
 
+func TestReplaceCandidateRecoversDisconnectedSlotWithMissingRuntimeMetadata(t *testing.T) {
+	fixture := newFixture()
+	group, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeResidential, "failed-node")
+	group.Status = domain.ProxyGroupDegraded
+	group.AimiliSlot = 1
+	group.PublicPort = 20002
+	group.MixedPort = 30002
+	group.PublicInboundID = 23
+	group.LastErrorCode = "manual_replacement_required"
+	group.CreatedAt = fixture.now()
+	group.UpdatedAt = fixture.now()
+	fixture.store.groups[group.ID] = group
+	fixture.store.protocolModes[group.ID] = domain.EgressProtocolMode{EgressID: group.ID, ActiveMode: domain.ProtocolVLESSTCPRealityVision, DesiredMode: domain.ProtocolVLESSTCPRealityVision, State: domain.ProtocolReady, Version: 1, UpdatedAt: fixture.now()}
+	// A real manual-required snapshot retains only the old candidate and country.
+	// ProxyType is empty because the dead tunnel can no longer be classified.
+	fixture.aimili.createdSlots = map[int]aimili.Slot{1: {Number: 1, NodeID: "failed-node", Country: "JP", Port: 17929, Status: "disconnected", EgressOK: false}}
+	fixture.aimili.candidates = []aimili.Candidate{{ID: "new-node", CountryCode: "KR", CountryName: "韩国", ProxyType: "residential", ProbeStatus: "available", IP: "198.51.100.8", LatencyMS: 45}}
+	fixture.aimili.assignedSlot = aimili.Slot{Number: 1, NodeID: "new-node", Country: "KR", CountryName: "韩国", ProxyType: "residential", ExitIP: "203.0.113.8", CheckedAt: 1_700_000_010.5, Port: 17929, Status: "up", EgressOK: true}
+
+	updated, err := fixture.orchestratorWithMax(t, 3).ReplaceCandidate(context.Background(), "new-node", group.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != domain.ProxyGroupReady || updated.CandidateID != "new-node" || updated.AimiliSlot != 1 || updated.LastErrorCode != "" {
+		t.Fatalf("updated=%#v", updated)
+	}
+}
+
 func TestReplaceCandidateReloadsCandidatesOnlyAfterPersistedRejection(t *testing.T) {
 	tests := []struct {
 		name      string
