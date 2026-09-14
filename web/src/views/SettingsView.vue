@@ -354,7 +354,7 @@ function messageFor(error: unknown, fallback: string): string {
         <p class="section-kicker">CAPACITY</p><h2>运行容量</h2>
         <div class="capacity-value"><strong>{{ summary?.onlineCount ?? 0 }} / {{ summary?.maxOnline ?? 1 }}</strong><span>在线节点</span></div>
         <dl><div><dt>可选节点</dt><dd>{{ summary?.candidateCount ?? 0 }}</dd></div><div><dt>生产上限</dt><dd>{{ summary?.maxOnline ?? 1 }}</dd></div></dl>
-        <p class="capacity-help">当前 512 MiB 主机保持单在线节点，避免多个 OpenVPN、Xray 入站与探测任务争抢内存。</p>
+        <p class="capacity-help">当前按生产上限运行；增加出口前应逐个验证内存、连接和探测负载，避免多个 OpenVPN、Xray 入站与检测任务相互争抢资源。</p>
       </aside>
 
       <section class="services-section">

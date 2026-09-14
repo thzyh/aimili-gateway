@@ -41,6 +41,12 @@ class CapacityConfigTests(unittest.TestCase):
     def test_accepts_capacity_four_for_one_step_expansion(self):
         self.assertEqual(4, MODULE.updated_config({"maxProxyGroups": 3}, 4)["maxProxyGroups"])
 
+    def test_protocol_ports_follow_capacity(self):
+        original = {"allowedPorts": [8443, 20000, 20001, 20002], "apiServer": "127.0.0.1:62789"}
+        updated = MODULE.updated_protocol_config(original, 4)
+        self.assertEqual([8443, 20000, 20001, 20002, 20003], updated["allowedPorts"])
+        self.assertEqual([8443, 20000, 20001, 20002], original["allowedPorts"])
+
     def test_rejects_capacity_five(self):
         with self.assertRaisesRegex(ValueError, "1, 2, 3, or 4"):
             MODULE.updated_config({"maxProxyGroups": 1}, 5)

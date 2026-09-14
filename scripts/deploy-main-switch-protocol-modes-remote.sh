@@ -148,17 +148,22 @@ protocol_stage2_postcheck() {
         sleep 2
     done
     [[ "$ready" == true ]]
-    python3 - "$GATEWAY_DB" "$XUI_DB" <<'PY'
-import sqlite3, sys
+    python3 - "$GATEWAY_DB" "$XUI_DB" /etc/aimili-gateway/config.json /etc/aimili-gateway/protocol-transaction.json <<'PY'
+import json, sqlite3, sys
 gateway = sqlite3.connect(f'file:{sys.argv[1]}?mode=ro', uri=True)
 assert gateway.execute('SELECT COUNT(*) FROM schema_migrations WHERE version=10').fetchone()[0] == 1
-assert gateway.execute('SELECT COUNT(*) FROM egress_protocol_modes').fetchone()[0] == 4
+slots = int(json.load(open(sys.argv[3], encoding='utf-8'))['maxProxyGroups'])
+assert gateway.execute('SELECT COUNT(*) FROM egress_protocol_modes').fetchone()[0] == slots + 1
 gateway.close()
 xui = sqlite3.connect(f'file:{sys.argv[2]}?mode=ro', uri=True)
 rows = xui.execute('SELECT tag,port FROM inbounds').fetchall(); xui.close()
 managed = [row for row in rows if row[0] == 'aimili-reality' or str(row[0]).startswith('agw-')]
-assert sum(row[1] in (8443,20000,20001,20002) for row in managed) == 4
-assert sum(row[1] in (30000,30001,30002,31000) for row in managed) == 4
+public_ports = {8443, *range(20000, 20000 + slots)}
+mixed_ports = {31000, *range(30000, 30000 + slots)}
+assert sum(row[1] in public_ports for row in managed) == slots + 1
+assert sum(row[1] in mixed_ports for row in managed) == slots + 1
+protocol = json.load(open(sys.argv[4], encoding='utf-8'))
+assert protocol['allowedPorts'] == [8443, *range(20000, 20000 + slots)]
 PY
     current_xray="$(server_xray_pid)"
     [[ -n "$current_xray" && "$current_xray" == "$(<"$BACKUP_ROOT/xray.pid")" ]]
