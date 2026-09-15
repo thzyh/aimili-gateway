@@ -4,7 +4,11 @@
 
 ## 当前入口
 
-- `2026-08-29-main-switch-protocol-modes-handoff.md`：主连接安全切换与每出口独立协议模式交接。
+- `2026-09-05-current-state-handoff.md`：当前本地路径、Git、生产摘要、最新修复和未完成事项的权威入口。
+
+## 历史交接
+
+- `2026-08-29-main-switch-protocol-modes-handoff.md`：主连接安全切换与每出口独立协议模式的历史交接；其后续实现已经完成，不再作为当前状态入口。
 
 ## 使用方法
 

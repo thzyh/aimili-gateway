@@ -2,15 +2,19 @@
 import type { ProxyType } from '../api/client'
 import type { PoolStatusGroup } from './poolStatus'
 
-defineProps<{ countries: { code: string; name: string }[]; country: string; proxyType: '' | ProxyType; status: '' | PoolStatusGroup; sort: string }>()
-const emit = defineEmits<{ country: [value: string]; proxyType: [value: '' | ProxyType]; status: [value: '' | PoolStatusGroup]; sort: [value: string] }>()
+defineProps<{ countries: { code: string; name: string; count: number }[]; officialCountries: { code: string; name: string; count: number }[]; country: string; supplementCountry: string; proxyType: '' | ProxyType; status: '' | PoolStatusGroup; sort: string }>()
+const emit = defineEmits<{ country: [value: string]; supplementCountry: [value: string]; proxyType: [value: '' | ProxyType]; status: [value: '' | PoolStatusGroup]; sort: [value: string] }>()
 </script>
 
 <template>
   <div class="filters" aria-label="节点筛选">
-    <select data-country-filter :value="country" aria-label="国家" @change="emit('country', ($event.target as HTMLSelectElement).value)">
-      <option value="">全部国家</option>
-      <option v-for="item in countries" :key="item.code" :value="item.code">{{ item.name || item.code }}</option>
+    <select data-country-filter class="country-filter" :value="country" aria-label="现有国家" @change="emit('country', ($event.target as HTMLSelectElement).value)">
+      <option value="">现有国家：全部</option>
+      <option v-for="item in countries" :key="item.code" :value="item.code">{{ item.name || item.code }}（{{ item.count }} 个节点）</option>
+    </select>
+    <select data-country-supplement class="country-filter" :value="supplementCountry" aria-label="补充国家" @change="emit('supplementCountry', ($event.target as HTMLSelectElement).value)">
+      <option value="">补充国家</option>
+      <option v-for="item in officialCountries" :key="item.code" :value="item.code">{{ item.name || item.code }}（{{ item.count }} 个官方节点）</option>
     </select>
     <select :value="proxyType" aria-label="IP 类型" @change="emit('proxyType', ($event.target as HTMLSelectElement).value as '' | ProxyType)">
       <option value="">全部类型</option><option value="residential">住宅</option><option value="datacenter">机房</option>
@@ -25,5 +29,5 @@ const emit = defineEmits<{ country: [value: string]; proxyType: [value: '' | Pro
 </template>
 
 <style scoped>
-.filters{display:flex;flex-wrap:wrap;gap:8px}.filters select{height:36px;min-width:132px;padding:0 34px 0 11px;border:1px solid var(--border);border-radius:8px;background:var(--input);color:var(--text);font:inherit;font-size:13px}.filters select:focus{outline:3px solid var(--focus);border-color:var(--accent)}@media(max-width:600px){.filters{display:grid;grid-template-columns:1fr 1fr}.filters select{min-width:0;width:100%}}
+.filters{display:flex;flex-wrap:nowrap;gap:8px;min-width:0;flex:1}.filters select{height:36px;min-width:112px;padding:0 28px 0 11px;border:1px solid var(--border);border-radius:8px;background:var(--input);color:var(--text);font:inherit;font-size:13px}.filters select.country-filter{flex:1 1 178px;min-width:0}.filters select:focus{outline:3px solid var(--focus);border-color:var(--accent)}@media(max-width:900px){.filters{flex-wrap:wrap}.filters select.country-filter{flex-basis:calc(50% - 4px)}}@media(max-width:600px){.filters{display:grid;grid-template-columns:1fr 1fr}.filters select{min-width:0;width:100%}}
 </style>

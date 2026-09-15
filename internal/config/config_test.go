@@ -43,6 +43,42 @@ func TestLoadAppliesSafeLocalDefaults(t *testing.T) {
 		cfg.MixedPortStart != 30000 || cfg.MixedPortEnd != 30999 || cfg.ProbeHost != "api.ipify.org" || cfg.XrayPath == "" {
 		t.Fatalf("proxy runtime defaults are incomplete: %#v", cfg)
 	}
+	if cfg.ProtocolRequestDir != filepath.FromSlash("data/protocol-spool/requests") || cfg.ProtocolResultDir != filepath.FromSlash("data/protocol-spool/results") || cfg.ProtocolTimeoutSeconds != 180 {
+		t.Fatalf("protocol transaction defaults are incomplete: %#v", cfg)
+	}
+}
+
+func TestValidateRequiresSiblingProtocolSpoolDirectories(t *testing.T) {
+	cfg := validProductionConfig()
+	for _, mutate := range []func(*Config){
+		func(value *Config) { value.ProtocolRequestDir = "relative/requests" },
+		func(value *Config) { value.ProtocolResultDir = filepath.FromSlash("/var/lib/other/results") },
+		func(value *Config) { value.ProtocolResultDir = value.ProtocolRequestDir },
+		func(value *Config) { value.ProtocolTimeoutSeconds = 0 },
+		func(value *Config) { value.ProtocolTimeoutSeconds = 601 },
+	} {
+		candidate := cfg
+		mutate(&candidate)
+		if err := candidate.Validate(); err == nil {
+			t.Fatalf("unsafe protocol spool accepted: %#v", candidate)
+		}
+	}
+}
+
+func TestValidateAcceptsAbsoluteExternalUIRoot(t *testing.T) {
+	cfg := validProductionConfig()
+	cfg.ExternalUIRoot = filepath.FromSlash("/var/lib/aimili-gateway/ui")
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("absolute external UI root rejected: %v", err)
+	}
+}
+
+func TestValidateRejectsRelativeExternalUIRoot(t *testing.T) {
+	cfg := validProductionConfig()
+	cfg.ExternalUIRoot = filepath.FromSlash("ui/releases")
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "externalUiRoot") {
+		t.Fatalf("relative external UI root error = %v", err)
+	}
 }
 
 func TestValidateRejectsUnsafeProxyRuntimeRanges(t *testing.T) {
@@ -194,6 +230,18 @@ func TestLoadAppliesDocumentedEnvironmentOverrides(t *testing.T) {
 	}
 }
 
+func TestValidateRequiresSiblingUpdateSpoolDirectories(t *testing.T) {
+	cfg := validProductionConfig()
+	cfg.UpdateRequestDir = filepath.FromSlash("/var/lib/aimili-gateway/update-spool/requests")
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("partial update spool accepted")
+	}
+	cfg.UpdateResultDir = filepath.FromSlash("/var/lib/aimili-gateway/update-spool/results")
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid update spool rejected: %v", err)
+	}
+}
+
 func validProductionConfig() Config {
 	return Config{
 		ListenAddress:          "127.0.0.1:9080",
@@ -205,6 +253,9 @@ func validProductionConfig() Config {
 		AimiliControlTokenFile: filepath.FromSlash("data/aimili-control.token"),
 		XUIBaseURL:             "http://127.0.0.1:2001/",
 		XUICredentialsFile:     filepath.FromSlash("data/xui-automation.json"),
+		ProtocolRequestDir:     filepath.FromSlash("/var/lib/aimili-gateway/protocol-spool/requests"),
+		ProtocolResultDir:      filepath.FromSlash("/var/lib/aimili-gateway/protocol-spool/results"),
+		ProtocolTimeoutSeconds: 180,
 		ExpertModeURL:          "/expert/",
 		AimiliBackendURL:       "/aimili-native/",
 	}.WithRuntimeDefaults()
@@ -224,6 +275,10 @@ func clearConfigEnvironment(t *testing.T) {
 		"GATEWAY_XUI_CREDENTIALS_FILE",
 		"GATEWAY_EXPERT_MODE_URL",
 		"GATEWAY_AIMILI_BACKEND_URL",
+		"GATEWAY_PROTOCOL_REQUEST_DIR",
+		"GATEWAY_PROTOCOL_RESULT_DIR",
+		"GATEWAY_UPDATE_REQUEST_DIR",
+		"GATEWAY_UPDATE_RESULT_DIR",
 	} {
 		t.Setenv(name, "")
 	}

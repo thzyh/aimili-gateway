@@ -20,6 +20,8 @@ const (
 	totpSecretBytes     = 20
 )
 
+var errGatewayReloadRequired = errors.New("gateway reload required")
+
 type commandDependencies struct {
 	Now          func() time.Time
 	Random       io.Reader
@@ -83,7 +85,7 @@ func runAccountMenu(ctx context.Context, database *store.Store, masterKeyPath st
 		}
 		if unifiedCredentialsChanged(choice) {
 			_, _ = fmt.Fprintln(out, "统一账户已更新，Gateway 将立即重载；请等待数秒后重新登录。")
-			return nil
+			return errGatewayReloadRequired
 		}
 	}
 }
@@ -142,7 +144,7 @@ func changeUsername(ctx context.Context, database *store.Store, synchronizer acc
 	if err != nil || !matched {
 		return errors.New("当前统一密码不正确")
 	}
-	if err := synchronizer.Change(ctx, accountsync.ChangeRequest{Username: username, Password: password}); err != nil {
+	if err := changeOrRepairAccount(ctx, synchronizer, accountsync.ChangeRequest{Username: username, Password: password}); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintln(out, "三服务用户名已同步更新，全部 Gateway 旧会话已撤销。")
@@ -159,7 +161,7 @@ func resetRandomPassword(ctx context.Context, database *store.Store, synchronize
 	if err != nil {
 		return err
 	}
-	if err := synchronizer.Change(ctx, accountsync.ChangeRequest{Username: admin.Username, Password: password}); err != nil {
+	if err := changeOrRepairAccount(ctx, synchronizer, accountsync.ChangeRequest{Username: admin.Username, Password: password}); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(out, "新随机密码（仅显示一次）：%s\n", password)
@@ -198,11 +200,20 @@ func resetCustomPassword(ctx context.Context, database *store.Store, synchronize
 	if err != nil {
 		return err
 	}
-	if err := synchronizer.Change(ctx, accountsync.ChangeRequest{Username: admin.Username, Password: password}); err != nil {
+	if err := changeOrRepairAccount(ctx, synchronizer, accountsync.ChangeRequest{Username: admin.Username, Password: password}); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintln(out, "三服务自定义密码已同步更新，全部 Gateway 旧会话已撤销。")
 	return nil
+}
+
+func changeOrRepairAccount(ctx context.Context, synchronizer accountSynchronizer, request accountsync.ChangeRequest) error {
+	err := synchronizer.Change(ctx, request)
+	var synchronizationError *accountsync.Error
+	if errors.As(err, &synchronizationError) && synchronizationError.Code == "account_drift" {
+		return synchronizer.Repair(ctx, request)
+	}
+	return err
 }
 
 func repairAccountSync(ctx context.Context, database *store.Store, synchronizer accountSynchronizer, prompts *promptReader, out io.Writer) error {

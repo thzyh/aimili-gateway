@@ -26,11 +26,11 @@ func TestServiceReturnsOnlyApprovedMaintenanceSummaries(t *testing.T) {
 		slots: []aimili.Slot{{Number: 1, EgressOK: true}},
 	}
 	groups := []domain.ProxyGroup{
-		{ID: "agw-jp-res-a", ResourceName: "agw-jp-res-a", Status: domain.ProxyGroupReady, VLESSInboundID: 11, MixedInboundID: 12, ConfigFingerprint: "fingerprint-one", LastCheckedAt: now},
+		{ID: "agw-jp-res-a", ResourceName: "agw-jp-res-a", Status: domain.ProxyGroupReady, PublicInboundID: 11, MixedInboundID: 12, ConfigFingerprint: "fingerprint-one", LastCheckedAt: now},
 	}
 	xuiSource := &fakeXUISource{snapshot: xui.Snapshot{
-		Inbounds:        []xui.Inbound{{ID: 11, Tag: "agw-jp-res-a-vless", Protocol: "vless"}, {ID: 12, Tag: "agw-jp-res-a-mixed", Protocol: "mixed"}},
-		Outbounds:       []xui.Outbound{{Tag: "agw-jp-res-a-socks", Protocol: "socks"}, {Tag: "user-outbound", Protocol: "freedom"}},
+		Inbounds:        []xui.Inbound{{ID: 1, Tag: "aimili-reality", Protocol: "vless"}, {ID: 2, Tag: "agw-main-mixed", Protocol: "mixed"}, {ID: 11, Tag: "agw-jp-res-a-vless", Protocol: "vless"}, {ID: 12, Tag: "agw-jp-res-a-mixed", Protocol: "mixed"}},
+		Outbounds:       []xui.Outbound{{Tag: "aimili-socks", Protocol: "socks"}, {Tag: "agw-jp-res-a-socks", Protocol: "socks"}, {Tag: "user-outbound", Protocol: "freedom"}},
 		OutboundTestURL: "https://must-not-escape.invalid/secret",
 	}}
 	groupSource := &fakeGroupSource{groups: groups}
@@ -58,7 +58,7 @@ func TestServiceReturnsOnlyApprovedMaintenanceSummaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if xuiSummary.ManagedVLESSCount != 1 || xuiSummary.ManagedMixedCount != 1 || xuiSummary.ManagedOutboundCount != 1 || !xuiSummary.OwnershipMatches {
+	if xuiSummary.ManagedPublicCount != 2 || xuiSummary.ManagedVLESSCount != 2 || xuiSummary.ManagedMixedCount != 2 || xuiSummary.ManagedOutboundCount != 2 || !xuiSummary.OwnershipMatches {
 		t.Fatalf("3x-ui summary = %#v", xuiSummary)
 	}
 
@@ -71,7 +71,7 @@ func TestServiceReturnsOnlyApprovedMaintenanceSummaries(t *testing.T) {
 }
 
 func TestServiceChecksManagedSlotsAndRepairsOnlyManagedResources(t *testing.T) {
-	groups := []domain.ProxyGroup{{ID: "agw-jp-dc", ResourceName: "agw-jp-dc", Status: domain.ProxyGroupReady, AimiliSlot: 7, VLESSInboundID: 11, MixedInboundID: 12}}
+	groups := []domain.ProxyGroup{{ID: "agw-jp-dc", ResourceName: "agw-jp-dc", Status: domain.ProxyGroupReady, AimiliSlot: 7, PublicInboundID: 11, MixedInboundID: 12}}
 	aimiliSource := &fakeAimiliSource{slots: []aimili.Slot{{Number: 7, EgressOK: true}}}
 	groupSource := &fakeGroupSource{groups: groups}
 	service, err := New(Config{MaxOnline: 1}, aimiliSource, &fakeXUISource{}, groupSource, &fakeAccountStatus{})
@@ -89,6 +89,38 @@ func TestServiceChecksManagedSlotsAndRepairsOnlyManagedResources(t *testing.T) {
 	}
 	if groupSource.repairCalls != 1 {
 		t.Fatalf("repair calls = %d", groupSource.repairCalls)
+	}
+}
+
+func TestXUISummaryRecognizesMainAndMixedPublicProtocols(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	groups := []domain.ProxyGroup{
+		{ID: "agw-a", ResourceName: "agw-a", PublicInboundID: 11, MixedInboundID: 12, ConfigFingerprint: "a", LastCheckedAt: now},
+		{ID: "agw-b", ResourceName: "agw-b", PublicInboundID: 21, MixedInboundID: 22, ConfigFingerprint: "b", LastCheckedAt: now},
+		{ID: "agw-c", ResourceName: "agw-c", PublicInboundID: 31, MixedInboundID: 32, ConfigFingerprint: "c", LastCheckedAt: now},
+	}
+	snapshot := xui.Snapshot{
+		Inbounds: []xui.Inbound{
+			{ID: 1, Tag: "aimili-reality", Protocol: "vless"}, {ID: 2, Tag: "agw-main-mixed", Protocol: "mixed"},
+			{ID: 11, Tag: "agw-a-vless", Protocol: "vless"}, {ID: 12, Tag: "agw-a-mixed", Protocol: "mixed"},
+			{ID: 21, Tag: "agw-b-vless", Protocol: "hysteria"}, {ID: 22, Tag: "agw-b-mixed", Protocol: "mixed"},
+			{ID: 31, Tag: "agw-c-vless", Protocol: "vless"}, {ID: 32, Tag: "agw-c-mixed", Protocol: "mixed"},
+		},
+		Outbounds: []xui.Outbound{
+			{Tag: "aimili-socks", Protocol: "socks"},
+			{Tag: "agw-a-socks", Protocol: "socks"}, {Tag: "agw-b-socks", Protocol: "socks"}, {Tag: "agw-c-socks", Protocol: "socks"},
+		},
+	}
+	service, err := New(Config{MaxOnline: 3}, &fakeAimiliSource{}, &fakeXUISource{snapshot: snapshot}, &fakeGroupSource{groups: groups}, &fakeAccountStatus{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary, err := service.XUI(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.ManagedPublicCount != 4 || summary.ManagedVLESSCount != 3 || summary.ManagedMixedCount != 4 || summary.ManagedOutboundCount != 4 || !summary.OwnershipMatches {
+		t.Fatalf("mixed protocol summary = %#v", summary)
 	}
 }
 
@@ -132,6 +164,30 @@ func TestServiceStartsCountryRefreshAndReconcilesAfterCompletion(t *testing.T) {
 	status, err := service.AimiliVPNRefresh(context.Background())
 	if err != nil || status.State != "completed" || status.ValidCount != 4 {
 		t.Fatalf("status = %#v, err = %v", status, err)
+	}
+}
+
+func TestCandidateCountriesDerivesLegacyAggregateCounters(t *testing.T) {
+	service, err := New(Config{MaxOnline: 1}, &fakeAimiliSource{
+		countries: []aimili.CandidateCountry{
+			{Code: "AR", Name: "阿根廷", CandidateCount: 2},
+			{Code: "JP", Name: "日本", CandidateCount: 3},
+		},
+		candidates: []aimili.Candidate{
+			{ID: "jp-1", CountryCode: "JP", ProxyType: "datacenter", ProbeStatus: "available"},
+			{ID: "jp-2", CountryCode: "JP", ProxyType: "residential", ProbeStatus: "available"},
+			{ID: "ar-1", CountryCode: "AR", ProxyType: "datacenter", ProbeStatus: "failed"},
+		},
+	}, &fakeXUISource{}, &fakeGroupSource{}, &fakeAccountStatus{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	countries, err := service.CandidateCountries(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(countries) != 2 || countries[0].OfficialCandidateTotal != 5 || countries[0].ValidNodeCount != 2 || countries[0].ValidCountryCount != 1 || countries[1].OfficialCandidateTotal != 5 || countries[1].ValidNodeCount != 2 || countries[1].ValidCountryCount != 1 {
+		t.Fatalf("legacy aggregate counters = %#v", countries)
 	}
 }
 

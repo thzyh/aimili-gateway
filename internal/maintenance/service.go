@@ -40,6 +40,7 @@ type AimiliSummary struct {
 }
 
 type XUISummary struct {
+	ManagedPublicCount   int       `json:"managedPublicCount"`
 	ManagedVLESSCount    int       `json:"managedVlessCount"`
 	ManagedMixedCount    int       `json:"managedMixedCount"`
 	ManagedOutboundCount int       `json:"managedOutboundCount"`
@@ -153,6 +154,33 @@ func (service *Service) CandidateCountries(ctx context.Context) ([]aimili.Candid
 	if err != nil {
 		return nil, countryRefreshError(err)
 	}
+	// Older AimiliVPN control planes expose only the per-country catalog
+	// count.  Keep the UI aggregate counters correct by deriving the missing
+	// fields from the same current candidate snapshot instead of displaying
+	// zeroes until AimiliVPN is upgraded.
+	candidates, candidateErr := service.availableCandidates(ctx)
+	if candidateErr != nil {
+		return nil, candidateErr
+	}
+	officialTotal := 0
+	for _, country := range countries {
+		officialTotal += country.CandidateCount
+	}
+	validCountries := make(map[string]struct{})
+	for _, candidate := range candidates {
+		validCountries[strings.ToUpper(strings.TrimSpace(candidate.CountryCode))] = struct{}{}
+	}
+	for index := range countries {
+		if countries[index].OfficialCandidateTotal <= 0 {
+			countries[index].OfficialCandidateTotal = officialTotal
+		}
+		if countries[index].ValidNodeCount <= 0 {
+			countries[index].ValidNodeCount = len(candidates)
+		}
+		if countries[index].ValidCountryCount <= 0 {
+			countries[index].ValidCountryCount = len(validCountries)
+		}
+	}
 	return countries, nil
 }
 
@@ -244,10 +272,31 @@ func (service *Service) XUI(ctx context.Context) (XUISummary, error) {
 	for _, outbound := range snapshot.Outbounds {
 		outbounds[outbound.Tag] = outbound
 	}
-	for _, group := range groups {
-		vless, vlessOK := inbounds[group.VLESSInboundID]
-		if vlessOK && vless.Tag == group.ResourceName+"-vless" && vless.Protocol == "vless" {
+	if public, ok := inboundByTag(snapshot.Inbounds, "aimili-reality"); ok && managedPublicProtocol(public.Protocol) {
+		result.ManagedPublicCount++
+		if public.Protocol == "vless" {
 			result.ManagedVLESSCount++
+		}
+	} else {
+		result.OwnershipMatches = false
+	}
+	if mixed, ok := inboundByTag(snapshot.Inbounds, "agw-main-mixed"); ok && mixed.Protocol == "mixed" {
+		result.ManagedMixedCount++
+	} else {
+		result.OwnershipMatches = false
+	}
+	if outbound, ok := outbounds["aimili-socks"]; ok && outbound.Protocol == "socks" {
+		result.ManagedOutboundCount++
+	} else {
+		result.OwnershipMatches = false
+	}
+	for _, group := range groups {
+		vless, vlessOK := inbounds[group.PublicInboundID]
+		if vlessOK && vless.Tag == group.ResourceName+"-vless" && managedPublicProtocol(vless.Protocol) {
+			result.ManagedPublicCount++
+			if vless.Protocol == "vless" {
+				result.ManagedVLESSCount++
+			}
 		} else {
 			result.OwnershipMatches = false
 		}
@@ -271,6 +320,25 @@ func (service *Service) XUI(ctx context.Context) (XUISummary, error) {
 		}
 	}
 	return result, nil
+}
+
+func inboundByTag(inbounds []xui.Inbound, tag string) (xui.Inbound, bool) {
+	var result xui.Inbound
+	found := false
+	for _, inbound := range inbounds {
+		if inbound.Tag != tag {
+			continue
+		}
+		if found {
+			return xui.Inbound{}, false
+		}
+		result, found = inbound, true
+	}
+	return result, found
+}
+
+func managedPublicProtocol(protocol string) bool {
+	return protocol == "vless" || protocol == "hysteria"
 }
 
 func (service *Service) CheckXUI(ctx context.Context) (XUISummary, error) { return service.XUI(ctx) }

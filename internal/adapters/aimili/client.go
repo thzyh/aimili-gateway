@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -20,7 +21,8 @@ import (
 const (
 	controlReadTimeout      = 8 * time.Second
 	controlOperationTimeout = 75 * time.Second
-	controlResponseLimit    = 16 << 10
+	mainAssignmentTimeout   = 195 * time.Second
+	controlResponseLimit    = 64 << 10
 )
 
 type Capabilities struct {
@@ -30,39 +32,56 @@ type Capabilities struct {
 }
 
 type Candidate struct {
-	ID          string  `json:"id"`
-	CountryCode string  `json:"country_short"`
-	CountryName string  `json:"country"`
-	IP          string  `json:"ip"`
-	ProxyType   string  `json:"proxy_type"`
-	Owner       string  `json:"owner"`
-	ASN         string  `json:"asn"`
-	ASName      string  `json:"as_name"`
-	LatencyMS   int     `json:"latency_ms"`
-	Score       int     `json:"score"`
-	ProbeStatus string  `json:"probe_status"`
-	LastProbeAt float64 `json:"last_probe_at"`
+	ID              string  `json:"id"`
+	CountryCode     string  `json:"country_short"`
+	CountryName     string  `json:"country"`
+	IP              string  `json:"ip"`
+	ExitIP          string  `json:"exit_ip"`
+	ExitIPCheckedAt float64 `json:"exit_ip_checked_at"`
+	ProxyType       string  `json:"proxy_type"`
+	Owner           string  `json:"owner"`
+	ASN             string  `json:"asn"`
+	ASName          string  `json:"as_name"`
+	LatencyMS       int     `json:"latency_ms"`
+	Score           int     `json:"score"`
+	ProbeStatus     string  `json:"probe_status"`
+	LastProbeAt     float64 `json:"last_probe_at"`
 }
 
 type CandidateCountry struct {
-	Code           string  `json:"code"`
-	Name           string  `json:"name"`
-	CandidateCount int     `json:"candidateCount"`
-	ObservedAt     float64 `json:"observedAt"`
+	Code                   string  `json:"code"`
+	Name                   string  `json:"name"`
+	CandidateCount         int     `json:"candidateCount"`
+	ObservedAt             float64 `json:"observedAt"`
+	OfficialCandidateTotal int     `json:"officialCandidateTotal"`
+	ValidNodeCount         int     `json:"validNodeCount"`
+	ValidCountryCount      int     `json:"validCountryCount"`
+	TargetValidNodeCount   int     `json:"targetValidNodeCount"`
+	MaxValidNodeCount      int     `json:"maxValidNodeCount"`
 }
 
 type CountryRefresh struct {
 	State                 string  `json:"state"`
 	Country               string  `json:"country"`
 	Phase                 string  `json:"phase"`
+	ResultCode            string  `json:"resultCode"`
 	CatalogCount          int     `json:"catalogCount"`
+	OfficialCount         int     `json:"officialCount"`
 	CountryCandidateCount int     `json:"countryCandidateCount"`
 	TestedCount           int     `json:"testedCount"`
+	UsableCount           int     `json:"usableCount"`
+	NewUsableCount        int     `json:"newUsableCount"`
+	RetainedCount         int     `json:"retainedCount"`
 	ValidCount            int     `json:"validCount"`
 	PreservedCount        int     `json:"preservedCount"`
 	StartedAt             float64 `json:"startedAt"`
 	FinishedAt            float64 `json:"finishedAt"`
 	ErrorCode             string  `json:"errorCode"`
+	StopReason            string  `json:"stopReason"`
+	CacheTotal            int     `json:"cacheTotal"`
+	CountryValidCount     int     `json:"countryValidCount"`
+	TargetValidNodeCount  int     `json:"targetValidNodeCount"`
+	MaxValidNodeCount     int     `json:"maxValidNodeCount"`
 }
 
 type CreateSlotRequest struct {
@@ -78,31 +97,75 @@ type AssignSlotRequest struct {
 }
 
 type Slot struct {
-	Number      int     `json:"slot"`
-	Country     string  `json:"country"`
-	CountryName string  `json:"country_name"`
-	ProxyType   string  `json:"proxy_type"`
-	Port        int     `json:"port"`
-	Status      string  `json:"status"`
-	NodeID      string  `json:"node_id"`
-	CandidateIP string  `json:"candidate_ip"`
-	ExitIP      string  `json:"exit_ip"`
-	EgressOK    bool    `json:"egress_ok"`
-	OK          bool    `json:"ok"`
-	LatencyMS   int     `json:"latency_ms"`
-	CheckedAt   float64 `json:"checked_at"`
+	Number              int     `json:"slot"`
+	Country             string  `json:"country"`
+	CountryName         string  `json:"country_name"`
+	ProxyType           string  `json:"proxy_type"`
+	Port                int     `json:"port"`
+	Status              string  `json:"status"`
+	NodeID              string  `json:"node_id"`
+	CandidateIP         string  `json:"candidate_ip"`
+	ExitIP              string  `json:"exit_ip"`
+	EgressOK            bool    `json:"egress_ok"`
+	OK                  bool    `json:"ok"`
+	LatencyMS           int     `json:"latency_ms"`
+	CheckedAt           float64 `json:"checked_at"`
+	RepairStatus        string  `json:"repair_status"`
+	AutoRepairAttempted bool    `json:"auto_repair_attempted"`
+	AutoRepairPerformed bool    `json:"auto_repair_performed"`
+	LastErrorCode       string  `json:"last_error_code"`
 }
 
 type SlotCheck = Slot
 
 type MainStatus struct {
+	CandidateID         string `json:"candidate_id"`
+	Country             string `json:"country"`
+	CountryName         string `json:"country_name"`
+	ProxyType           string `json:"proxy_type"`
+	ExitIP              string `json:"exit_ip"`
+	Port                int    `json:"port"`
+	EgressOK            bool   `json:"egress_ok"`
+	Active              bool   `json:"active"`
+	RepairStatus        string `json:"repair_status"`
+	AutoRepairAttempted bool   `json:"auto_repair_attempted"`
+	LastErrorCode       string `json:"last_error_code"`
+}
+
+type MutationLease struct {
+	State     string  `json:"state"`
+	LeaseID   string  `json:"lease_id"`
+	ExpiresAt float64 `json:"expires_at"`
+}
+
+type MainAssignmentRequest struct {
+	CandidateID                string `json:"candidateId"`
+	Country                    string `json:"country"`
+	ProxyType                  string `json:"proxyType"`
+	ExpectedCurrentCandidateID string `json:"expectedCurrentCandidateId"`
+	IdempotencyKey             string `json:"idempotencyKey"`
+}
+
+type MainRepairRequest struct {
+	CandidateID string `json:"candidateId"`
 	Country     string `json:"country"`
-	CountryName string `json:"country_name"`
-	ProxyType   string `json:"proxy_type"`
-	ExitIP      string `json:"exit_ip"`
-	Port        int    `json:"port"`
-	EgressOK    bool   `json:"egress_ok"`
-	Active      bool   `json:"active"`
+	ProxyType   string `json:"proxyType"`
+}
+
+type MainAssignmentStatus struct {
+	OperationID    string  `json:"operation_id"`
+	State          string  `json:"state"`
+	OldCandidateID string  `json:"old_candidate_id"`
+	NewCandidateID string  `json:"new_candidate_id"`
+	Country        string  `json:"country"`
+	ProxyType      string  `json:"proxy_type"`
+	Port           int     `json:"port"`
+	DNSVerified    bool    `json:"dns_verified"`
+	ExitVerified   bool    `json:"exit_verified"`
+	Available      bool    `json:"available"`
+	ErrorCode      string  `json:"error_code"`
+	Resolution     string  `json:"resolution"`
+	ExpiresAt      float64 `json:"expires_at"`
 }
 
 type AdminStatus struct {
@@ -122,7 +185,8 @@ type AdminSession struct {
 }
 
 type AdapterError struct {
-	Code string
+	Code              string
+	CandidateRejected bool
 }
 
 func (e *AdapterError) Error() string {
@@ -197,8 +261,30 @@ func (c *Client) Capabilities(ctx context.Context) (Capabilities, error) {
 
 func (c *Client) Candidates(ctx context.Context) ([]Candidate, error) {
 	var result []Candidate
-	err := c.do(ctx, c.readTimeout, http.MethodGet, "control/v1/candidates", nil, &result)
-	return result, err
+	if err := c.do(ctx, c.readTimeout, http.MethodGet, "control/v1/candidates", nil, &result); err != nil {
+		return nil, err
+	}
+	for _, candidate := range result {
+		if !validCandidate(candidate) {
+			return nil, &AdapterError{Code: "invalid_response"}
+		}
+	}
+	return result, nil
+}
+
+func validCandidate(candidate Candidate) bool {
+	if strings.TrimSpace(candidate.ID) == "" || len(candidate.ID) > 256 || strings.TrimSpace(candidate.IP) == "" || candidate.LastProbeAt < 0 || candidate.ExitIPCheckedAt < 0 {
+		return false
+	}
+	if candidate.CountryCode != "" && (len(candidate.CountryCode) != 2 || candidate.CountryCode != strings.ToUpper(candidate.CountryCode)) {
+		return false
+	}
+	for _, address := range []string{candidate.IP, candidate.ExitIP} {
+		if address != "" && (len(address) > 64 || net.ParseIP(address) == nil) {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *Client) CandidateCountries(ctx context.Context) ([]CandidateCountry, error) {
@@ -207,7 +293,7 @@ func (c *Client) CandidateCountries(ctx context.Context) ([]CandidateCountry, er
 		return nil, err
 	}
 	for _, country := range result {
-		if len(country.Code) != 2 || country.Code != strings.ToUpper(country.Code) || country.CandidateCount < 0 || country.ObservedAt < 0 {
+		if len(country.Code) != 2 || country.Code != strings.ToUpper(country.Code) || country.CandidateCount < 0 || country.ObservedAt < 0 || country.OfficialCandidateTotal < 0 || country.ValidNodeCount < 0 || country.ValidCountryCount < 0 || country.TargetValidNodeCount < 0 || country.MaxValidNodeCount < 0 {
 			return nil, &AdapterError{Code: "invalid_response"}
 		}
 	}
@@ -216,7 +302,7 @@ func (c *Client) CandidateCountries(ctx context.Context) ([]CandidateCountry, er
 
 func (c *Client) StartCountryRefresh(ctx context.Context, country string) (CountryRefresh, error) {
 	normalized := strings.ToUpper(strings.TrimSpace(country))
-	if len(normalized) != 2 || normalized[0] < 'A' || normalized[0] > 'Z' || normalized[1] < 'A' || normalized[1] > 'Z' {
+	if normalized != "ALL" && (len(normalized) != 2 || normalized[0] < 'A' || normalized[0] > 'Z' || normalized[1] < 'A' || normalized[1] > 'Z') {
 		return CountryRefresh{}, &AdapterError{Code: "invalid_request"}
 	}
 	var result CountryRefresh
@@ -249,11 +335,20 @@ func validCountryRefresh(refresh CountryRefresh) bool {
 	default:
 		return false
 	}
-	if refresh.Country != "" && (len(refresh.Country) != 2 || refresh.Country != strings.ToUpper(refresh.Country)) {
+	if refresh.Country != "" && refresh.Country != "ALL" && (len(refresh.Country) != 2 || refresh.Country != strings.ToUpper(refresh.Country)) {
 		return false
 	}
-	return refresh.CatalogCount >= 0 && refresh.CountryCandidateCount >= 0 && refresh.TestedCount >= 0 &&
-		refresh.ValidCount >= 0 && refresh.PreservedCount >= 0 && refresh.StartedAt >= 0 && refresh.FinishedAt >= 0
+	if refresh.ResultCode != "" {
+		switch refresh.ResultCode {
+		case "success", "no_official_candidates", "no_usable_nodes", "operation_busy", "maintenance_busy", "upstream_unavailable":
+		default:
+			return false
+		}
+	}
+	return refresh.CatalogCount >= 0 && refresh.OfficialCount >= 0 && refresh.CountryCandidateCount >= 0 && refresh.TestedCount >= 0 &&
+		refresh.UsableCount >= 0 && refresh.NewUsableCount >= 0 && refresh.RetainedCount >= 0 &&
+		refresh.ValidCount >= 0 && refresh.PreservedCount >= 0 && refresh.StartedAt >= 0 && refresh.FinishedAt >= 0 &&
+		refresh.CacheTotal >= 0 && refresh.CountryValidCount >= 0 && refresh.TargetValidNodeCount >= 0 && refresh.MaxValidNodeCount >= 0
 }
 
 func (c *Client) CreateSlot(ctx context.Context, input CreateSlotRequest) (Slot, error) {
@@ -283,6 +378,185 @@ func (c *Client) MainStatus(ctx context.Context) (MainStatus, error) {
 		return MainStatus{}, &AdapterError{Code: "invalid_response"}
 	}
 	return result, nil
+}
+
+var safeMainOperationID = regexp.MustCompile(`^[A-Za-z0-9_-]{8,128}$`)
+
+func (c *Client) AcquireMutationLease(ctx context.Context, idempotencyKey string) (MutationLease, error) {
+	if !visibleNonWhitespaceASCII(idempotencyKey, 8, 256) {
+		return MutationLease{}, &AdapterError{Code: "invalid_request"}
+	}
+	input := struct {
+		IdempotencyKey string `json:"idempotencyKey"`
+	}{IdempotencyKey: idempotencyKey}
+	var result MutationLease
+	if err := c.do(ctx, c.operationTimeout, http.MethodPost, "control/v1/mutation-leases", input, &result); err != nil {
+		return MutationLease{}, err
+	}
+	if !validMutationLease(result) {
+		return MutationLease{}, &AdapterError{Code: "invalid_response"}
+	}
+	return result, nil
+}
+
+func (c *Client) RenewMutationLease(ctx context.Context, leaseID string) (MutationLease, error) {
+	if !safeMutationLeaseID(leaseID) {
+		return MutationLease{}, &AdapterError{Code: "invalid_request"}
+	}
+	var result MutationLease
+	path := fmt.Sprintf("control/v1/mutation-leases/%s/renew", leaseID)
+	if err := c.do(ctx, c.operationTimeout, http.MethodPost, path, struct{}{}, &result); err != nil {
+		return MutationLease{}, err
+	}
+	if !validMutationLease(result) || result.LeaseID != leaseID {
+		return MutationLease{}, &AdapterError{Code: "invalid_response"}
+	}
+	return result, nil
+}
+
+func (c *Client) ReleaseMutationLease(ctx context.Context, leaseID string) error {
+	if !safeMutationLeaseID(leaseID) {
+		return &AdapterError{Code: "invalid_request"}
+	}
+	var result struct {
+		State string `json:"state"`
+	}
+	path := fmt.Sprintf("control/v1/mutation-leases/%s", leaseID)
+	if err := c.do(ctx, c.operationTimeout, http.MethodDelete, path, nil, &result); err != nil {
+		return err
+	}
+	if result.State != "released" {
+		return &AdapterError{Code: "invalid_response"}
+	}
+	return nil
+}
+
+func validMutationLease(value MutationLease) bool {
+	return value.State == "active" && safeMutationLeaseID(value.LeaseID) && value.ExpiresAt > 0
+}
+
+func safeMutationLeaseID(value string) bool {
+	if len(value) < 1 || len(value) > 1024 || value == "." || value == ".." || strings.ContainsAny(value, "/\\?#%") {
+		return false
+	}
+	return visibleNonWhitespaceASCII(value, 1, 1024)
+}
+
+func visibleNonWhitespaceASCII(value string, minLength, maxLength int) bool {
+	if len(value) < minLength || len(value) > maxLength {
+		return false
+	}
+	for _, character := range value {
+		if character <= 0x20 || character > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *Client) MainAssignment(ctx context.Context) (MainAssignmentStatus, error) {
+	var result MainAssignmentStatus
+	if err := c.do(ctx, c.readTimeout, http.MethodGet, "control/v1/main/assignment", nil, &result); err != nil {
+		return MainAssignmentStatus{}, err
+	}
+	if !validMainAssignmentStatus(result) {
+		return MainAssignmentStatus{}, &AdapterError{Code: "invalid_response"}
+	}
+	return result, nil
+}
+
+func (c *Client) StageMainAssignment(ctx context.Context, input MainAssignmentRequest) (MainAssignmentStatus, error) {
+	input.CandidateID = strings.TrimSpace(input.CandidateID)
+	input.Country = strings.ToUpper(strings.TrimSpace(input.Country))
+	input.ProxyType = strings.ToLower(strings.TrimSpace(input.ProxyType))
+	input.ExpectedCurrentCandidateID = strings.TrimSpace(input.ExpectedCurrentCandidateID)
+	input.IdempotencyKey = strings.TrimSpace(input.IdempotencyKey)
+	if input.CandidateID == "" || len(input.CandidateID) > 256 ||
+		len(input.Country) != 2 || input.Country[0] < 'A' || input.Country[0] > 'Z' || input.Country[1] < 'A' || input.Country[1] > 'Z' ||
+		!domainProxyTypeValid(input.ProxyType) || len(input.ExpectedCurrentCandidateID) > 256 ||
+		len(input.IdempotencyKey) < 8 || len(input.IdempotencyKey) > 256 || strings.IndexFunc(input.IdempotencyKey, func(character rune) bool { return character < 0x21 || character == 0x7f }) >= 0 {
+		return MainAssignmentStatus{}, &AdapterError{Code: "invalid_request"}
+	}
+	var result MainAssignmentStatus
+	if err := c.do(ctx, mainAssignmentTimeout, http.MethodPost, "control/v1/main/assign", input, &result); err != nil {
+		return MainAssignmentStatus{}, err
+	}
+	if !validMainAssignmentStatus(result) || result.State != "pending_commit" {
+		return MainAssignmentStatus{}, &AdapterError{Code: "invalid_response"}
+	}
+	return result, nil
+}
+
+func (c *Client) CommitMainAssignment(ctx context.Context, operationID string) (MainAssignmentStatus, error) {
+	return c.finishMainAssignment(ctx, operationID, "commit")
+}
+
+func (c *Client) RollbackMainAssignment(ctx context.Context, operationID string) (MainAssignmentStatus, error) {
+	return c.finishMainAssignment(ctx, operationID, "rollback")
+}
+
+func (c *Client) RepairCommitMainAssignment(ctx context.Context, operationID string) (MainAssignmentStatus, error) {
+	return c.finishMainAssignment(ctx, operationID, "repair-commit")
+}
+
+func (c *Client) RepairReplaceMainAssignment(ctx context.Context, operationID string, input MainRepairRequest) (MainAssignmentStatus, error) {
+	operationID = strings.TrimSpace(operationID)
+	input.CandidateID = strings.TrimSpace(input.CandidateID)
+	input.Country = strings.ToUpper(strings.TrimSpace(input.Country))
+	input.ProxyType = strings.ToLower(strings.TrimSpace(input.ProxyType))
+	if !safeMainOperationID.MatchString(operationID) || input.CandidateID == "" || len(input.CandidateID) > 256 ||
+		len(input.Country) != 2 || input.Country[0] < 'A' || input.Country[0] > 'Z' || input.Country[1] < 'A' || input.Country[1] > 'Z' ||
+		!domainProxyTypeValid(input.ProxyType) {
+		return MainAssignmentStatus{}, &AdapterError{Code: "invalid_request"}
+	}
+	var result MainAssignmentStatus
+	path := fmt.Sprintf("control/v1/main/assign/%s/repair-replace", operationID)
+	if err := c.do(ctx, mainAssignmentTimeout, http.MethodPost, path, input, &result); err != nil {
+		return MainAssignmentStatus{}, err
+	}
+	if !validMainAssignmentStatus(result) {
+		return MainAssignmentStatus{}, &AdapterError{Code: "invalid_response"}
+	}
+	return result, nil
+}
+
+func (c *Client) finishMainAssignment(ctx context.Context, operationID, action string) (MainAssignmentStatus, error) {
+	operationID = strings.TrimSpace(operationID)
+	if !safeMainOperationID.MatchString(operationID) || (action != "commit" && action != "rollback" && action != "repair-commit") {
+		return MainAssignmentStatus{}, &AdapterError{Code: "invalid_request"}
+	}
+	var result MainAssignmentStatus
+	path := fmt.Sprintf("control/v1/main/assign/%s/%s", operationID, action)
+	if err := c.do(ctx, mainAssignmentTimeout, http.MethodPost, path, struct{}{}, &result); err != nil {
+		return MainAssignmentStatus{}, err
+	}
+	if !validMainAssignmentStatus(result) {
+		return MainAssignmentStatus{}, &AdapterError{Code: "invalid_response"}
+	}
+	return result, nil
+}
+
+func validMainAssignmentStatus(result MainAssignmentStatus) bool {
+	if result.State == "idle" {
+		return result.OperationID == "" && result.OldCandidateID == "" && result.NewCandidateID == ""
+	}
+	switch result.State {
+	case "switching", "pending_commit", "repairing", "pending_gateway_validation", "committed", "rolling_back", "rolled_back", "repair_required":
+	default:
+		return false
+	}
+	if result.Resolution != "" {
+		if (result.Resolution != "repair_commit" && result.Resolution != "repair_replace") ||
+			(result.State != "pending_gateway_validation" && result.State != "committed" && result.State != "repair_required") {
+			return false
+		}
+	}
+	return safeMainOperationID.MatchString(result.OperationID) &&
+		len(result.OldCandidateID) <= 256 &&
+		result.NewCandidateID != "" && len(result.NewCandidateID) <= 256 &&
+		len(result.Country) == 2 && result.Country == strings.ToUpper(result.Country) &&
+		domainProxyTypeValid(result.ProxyType) && result.Port == 7928 &&
+		len(result.ErrorCode) <= 64 && result.ExpiresAt >= 0
 }
 
 func domainProxyTypeValid(value string) bool { return value == "residential" || value == "datacenter" }
@@ -315,7 +589,10 @@ func (c *Client) AssignSlotNode(ctx context.Context, slot int, input AssignSlotR
 
 func (c *Client) CheckSlot(ctx context.Context, slot int) (SlotCheck, error) {
 	var result SlotCheck
-	err := c.do(ctx, c.readTimeout, http.MethodPost, fmt.Sprintf("control/v1/slots/%d/check", slot), struct{}{}, &result)
+	// A check performs up to two sequential real egress probes in AimiliVPN.
+	// It is a mutating operation (the fresh result is persisted), so the short
+	// read timeout can expire before the fallback probe has a chance to finish.
+	err := c.do(ctx, c.operationTimeout, http.MethodPost, fmt.Sprintf("control/v1/slots/%d/check", slot), struct{}{}, &result)
 	return result, err
 }
 
@@ -427,13 +704,14 @@ func (c *Client) doJSON(ctx context.Context, timeout time.Duration, method, path
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		var failure struct {
 			Error struct {
-				Code string `json:"code"`
+				Code              string `json:"code"`
+				CandidateRejected bool   `json:"candidateRejected"`
 			} `json:"error"`
 		}
 		if json.Unmarshal(raw, &failure) != nil || failure.Error.Code == "" {
 			return &AdapterError{Code: "upstream_rejected"}
 		}
-		return &AdapterError{Code: failure.Error.Code}
+		return &AdapterError{Code: failure.Error.Code, CandidateRejected: failure.Error.CandidateRejected}
 	}
 	if output == nil {
 		if response.StatusCode != http.StatusNoContent || len(raw) != 0 {

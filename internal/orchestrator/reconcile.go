@@ -2,11 +2,15 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
+	"log"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/thzyh/aimili-gateway/internal/adapters/aimili"
 	"github.com/thzyh/aimili-gateway/internal/domain"
+	"github.com/thzyh/aimili-gateway/internal/store"
 )
 
 type ReconcileResult struct {
@@ -15,9 +19,15 @@ type ReconcileResult struct {
 	Failed     int `json:"failed"`
 }
 
+type candidateReassignmentStore interface {
+	ReassignProxyGroupCandidates(context.Context, map[string]string, time.Time) error
+}
+
 // Reconcile converges every safe Aimili candidate into an independently usable proxy entry.
 // A single candidate failure is isolated so healthy candidates can still become ready.
 func (o *Orchestrator) Reconcile(ctx context.Context) ReconcileResult {
+	ctx, mutationUnlock := o.lockMutation(ctx)
+	defer mutationUnlock()
 	unlock := o.locks.lock("activation")
 	defer unlock()
 	result := ReconcileResult{}
@@ -34,6 +44,9 @@ func (o *Orchestrator) Reconcile(ctx context.Context) ReconcileResult {
 	groups = o.adoptLegacyGroups(ctx, groups, candidates)
 	groups, historyFailures := o.degradeHistoricalDuplicateExits(ctx, groups)
 	result.Failed += historyFailures
+	groups, adoptionFailures := o.adoptUnmanagedSlots(ctx, groups)
+	result.Failed += adoptionFailures
+	groups = o.refreshAssignedGroups(ctx, groups)
 	existing := make(map[string]domain.ProxyGroup, len(groups))
 	byExit := make(map[string]domain.ProxyGroup, len(groups))
 	activeCount := len(groups)
@@ -104,6 +117,166 @@ func (o *Orchestrator) Reconcile(ctx context.Context) ReconcileResult {
 	return result
 }
 
+// refreshAssignedGroups revalidates degraded fixed groups against their current
+// AimiliVPN slot. A slot can legitimately switch to a different candidate while
+// retaining its number; without this pass Reconcile would keep the stale
+// candidate ID forever and report slot_not_found on every subsequent run.
+func (o *Orchestrator) refreshAssignedGroups(ctx context.Context, groups []domain.ProxyGroup) []domain.ProxyGroup {
+	slots, slotsErr := o.aimili.ListSlots(ctx)
+	bySlot := make(map[int]aimili.Slot, len(slots))
+	if slotsErr == nil {
+		for _, slot := range slots {
+			bySlot[slot.Number] = slot
+		}
+		groups = o.synchronizeManualSlotRepairs(ctx, groups, bySlot)
+	}
+	drifted := make(map[string]struct{})
+	if slotsErr == nil && len(groups) > 0 {
+		assignments := make(map[string]string, len(groups))
+		seenCandidates := make(map[string]struct{}, len(groups))
+		complete := true
+		for _, group := range groups {
+			slot, ok := bySlot[group.AimiliSlot]
+			candidateID := strings.TrimSpace(slot.NodeID)
+			if !ok || !slot.EgressOK || (slot.Status != "up" && slot.Status != "ready") || candidateID == "" {
+				complete = false
+				break
+			}
+			if _, duplicate := seenCandidates[candidateID]; duplicate {
+				complete = false
+				break
+			}
+			seenCandidates[candidateID] = struct{}{}
+			assignments[group.ID] = candidateID
+			if candidateID != strings.TrimSpace(group.CandidateID) {
+				drifted[group.ID] = struct{}{}
+			}
+		}
+		if complete && len(drifted) > 0 {
+			persistence, ok := o.store.(candidateReassignmentStore)
+			if !ok {
+				drifted = map[string]struct{}{}
+			} else if err := persistence.ReassignProxyGroupCandidates(ctx, assignments, o.config.Now().UTC()); err != nil {
+				log.Printf("reconcile candidate reassignment failed: code=%s", errorCode(err))
+				drifted = map[string]struct{}{}
+			} else if reloaded, err := o.store.ListProxyGroups(ctx); err == nil {
+				groups = reloaded
+			} else {
+				log.Printf("reconcile candidate reload failed: code=%s", errorCode(err))
+				drifted = map[string]struct{}{}
+			}
+		}
+	}
+	for index := range groups {
+		group := groups[index]
+		missingManagedResources := group.PublicInboundID <= 0 || group.MixedInboundID <= 0
+		_, assignmentDrift := drifted[group.ID]
+		runtimeRecovered := false
+		if slot, ok := bySlot[group.AimiliSlot]; ok {
+			runtimeRecovered = slot.EgressOK && (slot.Status == "up" || slot.Status == "ready") &&
+				(group.LastErrorCode == "managed_resource_drift" || group.LastErrorCode == "rollback_failed")
+		}
+		refreshable := assignmentDrift || runtimeRecovered || group.LastErrorCode == "slot_not_found" || (group.LastErrorCode == "protocol_failed" && missingManagedResources)
+		if (group.Status == domain.ProxyGroupReady && !assignmentDrift) || !refreshable || group.AimiliSlot < 0 || !strings.HasPrefix(group.ID, "agw-") {
+			continue
+		}
+		if missingManagedResources && slotsErr == nil {
+			if slot, ok := bySlot[group.AimiliSlot]; ok && slot.EgressOK {
+				policy, credentials, inputsErr := o.runtimeInputs(ctx)
+				if inputsErr == nil {
+					applySlotSnapshot(&group, slot)
+					refreshed, provisionErr := o.provisionGroupForSlot(ctx, group, slot, policy, credentials, false)
+					if provisionErr == nil {
+						groups[index] = refreshed
+						continue
+					}
+					log.Printf("reconcile assigned group reprovision failed: id=%s slot=%d code=%s", group.ID, group.AimiliSlot, errorCode(provisionErr))
+				}
+			}
+		}
+		refreshed, err := o.Check(ctx, group.ID)
+		if refreshed.ID != "" {
+			groups[index] = refreshed
+		}
+		if err != nil {
+			log.Printf("reconcile assigned group refresh failed: id=%s slot=%d code=%s", group.ID, group.AimiliSlot, errorCode(err))
+		}
+	}
+	return groups
+}
+
+// synchronizeManualSlotRepairs copies a terminal repair result already recorded
+// by AimiliVPN into Gateway's durable view. This deliberately uses the passive
+// ListSlots snapshot instead of CheckSlot so reconciliation cannot claim another
+// automatic-repair attempt.
+func (o *Orchestrator) synchronizeManualSlotRepairs(ctx context.Context, groups []domain.ProxyGroup, bySlot map[int]aimili.Slot) []domain.ProxyGroup {
+	for index := range groups {
+		current := groups[index]
+		slot, ok := bySlot[current.AimiliSlot]
+		if !ok || slot.EgressOK || slot.RepairStatus != "manual_required" || current.AimiliSlot < 0 || !strings.HasPrefix(current.ID, "agw-") {
+			continue
+		}
+		updated := current
+		applySlotSnapshot(&updated, slot)
+		updated.AutoRepairPerformed = current.AutoRepairPerformed
+		updated.Status = domain.ProxyGroupDegraded
+		updated.LastErrorCode = strings.TrimSpace(slot.LastErrorCode)
+		if updated.LastErrorCode == "" {
+			updated.LastErrorCode = "manual_replacement_required"
+		}
+		if updated == current {
+			continue
+		}
+		updated.LastCheckedAt = o.config.Now().UTC()
+		updated.UpdatedAt = updated.LastCheckedAt
+		if err := o.save(ctx, &updated); err != nil {
+			log.Printf("reconcile manual repair synchronization failed: id=%s slot=%d code=%s", current.ID, current.AimiliSlot, errorCode(err))
+			continue
+		}
+		groups[index] = updated
+	}
+	return groups
+}
+
+func (o *Orchestrator) adoptUnmanagedSlots(ctx context.Context, groups []domain.ProxyGroup) ([]domain.ProxyGroup, int) {
+	slots, err := o.aimili.ListSlots(ctx)
+	if err != nil {
+		return groups, 1
+	}
+	sort.Slice(slots, func(i, j int) bool { return slots[i].Number < slots[j].Number })
+	claimedSlots := make(map[int]struct{}, len(groups))
+	claimedCandidates := make(map[string]struct{}, len(groups))
+	for _, group := range groups {
+		claimedSlots[group.AimiliSlot] = struct{}{}
+		if candidateID := strings.TrimSpace(group.CandidateID); candidateID != "" {
+			claimedCandidates[candidateID] = struct{}{}
+		}
+	}
+	failures := 0
+	for _, slot := range slots {
+		candidateID := strings.TrimSpace(slot.NodeID)
+		if len(groups) >= o.config.MaxGroups || candidateID == "" || !slot.EgressOK || (slot.Status != "up" && slot.Status != "ready") {
+			continue
+		}
+		if _, claimed := claimedSlots[slot.Number]; claimed {
+			continue
+		}
+		if _, claimed := claimedCandidates[candidateID]; claimed {
+			continue
+		}
+		group, adoptErr := o.adoptExistingSlot(ctx, slot, groups)
+		if adoptErr != nil {
+			log.Printf("reconcile slot adoption failed: slot=%d code=%s", slot.Number, errorCode(adoptErr))
+			failures++
+			continue
+		}
+		groups = append(groups, group)
+		claimedSlots[group.AimiliSlot] = struct{}{}
+		claimedCandidates[group.CandidateID] = struct{}{}
+	}
+	return groups, failures
+}
+
 func (o *Orchestrator) degradeHistoricalDuplicateExits(ctx context.Context, groups []domain.ProxyGroup) ([]domain.ProxyGroup, int) {
 	sort.SliceStable(groups, func(i, j int) bool {
 		if groups[i].CreatedAt.Equal(groups[j].CreatedAt) {
@@ -149,6 +322,7 @@ func (o *Orchestrator) Pool(ctx context.Context) ([]domain.ProxyGroup, error) {
 		return nil, &Error{Code: "storage_failed"}
 	}
 	byCandidate := make(map[string]domain.ProxyGroup, len(groups))
+	byIdentity := make(map[string]domain.ProxyGroup, len(groups))
 	legacy := make([]domain.ProxyGroup, 0)
 	for _, group := range groups {
 		if strings.TrimSpace(group.CandidateID) == "" {
@@ -156,9 +330,21 @@ func (o *Orchestrator) Pool(ctx context.Context) ([]domain.ProxyGroup, error) {
 			continue
 		}
 		byCandidate[group.CandidateID] = group
+		byIdentity[group.ID] = group
 	}
 	result := make([]domain.ProxyGroup, 0, len(candidates)+len(legacy))
 	seen := make(map[string]struct{}, len(candidates))
+	seenGroups := make(map[string]struct{}, len(groups))
+	appendUnique := func(group domain.ProxyGroup) {
+		if _, ok := seenGroups[group.ID]; ok {
+			return
+		}
+		seenGroups[group.ID] = struct{}{}
+		result = append(result, group)
+	}
+	for _, group := range legacy {
+		appendUnique(group)
+	}
 	for _, candidate := range candidates {
 		candidate.ID = strings.TrimSpace(candidate.ID)
 		proxyType := domain.ProxyType(candidate.ProxyType)
@@ -167,49 +353,77 @@ func (o *Orchestrator) Pool(ctx context.Context) ([]domain.ProxyGroup, error) {
 		}
 		seen[candidate.ID] = struct{}{}
 		if group, ok := byCandidate[candidate.ID]; ok {
-			result = append(result, group)
+			appendUnique(group)
 			continue
 		}
 		standby, identityErr := domain.NewProxyGroupIdentity(candidate.CountryCode, proxyType, candidate.ID)
 		if identityErr != nil {
 			continue
 		}
+		if group, ok := byIdentity[standby.ID]; ok {
+			appendUnique(group)
+			continue
+		}
 		standby.CountryName = candidate.CountryName
 		standby.CandidateIP = candidate.IP
+		if normalizedExit, ok := normalizeExitIP(candidate.ExitIP); ok {
+			standby.ExitIP = normalizedExit
+			standby.ExitIPCheckedAt = candidate.ExitIPCheckedAt
+		}
 		standby.CandidateLatencyMS = candidate.LatencyMS
 		standby.Status = domain.ProxyGroupStandby
-		result = append(result, standby)
+		appendUnique(standby)
 	}
 	for candidateID, group := range byCandidate {
 		if _, ok := seen[candidateID]; !ok {
-			result = append(result, group)
+			appendUnique(group)
 		}
 	}
-	result = append(legacy, result...)
-	if main, mainErr := o.aimili.MainStatus(ctx); mainErr == nil && main.Active {
-		proxyType := domain.ProxyType(main.ProxyType)
+	main, mainErr := o.aimili.MainStatus(ctx)
+	storedMain, storedMainErr := store.MainEgress{}, error(store.ErrProxyGroupNotFound)
+	if source, ok := o.store.(mainEgressStore); ok {
+		storedMain, storedMainErr = source.GetMainEgress(ctx)
+	}
+	if (mainErr == nil && (main.Active || main.RepairStatus == "manual_required")) || (storedMainErr == nil && storedMain.Enabled) {
+		proxyType := storedMain.ProxyType
+		country, countryName := storedMain.CountryCode, storedMain.CountryName
+		candidateID, exitIP := storedMain.CandidateID, storedMain.ExitIP
+		publicPort, mixedPort := storedMain.PublicPort, storedMain.MixedPort
+		if mainErr == nil && main.Active {
+			proxyType = domain.ProxyType(main.ProxyType)
+			if !proxyType.Valid() {
+				proxyType = storedMain.ProxyType
+			}
+			country = strings.ToUpper(strings.TrimSpace(main.Country))
+			countryName, candidateID, exitIP = main.CountryName, main.CandidateID, main.ExitIP
+			publicPort, mixedPort = 8443, o.config.MainMixedPort
+		}
 		if !proxyType.Valid() {
 			proxyType = domain.ProxyTypeDatacenter
 		}
-		country := strings.ToUpper(strings.TrimSpace(main.Country))
 		if len(country) != 2 {
 			country = "ZZ"
 		}
-		status := domain.ProxyGroupDegraded
-		lastError := "egress_unavailable"
-		if main.EgressOK {
+		if publicPort == 0 {
+			publicPort = 8443
+		}
+		if mixedPort == 0 {
+			mixedPort = o.config.MainMixedPort
+		}
+		status, lastError := domain.ProxyGroupDegraded, "egress_unavailable"
+		if mainErr == nil && main.RepairStatus == "manual_required" {
+			lastError = "manual_replacement_required"
+		} else if mainErr == nil && main.Active && main.EgressOK {
 			status, lastError = domain.ProxyGroupReady, ""
 		}
-		mainGroup := domain.ProxyGroup{ID: "agw-main", ResourceName: "agw-main", CountryCode: country, CountryName: main.CountryName, ProxyType: proxyType, CandidateID: "main-tun0", Status: status, EgressSource: domain.EgressSourceMain, AimiliSlot: -1, VLESSPort: 8443, MixedPort: o.config.MainMixedPort, ExitIP: main.ExitIP, LastErrorCode: lastError, Version: 1, LastCheckedAt: o.config.Now().UTC()}
-		if source, ok := o.store.(mainEgressStore); ok {
-			if stored, storedErr := source.GetMainEgress(ctx); storedErr == nil {
-				mainGroup.CandidateLatencyMS = stored.CandidateLatencyMS
-				mainGroup.VLESSLatencyMS = stored.VLESSLatencyMS
-				mainGroup.SOCKSLatencyMS = stored.SOCKSLatencyMS
-				mainGroup.LastCheckedAt = stored.LastCheckedAt
-				if stored.LastErrorCode != "" {
-					mainGroup.LastErrorCode = stored.LastErrorCode
-				}
+		mainGroup := domain.ProxyGroup{ID: "agw-main", ResourceName: "agw-main", CountryCode: country, CountryName: countryName, ProxyType: proxyType, CandidateID: candidateID, Status: status, EgressSource: domain.EgressSourceMain, AimiliSlot: -1, PublicPort: publicPort, MixedPort: mixedPort, ExitIP: exitIP, LastErrorCode: lastError, Version: 1, LastCheckedAt: o.config.Now().UTC()}
+		if storedMainErr == nil {
+			mainGroup.CandidateLatencyMS = storedMain.CandidateLatencyMS
+			mainGroup.VLESSLatencyMS = storedMain.VLESSLatencyMS
+			mainGroup.SOCKSLatencyMS = storedMain.SOCKSLatencyMS
+			mainGroup.LastCheckedAt = storedMain.LastCheckedAt
+			if storedMain.LastErrorCode != "" && lastError != "manual_replacement_required" {
+				mainGroup.LastErrorCode = storedMain.LastErrorCode
 			}
 		}
 		for _, group := range result {
@@ -220,7 +434,50 @@ func (o *Orchestrator) Pool(ctx context.Context) ([]domain.ProxyGroup, error) {
 		}
 		result = append([]domain.ProxyGroup{mainGroup}, result...)
 	}
+	if err := o.attachProtocolModes(ctx, result); err != nil {
+		return nil, err
+	}
 	return result, nil
+}
+
+func (o *Orchestrator) attachProtocolModes(ctx context.Context, groups []domain.ProxyGroup) error {
+	persistence, ok := o.store.(protocolModeStore)
+	if !ok {
+		return &Error{Code: "not_configured"}
+	}
+	for index := range groups {
+		group := &groups[index]
+		if group.Status == domain.ProxyGroupStandby || !strings.HasPrefix(group.ID, "agw-") {
+			continue
+		}
+		state, err := persistence.GetEgressProtocolMode(ctx, group.ID)
+		if err != nil {
+			if !errors.Is(err, store.ErrEgressProtocolNotFound) {
+				return &Error{Code: "storage_failed"}
+			}
+			if group.ID == "agw-main" && group.LastErrorCode == "manual_replacement_required" {
+				continue
+			}
+			group.Status = domain.ProxyGroupRepairRequired
+			group.ProtocolState = domain.ProtocolRepairRequired
+			group.ProtocolLastErrorCode = "protocol_state_missing"
+			continue
+		}
+		if !state.ActiveMode.Valid() || !state.DesiredMode.Valid() || !state.State.Valid() {
+			group.Status = domain.ProxyGroupRepairRequired
+			group.ProtocolState = domain.ProtocolRepairRequired
+			group.ProtocolLastErrorCode = "protocol_state_invalid"
+			continue
+		}
+		group.ProtocolMode = state.ActiveMode
+		group.DesiredProtocolMode = state.DesiredMode
+		group.ProtocolState = state.State
+		group.ProtocolLastErrorCode = state.LastErrorCode
+		if state.State == domain.ProtocolRepairRequired {
+			group.Status = domain.ProxyGroupRepairRequired
+		}
+	}
+	return nil
 }
 
 func (o *Orchestrator) adoptLegacyGroups(ctx context.Context, groups []domain.ProxyGroup, candidates []aimili.Candidate) []domain.ProxyGroup {
@@ -270,6 +527,9 @@ func (o *Orchestrator) adoptLegacyGroups(ctx context.Context, groups []domain.Pr
 		group.CandidateID = candidate.ID
 		group.CandidateIP = candidate.IP
 		group.CandidateLatencyMS = candidate.LatencyMS
+		if slot.CheckedAt > 0 {
+			group.ExitIPCheckedAt = slot.CheckedAt
+		}
 		group.LastSeenAt = o.config.Now().UTC()
 		group.UpdatedAt = group.LastSeenAt
 		if err := o.save(ctx, group); err != nil {

@@ -7,16 +7,31 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 )
 
 type subscriptionFixture struct {
-	client      map[string]any
-	added       map[string]any
-	attached    []int64
-	settingPath int
-	settingVerb string
+	client            map[string]any
+	added             map[string]any
+	attached          []int64
+	settingPath       int
+	settingVerb       string
+	attachCalls       int
+	aliasWrites       [][]map[string]any
+	aliasWriteFailure bool
+	aliasReadMismatch bool
+	updated           map[string]any
+	subSortIndexes    map[int64]int
+	inboundUpdates    map[int64]map[string]any
+}
+
+func (f *subscriptionFixture) subSortIndex(id int64, fallback int) int {
+	if value, ok := f.subSortIndexes[id]; ok {
+		return value
+	}
+	return fallback
 }
 
 func (f *subscriptionFixture) handler(w http.ResponseWriter, r *http.Request) {
@@ -29,12 +44,13 @@ func (f *subscriptionFixture) handler(w http.ResponseWriter, r *http.Request) {
 	case "/panel/panel/api/xray/":
 		fmt.Fprint(w, `{"success":true,"obj":{"xraySetting":"{\"outbounds\":[],\"routing\":{\"rules\":[]}}","outboundTestUrl":"https://probe.invalid/"}}`)
 	case "/panel/panel/api/inbounds/list":
-		fmt.Fprint(w, `{"success":true,"obj":[
-            {"id":1,"tag":"aimili-reality","remark":"Aimili Reality","protocol":"vless","port":8443},
-            {"id":2,"tag":"agw-jp-dc-vless","remark":"Aimili Gateway agw-jp-dc VLESS","protocol":"vless","port":20000},
+		fmt.Fprintf(w, `{"success":true,"obj":[
+			{"id":1,"tag":"aimili-reality","remark":"Aimili Reality","protocol":"vless","port":8443,"subSortIndex":%d,"settings":"{\"clients\":[{\"id\":\"stable-client\",\"email\":\"aimili-gateway-subscription\",\"flow\":\"xtls-rprx-vision\"}]}","streamSettings":"{\"network\":\"tcp\",\"security\":\"reality\",\"realitySettings\":{\"serverNames\":[\"proxy.example.test\"],\"shortIds\":[\"short-one\"],\"settings\":{\"publicKey\":\"public-one\",\"fingerprint\":\"chrome\"}}}"},
+			{"id":2,"tag":"agw-jp-dc-vless","remark":"Aimili Gateway agw-jp-dc VLESS","protocol":"vless","port":20000,"subSortIndex":%d,"settings":"{\"clients\":[{\"id\":\"stable-client\",\"email\":\"aimili-gateway-subscription\",\"flow\":\"\"}]}","streamSettings":"{\"network\":\"xhttp\",\"security\":\"reality\",\"xhttpSettings\":{\"path\":\"/safe-xhttp-path\",\"mode\":\"auto\"},\"realitySettings\":{\"serverNames\":[\"proxy.example.test\"],\"shortIds\":[\"short-two\"],\"settings\":{\"publicKey\":\"public-two\",\"fingerprint\":\"chrome\"}}}"},
             {"id":3,"tag":"agw-jp-dc-mixed","remark":"Aimili Gateway agw-jp-dc mixed","protocol":"mixed","port":30000},
-            {"id":4,"tag":"user-vless","remark":"User VLESS","protocol":"vless","port":40000}
-        ]}`)
+			{"id":4,"tag":"user-vless","remark":"User VLESS","protocol":"vless","port":40000},
+			{"id":5,"tag":"agw-us-dc-vless","remark":"Aimili Gateway agw-us-dc VLESS","protocol":"hysteria","port":20001,"subSortIndex":%d,"settings":"{\"version\":2,\"clients\":[{\"auth\":\"stable-auth\",\"email\":\"aimili-gateway-subscription\"}]}","streamSettings":"{\"network\":\"hysteria\",\"security\":\"tls\",\"hysteriaSettings\":{\"version\":2},\"tlsSettings\":{\"serverName\":\"192.0.2.20\"}}"}
+		]}`, f.subSortIndex(1, 1), f.subSortIndex(2, 2), f.subSortIndex(5, 3))
 	case "/panel/panel/api/setting/all":
 		f.settingVerb = r.Method
 		if r.Method != http.MethodPost {
@@ -62,7 +78,18 @@ func (f *subscriptionFixture) handler(w http.ResponseWriter, r *http.Request) {
 			client, _ := f.added["client"].(map[string]any)
 			f.client = map[string]any{"id": 42, "email": client["email"], "subId": client["subId"], "client": client, "inboundIds": []any{}}
 			fmt.Fprint(w, `{"success":true,"obj":null}`)
+		case strings.HasPrefix(r.URL.Path, "/panel/panel/api/clients/update/"):
+			if err := json.NewDecoder(r.Body).Decode(&f.updated); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			f.client["subId"] = f.updated["subId"]
+			if nested, ok := f.client["client"].(map[string]any); ok {
+				nested["subId"] = f.updated["subId"]
+			}
+			fmt.Fprint(w, `{"success":true,"obj":null}`)
 		case strings.HasPrefix(r.URL.Path, "/panel/panel/api/clients/") && strings.HasSuffix(r.URL.Path, "/attach"):
+			f.attachCalls++
 			var payload struct {
 				InboundIDs []int64 `json:"inboundIds"`
 			}
@@ -77,9 +104,307 @@ func (f *subscriptionFixture) handler(w http.ResponseWriter, r *http.Request) {
 			}
 			f.client["inboundIds"] = values
 			fmt.Fprint(w, `{"success":true,"obj":null}`)
+		case strings.HasPrefix(r.URL.Path, "/panel/panel/api/clients/") && strings.HasSuffix(r.URL.Path, "/inboundAliases"):
+			if f.aliasWriteFailure {
+				w.WriteHeader(http.StatusInternalServerError)
+				fmt.Fprint(w, `{"success":false}`)
+				return
+			}
+			var payload struct {
+				Aliases []map[string]any `json:"aliases"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			f.aliasWrites = append(f.aliasWrites, payload.Aliases)
+			if !f.aliasReadMismatch {
+				aliases := make(map[string]any, len(payload.Aliases))
+				for _, item := range payload.Aliases {
+					aliases[fmt.Sprint(item["inboundId"])] = item["alias"]
+				}
+				f.client["inboundAliases"] = aliases
+			}
+			fmt.Fprint(w, `{"success":true,"obj":null}`)
+		case strings.HasPrefix(r.URL.Path, "/panel/panel/api/inbounds/update/"):
+			var id int64
+			if _, err := fmt.Sscan(strings.TrimPrefix(r.URL.Path, "/panel/panel/api/inbounds/update/"), &id); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			if f.inboundUpdates == nil {
+				f.inboundUpdates = map[int64]map[string]any{}
+			}
+			if f.subSortIndexes == nil {
+				f.subSortIndexes = map[int64]int{}
+			}
+			f.inboundUpdates[id] = payload
+			f.subSortIndexes[id] = int(integerValue(payload["subSortIndex"]))
+			fmt.Fprint(w, `{"success":true,"obj":null}`)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
+	}
+}
+
+func TestPublicProfileAcceptsLegacyMainWithMultipleRealityValues(t *testing.T) {
+	detail := inboundDetail{
+		ID: 1, Tag: "aimili-reality", Remark: "Aimili Reality", Protocol: "vless", Port: 8443,
+		Settings: mustJSONString(map[string]any{"clients": []any{map[string]any{"id": "stable-client", "email": managedSubscriptionEmail}}}),
+		StreamSettings: mustJSONString(map[string]any{
+			"network": "tcp", "security": "reality",
+			"realitySettings": map[string]any{
+				"serverNames": []any{"www.amazon.com", "proxy.example.test"},
+				"shortIds":    []any{"short-one", "short-two"},
+				"settings":    map[string]any{"publicKey": "public-one"},
+			},
+		}),
+	}
+	profile, err := publicProfile(detail, subscriptionClient{uuid: "stable-client", email: managedSubscriptionEmail})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.Mode != "vless_tcp_reality_vision" || profile.ServerName != "www.amazon.com" || profile.ShortID != "short-one" || profile.PublicKey != "public-one" {
+		t.Fatalf("legacy main profile=%#v", profile)
+	}
+}
+
+func TestOwnedPublicIDsPreservesRequestedOrder(t *testing.T) {
+	inbounds := []Inbound{
+		{ID: 1, Tag: "aimili-reality", Remark: "Aimili Reality", Protocol: "vless"},
+		{ID: 5, Tag: "agw-slot-2-vless", Remark: "Aimili Gateway slot 2", Protocol: "vless"},
+		{ID: 9, Tag: "agw-slot-3-vless", Remark: "Aimili Gateway slot 3", Protocol: "hysteria"},
+		{ID: 12, Tag: "agw-slot-1-vless", Remark: "Aimili Gateway slot 1", Protocol: "vless"},
+	}
+	if got, want := ownedPublicIDs(inbounds, []int64{1, 12, 5, 9}), []int64{1, 12, 5, 9}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("owned IDs = %v, want %v", got, want)
+	}
+}
+
+func TestEnsureSubscriptionClientSetsOwnedInboundSortOrderOnly(t *testing.T) {
+	fixture := &subscriptionFixture{
+		client: map[string]any{"id": 42, "email": "aimili-gateway-subscription", "subId": "stable-sub", "uuid": "stable-client", "auth": "stable-auth", "inboundIds": []any{1, 2, 5}},
+	}
+	client := newSubscriptionFixtureClient(t, fixture)
+
+	subscription, err := client.EnsureSubscriptionClient(context.Background(), SubscriptionDesired{
+		ClientEmail: "aimili-gateway-subscription", ClientUUID: "stable-client", InboundIDs: []int64{5, 2, 1, 3, 4},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := subscription.InboundIDs, []int64{5, 2, 1}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("subscription IDs = %v, want %v", got, want)
+	}
+	if len(fixture.inboundUpdates) != 2 || fixture.subSortIndexes[5] != 1 || fixture.subSortIndexes[1] != 3 {
+		t.Fatalf("sort indexes=%v updates=%v", fixture.subSortIndexes, fixture.inboundUpdates)
+	}
+	if _, touched := fixture.inboundUpdates[3]; touched {
+		t.Fatal("mixed inbound was modified")
+	}
+	if _, touched := fixture.inboundUpdates[4]; touched {
+		t.Fatal("user-owned inbound was modified")
+	}
+	for id, update := range fixture.inboundUpdates {
+		if update["tag"] == nil || update["port"] == nil || update["settings"] == nil || update["streamSettings"] == nil {
+			t.Fatalf("inbound %d update did not preserve the full payload: %#v", id, update)
+		}
+	}
+}
+
+func TestVerifySubscriptionClientRejectsSortOrderDriftWithoutWriting(t *testing.T) {
+	fixture := &subscriptionFixture{
+		client:         map[string]any{"id": 42, "email": "aimili-gateway-subscription", "subId": "stable-sub", "client": map[string]any{"id": "stable-client"}, "inboundIds": []any{1, 2}},
+		subSortIndexes: map[int64]int{1: 2, 2: 1},
+	}
+	client := newSubscriptionFixtureClient(t, fixture)
+	_, err := client.VerifySubscriptionClient(context.Background(), SubscriptionDesired{
+		ClientEmail: "aimili-gateway-subscription", ClientUUID: "stable-client", InboundIDs: []int64{1, 2},
+	})
+	var adapterError *AdapterError
+	if !errors.As(err, &adapterError) || adapterError.Code != "managed_resource_drift" {
+		t.Fatalf("error = %v", err)
+	}
+	if len(fixture.inboundUpdates) != 0 {
+		t.Fatalf("read-only verification wrote inbounds: %#v", fixture.inboundUpdates)
+	}
+}
+
+func TestEnsureSubscriptionClientRestoresPersistedSubIDBeforeAttach(t *testing.T) {
+	fixture := &subscriptionFixture{client: map[string]any{
+		"id": 42, "email": "aimili-gateway-subscription", "subId": "",
+		"client": map[string]any{"id": "stable-client", "email": "aimili-gateway-subscription"}, "inboundIds": []any{1},
+	}}
+	client := newSubscriptionFixtureClient(t, fixture)
+	subscription, err := client.EnsureSubscriptionClient(context.Background(), SubscriptionDesired{
+		ClientEmail: "aimili-gateway-subscription", ClientUUID: "stable-client", SubscriptionID: "stable-sub", InboundIDs: []int64{1, 2},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fixture.updated["subId"] != "stable-sub" || fixture.attachCalls != 1 || subscription.SubscriptionID != "stable-sub" {
+		t.Fatalf("updated=%#v attach=%d subscription=%#v", fixture.updated, fixture.attachCalls, subscription)
+	}
+}
+
+func TestEnsureSubscriptionClientRejectsAliasWriteFailure(t *testing.T) {
+	fixture := &subscriptionFixture{client: map[string]any{"id": 42, "email": "aimili-gateway-subscription", "subId": "stable-sub", "client": map[string]any{"id": "stable-client"}, "inboundIds": []any{1, 2}}, aliasWriteFailure: true}
+	client := newSubscriptionFixtureClient(t, fixture)
+	_, err := client.EnsureSubscriptionClient(context.Background(), SubscriptionDesired{ClientEmail: "aimili-gateway-subscription", ClientUUID: "stable-client", InboundIDs: []int64{1, 2}, Aliases: map[int64]string{1: "主连接_日本", 2: "出口位 1_日本"}})
+	if err == nil || len(fixture.aliasWrites) != 0 {
+		t.Fatalf("error=%v writes=%#v", err, fixture.aliasWrites)
+	}
+}
+
+func TestEnsureSubscriptionClientRejectsAliasReadMismatch(t *testing.T) {
+	fixture := &subscriptionFixture{client: map[string]any{"id": 42, "email": "aimili-gateway-subscription", "subId": "stable-sub", "client": map[string]any{"id": "stable-client"}, "inboundIds": []any{1, 2}}, aliasReadMismatch: true}
+	client := newSubscriptionFixtureClient(t, fixture)
+	_, err := client.EnsureSubscriptionClient(context.Background(), SubscriptionDesired{ClientEmail: "aimili-gateway-subscription", ClientUUID: "stable-client", InboundIDs: []int64{1, 2}, Aliases: map[int64]string{1: "主连接_日本", 2: "出口位 1_日本"}})
+	var adapterError *AdapterError
+	if !errors.As(err, &adapterError) || adapterError.Code != "subscription_incomplete" || len(fixture.aliasWrites) != 1 {
+		t.Fatalf("error=%v writes=%#v", err, fixture.aliasWrites)
+	}
+}
+
+func TestEnsureSubscriptionClientSetsAndVerifiesOwnedAliases(t *testing.T) {
+	fixture := &subscriptionFixture{client: map[string]any{
+		"id": 42, "email": "aimili-gateway-subscription", "subId": "stable-sub",
+		"client": map[string]any{"id": "stable-client"}, "inboundIds": []any{1, 2},
+		"inboundAliases": map[string]any{"1": "", "2": ""},
+	}}
+	client := newSubscriptionFixtureClient(t, fixture)
+	want := map[int64]string{1: "主连接_日本", 2: "出口位 1_日本"}
+
+	subscription, err := client.EnsureSubscriptionClient(context.Background(), SubscriptionDesired{
+		ClientEmail: "aimili-gateway-subscription", ClientUUID: "stable-client", InboundIDs: []int64{1, 2}, Aliases: want,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(subscription.Aliases, want) {
+		t.Fatalf("aliases = %#v, want %#v", subscription.Aliases, want)
+	}
+	if len(fixture.aliasWrites) != 1 || len(fixture.aliasWrites[0]) != 2 {
+		t.Fatalf("alias writes = %#v", fixture.aliasWrites)
+	}
+}
+
+func TestEnsureSubscriptionClientRejectsUnownedAliasBeforeAnyClientWrite(t *testing.T) {
+	fixture := &subscriptionFixture{}
+	client := newSubscriptionFixtureClient(t, fixture)
+
+	_, err := client.EnsureSubscriptionClient(context.Background(), SubscriptionDesired{
+		ClientEmail: "aimili-gateway-subscription", ClientUUID: "stable-client", InboundIDs: []int64{1, 2, 4},
+		Aliases: map[int64]string{1: "主连接_日本", 2: "出口位 1_日本", 4: "出口位 2_美国"},
+	})
+	var adapterError *AdapterError
+	if !errors.As(err, &adapterError) || adapterError.Code != "invalid_request" {
+		t.Fatalf("error = %v", err)
+	}
+	if fixture.added != nil || fixture.attachCalls != 0 || len(fixture.aliasWrites) != 0 {
+		t.Fatalf("unowned alias caused writes: added=%#v attach=%d aliases=%#v", fixture.added, fixture.attachCalls, fixture.aliasWrites)
+	}
+}
+
+func TestVerifySubscriptionClientRejectsAliasDriftWithoutWriting(t *testing.T) {
+	fixture := &subscriptionFixture{client: map[string]any{
+		"id": 42, "email": "aimili-gateway-subscription", "subId": "stable-sub",
+		"client": map[string]any{"id": "stable-client"}, "inboundIds": []any{1, 2},
+		"inboundAliases": []any{map[string]any{"inboundId": float64(1), "alias": "主连接_日本"}, map[string]any{"inboundId": float64(2), "alias": "出口位 1_美国"}},
+	}}
+	client := newSubscriptionFixtureClient(t, fixture)
+
+	_, err := client.VerifySubscriptionClient(context.Background(), SubscriptionDesired{
+		ClientEmail: "aimili-gateway-subscription", ClientUUID: "stable-client", InboundIDs: []int64{1, 2},
+		Aliases: map[int64]string{1: "主连接_日本", 2: "出口位 1_日本"},
+	})
+	var adapterError *AdapterError
+	if !errors.As(err, &adapterError) || adapterError.Code != "subscription_incomplete" {
+		t.Fatalf("error = %v", err)
+	}
+	if len(fixture.aliasWrites) != 0 {
+		t.Fatalf("read-only verification wrote aliases: %#v", fixture.aliasWrites)
+	}
+}
+
+func TestRepairSubscriptionAliasesCorrectsExclusiveAliasDriftWithoutChangingAssociations(t *testing.T) {
+	fixture := &subscriptionFixture{client: map[string]any{
+		"id": 42, "email": "aimili-gateway-subscription", "subId": "stable-sub",
+		"client": map[string]any{"id": "stable-client"}, "inboundIds": []any{1, 2},
+		"inboundAliases": map[string]any{"1": "主连接_旧国家", "2": "出口位 1_日本"},
+	}}
+	client := newSubscriptionFixtureClient(t, fixture)
+	want := map[int64]string{1: "主连接_日本", 2: "出口位 1_日本"}
+
+	subscription, err := client.RepairSubscriptionAliases(context.Background(), SubscriptionDesired{
+		ClientEmail: "aimili-gateway-subscription", ClientUUID: "stable-client", InboundIDs: []int64{1, 2}, Aliases: want,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(subscription.Aliases, want) {
+		t.Fatalf("aliases = %#v, want %#v", subscription.Aliases, want)
+	}
+	if fixture.added != nil || fixture.attachCalls != 0 || len(fixture.aliasWrites) != 1 || len(fixture.aliasWrites[0]) != 2 {
+		t.Fatalf("repair changed more than aliases: added=%#v attaches=%d aliasWrites=%#v", fixture.added, fixture.attachCalls, fixture.aliasWrites)
+	}
+}
+
+func TestRepairSubscriptionAliasesRejectsIncompleteAssociationWithoutWriting(t *testing.T) {
+	fixture := &subscriptionFixture{client: map[string]any{
+		"id": 42, "email": "aimili-gateway-subscription", "subId": "stable-sub",
+		"client": map[string]any{"id": "stable-client"}, "inboundIds": []any{1},
+		"inboundAliases": map[string]any{"1": "主连接_日本"},
+	}}
+	client := newSubscriptionFixtureClient(t, fixture)
+
+	_, err := client.RepairSubscriptionAliases(context.Background(), SubscriptionDesired{
+		ClientEmail: "aimili-gateway-subscription", ClientUUID: "stable-client", InboundIDs: []int64{1, 2},
+		Aliases: map[int64]string{1: "主连接_日本", 2: "出口位 1_日本"},
+	})
+	var adapterError *AdapterError
+	if !errors.As(err, &adapterError) || adapterError.Code != "subscription_incomplete" {
+		t.Fatalf("error = %v", err)
+	}
+	if fixture.added != nil || fixture.attachCalls != 0 || len(fixture.aliasWrites) != 0 {
+		t.Fatalf("incomplete association caused writes: added=%#v attaches=%d aliasWrites=%#v", fixture.added, fixture.attachCalls, fixture.aliasWrites)
+	}
+}
+
+func TestEnsureSubscriptionClientReadsMixedPublicProfilesWithoutReattaching(t *testing.T) {
+	fixture := &subscriptionFixture{client: map[string]any{
+		"id": 42, "email": "aimili-gateway-subscription", "subId": "stable-sub",
+		"uuid": "stable-client", "auth": "stable-auth", "inboundIds": []any{1, 2, 5},
+	}}
+	client := newSubscriptionFixtureClient(t, fixture)
+	subscription, err := client.EnsureSubscriptionClient(context.Background(), SubscriptionDesired{
+		ClientEmail: "aimili-gateway-subscription", ClientUUID: "stable-client", InboundIDs: []int64{1, 2, 5},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fixture.attachCalls != 0 {
+		t.Fatalf("stable attachment set was rewritten %d times", fixture.attachCalls)
+	}
+	if len(subscription.PublicProfiles) != 3 {
+		t.Fatalf("public profile count = %d", len(subscription.PublicProfiles))
+	}
+	wantModes := []string{"vless_tcp_reality_vision", "vless_xhttp_reality", "hysteria2_quic_tls"}
+	for index, profile := range subscription.PublicProfiles {
+		if profile.InboundID != []int64{1, 2, 5}[index] || string(profile.Mode) != wantModes[index] {
+			t.Fatalf("profile %d has wrong identity or mode", index)
+		}
+	}
+	if subscription.PublicProfiles[1].XHTTPPath != "/safe-xhttp-path" || subscription.PublicProfiles[2].Auth != "stable-auth" || subscription.PublicProfiles[2].ServerName != "192.0.2.20" {
+		t.Fatal("protocol-specific transient material was not resolved")
+	}
+	if subscription.PublicProfiles[0].ClientID != "stable-client" || subscription.PublicProfiles[1].ClientID != "stable-client" || subscription.PublicProfiles[2].ClientID != "" {
+		t.Fatal("protocol profile identities were not isolated by protocol")
 	}
 }
 

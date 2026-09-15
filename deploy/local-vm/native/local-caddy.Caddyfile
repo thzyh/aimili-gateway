@@ -1,0 +1,21 @@
+https://example.invalid:8080 {
+    tls internal
+    @xui path /xui/*
+    handle @xui {
+        reverse_proxy 127.0.0.1:2001
+    }
+
+    @subscription path /sub/*
+    handle @subscription {
+        reverse_proxy 127.0.0.1:2096
+    }
+
+    @vpngate path /vpngate/*
+    handle @vpngate {
+        reverse_proxy 127.0.0.1:8787
+    }
+
+    handle {
+        reverse_proxy 127.0.0.1:9080
+    }
+}

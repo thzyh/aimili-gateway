@@ -18,6 +18,14 @@
 	"mainMixedPort": 31000,
 	"xrayPath": "/usr/local/x-ui/bin/xray-linux-amd64",
 	"probeHost": "api.ipify.org",
+	"protocolRequestDir": "/var/lib/aimili-gateway/protocol-spool/requests",
+	"protocolResultDir": "/var/lib/aimili-gateway/protocol-spool/results",
+	"protocolTimeoutSeconds": 180,
+	"externalUiRoot": "/var/lib/aimili-gateway/ui",
+  "updateRequestDir": "/var/lib/aimili-gateway/update-spool/requests",
+  "updateEnabled": false,
+  "updateCatalogFile": "/etc/aimili-gateway/update-catalog.json",
+	"updateResultDir": "/var/lib/aimili-gateway/update-spool/results",
 	"mixedSourceCidrs": ["203.0.113.24/32"],
   "expertModeUrl": "/EXISTING_3X_UI_ROUTE/"
 }

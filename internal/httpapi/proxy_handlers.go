@@ -2,8 +2,12 @@ package httpapi
 
 import (
 	"context"
+	"crypto/sha256"
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"net/netip"
 	"strconv"
@@ -16,23 +20,32 @@ import (
 )
 
 type proxyGroupResponse struct {
-	ID                 string                  `json:"id"`
-	CountryCode        string                  `json:"countryCode"`
-	CountryName        string                  `json:"countryName"`
-	ProxyType          domain.ProxyType        `json:"proxyType"`
-	Status             domain.ProxyGroupStatus `json:"status"`
-	EgressSource       domain.EgressSource     `json:"egressSource"`
-	VLESSPort          int                     `json:"vlessPort"`
-	MixedPort          int                     `json:"mixedPort"`
-	ExitIP             string                  `json:"exitIp"`
-	CandidateLatencyMS int                     `json:"candidateLatencyMs"`
-	VLESSLatencyMS     int                     `json:"vlessLatencyMs"`
-	SOCKSLatencyMS     int                     `json:"socksLatencyMs"`
-	LastErrorCode      string                  `json:"lastErrorCode,omitempty"`
-	Version            int64                   `json:"version"`
-	LastCheckedAt      *time.Time              `json:"lastCheckedAt,omitempty"`
-	SlotNumber         int                     `json:"slotNumber,omitempty"`
-	Fixed              bool                    `json:"fixed"`
+	ID                     string                  `json:"id"`
+	CountryCode            string                  `json:"countryCode"`
+	CountryName            string                  `json:"countryName"`
+	ProxyType              domain.ProxyType        `json:"proxyType"`
+	Status                 domain.ProxyGroupStatus `json:"status"`
+	EgressSource           domain.EgressSource     `json:"egressSource"`
+	PublicPort             int                     `json:"publicPort"`
+	VLESSPort              int                     `json:"vlessPort"`
+	MixedPort              int                     `json:"mixedPort"`
+	ProtocolMode           domain.ProtocolMode     `json:"protocolMode,omitempty"`
+	DesiredProtocolMode    domain.ProtocolMode     `json:"desiredProtocolMode,omitempty"`
+	ProtocolState          domain.ProtocolState    `json:"protocolState,omitempty"`
+	SubscriptionState      string                  `json:"subscriptionState,omitempty"`
+	AvailableProtocolModes []domain.ProtocolMode   `json:"availableProtocolModes,omitempty"`
+	CandidateIP            string                  `json:"candidateIp"`
+	ExitIP                 string                  `json:"exitIp"`
+	ExitIPCheckedAt        float64                 `json:"exitIpCheckedAt"`
+	CandidateLatencyMS     int                     `json:"candidateLatencyMs"`
+	VLESSLatencyMS         int                     `json:"vlessLatencyMs"`
+	SOCKSLatencyMS         int                     `json:"socksLatencyMs"`
+	LastErrorCode          string                  `json:"lastErrorCode,omitempty"`
+	AutoRepairPerformed    bool                    `json:"autoRepairPerformed,omitempty"`
+	Version                int64                   `json:"version"`
+	LastCheckedAt          *time.Time              `json:"lastCheckedAt,omitempty"`
+	SlotNumber             int                     `json:"slotNumber,omitempty"`
+	Fixed                  bool                    `json:"fixed"`
 }
 
 type cachedResponse struct {
@@ -168,7 +181,7 @@ func (s *server) handleReplaceProxyGroup(response http.ResponseWriter, request *
 		writeAPIError(response, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	key, hit, ok := s.idempotencyKey(response, request, session)
+	key, hit, ok := s.idempotencyKey(response, request, session, strings.TrimSpace(input.TargetGroupID))
 	if !ok {
 		return
 	}
@@ -176,14 +189,73 @@ func (s *server) handleReplaceProxyGroup(response http.ResponseWriter, request *
 		writeCached(response, *hit)
 		return
 	}
-	group, err := s.proxyManager.ReplaceCandidate(request.Context(), request.PathValue("id"), strings.TrimSpace(input.TargetGroupID))
+	var persistentOperationID string
+	if strings.TrimSpace(input.TargetGroupID) == "agw-main" {
+		rawKey := strings.TrimSpace(request.Header.Get("Idempotency-Key"))
+		keyHash, bodyHash := persistentIdempotencyHashes(session.stored.ID, request.Method, request.URL.Path, rawKey, []any{"agw-main"})
+		operation, operationErr := s.store.GetEgressOperationByRequestHash(request.Context(), "agw-main", "main_assign", keyHash)
+		if operationErr == nil {
+			if operation.TransactionID != bodyHash {
+				writeAPIError(response, http.StatusConflict, "idempotency_conflict")
+				return
+			}
+			if operation.Phase == "started" {
+				persistentOperationID = operation.OperationID
+			} else if operation.Phase != "completed" {
+				writeAPIError(response, http.StatusConflict, "operation_busy")
+				return
+			} else {
+				main, mainErr := s.store.GetMainEgress(request.Context())
+				if mainErr != nil || !main.Enabled {
+					writeAPIError(response, http.StatusConflict, "operation_busy")
+					return
+				}
+				result := safeMainGroup(main)
+				s.storeIdempotent(key, http.StatusOK, result)
+				writeJSON(response, http.StatusOK, result)
+				return
+			}
+		}
+		if operationErr != nil {
+			if !errors.Is(operationErr, sql.ErrNoRows) {
+				writeAPIError(response, http.StatusInternalServerError, "storage_failed")
+				return
+			}
+			persistentOperationID = "http-main-" + keyHash[:27]
+			if err := s.store.CreateEgressOperation(request.Context(), store.EgressOperation{OperationID: persistentOperationID, EgressID: "agw-main", Kind: "main_assign", Phase: "started", RequestHash: keyHash, TransactionID: bodyHash, StartedAt: s.now().UTC()}); err != nil {
+				writeAPIError(response, http.StatusInternalServerError, "storage_failed")
+				return
+			}
+		}
+	}
+	operationContext := request.Context()
+	if persistentOperationID != "" {
+		operationContext = orchestrator.WithMainAssignmentOperationKey(operationContext, persistentOperationID)
+	}
+	group, err := s.proxyManager.ReplaceCandidate(operationContext, request.PathValue("id"), strings.TrimSpace(input.TargetGroupID))
 	if err != nil {
 		writeProxyError(response, err)
 		return
 	}
+	if persistentOperationID != "" {
+		if err := s.store.CompleteEgressOperation(request.Context(), persistentOperationID, s.now().UTC()); err != nil {
+			writeAPIError(response, http.StatusInternalServerError, "storage_failed")
+			return
+		}
+	}
 	result := safeProxyGroup(group)
 	s.storeIdempotent(key, http.StatusOK, result)
 	writeJSON(response, http.StatusOK, result)
+}
+
+func safeMainGroup(main store.MainEgress) proxyGroupResponse {
+	return safeProxyGroup(domain.ProxyGroup{
+		ID: "agw-main", CountryCode: main.CountryCode, CountryName: main.CountryName, ProxyType: main.ProxyType,
+		Status: domain.ProxyGroupReady, EgressSource: domain.EgressSourceMain, AimiliSlot: -1,
+		PublicPort: main.PublicPort, MixedPort: main.MixedPort, ExitIP: main.ExitIP,
+		CandidateLatencyMS: main.CandidateLatencyMS, VLESSLatencyMS: main.VLESSLatencyMS, SOCKSLatencyMS: main.SOCKSLatencyMS,
+		LastErrorCode: main.LastErrorCode, Version: 1, LastCheckedAt: main.LastCheckedAt,
+	})
 }
 
 func (s *server) handleCheckMainProxyGroup(response http.ResponseWriter, request *http.Request) {
@@ -256,7 +328,7 @@ func (s *server) handleEnableProxyGroup(response http.ResponseWriter, request *h
 		writeAPIError(response, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	key, hit, ok := s.idempotencyKey(response, request, session)
+	key, hit, ok := s.idempotencyKey(response, request, session, identity.CountryCode, identity.ProxyType)
 	if !ok {
 		return
 	}
@@ -352,6 +424,156 @@ func (s *server) handleConnections(response http.ResponseWriter, request *http.R
 	writeJSON(response, http.StatusOK, connections)
 }
 
+type protocolModeResponse struct {
+	ProtocolMode           domain.ProtocolMode   `json:"protocolMode"`
+	DesiredProtocolMode    domain.ProtocolMode   `json:"desiredProtocolMode"`
+	ProtocolState          domain.ProtocolState  `json:"protocolState"`
+	SubscriptionState      string                `json:"subscriptionState"`
+	AvailableProtocolModes []domain.ProtocolMode `json:"availableProtocolModes"`
+	LastErrorCode          string                `json:"lastErrorCode,omitempty"`
+	UpdatedAt              time.Time             `json:"updatedAt"`
+}
+
+type interruptedProtocolResumeVerifier interface {
+	CanResumeInterruptedProtocolMode(context.Context, string, domain.ProtocolMode, domain.ProtocolMode) bool
+}
+
+func (s *server) handleProtocolMode(response http.ResponseWriter, request *http.Request) {
+	session, ok := s.authorizeMutation(response, request)
+	if !ok {
+		return
+	}
+	var input struct {
+		ProtocolMode         domain.ProtocolMode `json:"protocolMode"`
+		ExpectedProtocolMode domain.ProtocolMode `json:"expectedProtocolMode,omitempty"`
+	}
+	if decodeJSON(request, &input) != nil || !input.ProtocolMode.Valid() || (input.ExpectedProtocolMode != "" && !input.ExpectedProtocolMode.Valid()) {
+		writeAPIError(response, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	idempotencyBody := []any{input.ProtocolMode}
+	if input.ExpectedProtocolMode != "" {
+		idempotencyBody = append(idempotencyBody, input.ExpectedProtocolMode)
+	}
+	key, hit, ok := s.idempotencyKey(response, request, session, idempotencyBody...)
+	if !ok {
+		return
+	}
+	if hit != nil {
+		writeCached(response, *hit)
+		return
+	}
+	egressID := request.PathValue("id")
+	rawKey := strings.TrimSpace(request.Header.Get("Idempotency-Key"))
+	keyHash, bodyHash := persistentIdempotencyHashes(session.stored.ID, request.Method, request.URL.Path, rawKey, idempotencyBody)
+	operation, operationErr := s.store.GetEgressOperationByRequestHash(request.Context(), egressID, "protocol_switch", keyHash)
+	operationID := ""
+	if operationErr == nil {
+		if operation.TransactionID != bodyHash {
+			writeAPIError(response, http.StatusConflict, "idempotency_conflict")
+			return
+		}
+		if operation.Phase == "completed" {
+			result := safeProtocolMode(domain.EgressProtocolMode{EgressID: egressID, ActiveMode: input.ProtocolMode, DesiredMode: input.ProtocolMode, State: domain.ProtocolReady, UpdatedAt: operation.CompletedAt})
+			s.storeIdempotent(key, http.StatusOK, result)
+			writeJSON(response, http.StatusOK, result)
+			return
+		}
+		if operation.Phase == "failed" && operation.ErrorCode != "" {
+			writeProxyError(response, &orchestrator.Error{Code: operation.ErrorCode})
+			return
+		}
+		current, currentErr := s.store.GetEgressProtocolMode(request.Context(), egressID)
+		if operation.Phase != "started" || currentErr != nil || current.State != domain.ProtocolReady {
+			writeAPIError(response, http.StatusConflict, "operation_busy")
+			return
+		}
+		if current.ActiveMode == input.ProtocolMode {
+			completedAt := s.now().UTC()
+			if err := s.store.CompleteEgressOperation(request.Context(), operation.OperationID, completedAt); err != nil {
+				writeAPIError(response, http.StatusInternalServerError, "storage_failed")
+				return
+			}
+			result := safeProtocolMode(domain.EgressProtocolMode{EgressID: egressID, ActiveMode: input.ProtocolMode, DesiredMode: input.ProtocolMode, State: domain.ProtocolReady, UpdatedAt: completedAt})
+			s.storeIdempotent(key, http.StatusOK, result)
+			writeJSON(response, http.StatusOK, result)
+			return
+		}
+		if input.ExpectedProtocolMode != "" && input.ExpectedProtocolMode != current.ActiveMode {
+			writeAPIError(response, http.StatusConflict, "operation_busy")
+			return
+		}
+		intervening, interveningErr := s.store.HasOtherEgressOperationAtOrAfter(request.Context(), operation)
+		if interveningErr != nil {
+			writeAPIError(response, http.StatusInternalServerError, "storage_failed")
+			return
+		}
+		if intervening {
+			writeAPIError(response, http.StatusConflict, "operation_busy")
+			return
+		}
+		resumeVerifier, ok := s.proxyManager.(interruptedProtocolResumeVerifier)
+		if !ok || !resumeVerifier.CanResumeInterruptedProtocolMode(request.Context(), egressID, current.ActiveMode, input.ProtocolMode) {
+			writeAPIError(response, http.StatusConflict, "operation_busy")
+			return
+		}
+		input.ExpectedProtocolMode = current.ActiveMode
+		operationID = operation.OperationID
+	}
+	if !errors.Is(operationErr, sql.ErrNoRows) {
+		if operationErr != nil {
+			writeAPIError(response, http.StatusInternalServerError, "storage_failed")
+			return
+		}
+	}
+	if errors.Is(operationErr, sql.ErrNoRows) {
+		operationID = "http-" + keyHash[:32]
+		if err := s.store.CreateEgressOperation(request.Context(), store.EgressOperation{OperationID: operationID, EgressID: egressID, Kind: "protocol_switch", Phase: "started", RequestHash: keyHash, TransactionID: bodyHash, StartedAt: s.now().UTC()}); err != nil {
+			writeAPIError(response, http.StatusInternalServerError, "storage_failed")
+			return
+		}
+	}
+	state, err := s.proxyManager.SwitchProtocolModeExpected(request.Context(), egressID, input.ProtocolMode, input.ExpectedProtocolMode)
+	if err != nil {
+		code := "internal_error"
+		var operationError *orchestrator.Error
+		if errors.As(err, &operationError) {
+			code = operationError.Code
+		}
+		if failErr := s.store.FailEgressOperation(request.Context(), operationID, code, s.now().UTC()); failErr != nil {
+			writeAPIError(response, http.StatusInternalServerError, "storage_failed")
+			return
+		}
+		writeProxyError(response, err)
+		return
+	}
+	if err := s.store.CompleteEgressOperation(request.Context(), operationID, s.now().UTC()); err != nil {
+		writeAPIError(response, http.StatusInternalServerError, "storage_failed")
+		return
+	}
+	result := safeProtocolMode(state)
+	s.storeIdempotent(key, http.StatusOK, result)
+	writeJSON(response, http.StatusOK, result)
+}
+
+func safeProtocolMode(state domain.EgressProtocolMode) protocolModeResponse {
+	subscriptionState := "unavailable"
+	switch state.State {
+	case domain.ProtocolReady:
+		subscriptionState = "ready"
+	case domain.ProtocolSubscriptionPending:
+		subscriptionState = "pending"
+	case domain.ProtocolRepairRequired:
+		subscriptionState = "repair_required"
+	}
+	return protocolModeResponse{
+		ProtocolMode: state.ActiveMode, DesiredProtocolMode: state.DesiredMode, ProtocolState: state.State,
+		SubscriptionState:      subscriptionState,
+		AvailableProtocolModes: []domain.ProtocolMode{domain.ProtocolVLESSTCPRealityVision, domain.ProtocolVLESSXHTTPReality, domain.ProtocolHysteria2QUICTLS},
+		LastErrorCode:          state.LastErrorCode, UpdatedAt: state.UpdatedAt,
+	}
+}
+
 func (s *server) handleAggregateConnections(response http.ResponseWriter, request *http.Request) {
 	if _, ok := s.authenticateOrWrite(response, request); !ok {
 		return
@@ -390,6 +612,33 @@ type mixedPolicyResponse struct {
 	Enabled     bool     `json:"enabled"`
 	CIDRs       []string `json:"cidrs"`
 	ApplyStatus string   `json:"applyStatus"`
+}
+
+type mixedCredentialRotationResponse struct {
+	RotatedAt time.Time `json:"rotatedAt"`
+}
+
+func (s *server) handleRotateMixedCredentials(response http.ResponseWriter, request *http.Request) {
+	session, ok := s.authorizeMutation(response, request)
+	if !ok {
+		return
+	}
+	key, hit, ok := s.idempotencyKey(response, request, session)
+	if !ok {
+		return
+	}
+	if hit != nil {
+		writeCached(response, *hit)
+		return
+	}
+	rotatedAt, err := s.proxyManager.RotateMixedCredentials(request.Context())
+	if err != nil {
+		writeProxyError(response, err)
+		return
+	}
+	result := mixedCredentialRotationResponse{RotatedAt: rotatedAt}
+	s.storeIdempotent(key, http.StatusOK, result)
+	writeJSON(response, http.StatusOK, result)
 }
 
 func (s *server) handleGetMixedPolicy(response http.ResponseWriter, request *http.Request) {
@@ -445,6 +694,71 @@ func (s *server) handleSetMixedPolicy(response http.ResponseWriter, request *htt
 	writeJSON(response, http.StatusOK, safeMixedPolicy(policy))
 }
 
+func (s *server) handleAuthorizeCurrentMixedPolicy(response http.ResponseWriter, request *http.Request) {
+	if _, ok := s.authorizeMutation(response, request); !ok {
+		return
+	}
+	prefix, errorCode := currentForwardedClientPrefix(request)
+	if errorCode != "" {
+		writeAPIError(response, http.StatusForbidden, errorCode)
+		return
+	}
+	policy, err := s.proxyManager.MixedPolicy(request.Context())
+	if err != nil {
+		writeProxyError(response, err)
+		return
+	}
+	policy.Enabled = true
+	found := false
+	for _, existing := range policy.CIDRs {
+		if existing == prefix {
+			found = true
+			break
+		}
+	}
+	if !found {
+		policy.CIDRs = append(policy.CIDRs, prefix)
+	}
+	if err := s.proxyManager.SetMixedPolicy(request.Context(), policy); err != nil {
+		writeProxyError(response, err)
+		return
+	}
+	updated, err := s.proxyManager.MixedPolicy(request.Context())
+	if err != nil {
+		writeProxyError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, safeMixedPolicy(updated))
+}
+
+func currentForwardedClientPrefix(request *http.Request) (netip.Prefix, string) {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(request.RemoteAddr))
+	if err != nil {
+		return netip.Prefix{}, "client_peer_invalid"
+	}
+	peer, err := netip.ParseAddr(host)
+	if err != nil {
+		return netip.Prefix{}, "client_peer_invalid"
+	}
+	if !peer.IsLoopback() {
+		return netip.Prefix{}, "client_peer_untrusted"
+	}
+	forwarded := strings.TrimSpace(request.Header.Get("X-Forwarded-For"))
+	if forwarded == "" {
+		return netip.Prefix{}, "client_forwarded_for_missing"
+	}
+	values := strings.Split(forwarded, ",")
+	client, err := netip.ParseAddr(strings.TrimSpace(values[len(values)-1]))
+	if err != nil {
+		return netip.Prefix{}, "client_forwarded_for_invalid"
+	}
+	client = client.Unmap()
+	if !client.IsGlobalUnicast() || client.IsPrivate() || client.IsLoopback() || client.IsLinkLocalUnicast() {
+		return netip.Prefix{}, "client_forwarded_for_non_public"
+	}
+	return netip.PrefixFrom(client, client.BitLen()), ""
+}
+
 func safeMixedPolicy(policy store.MixedSourcePolicy) mixedPolicyResponse {
 	return mixedPolicyResponse{Enabled: policy.Enabled, CIDRs: prefixStringsForResponse(policy.CIDRs), ApplyStatus: string(policy.ApplyStatus)}
 }
@@ -480,15 +794,27 @@ func (s *server) authorizeSessionMutation(response http.ResponseWriter, request 
 	}
 	return session, true
 }
-func (s *server) idempotencyKey(response http.ResponseWriter, request *http.Request, session requestSession) (string, *cachedResponse, bool) {
+func (s *server) idempotencyKey(response http.ResponseWriter, request *http.Request, session requestSession, requestValues ...any) (string, *cachedResponse, bool) {
 	raw := strings.TrimSpace(request.Header.Get("Idempotency-Key"))
 	if raw == "" || len(raw) > 128 {
 		writeAPIError(response, http.StatusPreconditionRequired, "idempotency_key_required")
 		return "", nil, false
 	}
 	key := idempotencyCacheKey(session.stored.ID, request.Method, request.URL.Path, raw)
+	encoded, err := json.Marshal(requestValues)
+	if err != nil {
+		writeAPIError(response, http.StatusBadRequest, "invalid_request")
+		return "", nil, false
+	}
+	digest := sha256.Sum256(encoded)
+	requestHash := fmt.Sprintf("%x", digest[:])
 	s.idempotencyMu.Lock()
 	defer s.idempotencyMu.Unlock()
+	if previous, exists := s.idempotencyRequests[key]; exists && previous != requestHash {
+		writeAPIError(response, http.StatusConflict, "idempotency_conflict")
+		return "", nil, false
+	}
+	s.idempotencyRequests[key] = requestHash
 	if cached, exists := s.idempotency[key]; exists {
 		return key, &cached, true
 	}
@@ -497,6 +823,13 @@ func (s *server) idempotencyKey(response http.ResponseWriter, request *http.Requ
 
 func idempotencyCacheKey(sessionID int64, method, path, raw string) string {
 	return strings.Join([]string{strconv.FormatInt(sessionID, 10), method, path, raw}, "\x00")
+}
+
+func persistentIdempotencyHashes(sessionID int64, method, path, raw string, requestValues []any) (string, string) {
+	keyDigest := sha256.Sum256([]byte(idempotencyCacheKey(sessionID, method, path, raw)))
+	encoded, _ := json.Marshal(requestValues)
+	bodyDigest := sha256.Sum256(encoded)
+	return fmt.Sprintf("%x", keyDigest[:]), fmt.Sprintf("%x", bodyDigest[:])
 }
 func (s *server) storeIdempotent(key string, status int, value any) {
 	body, _ := json.Marshal(value)
@@ -514,8 +847,19 @@ func safeProxyGroup(group domain.ProxyGroup) proxyGroupResponse {
 	if group.EgressSource != domain.EgressSourceMain && group.AimiliSlot >= 0 && group.Status != domain.ProxyGroupStandby {
 		slotNumber = group.AimiliSlot + 1
 	}
-	fixed := group.EgressSource == domain.EgressSourceMain || (group.Status != domain.ProxyGroupStandby && group.AimiliSlot >= 0 && group.VLESSPort > 0)
-	result := proxyGroupResponse{ID: group.ID, CountryCode: group.CountryCode, CountryName: group.CountryName, ProxyType: group.ProxyType, Status: group.Status, EgressSource: group.EgressSource, VLESSPort: group.VLESSPort, MixedPort: group.MixedPort, ExitIP: group.ExitIP, CandidateLatencyMS: group.CandidateLatencyMS, VLESSLatencyMS: group.VLESSLatencyMS, SOCKSLatencyMS: group.SOCKSLatencyMS, LastErrorCode: group.LastErrorCode, Version: group.Version, SlotNumber: slotNumber, Fixed: fixed}
+	fixed := group.EgressSource == domain.EgressSourceMain || (group.Status != domain.ProxyGroupStandby && group.AimiliSlot >= 0 && group.PublicPort > 0)
+	result := proxyGroupResponse{ID: group.ID, CountryCode: group.CountryCode, CountryName: group.CountryName, ProxyType: group.ProxyType, Status: group.Status, EgressSource: group.EgressSource, PublicPort: group.PublicPort, VLESSPort: group.PublicPort, MixedPort: group.MixedPort, CandidateIP: group.CandidateIP, ExitIP: group.ExitIP, ExitIPCheckedAt: group.ExitIPCheckedAt, CandidateLatencyMS: group.CandidateLatencyMS, VLESSLatencyMS: group.VLESSLatencyMS, SOCKSLatencyMS: group.SOCKSLatencyMS, LastErrorCode: group.LastErrorCode, AutoRepairPerformed: group.AutoRepairPerformed, Version: group.Version, SlotNumber: slotNumber, Fixed: fixed}
+	if group.ProtocolState.Valid() {
+		protocol := safeProtocolMode(domain.EgressProtocolMode{ActiveMode: group.ProtocolMode, DesiredMode: group.DesiredProtocolMode, State: group.ProtocolState, LastErrorCode: group.ProtocolLastErrorCode})
+		result.ProtocolMode = protocol.ProtocolMode
+		result.DesiredProtocolMode = protocol.DesiredProtocolMode
+		result.ProtocolState = protocol.ProtocolState
+		result.SubscriptionState = protocol.SubscriptionState
+		result.AvailableProtocolModes = protocol.AvailableProtocolModes
+		if protocol.LastErrorCode != "" {
+			result.LastErrorCode = protocol.LastErrorCode
+		}
+	}
 	if !group.LastCheckedAt.IsZero() {
 		checked := group.LastCheckedAt
 		result.LastCheckedAt = &checked
@@ -536,7 +880,7 @@ func writeProxyError(response http.ResponseWriter, err error) {
 		status = http.StatusNotFound
 	case "not_configured", "credentials_not_configured":
 		status = http.StatusServiceUnavailable
-	case "operation_failed", "storage_failed":
+	case "operation_failed", "storage_failed", "internal_error":
 		status = http.StatusInternalServerError
 	}
 	writeAPIError(response, status, operationError.Code)

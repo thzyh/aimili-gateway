@@ -1,6 +1,6 @@
 # 主连接安全切换与每出口独立协议模式实施计划
 
-状态：设计已批准，准备执行
+状态：核心开发与最终混合状态已完成；Task 1–10 与 Task 11 Stage 1–6、8 已完成；Stage 7 的已提交协议模式、AimiliVPN 状态迁移、四出口重启恢复和最终外部验收通过，未提交主事务自动回滚、两阶段主 repair 生产演练、Gateway UI 与 v2rayN GUI 的最后验收仍待完成
 
 > **执行要求：** 使用 `superpowers:executing-plans` 逐任务实施；所有功能与故障修复必须使用 `superpowers:test-driven-development`，先观察新增测试按预期失败，再写最小实现。完成前使用 `superpowers:verification-before-completion`，并按项目规则执行一次 `ponytail-review`。
 
@@ -11,6 +11,10 @@
 **技术栈：** Python 3 标准库与 `unittest`、Go 1.26、SQLite、Vue 3 + TypeScript、Vitest/Vite、Xray HandlerService、systemd path/oneshot、UFW。
 
 **设计依据：** `docs/superpowers/specs/2026-08-29-main-switch-protocol-modes-design.md`
+
+**执行记录（2026-08-31）：** Task 1–10 与 Task 11 Stage 1–6、8 已完成。出口位 1 完成 `TCP → XHTTP → TCP` 并最终保持 XHTTP；出口位 2 完成 Hysteria2 外部 QUIC/TLS 与真实出口验证；主连接完成 `TCP → XHTTP → TCP`，每一方向均通过四出口公网、四个授权 mixed、统一订阅、单 Xray 和唯一出口联合验收。首次主切回期间 AimiliVPN 自动漂移到另一可用主节点，helper 已回滚但 Gateway 因旧身份不匹配正确进入 `repair_required`；新增恢复逻辑只在 helper 已证明回滚、当前主两次身份绑定一致且 `7928 + mixed + 当前公网协议` 全部通过后同步主身份并恢复 ready。最终运行状态为主 TCP、出口位 1 XHTTP、出口位 2 Hysteria2、出口位 3 TCP。历史 `repair-replace` 只验证了 AimiliVPN `7928`，不能作为 Gateway 主 mixed/公网验证证据；两阶段 repair 代码已部署，但用户专门要求的生产事务写入演练仍被审批系统拒绝。未提交事务自动回滚和 GUI 最终点击仍待完成。
+
+**收尾记录（2026-08-31）：** AimiliVPN 严格状态 schema 部署后发现生产历史终态仍保留两个旧 repair resolution 且没有后来新增的 repair hash。第 4 轮 TDD 只在 `active=None`、全部历史均为终态、记录为 `committed`、resolution 精确属于两个旧闭集且无 repair hash 时执行 canonical migration；其他活动态、未知 resolution、坏 hash 和 `rolled_back + 旧 resolution` 继续 fail-closed。修复提交 `2cada1f` 通过 119/119 全量测试和 scoped 复审后，从私有 GitHub 精确 fetch，仅安装三份 AimiliVPN 源文件并保留生产仓库 HEAD、既有未提交修复、`.codex-backups` 与 `/var/backups/aimili-final-stack-*`。迁移后 7 条历史均为终态、mutation lease acquire/renew/release 通过；AimiliVPN 重启造成的主与三个普通槽位身份漂移分别经 Gateway 正式 `check` 原路径三路径复验后同步。最终无切换外部验收与新 300 秒资源观察均通过，协议组合和四出口不变量未改变。
 
 ## 全局硬约束
 
@@ -414,26 +418,26 @@ git commit -m "feat: add per-egress protocol controls"
 - Create: `docs/verification/2026-08-29-main-switch-protocol-modes.md`
 - Modify: `README.md`
 
-- [ ] **Step 1：写部署与回滚脚本契约测试**
+- [x] **Step 1：写部署与回滚脚本契约测试**
 
 先测试脚本必须：受限联合备份、资源门检查、精确 UFW UDP 规则、禁止 `443/udp` 和端口范围、逐级开关、失败自动回滚、非 Gateway 资源前后指纹、Xray PID/非目标探针、敏感输出过滤。
 
-- [ ] **Step 2：运行契约测试确认红灯并实现脚本**
+- [x] **Step 2：运行契约测试确认红灯并实现脚本**
 
 ```powershell
 go test ./deploy -run 'MainSwitch|Protocol|Rollback' -v
 python -m unittest scripts.test_protocol_transaction_integration -v
 ```
 
-- [ ] **Step 3：运行本地 fake-Xray/fake-3x-ui 故障注入**
+- [x] **Step 3：运行本地 fake-Xray/fake-3x-ui 故障注入**
 
 覆盖每个事务阶段崩溃、重复请求、数据库锁、订阅失败、公网验证失败、非目标长连接持续、Gateway/AimiliVPN 重启恢复。集成夹具只使用伪凭据，结束后清理临时文件。
 
-- [ ] **Step 4：更新运维文档和验证记录模板**
+- [x] **Step 4：更新运维文档和验证记录模板**
 
 说明备份、恢复、`repair_required` 处置、证书续期验证、云 UDP 边界诊断；验证记录只写安全状态、计数、端口、PID 是否变化和脱敏错误码。
 
-- [ ] **Step 5：两个仓库全量本地验证**
+- [x] **Step 5：两个仓库全量本地验证**
 
 ```powershell
 python -m unittest discover -s tests -v
@@ -444,7 +448,7 @@ python -m unittest discover -s scripts -p "test_*.py" -v
 git diff --check
 ```
 
-- [ ] **Step 6：执行复杂度审查、修正后再验证并提交**
+- [x] **Step 6：执行复杂度审查、修正后再验证并提交**
 
 使用 `ponytail-review` 只检查可删除的推测性抽象、重复封装和不必要扩展点；逐项核对设计硬约束后再修改，不能为减行删除事务边界、安全检查或回滚。若发生结构调整，重跑本任务全部本地验证。
 
@@ -459,35 +463,41 @@ git commit -m "docs: add protocol switch deployment runbook"
 
 **前置硬门：** 两仓库工作树干净、全量本地测试通过、联合备份成功、`MemAvailable ≥ 160 MiB`、Swap 空闲 `≥ 512 MiB`、证书有效且 Xray 可读、非 Gateway 资源已记录安全指纹。所有 SSH 输出必须经过脱敏过滤。
 
-- [ ] **Stage 1：只部署 AimiliVPN 主事务**
+- [x] **Stage 1：只部署 AimiliVPN 主事务**
 
 先受控制造新主失败并确认自动恢复旧主，再执行一次真实主切换。验证 `7928`、主 mixed、`8443` 当前协议、代理 DNS、真实出口；三个普通槽位节点/进程/出口不变。任一失败恢复 AimiliVPN 代码与状态并停止。
 
-- [ ] **Stage 2：部署 Gateway 中性模型、助手和精确 UDP 白名单**
+- [x] **Stage 2：部署 Gateway 中性模型、助手和精确 UDP 白名单**
 
 所有出口仍保持 TCP/Vision。验证 Gateway 数据迁移、四公网入站/四 mixed 数量、Xray PID、3x-ui 重启可重建现状、UFW 只有 `8443/udp` 与 `20000–20002/udp` 的四条精确规则，没有 `443/udp` 节点规则。
 
-- [ ] **Stage 3：普通出口 TCP → XHTTP → TCP**
+- [x] **Stage 3：普通出口 TCP → XHTTP → TCP**
 
 保持另外三个公网节点和四个 mixed 的长连接探针。验证 Xray PID 不变、订阅更新、v2rayN `7.24.4` 识别、代理 DNS和真实出口；切回 TCP 验证反向路径。任一失败只回滚目标出口。
 
-- [ ] **Stage 4：普通出口 VLESS → Hysteria2**
+执行结果：先后修复空 `listen`、systemd SQLite sidecar 权限和生产 Gateway/helper 版本差异后，生产 Xray `26.7.28 run -test`、运行时热切、外部代理 DNS与真实出口均通过；出口位 1 完成 `TCP → XHTTP → TCP`，最终再次切为 XHTTP。切换期间 Xray PID 与非目标探针持续。
+
+- [x] **Stage 4：普通出口 VLESS → Hysteria2**
 
 完成外部 QUIC/TLS、证书、代理 DNS、真实出口、UFW 计数和资源观察。若包未到主机则判定上游云防火墙阻断，立即回 TCP 并停止扩大，不重建服务器。
 
-- [ ] **Stage 5：观察资源硬门**
+- [x] **Stage 5：观察资源硬门**
 
 单出口切换后观察至少 5 分钟：无 OOM；Xray RSS 峰值 ≤ 96 MiB；`MemAvailable` 不连续 30 秒低于 96 MiB；Swap 增量 ≤ 128 MiB。越界立即回滚。
 
-- [ ] **Stage 6：主出口协议试切与最终混合模式**
+- [x] **Stage 6：主出口协议试切与最终混合模式**
 
 普通出口稳定后才允许主协议试切，并同时验证 `7928` 与主 mixed。最终状态：主 TCP/Vision、出口位 1 XHTTP、出口位 2 Hysteria2、出口位 3 TCP/Vision；出口总数四、公网入站总数四、mixed 总数四。
+
+执行结果：主连接通过 Gateway 正式 protocol-mode API 完成 `TCP/Vision → XHTTP/REALITY → TCP/Vision`。首次切回期间 AimiliVPN 自动切换主节点，Gateway 因候选与出口身份不一致进入 `repair_required`，未错误提交。TDD 增加封闭恢复：helper rollback 必须先成功，当前 Aimili 主身份在三路径验证前后必须一致，随后才同步 Gateway 主身份并恢复 ready；失败继续 fail-closed。修复部署后主 `XHTTP → TCP` 及最终无切换验收均通过：4 ready、4 公网、4 mixed、单 Xray、4 条订阅、4 个唯一出口；主与三个普通出口公网真实连接及四个授权 mixed 均通过，最终协议组合符合计划。
 
 - [ ] **Stage 7：重启恢复和原用户路径验收**
 
 受控重启 x-ui/Xray，确认 SQLite 重建相同混合模式；再重启 Gateway 与 AimiliVPN，确认未提交事务自动回滚、已提交模式不漂移。通过 Gateway UI 实际执行候选替换到“主连接”、独立协议切换与“复制节点订阅”，用 v2rayN `7.24.4` 刷新并逐条验证。只有原用户路径通过后才能声明完成。
 
-- [ ] **Stage 8：更新脱敏验证记录**
+执行进度：x-ui/Xray、Gateway 的已提交协议模式重启恢复与重启后的四出口全量外部验证通过。AimiliVPN 第 4 轮历史终态 canonical migration 已生产部署，AimiliVPN/Gateway 重启后主与三个普通槽位经正式 `check` 原路径同步，最终四出口外部验收和 300 秒观察再次通过。AimiliVPN 未提交事务重启演练在旧/新公共节点均离线时正确 fail-closed；历史 repair 仅恢复 `7928`，不能证明 Gateway 主 mixed/公网路径。本轮两阶段 repair 修复尚未生产事务写入演练，且仍缺旧主在线条件下的自动 rollback 成功证据。Gateway UI 与 v2rayN GUI 的最终点击待人工完成；不得以 API/核心验证替代。
+
+- [x] **Stage 8：更新脱敏验证记录**
 
 在 `docs/verification/2026-08-29-main-switch-protocol-modes.md` 记录提交、服务版本、测试命令结果、状态计数、回滚演练、PID/资源指标和未决外部边界；不得记录连接秘密或完整订阅地址。
 

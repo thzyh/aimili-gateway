@@ -49,11 +49,11 @@ func (s *server) handleRefreshAimiliSettings(response http.ResponseWriter, reque
 		return
 	}
 	country := strings.ToUpper(strings.TrimSpace(input.Country))
-	if len(country) != 2 || country[0] < 'A' || country[0] > 'Z' || country[1] < 'A' || country[1] > 'Z' {
+	if country != "ALL" && (len(country) != 2 || country[0] < 'A' || country[0] > 'Z' || country[1] < 'A' || country[1] > 'Z') {
 		writeAPIError(response, http.StatusBadRequest, "invalid_request")
 		return
 	}
-	key, hit, ok := s.idempotencyKey(response, request, session)
+	key, hit, ok := s.idempotencyKey(response, request, session, country)
 	if !ok {
 		return
 	}

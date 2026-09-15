@@ -23,7 +23,7 @@ func TestEnableCreatesAndValidatesOneStableProxyGroup(t *testing.T) {
 		t.Fatal(err)
 	}
 	if group.Status != domain.ProxyGroupReady || group.AimiliSlot != 0 || group.ExitIP != "203.0.113.7" ||
-		group.VLESSPort != 20000 || group.MixedPort != 30000 || group.VLESSInboundID == 0 || group.MixedInboundID == 0 {
+		group.PublicPort != 20000 || group.MixedPort != 30000 || group.PublicInboundID == 0 || group.MixedInboundID == 0 {
 		t.Fatalf("unexpected ready group: %#v", group)
 	}
 	want := []string{"slot.create", "slot.check", "xui.ensure", "validate.socks", "validate.vless"}
@@ -32,6 +32,35 @@ func TestEnableCreatesAndValidatesOneStableProxyGroup(t *testing.T) {
 	}
 	if fixture.xui.desired.RealityTarget != "127.0.0.1:443" || fixture.xui.desired.RealityServerName != "proxy.example.test" {
 		t.Fatalf("Reality target = %#v", fixture.xui.desired)
+	}
+	protocol, ok := fixture.store.protocolModes[group.ID]
+	if !ok || protocol.ActiveMode != domain.ProtocolVLESSTCPRealityVision || protocol.DesiredMode != domain.ProtocolVLESSTCPRealityVision || protocol.State != domain.ProtocolReady {
+		t.Fatalf("default protocol state = %#v, present=%v", protocol, ok)
+	}
+}
+
+func TestNewAcceptsIPAddressEndpointWithSeparateRealityServerName(t *testing.T) {
+	fixture := newFixture()
+	value, err := New(Config{
+		MaxGroups: 1, VLESSPortStart: 20000, VLESSPortEnd: 20009,
+		MixedPortStart: 30000, MixedPortEnd: 30009,
+		PublicHost: "192.168.88.4", RealityServerName: "reality.aimili.test",
+		XrayPath: "/xray", ProbeHost: "ip.example.test",
+	}, fixture.store, fixture.aimili, fixture.xui, fixture.validator, []byte("01234567890123456789012345678901"))
+	if err != nil || value == nil {
+		t.Fatalf("IP endpoint with a separate Reality name was rejected: value=%#v err=%v", value, err)
+	}
+}
+
+func TestEnableCompensatesWhenDefaultProtocolStateCannotBeCreated(t *testing.T) {
+	fixture := newFixture()
+	fixture.store.protocolCreateError = errors.New("storage unavailable")
+	_, err := fixture.orchestrator(t).Enable(context.Background(), EnableRequest{CountryCode: "JP", ProxyType: domain.ProxyTypeDatacenter})
+	if codeOf(err) != "storage_failed" {
+		t.Fatalf("error = %v", err)
+	}
+	if len(fixture.store.groups) != 0 || len(fixture.store.protocolModes) != 0 || !contains(fixture.calls, "xui.delete") || !contains(fixture.calls, "slot.delete") {
+		t.Fatalf("incomplete compensation: groups=%#v protocols=%#v calls=%#v", fixture.store.groups, fixture.store.protocolModes, fixture.calls)
 	}
 }
 
@@ -59,7 +88,7 @@ func TestEnableReservesAFreeAimiliSlotBeforePersistingSecondGroup(t *testing.T) 
 	existing, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter, "jp-existing")
 	existing.Status = domain.ProxyGroupReady
 	existing.AimiliSlot = 0
-	existing.VLESSPort = 20000
+	existing.PublicPort = 20000
 	existing.MixedPort = 30000
 	existing.ExitIP = "203.0.113.7"
 	fixture.store.groups[existing.ID] = existing
@@ -84,7 +113,7 @@ func TestEnableRotatesANewSlotUntilItsExitIsUnique(t *testing.T) {
 	existing, _ := domain.NewProxyGroupIdentity("US", domain.ProxyTypeDatacenter, "existing")
 	existing.Status = domain.ProxyGroupReady
 	existing.ExitIP = "203.0.113.7"
-	existing.VLESSPort = 20000
+	existing.PublicPort = 20000
 	existing.MixedPort = 30000
 	existing.CreatedAt = fixture.now().Add(-time.Hour)
 	fixture.store.groups[existing.ID] = existing
@@ -113,7 +142,7 @@ func TestEnableRollsBackAfterThreeDuplicateExitRotations(t *testing.T) {
 	existing, _ := domain.NewProxyGroupIdentity("US", domain.ProxyTypeDatacenter, "existing")
 	existing.Status = domain.ProxyGroupReady
 	existing.ExitIP = "203.0.113.7"
-	existing.VLESSPort = 20000
+	existing.PublicPort = 20000
 	existing.MixedPort = 30000
 	fixture.store.groups[existing.ID] = existing
 	fixture.aimili.rotatedExitIPs = []string{"203.0.113.7", "203.0.113.7", "203.0.113.7"}
@@ -161,7 +190,7 @@ func TestReadyExitIPsNormalizesAddressesAndExcludesOneGroup(t *testing.T) {
 
 func TestPoolIncludesHealthyLegacyMainAsFourthEgress(t *testing.T) {
 	fixture := newFixture()
-	fixture.aimili.mainStatus = aimili.MainStatus{Country: "JP", CountryName: "日本", ProxyType: "datacenter", ExitIP: "203.0.113.20", Port: 7928, EgressOK: true, Active: true}
+	fixture.aimili.mainStatus = aimili.MainStatus{CandidateID: "main-node", Country: "JP", CountryName: "日本", ProxyType: "datacenter", ExitIP: "203.0.113.20", Port: 7928, EgressOK: true, Active: true}
 	pool, err := fixture.orchestratorWithMax(t, 3).Pool(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -173,8 +202,134 @@ func TestPoolIncludesHealthyLegacyMainAsFourthEgress(t *testing.T) {
 			break
 		}
 	}
-	if main == nil || main.EgressSource != domain.EgressSourceMain || main.VLESSPort != 8443 || main.ExitIP != "203.0.113.20" {
+	if main == nil || main.EgressSource != domain.EgressSourceMain || main.PublicPort != 8443 || main.ExitIP != "203.0.113.20" {
 		t.Fatalf("main group=%#v pool=%#v", main, pool)
+	}
+}
+
+func TestPoolKeepsPersistedMainVisibleWhileRuntimeReconnects(t *testing.T) {
+	fixture := newFixture()
+	fixture.store.mainEgress = store.MainEgress{
+		ResourceName: "agw-main", CountryCode: "JP", CountryName: "日本",
+		ProxyType: domain.ProxyTypeDatacenter, ExitIP: "203.0.113.20",
+		PublicInboundID: 1, MixedInboundID: 2, PublicPort: 8443, MixedPort: 31000,
+		Enabled: true, VLESSLatencyMS: 81, SOCKSLatencyMS: 70,
+		LastCheckedAt: fixture.now(), UpdatedAt: fixture.now(),
+	}
+	fixture.aimili.mainStatus = aimili.MainStatus{Port: 7928, EgressOK: true, Active: false}
+	fixture.store.protocolModes["agw-main"] = domain.EgressProtocolMode{
+		EgressID: "agw-main", ActiveMode: domain.ProtocolVLESSTCPRealityVision,
+		DesiredMode: domain.ProtocolVLESSTCPRealityVision, State: domain.ProtocolReady,
+		Version: 1, UpdatedAt: fixture.now(),
+	}
+
+	pool, err := fixture.orchestratorWithMax(t, 3).Pool(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var main *domain.ProxyGroup
+	for i := range pool {
+		if pool[i].ID == "agw-main" {
+			main = &pool[i]
+			break
+		}
+	}
+	if main == nil || main.Status != domain.ProxyGroupDegraded || main.LastErrorCode != "egress_unavailable" || main.PublicPort != 8443 || main.ExitIP != "203.0.113.20" {
+		t.Fatalf("persisted main disappeared or was misreported: main=%#v pool=%#v", main, pool)
+	}
+}
+
+func TestPoolShowsPersistedMainAsWaitingForManualReplacement(t *testing.T) {
+	fixture := newFixture()
+	fixture.store.mainEgress = store.MainEgress{
+		ResourceName: "agw-main", CountryCode: "JP", CountryName: "日本",
+		ProxyType: domain.ProxyTypeDatacenter, CandidateID: "jp-old", ExitIP: "203.0.113.20",
+		PublicInboundID: 1, MixedInboundID: 2, PublicPort: 8443, MixedPort: 31000,
+		Enabled: true, LastCheckedAt: fixture.now(), UpdatedAt: fixture.now(),
+	}
+	fixture.aimili.mainStatus = aimili.MainStatus{
+		Port: 7928, Active: false, EgressOK: false, RepairStatus: "manual_required",
+		AutoRepairAttempted: true, LastErrorCode: "replacement_failed",
+	}
+	fixture.store.protocolModes["agw-main"] = domain.EgressProtocolMode{
+		EgressID: "agw-main", ActiveMode: domain.ProtocolVLESSTCPRealityVision,
+		DesiredMode: domain.ProtocolVLESSTCPRealityVision, State: domain.ProtocolReady,
+		Version: 1, UpdatedAt: fixture.now(),
+	}
+
+	pool, err := fixture.orchestratorWithMax(t, 3).Pool(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pool) == 0 || pool[0].ID != "agw-main" || pool[0].Status != domain.ProxyGroupDegraded || pool[0].LastErrorCode != "manual_replacement_required" || pool[0].PublicPort != 8443 {
+		t.Fatalf("manual main placeholder was not preserved: %#v", pool)
+	}
+}
+
+func TestPoolShowsRuntimeManualMainWithoutPersistedMain(t *testing.T) {
+	fixture := newFixture()
+	fixture.aimili.mainStatus = aimili.MainStatus{
+		Port: 7928, Active: false, EgressOK: false, RepairStatus: "manual_required",
+		AutoRepairAttempted: true, LastErrorCode: "replacement_failed",
+	}
+
+	pool, err := fixture.orchestratorWithMax(t, 3).Pool(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pool) == 0 || pool[0].ID != "agw-main" {
+		t.Fatalf("runtime manual main placeholder disappeared: %#v", pool)
+	}
+	main := pool[0]
+	if main.Status != domain.ProxyGroupDegraded || main.LastErrorCode != "manual_replacement_required" || main.PublicPort != 8443 || main.MixedPort != 31000 {
+		t.Fatalf("runtime manual main placeholder was misreported: %#v", main)
+	}
+	if main.CandidateID != "" || main.CountryCode != "ZZ" || main.ExitIP != "" {
+		t.Fatalf("runtime manual main placeholder fabricated stale identity: %#v", main)
+	}
+}
+
+func TestPoolAttachesPersistedProtocolStateToLiveEgress(t *testing.T) {
+	fixture := newFixture()
+	group, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter, "node-one")
+	group.Status = domain.ProxyGroupReady
+	group.AimiliSlot = 0
+	group.PublicPort = 20000
+	group.MixedPort = 30000
+	group.PublicInboundID = 21
+	group.CreatedAt = fixture.now()
+	group.UpdatedAt = fixture.now()
+	fixture.store.groups[group.ID] = group
+	fixture.store.protocolModes[group.ID] = domain.EgressProtocolMode{EgressID: group.ID, ActiveMode: domain.ProtocolVLESSXHTTPReality, DesiredMode: domain.ProtocolVLESSXHTTPReality, State: domain.ProtocolReady, Version: 3, UpdatedAt: fixture.now()}
+	fixture.aimili.candidates = []aimili.Candidate{{ID: "node-one", CountryCode: "JP", ProxyType: "datacenter", ProbeStatus: "available"}}
+
+	pool, err := fixture.orchestratorWithMax(t, 3).Pool(context.Background())
+	if err != nil || len(pool) != 1 {
+		t.Fatalf("pool=%#v err=%v", pool, err)
+	}
+	if pool[0].ProtocolMode != domain.ProtocolVLESSXHTTPReality || pool[0].DesiredProtocolMode != domain.ProtocolVLESSXHTTPReality || pool[0].ProtocolState != domain.ProtocolReady {
+		t.Fatalf("protocol state was not attached: %#v", pool[0])
+	}
+}
+
+func TestPoolMarksLiveEgressWithoutProtocolStateAsRepairRequired(t *testing.T) {
+	fixture := newFixture()
+	group, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter, "node-one")
+	group.Status = domain.ProxyGroupReady
+	group.AimiliSlot = 0
+	group.PublicPort = 20000
+	group.MixedPort = 30000
+	group.CreatedAt = fixture.now()
+	group.UpdatedAt = fixture.now()
+	fixture.store.groups[group.ID] = group
+	fixture.aimili.candidates = []aimili.Candidate{{ID: "node-one", CountryCode: "JP", ProxyType: "datacenter", ProbeStatus: "available"}}
+
+	pool, err := fixture.orchestratorWithMax(t, 3).Pool(context.Background())
+	if err != nil || len(pool) != 1 {
+		t.Fatalf("pool=%#v err=%v", pool, err)
+	}
+	if pool[0].Status != domain.ProxyGroupRepairRequired || pool[0].ProtocolState != domain.ProtocolRepairRequired || pool[0].ProtocolLastErrorCode != "protocol_state_missing" {
+		t.Fatalf("missing protocol state was hidden: %#v", pool[0])
 	}
 }
 
@@ -228,8 +383,78 @@ func TestCheckNeverRotatesAndRotateKeepsEntryStable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rotated.ExitIP != "203.0.113.8" || rotated.VLESSPort != created.VLESSPort || rotated.MixedPort != created.MixedPort || rotated.ResourceName != created.ResourceName {
+	if rotated.ExitIP != "203.0.113.8" || rotated.PublicPort != created.PublicPort || rotated.MixedPort != created.MixedPort || rotated.ResourceName != created.ResourceName {
 		t.Fatalf("rotate changed stable entry: before=%#v after=%#v", created, rotated)
+	}
+}
+
+func TestCheckKeepsPreviousStateForTransientControlPlaneErrors(t *testing.T) {
+	for _, code := range []string{"operation_busy", "maintenance_busy", "timeout"} {
+		t.Run(code, func(t *testing.T) {
+			fixture := newFixture()
+			orchestrator := fixture.orchestrator(t)
+			created, err := orchestrator.Enable(context.Background(), EnableRequest{CountryCode: "JP", ProxyType: domain.ProxyTypeDatacenter})
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := fixture.store.groups[created.ID]
+			fixture.aimili.checkErrors = []error{&aimili.AdapterError{Code: code}}
+
+			if _, err := orchestrator.Check(context.Background(), created.ID); codeOf(err) != code {
+				t.Fatalf("error = %v", err)
+			}
+			after := fixture.store.groups[created.ID]
+			if after.Status != before.Status || after.LastErrorCode != before.LastErrorCode || !after.LastCheckedAt.Equal(before.LastCheckedAt) {
+				t.Fatalf("transient check error changed persisted health: before=%#v after=%#v", before, after)
+			}
+		})
+	}
+}
+
+func TestCheckKeepsDisconnectedSlotVisibleForManualReplacement(t *testing.T) {
+	fixture := newFixture()
+	orchestrator := fixture.orchestrator(t)
+	created, err := orchestrator.Enable(context.Background(), EnableRequest{CountryCode: "JP", ProxyType: domain.ProxyTypeDatacenter})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.aimili.createdSlots = map[int]aimili.Slot{}
+	fixture.aimili.checkResults = []aimili.SlotCheck{{
+		Number: created.AimiliSlot, NodeID: created.CandidateID, Country: "JP", CountryName: "日本",
+		ProxyType: "datacenter", Port: 17928, Status: "disconnected", EgressOK: false,
+		RepairStatus: "manual_required", AutoRepairAttempted: true, LastErrorCode: "replacement_failed",
+	}}
+
+	checked, err := orchestrator.Check(context.Background(), created.ID)
+	if codeOf(err) != "replacement_failed" {
+		t.Fatalf("error = %v checked=%#v", err, checked)
+	}
+	persisted := fixture.store.groups[created.ID]
+	if persisted.Status != domain.ProxyGroupDegraded || persisted.LastErrorCode != "replacement_failed" || persisted.PublicPort != created.PublicPort || persisted.MixedPort != created.MixedPort || persisted.CandidateID != created.CandidateID {
+		t.Fatalf("manual replacement placeholder was not preserved: before=%#v after=%#v", created, persisted)
+	}
+}
+
+func TestCheckReportsSuccessfulAutomaticRepairToTheCaller(t *testing.T) {
+	fixture := newFixture()
+	orchestrator := fixture.orchestrator(t)
+	created, err := orchestrator.Enable(context.Background(), EnableRequest{CountryCode: "JP", ProxyType: domain.ProxyTypeDatacenter})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.aimili.createdSlots = map[int]aimili.Slot{}
+	fixture.aimili.checkResults = []aimili.SlotCheck{{
+		Number: created.AimiliSlot, NodeID: "jp-replacement", Country: "JP", CountryName: "日本",
+		ProxyType: "residential", Port: 17928, Status: "up", ExitIP: "203.0.113.88",
+		EgressOK: true, AutoRepairPerformed: true,
+	}}
+
+	checked, err := orchestrator.Check(context.Background(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !checked.AutoRepairPerformed || checked.CandidateID != "jp-replacement" || checked.ExitIP != "203.0.113.88" {
+		t.Fatalf("automatic repair result was lost: %#v", checked)
 	}
 }
 
@@ -238,7 +463,8 @@ func TestCheckSynchronizesRuntimeCandidateIdentity(t *testing.T) {
 	group, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter, "stale-node")
 	group.Status = domain.ProxyGroupReady
 	group.AimiliSlot = 2
-	group.VLESSPort = 20000
+	group.PublicInboundID = 21
+	group.PublicPort = 20000
 	group.MixedPort = 30000
 	group.ExitIP = "203.0.113.7"
 	group.RealityPublicKey = "pk"
@@ -247,6 +473,7 @@ func TestCheckSynchronizesRuntimeCandidateIdentity(t *testing.T) {
 	group.CreatedAt = fixture.now()
 	group.UpdatedAt = fixture.now()
 	fixture.store.groups[group.ID] = group
+	fixture.store.protocolModes[group.ID] = domain.EgressProtocolMode{EgressID: group.ID, ActiveMode: domain.ProtocolVLESSTCPRealityVision, DesiredMode: domain.ProtocolVLESSTCPRealityVision, State: domain.ProtocolReady, Version: 1, UpdatedAt: fixture.now()}
 	fixture.aimili.createdSlots = map[int]aimili.Slot{2: {
 		Number: 2, NodeID: "runtime-node", Country: "KR", CountryName: "韩国", ProxyType: "residential",
 		CandidateIP: "198.51.100.8", ExitIP: "203.0.113.8", Port: 17930, Status: "up", EgressOK: true, LatencyMS: 44,
@@ -261,16 +488,208 @@ func TestCheckSynchronizesRuntimeCandidateIdentity(t *testing.T) {
 	}
 }
 
+func TestCheckResynchronizesAnExitThatDriftsDuringValidation(t *testing.T) {
+	fixture := newFixture()
+	group, _ := domain.NewProxyGroupIdentity("ID", domain.ProxyTypeResidential, "id-node")
+	group.Status = domain.ProxyGroupReady
+	group.AimiliSlot = 3
+	group.PublicInboundID = 24
+	group.PublicPort = 20003
+	group.MixedPort = 30003
+	group.ExitIP = "203.0.113.7"
+	group.CreatedAt = fixture.now()
+	group.UpdatedAt = fixture.now()
+	fixture.store.groups[group.ID] = group
+	fixture.store.protocolModes[group.ID] = domain.EgressProtocolMode{
+		EgressID: group.ID, ActiveMode: domain.ProtocolVLESSTCPRealityVision,
+		DesiredMode: domain.ProtocolVLESSTCPRealityVision, State: domain.ProtocolReady,
+		Version: 1, UpdatedAt: fixture.now(),
+	}
+	fixture.aimili.createdSlots = map[int]aimili.Slot{}
+	fixture.aimili.checkResults = []aimili.SlotCheck{
+		{Number: 3, NodeID: "id-node", Country: "ID", CountryName: "印度尼西亚", ProxyType: "residential", ExitIP: "203.0.113.7", Port: 17931, Status: "up", EgressOK: true},
+		{Number: 3, NodeID: "id-node", Country: "ID", CountryName: "印度尼西亚", ProxyType: "residential", ExitIP: "203.0.113.8", Port: 17931, Status: "up", EgressOK: true},
+	}
+	fixture.validator.socksErrors = []error{&validator.Error{Code: "egress_mismatch"}, nil}
+	fixture.xui.subscriptionProfiles = []xui.PublicProfile{{
+		InboundID: 24, Mode: domain.ProtocolVLESSTCPRealityVision, ClientID: "test-client",
+		PublicKey: "test-public", ShortID: "test-short", ServerName: "proxy.example.test",
+	}}
+
+	checked, err := fixture.orchestratorWithMax(t, 4).Check(context.Background(), group.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checked.Status != domain.ProxyGroupReady || checked.ExitIP != "203.0.113.8" || checked.LastErrorCode != "" {
+		t.Fatalf("drifted exit was not resynchronized: %#v", checked)
+	}
+	if !equalStrings(fixture.validator.socksExpectedIPs, []string{"203.0.113.7", "203.0.113.8"}) || len(fixture.validator.publicTargets) != 1 || fixture.validator.publicTargets[0].ExpectedExitIP != "203.0.113.8" {
+		t.Fatalf("validation did not retry against the refreshed exit: socks=%#v public=%#v", fixture.validator.socksExpectedIPs, fixture.validator.publicTargets)
+	}
+}
+
+func TestCheckDoesNotHideARealEgressMismatch(t *testing.T) {
+	fixture := newFixture()
+	group, _ := domain.NewProxyGroupIdentity("ID", domain.ProxyTypeResidential, "id-node")
+	group.Status = domain.ProxyGroupReady
+	group.AimiliSlot = 3
+	group.PublicInboundID = 24
+	group.PublicPort = 20003
+	group.MixedPort = 30003
+	group.ExitIP = "203.0.113.7"
+	group.CreatedAt = fixture.now()
+	group.UpdatedAt = fixture.now()
+	fixture.store.groups[group.ID] = group
+	fixture.store.protocolModes[group.ID] = domain.EgressProtocolMode{
+		EgressID: group.ID, ActiveMode: domain.ProtocolVLESSTCPRealityVision,
+		DesiredMode: domain.ProtocolVLESSTCPRealityVision, State: domain.ProtocolReady,
+		Version: 1, UpdatedAt: fixture.now(),
+	}
+	fixture.aimili.createdSlots = map[int]aimili.Slot{}
+	fixture.aimili.checkResults = []aimili.SlotCheck{
+		{Number: 3, NodeID: "id-node", Country: "ID", ProxyType: "residential", ExitIP: "203.0.113.7", Port: 17931, Status: "up", EgressOK: true},
+		{Number: 3, NodeID: "id-node", Country: "ID", ProxyType: "residential", ExitIP: "203.0.113.7", Port: 17931, Status: "up", EgressOK: true},
+	}
+	fixture.validator.socksErrors = []error{&validator.Error{Code: "egress_mismatch"}}
+
+	checked, err := fixture.orchestratorWithMax(t, 4).Check(context.Background(), group.ID)
+	if codeOf(err) != "egress_mismatch" || checked.Status != domain.ProxyGroupDegraded || checked.LastErrorCode != "egress_mismatch" {
+		t.Fatalf("real mismatch was hidden: checked=%#v err=%v", checked, err)
+	}
+	if fixture.validator.socksCalls != 1 {
+		t.Fatalf("unchanged exit was unnecessarily retried: calls=%d", fixture.validator.socksCalls)
+	}
+}
+
+func TestPoolKeepsVerifiedCandidateExitSeparateAndDoesNotFabricateMissingExit(t *testing.T) {
+	fixture := newFixture()
+	fixture.aimili.candidates = []aimili.Candidate{
+		{ID: "jp-verified", CountryCode: "JP", CountryName: "日本", IP: "198.51.100.10", ExitIP: "203.0.113.10", ExitIPCheckedAt: 1700000005, ProxyType: "datacenter", ProbeStatus: "available"},
+		{ID: "us-unverified", CountryCode: "US", CountryName: "美国", IP: "198.51.100.11", ProxyType: "residential", ProbeStatus: "available"},
+	}
+
+	pool, err := fixture.orchestratorWithMax(t, 1).Pool(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pool) != 2 {
+		t.Fatalf("pool = %#v", pool)
+	}
+	if pool[0].CandidateIP != "198.51.100.10" || pool[0].ExitIP != "203.0.113.10" || pool[0].ExitIPCheckedAt != 1700000005 {
+		t.Fatalf("verified candidate metadata was not separated: %#v", pool[0])
+	}
+	if pool[1].CandidateIP != "198.51.100.11" || pool[1].ExitIP != "" || pool[1].ExitIPCheckedAt != 0 {
+		t.Fatalf("missing candidate exit was fabricated: %#v", pool[1])
+	}
+}
+
+func TestLegacySlotWithoutCheckedAtDoesNotClearKnownExitCheckTime(t *testing.T) {
+	group := domain.ProxyGroup{CandidateID: "candidate-a", ExitIP: "203.0.113.10", ExitIPCheckedAt: 1700000005}
+	applySlotSnapshot(&group, aimili.Slot{NodeID: "candidate-a", ExitIP: "203.0.113.11", CheckedAt: 0})
+	if group.ExitIP != "203.0.113.11" || group.ExitIPCheckedAt != 1700000005 {
+		t.Fatalf("legacy slot cleared verified exit check time: %#v", group)
+	}
+}
+
+func TestSlotCandidateChangeWithoutCheckedAtClearsPreviousExitCheckTime(t *testing.T) {
+	group := domain.ProxyGroup{CandidateID: "candidate-a", ExitIP: "203.0.113.10", ExitIPCheckedAt: 1700000005}
+	applySlotSnapshot(&group, aimili.Slot{NodeID: "candidate-b", ExitIP: "203.0.113.11", CheckedAt: 0})
+	if group.CandidateID != "candidate-b" || group.ExitIP != "203.0.113.11" || group.ExitIPCheckedAt != 0 {
+		t.Fatalf("new candidate retained the previous exit check time: %#v", group)
+	}
+}
+
+func TestCheckValidatesTheCurrentXHTTPProfileInsteadOfAssumingTCP(t *testing.T) {
+	fixture := newFixture()
+	group, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter, "node-one")
+	group.Status = domain.ProxyGroupReady
+	group.AimiliSlot = 2
+	group.PublicInboundID = 21
+	group.PublicPort = 20000
+	group.MixedPort = 30000
+	group.ExitIP = "203.0.113.7"
+	group.CreatedAt = fixture.now()
+	group.UpdatedAt = fixture.now()
+	fixture.store.groups[group.ID] = group
+	fixture.store.protocolModes[group.ID] = domain.EgressProtocolMode{EgressID: group.ID, ActiveMode: domain.ProtocolVLESSXHTTPReality, DesiredMode: domain.ProtocolVLESSXHTTPReality, State: domain.ProtocolReady, Version: 1, UpdatedAt: fixture.now()}
+	fixture.aimili.createdSlots = map[int]aimili.Slot{2: {Number: 2, NodeID: "node-one", Country: "JP", ProxyType: "datacenter", ExitIP: "203.0.113.7", Port: 17930, Status: "up", EgressOK: true}}
+	fixture.xui.subscriptionProfiles = []xui.PublicProfile{{InboundID: 21, Mode: domain.ProtocolVLESSXHTTPReality, ClientID: "test-client", PublicKey: "test-public", ShortID: "test-short", ServerName: "proxy.example.test", XHTTPPath: "/test-path"}}
+
+	checked, err := fixture.orchestratorWithMax(t, 3).Check(context.Background(), group.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checked.Status != domain.ProxyGroupReady || fixture.validator.vlessCalls != 0 || len(fixture.validator.publicTargets) != 1 || fixture.validator.publicTargets[0].Mode != domain.ProtocolVLESSXHTTPReality || fixture.validator.publicTargets[0].XHTTPPath != "/test-path" {
+		t.Fatalf("checked=%#v vlessCalls=%d publicTargets=%#v", checked, fixture.validator.vlessCalls, fixture.validator.publicTargets)
+	}
+}
+
 type fakeStore struct {
-	mu                 sync.Mutex
-	groups             map[string]domain.ProxyGroup
-	credentials        map[string][]byte
-	cidrs              []netip.Prefix
-	policy             store.MixedSourcePolicy
-	enforceUniqueSlots bool
-	mainEgress         store.MainEgress
-	subscription       store.GatewaySubscription
-	aggregate          store.AggregateConfig
+	mu                   sync.Mutex
+	groups               map[string]domain.ProxyGroup
+	credentials          map[string][]byte
+	cidrs                []netip.Prefix
+	policy               store.MixedSourcePolicy
+	enforceUniqueSlots   bool
+	mainEgress           store.MainEgress
+	subscription         store.GatewaySubscription
+	subscriptionWrites   int
+	aggregate            store.AggregateConfig
+	protocolModes        map[string]domain.EgressProtocolMode
+	protocolUpdates      int
+	protocolCreateError  error
+	protocolUpdateErrors map[int]error
+}
+
+func (s *fakeStore) CreateEgressProtocolMode(_ context.Context, value domain.EgressProtocolMode) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.protocolCreateError != nil {
+		return s.protocolCreateError
+	}
+	if _, exists := s.protocolModes[value.EgressID]; exists {
+		return errors.New("protocol mode already exists")
+	}
+	s.protocolModes[value.EgressID] = value
+	return nil
+}
+
+func (s *fakeStore) GetEgressProtocolMode(_ context.Context, egressID string) (domain.EgressProtocolMode, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	value, ok := s.protocolModes[egressID]
+	if !ok {
+		return domain.EgressProtocolMode{}, store.ErrEgressProtocolNotFound
+	}
+	return value, nil
+}
+
+func (s *fakeStore) ListEgressProtocolModes(context.Context) ([]domain.EgressProtocolMode, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := make([]domain.EgressProtocolMode, 0, len(s.protocolModes))
+	for _, value := range s.protocolModes {
+		result = append(result, value)
+	}
+	return result, nil
+}
+
+func (s *fakeStore) UpdateEgressProtocolMode(_ context.Context, value domain.EgressProtocolMode, expectedVersion int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	nextUpdate := s.protocolUpdates + 1
+	if err := s.protocolUpdateErrors[nextUpdate]; err != nil {
+		s.protocolUpdates++
+		return err
+	}
+	current, ok := s.protocolModes[value.EgressID]
+	if !ok || current.Version != expectedVersion {
+		return store.ErrEgressProtocolChanged
+	}
+	value.Version = expectedVersion + 1
+	s.protocolModes[value.EgressID] = value
+	s.protocolUpdates++
+	return nil
 }
 
 func (s *fakeStore) CreateProxyGroup(_ context.Context, group domain.ProxyGroup) error {
@@ -318,10 +737,33 @@ func (s *fakeStore) UpdateProxyGroup(_ context.Context, group domain.ProxyGroup,
 	s.groups[group.ID] = group
 	return nil
 }
+func (s *fakeStore) ReassignProxyGroupCandidates(_ context.Context, assignments map[string]string, now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	seen := make(map[string]struct{}, len(assignments))
+	for id, candidateID := range assignments {
+		if _, ok := s.groups[id]; !ok {
+			return store.ErrProxyGroupNotFound
+		}
+		if _, duplicate := seen[candidateID]; duplicate {
+			return store.ErrProxyGroupExists
+		}
+		seen[candidateID] = struct{}{}
+	}
+	for id, candidateID := range assignments {
+		group := s.groups[id]
+		group.CandidateID = candidateID
+		group.Version++
+		group.UpdatedAt = now
+		s.groups[id] = group
+	}
+	return nil
+}
 func (s *fakeStore) DeleteProxyGroup(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.groups, id)
+	delete(s.protocolModes, id)
 	return nil
 }
 func (s *fakeStore) GetCredential(_ context.Context, purpose string, _ []byte) ([]byte, error) {
@@ -330,6 +772,14 @@ func (s *fakeStore) GetCredential(_ context.Context, purpose string, _ []byte) (
 		return nil, store.ErrCredentialNotFound
 	}
 	return append([]byte(nil), value...), nil
+}
+func (s *fakeStore) ReplaceMixedCredentials(_ context.Context, username, password, _ []byte) error {
+	if len(username) == 0 || len(password) == 0 {
+		return errors.New("credentials required")
+	}
+	s.credentials[credentialMixedUsername] = append([]byte(nil), username...)
+	s.credentials[credentialMixedPassword] = append([]byte(nil), password...)
+	return nil
 }
 func (s *fakeStore) ListMixedCIDRs(context.Context) ([]netip.Prefix, error) {
 	return append([]netip.Prefix(nil), s.cidrs...), nil
@@ -357,9 +807,19 @@ func (s *fakeStore) SaveMainEgress(_ context.Context, value store.MainEgress) er
 	s.mainEgress = value
 	return nil
 }
+func (s *fakeStore) GetMainEgress(context.Context) (store.MainEgress, error) {
+	if s.mainEgress.ResourceName == "" {
+		return store.MainEgress{}, store.ErrProxyGroupNotFound
+	}
+	return s.mainEgress, nil
+}
 func (s *fakeStore) SaveGatewaySubscription(_ context.Context, value store.GatewaySubscription) error {
+	s.subscriptionWrites++
 	s.subscription = value
 	return nil
+}
+func (s *fakeStore) GetGatewaySubscription(context.Context) (store.GatewaySubscription, error) {
+	return s.subscription, nil
 }
 func (s *fakeStore) GetAggregateConfig(context.Context) (store.AggregateConfig, error) {
 	return s.aggregate, nil
@@ -370,25 +830,144 @@ func (s *fakeStore) SaveAggregateConfig(_ context.Context, value store.Aggregate
 }
 
 type fakeAimili struct {
-	calls            *[]string
-	rotatedExitIP    string
-	rotatedExitIPs   []string
-	rotateCalls      int
-	unreadyChecks    int
-	candidates       []aimili.Candidate
-	slotsByCandidate map[string]aimili.Slot
-	createdSlots     map[int]aimili.Slot
-	createErrors     map[string]error
-	mainStatus       aimili.MainStatus
-	assignedSlot     aimili.Slot
-	assignedSlots    []aimili.Slot
-	assignErrors     []error
-	assignCalls      int
-	checkResults     []aimili.SlotCheck
-	assignRequests   []aimili.AssignSlotRequest
+	calls                     *[]string
+	rotatedExitIP             string
+	rotatedExitIPs            []string
+	rotateCalls               int
+	unreadyChecks             int
+	candidates                []aimili.Candidate
+	candidateReads            int
+	slotsByCandidate          map[string]aimili.Slot
+	createdSlots              map[int]aimili.Slot
+	createErrors              map[string]error
+	mainStatus                aimili.MainStatus
+	assignedSlot              aimili.Slot
+	assignedSlots             []aimili.Slot
+	assignErrors              []error
+	assignCalls               int
+	checkResults              []aimili.SlotCheck
+	checkErrors               []error
+	assignRequests            []aimili.AssignSlotRequest
+	stagedMainStatus          aimili.MainStatus
+	mainAssignment            aimili.MainAssignmentStatus
+	mainRollbackError         error
+	mainCommitErrors          []error
+	mainCommitCalls           int
+	repairCommitCalls         int
+	repairReplaceRequests     []aimili.MainRepairRequest
+	mainStageRequests         []aimili.MainAssignmentRequest
+	repairCommitErrors        []error
+	repairReplaceErrors       []error
+	rotateEntered             chan struct{}
+	mutationLeaseExpires      float64
+	mutationLeaseAcquireError error
+	mutationLeaseRenewError   error
+	mutationLeaseRenewed      chan struct{}
+	mutationLeaseRenewErrors  chan error
+}
+
+func (a *fakeAimili) MainAssignment(context.Context) (aimili.MainAssignmentStatus, error) {
+	if a.mainAssignment.State == "" {
+		return aimili.MainAssignmentStatus{State: "idle"}, nil
+	}
+	return a.mainAssignment, nil
+}
+
+func (a *fakeAimili) StageMainAssignment(_ context.Context, request aimili.MainAssignmentRequest) (aimili.MainAssignmentStatus, error) {
+	*a.calls = append(*a.calls, "main.stage")
+	a.mainStageRequests = append(a.mainStageRequests, request)
+	a.mainStatus = a.stagedMainStatus
+	return aimili.MainAssignmentStatus{OperationID: "operation-safe-1", State: "pending_commit", OldCandidateID: request.ExpectedCurrentCandidateID, NewCandidateID: request.CandidateID, Country: request.Country, ProxyType: request.ProxyType, Port: 7928, DNSVerified: true, ExitVerified: true, Available: true}, nil
+}
+func (a *fakeAimili) CommitMainAssignment(context.Context, string) (aimili.MainAssignmentStatus, error) {
+	*a.calls = append(*a.calls, "main.commit")
+	index := a.mainCommitCalls
+	a.mainCommitCalls++
+	a.mainAssignment.State = "committed"
+	if index < len(a.mainCommitErrors) && a.mainCommitErrors[index] != nil {
+		return aimili.MainAssignmentStatus{}, a.mainCommitErrors[index]
+	}
+	return aimili.MainAssignmentStatus{OperationID: "operation-safe-1", State: "committed"}, nil
+}
+func (a *fakeAimili) RollbackMainAssignment(context.Context, string) (aimili.MainAssignmentStatus, error) {
+	*a.calls = append(*a.calls, "main.rollback")
+	if a.mainRollbackError != nil {
+		return aimili.MainAssignmentStatus{}, a.mainRollbackError
+	}
+	a.mainStatus = aimili.MainStatus{CandidateID: "old-main", Country: "US", CountryName: "United States", ProxyType: "datacenter", ExitIP: "203.0.113.10", Port: 7928, EgressOK: true, Active: true}
+	return aimili.MainAssignmentStatus{OperationID: "operation-safe-1", State: "rolled_back"}, nil
+}
+
+func (a *fakeAimili) RepairCommitMainAssignment(context.Context, string) (aimili.MainAssignmentStatus, error) {
+	*a.calls = append(*a.calls, "main.repair-commit")
+	index := a.repairCommitCalls
+	a.repairCommitCalls++
+	a.mainStatus = a.stagedMainStatus
+	a.mainAssignment.State = "pending_gateway_validation"
+	a.mainAssignment.DNSVerified = true
+	a.mainAssignment.ExitVerified = true
+	a.mainAssignment.Available = true
+	if index < len(a.repairCommitErrors) && a.repairCommitErrors[index] != nil {
+		return aimili.MainAssignmentStatus{}, a.repairCommitErrors[index]
+	}
+	return a.mainAssignment, nil
+}
+
+func (a *fakeAimili) RepairReplaceMainAssignment(_ context.Context, _ string, request aimili.MainRepairRequest) (aimili.MainAssignmentStatus, error) {
+	*a.calls = append(*a.calls, "main.repair-replace")
+	a.repairReplaceRequests = append(a.repairReplaceRequests, request)
+	a.mainStatus = a.stagedMainStatus
+	a.mainAssignment.State = "pending_gateway_validation"
+	a.mainAssignment.NewCandidateID = request.CandidateID
+	a.mainAssignment.Country = request.Country
+	a.mainAssignment.ProxyType = request.ProxyType
+	a.mainAssignment.DNSVerified = true
+	a.mainAssignment.ExitVerified = true
+	a.mainAssignment.Available = true
+	index := len(a.repairReplaceRequests) - 1
+	if index < len(a.repairReplaceErrors) && a.repairReplaceErrors[index] != nil {
+		return aimili.MainAssignmentStatus{}, a.repairReplaceErrors[index]
+	}
+	return a.mainAssignment, nil
 }
 
 func (a *fakeAimili) MainStatus(context.Context) (aimili.MainStatus, error) { return a.mainStatus, nil }
+func (a *fakeAimili) AcquireMutationLease(_ context.Context, _ string) (aimili.MutationLease, error) {
+	*a.calls = append(*a.calls, "main.lease.acquire")
+	if a.mutationLeaseAcquireError != nil {
+		return aimili.MutationLease{}, a.mutationLeaseAcquireError
+	}
+	expires := a.mutationLeaseExpires
+	if expires == 0 {
+		expires = float64(time.Now().Add(time.Minute).Unix())
+	}
+	return aimili.MutationLease{State: "active", LeaseID: "opaque-lease-safe-1", ExpiresAt: expires}, nil
+}
+func (a *fakeAimili) RenewMutationLease(_ context.Context, leaseID string) (aimili.MutationLease, error) {
+	if a.mutationLeaseRenewed != nil {
+		select {
+		case a.mutationLeaseRenewed <- struct{}{}:
+		default:
+		}
+	}
+	if a.mutationLeaseRenewError != nil {
+		return aimili.MutationLease{}, a.mutationLeaseRenewError
+	}
+	if a.mutationLeaseRenewErrors != nil {
+		select {
+		case err := <-a.mutationLeaseRenewErrors:
+			if err != nil {
+				return aimili.MutationLease{}, err
+			}
+		default:
+		}
+	}
+	return aimili.MutationLease{State: "active", LeaseID: leaseID, ExpiresAt: float64(time.Now().Add(time.Minute).Unix())}, nil
+}
+func (a *fakeAimili) ReleaseMutationLease(context.Context, string) error {
+	*a.calls = append(*a.calls, "main.lease.release")
+	return nil
+}
 func (a *fakeAimili) AssignSlotNode(_ context.Context, number int, request aimili.AssignSlotRequest) (aimili.Slot, error) {
 	a.assignRequests = append(a.assignRequests, request)
 	index := a.assignCalls
@@ -409,6 +988,7 @@ func (a *fakeAimili) AssignSlotNode(_ context.Context, number int, request aimil
 }
 
 func (a *fakeAimili) Candidates(context.Context) ([]aimili.Candidate, error) {
+	a.candidateReads++
 	if a.candidates != nil {
 		return append([]aimili.Candidate(nil), a.candidates...), nil
 	}
@@ -437,6 +1017,13 @@ func (a *fakeAimili) ListSlots(context.Context) ([]aimili.Slot, error) {
 }
 func (a *fakeAimili) CheckSlot(_ context.Context, number int) (aimili.SlotCheck, error) {
 	*a.calls = append(*a.calls, "slot.check")
+	if len(a.checkErrors) > 0 {
+		err := a.checkErrors[0]
+		a.checkErrors = a.checkErrors[1:]
+		if err != nil {
+			return aimili.SlotCheck{}, err
+		}
+	}
 	if len(a.checkResults) > 0 {
 		result := a.checkResults[0]
 		a.checkResults = a.checkResults[1:]
@@ -462,6 +1049,13 @@ func (a *fakeAimili) CheckSlot(_ context.Context, number int) (aimili.SlotCheck,
 }
 func (a *fakeAimili) RotateSlot(_ context.Context, number int) (aimili.Slot, error) {
 	*a.calls = append(*a.calls, "slot.rotate")
+	if a.rotateEntered != nil {
+		select {
+		case <-a.rotateEntered:
+		default:
+			close(a.rotateEntered)
+		}
+	}
 	if a.rotateCalls < len(a.rotatedExitIPs) {
 		a.rotatedExitIP = a.rotatedExitIPs[a.rotateCalls]
 		a.rotateCalls++
@@ -491,28 +1085,96 @@ func (a *fakeAimili) slot(ip string) aimili.Slot {
 }
 
 type fakeXUI struct {
-	calls                  *[]string
-	deleteError            error
-	desired                xui.DesiredGroup
-	updated                []xui.DesiredGroup
-	updateNames            []string
-	updateErrors           map[int]error
-	returnedPublicKey      string
-	returnedShortID        string
-	returnedServerName     string
-	returnedVLESSInboundID int64
-	returnedMixedInboundID int64
-	returnedResourceName   string
-	deletedAggregate       xui.ManagedAggregate
-	deleteAggregateError   error
-	snapshot               xui.Snapshot
-	subscriptionDesired    xui.SubscriptionDesired
+	calls                          *[]string
+	deleteError                    error
+	desired                        xui.DesiredGroup
+	updated                        []xui.DesiredGroup
+	updateNames                    []string
+	repairPublicNames              []string
+	updateErrors                   map[int]error
+	returnedPublicKey              string
+	returnedShortID                string
+	returnedServerName             string
+	returnedVLESSInboundID         int64
+	returnedMixedInboundID         int64
+	returnedResourceName           string
+	deletedAggregate               xui.ManagedAggregate
+	deleteAggregateError           error
+	snapshot                       xui.Snapshot
+	subscriptionDesired            xui.SubscriptionDesired
+	ensureSubscriptionCalls        int
+	ensureSubscriptionErrors       []error
+	ensureSubscriptionAliasDrifts  []bool
+	subscriptionProfiles           []xui.PublicProfile
+	verifySubscriptionErr          error
+	verifySubscriptionErrors       []error
+	verifySubscriptionCalls        int
+	repairSubscriptionAliasesCalls int
+	profileSequences               [][]xui.PublicProfile
+	ensureLegacyMainCalls          int
+	legacyMainDesired              xui.LegacyMainDesired
 }
 
 func (x *fakeXUI) Snapshot(context.Context) (xui.Snapshot, error) { return x.snapshot, nil }
 func (x *fakeXUI) EnsureSubscriptionClient(_ context.Context, desired xui.SubscriptionDesired) (xui.Subscription, error) {
+	x.ensureSubscriptionCalls++
+	if len(x.ensureSubscriptionErrors) > 0 {
+		err := x.ensureSubscriptionErrors[0]
+		x.ensureSubscriptionErrors = x.ensureSubscriptionErrors[1:]
+		if err != nil {
+			return xui.Subscription{}, err
+		}
+	}
 	x.subscriptionDesired = desired
-	return xui.Subscription{ResourceName: "aimili-gateway-subscription", ClientID: 42, ClientEmail: desired.ClientEmail, ClientUUID: desired.ClientUUID, SubscriptionID: "opaque", InboundIDs: append([]int64(nil), desired.InboundIDs...), SubscriptionPath: "/sub-test/"}, nil
+	aliases := make(map[int64]string, len(desired.Aliases))
+	for id, alias := range desired.Aliases {
+		aliases[id] = alias
+	}
+	if len(x.ensureSubscriptionAliasDrifts) > 0 {
+		drift := x.ensureSubscriptionAliasDrifts[0]
+		x.ensureSubscriptionAliasDrifts = x.ensureSubscriptionAliasDrifts[1:]
+		if drift {
+			for id := range aliases {
+				aliases[id] = "出口位 1_漂移"
+				break
+			}
+		}
+	}
+	profiles := append([]xui.PublicProfile(nil), x.subscriptionProfiles...)
+	if len(x.profileSequences) > 0 {
+		profiles = append([]xui.PublicProfile(nil), x.profileSequences[0]...)
+		x.profileSequences = x.profileSequences[1:]
+	}
+	if len(profiles) == 0 {
+		for _, id := range desired.InboundIDs {
+			profiles = append(profiles, xui.PublicProfile{InboundID: id, Mode: domain.ProtocolVLESSTCPRealityVision, ClientID: desired.ClientUUID, PublicKey: "public-key", ShortID: "short-id", ServerName: "proxy.example.test"})
+		}
+	}
+	return xui.Subscription{ResourceName: "aimili-gateway-subscription", ClientID: 42, ClientEmail: desired.ClientEmail, ClientUUID: desired.ClientUUID, SubscriptionID: "opaque", InboundIDs: append([]int64(nil), desired.InboundIDs...), SubscriptionPath: "/sub-test/", PublicProfiles: profiles, Aliases: aliases}, nil
+}
+func (x *fakeXUI) VerifySubscriptionClient(_ context.Context, desired xui.SubscriptionDesired) (xui.Subscription, error) {
+	x.verifySubscriptionCalls++
+	if len(x.verifySubscriptionErrors) > 0 {
+		err := x.verifySubscriptionErrors[0]
+		x.verifySubscriptionErrors = x.verifySubscriptionErrors[1:]
+		if err != nil {
+			return xui.Subscription{}, err
+		}
+	}
+	if x.verifySubscriptionErr != nil {
+		return xui.Subscription{}, x.verifySubscriptionErr
+	}
+	before := x.ensureSubscriptionCalls
+	result, err := x.EnsureSubscriptionClient(context.Background(), desired)
+	x.ensureSubscriptionCalls = before
+	return result, err
+}
+func (x *fakeXUI) RepairSubscriptionAliases(_ context.Context, desired xui.SubscriptionDesired) (xui.Subscription, error) {
+	x.repairSubscriptionAliasesCalls++
+	before := x.ensureSubscriptionCalls
+	result, err := x.EnsureSubscriptionClient(context.Background(), desired)
+	x.ensureSubscriptionCalls = before
+	return result, err
 }
 func (x *fakeXUI) SubscriptionURL(_ context.Context, subscription xui.Subscription) (string, error) {
 	return subscription.SubscriptionPath + subscription.SubscriptionID, nil
@@ -524,6 +1186,8 @@ func (x *fakeXUI) DeleteManagedAggregate(_ context.Context, managed xui.ManagedA
 }
 
 func (x *fakeXUI) EnsureLegacyMain(_ context.Context, desired xui.LegacyMainDesired) (xui.LegacyMain, error) {
+	x.ensureLegacyMainCalls++
+	x.legacyMainDesired = desired
 	return xui.LegacyMain{VLESSInboundID: 1, MixedInboundID: 98, VLESSPort: desired.VLESSPort, MixedPort: desired.MixedPort, ClientID: "legacy-client", PublicKey: "legacy-public", ShortID: "legacy-short", ServerName: "www.microsoft.com", OutboundTag: "aimili-socks"}, nil
 }
 
@@ -567,6 +1231,33 @@ func (x *fakeXUI) UpdateManagedGroup(_ context.Context, desired xui.DesiredGroup
 	return managed, nil
 }
 
+func (x *fakeXUI) RepairManagedPublic(_ context.Context, desired xui.DesiredGroup, managed xui.ManagedGroup, _ domain.ProtocolMode) (xui.ManagedGroup, error) {
+	x.repairPublicNames = append(x.repairPublicNames, desired.ResourceName)
+	if x.returnedPublicKey != "" {
+		managed.PublicKey = x.returnedPublicKey
+	}
+	if x.returnedShortID != "" {
+		managed.ShortID = x.returnedShortID
+	}
+	if x.returnedServerName != "" {
+		managed.ServerName = x.returnedServerName
+	}
+	if x.returnedVLESSInboundID != 0 {
+		managed.VLESSInboundID = x.returnedVLESSInboundID
+	}
+	return managed, nil
+}
+
+func (x *fakeXUI) UpdateManagedMixedPolicy(ctx context.Context, desired xui.DesiredGroup, managed xui.ManagedGroup) (xui.ManagedGroup, error) {
+	return x.UpdateManagedGroup(ctx, desired, managed)
+}
+
+func (x *fakeXUI) UpdateLegacyMainMixedPolicy(_ context.Context, desired xui.LegacyMainDesired) error {
+	x.ensureLegacyMainCalls++
+	x.legacyMainDesired = desired
+	return nil
+}
+
 type fakeValidator struct {
 	calls            *[]string
 	vlessError       error
@@ -577,6 +1268,8 @@ type fakeValidator struct {
 	socksExpectedIPs []string
 	socksLatency     time.Duration
 	vlessLatency     time.Duration
+	publicErrors     []error
+	publicTargets    []validator.PublicTarget
 }
 
 func (v *fakeValidator) ValidateSOCKS5H(_ context.Context, target validator.SOCKSTarget) (validator.Result, error) {
@@ -599,6 +1292,15 @@ func (v *fakeValidator) ValidateVLESS(_ context.Context, target validator.VLESST
 	}
 	return validator.Result{ExitIP: target.ExpectedExitIP, DNSVerified: true, Latency: v.vlessLatency}, nil
 }
+func (v *fakeValidator) ValidatePublic(_ context.Context, target validator.PublicTarget) (validator.Result, error) {
+	*v.calls = append(*v.calls, "validate.public")
+	v.publicTargets = append(v.publicTargets, target)
+	index := len(v.publicTargets) - 1
+	if index < len(v.publicErrors) && v.publicErrors[index] != nil {
+		return validator.Result{}, v.publicErrors[index]
+	}
+	return validator.Result{ExitIP: target.ExpectedExitIP, DNSVerified: true, Latency: v.vlessLatency}, nil
+}
 
 type fixture struct {
 	calls     []string
@@ -610,7 +1312,7 @@ type fixture struct {
 
 func newFixture() *fixture {
 	f := &fixture{}
-	f.store = &fakeStore{groups: map[string]domain.ProxyGroup{}, credentials: map[string][]byte{"vless-client-id": []byte("client-id"), "mixed-username": []byte("proxy-user"), "mixed-password": []byte("proxy-password")}, cidrs: []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24")}}
+	f.store = &fakeStore{groups: map[string]domain.ProxyGroup{}, protocolModes: map[string]domain.EgressProtocolMode{}, credentials: map[string][]byte{"vless-client-id": []byte("client-id"), "mixed-username": []byte("proxy-user"), "mixed-password": []byte("proxy-password")}, cidrs: []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24")}}
 	f.store.policy = store.MixedSourcePolicy{Enabled: true, CIDRs: append([]netip.Prefix(nil), f.store.cidrs...), ApplyStatus: store.MixedPolicyApplied, UpdatedAt: f.now()}
 	f.aimili = &fakeAimili{calls: &f.calls}
 	f.xui = &fakeXUI{calls: &f.calls}

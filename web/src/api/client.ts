@@ -31,30 +31,47 @@ export interface AuthOptionsPayload {
 
 export type ProxyType = 'residential' | 'datacenter'
 export type ProxyGroupStatus = 'standby' | 'provisioning' | 'ready' | 'rotating' | 'degraded' | 'repair_required' | 'disabling'
+export type ProtocolMode = 'vless_tcp_reality_vision' | 'vless_xhttp_reality' | 'hysteria2_quic_tls'
+export type ProtocolState = 'ready' | 'switching' | 'subscription_pending' | 'rolling_back' | 'repair_required'
+export type SubscriptionState = 'ready' | 'pending' | 'repair_required' | 'unavailable'
 
 export interface CountryPayload { code: string; name: string; residentialCount: number; datacenterCount: number }
 export interface ProxyGroupPayload {
   id: string; countryCode: string; countryName: string; proxyType: ProxyType; status: ProxyGroupStatus
   egressSource?: 'slot' | 'main'
 	  slotNumber?: number; fixed?: boolean
-  vlessPort: number; mixedPort: number; exitIp: string; candidateLatencyMs: number; vlessLatencyMs: number; socksLatencyMs: number
-  lastErrorCode?: string; version: number; lastCheckedAt?: string
+  publicPort?: number
+  protocolMode?: ProtocolMode; desiredProtocolMode?: ProtocolMode; protocolState?: ProtocolState; subscriptionState?: SubscriptionState
+  availableProtocolModes?: ProtocolMode[]
+  vlessPort: number; mixedPort: number; candidateIp?: string; exitIp: string; exitIpCheckedAt?: number; candidateLatencyMs: number; vlessLatencyMs: number; socksLatencyMs: number
+  lastErrorCode?: string; autoRepairPerformed?: boolean; version: number; lastCheckedAt?: string
 }
-export interface ConnectionsPayload { vlessUri: string; socks5hUri: string }
+export interface ConnectionsPayload { protocolMode: ProtocolMode; publicUri: string; vlessUri?: string; vlessError?: string; socks5hUri: string }
+export interface ProtocolModePayload {
+  protocolMode: ProtocolMode; desiredProtocolMode: ProtocolMode; protocolState: ProtocolState; subscriptionState: SubscriptionState
+  availableProtocolModes: ProtocolMode[]; lastErrorCode?: string; updatedAt: string
+}
 export interface SubscriptionPayload { url: string; inboundCount: number; updatedAt: string }
 export type AccountSyncStatus = 'reset_required' | 'synced' | 'checking' | 'repair_required' | 'incompatible'
 export type MixedPolicyApplyStatus = 'pending' | 'applying' | 'applied' | 'failed' | 'repair_required'
 export interface SettingsSummaryPayload { accountSyncStatus: AccountSyncStatus; candidateCount: number; onlineCount: number; maxOnline: number }
 export interface MixedSourcePolicyPayload { enabled: boolean; cidrs: string[]; applyStatus: MixedPolicyApplyStatus }
-export interface AimiliSettingsPayload { candidateCount: number; residentialCount: number; datacenterCount: number; managedSlotCount: number; lastRefreshedAt?: string }
-export interface CandidateCountryPayload { code: string; name: string; candidateCount: number; observedAt: number }
+export interface CandidateCountryPayload { code: string; name: string; candidateCount: number; observedAt: number; officialCandidateTotal?: number; validNodeCount?: number; validCountryCount?: number; targetValidNodeCount?: number; maxValidNodeCount?: number }
 export type CountryRefreshState = 'idle' | 'running' | 'completed' | 'failed'
 export interface CountryRefreshPayload {
   state: CountryRefreshState; country: string; phase: string
+  resultCode?: 'success' | 'no_official_candidates' | 'no_usable_nodes' | 'operation_busy' | 'maintenance_busy' | 'upstream_unavailable'
+  officialCount?: number; usableCount?: number; newUsableCount?: number; retainedCount?: number
   catalogCount?: number; countryCandidateCount?: number; testedCount: number; validCount: number; preservedCount?: number
   startedAt?: number; finishedAt?: number; errorCode?: string
+  stopReason?: string; cacheTotal?: number; countryValidCount?: number; targetValidNodeCount?: number; maxValidNodeCount?: number
 }
-export interface XUISettingsPayload { managedVlessCount: number; managedMixedCount: number; managedOutboundCount: number; ownershipMatches: boolean; lastCheckedAt?: string }
+export interface XUISettingsPayload { managedPublicCount: number; managedVlessCount: number; managedMixedCount: number; managedOutboundCount: number; ownershipMatches: boolean; lastCheckedAt?: string }
+export type UpdateKind = 'ui' | 'gateway'
+export type UpdateState = 'pending' | 'downloading' | 'validating' | 'switching' | 'verifying' | 'rolled_back' | 'success' | 'failed' | 'repair_required'
+export interface UpdateVersionPayload { kind: UpdateKind; version: string; compatible: boolean }
+export interface UpdateSummaryPayload { enabled: boolean; currentGateway: string; currentUi?: string; available: UpdateVersionPayload[] }
+export interface UpdateResultPayload { runId: string; kind: UpdateKind; version?: string; state: UpdateState; errorCode?: string }
 
 export function idempotencyHeaders(): HeadersInit {
   const random = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`
@@ -161,7 +178,7 @@ export async function apiDownloadText(path: string): Promise<string> {
   return response.text()
 }
 
-const backendLoginPaths = new Set(['/api/v1/backends/aimilivpn/login', '/api/v1/backends/3x-ui/login'])
+const backendLoginPaths = new Set(['/api/v1/backends/3x-ui/login'])
 
 export async function openBackend(path: string): Promise<string> {
   if (!backendLoginPaths.has(path)) {

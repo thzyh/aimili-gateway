@@ -1,0 +1,24 @@
+[Unit]
+Description=Aimili egress engine from the Aimili Gateway repository
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/aimili-gateway/services/aimili-egress
+ExecStart=/usr/bin/python3 /opt/aimili-gateway/services/aimili-egress/vpngate_manager.py
+Environment=VPNGATE_DATA_DIR=/opt/aimilivpn/vpngate_data
+Environment=AIMILI_CONTROL_ADDRESS=127.0.0.1:8790
+Environment=AIMILI_CONTROL_TOKEN_FILE=/etc/aimilivpn/control.token
+EnvironmentFile=-/etc/default/aimilivpn
+Restart=always
+RestartSec=5
+UMask=0077
+
+# 此服务需要创建 TUN、策略路由和本机代理；Gateway 服务本身不获得这些权限。
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

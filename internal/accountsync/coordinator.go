@@ -86,7 +86,7 @@ func (c *Coordinator) Status(ctx context.Context) (store.AccountSyncState, error
 func (c *Coordinator) Check(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	credentials, err := c.preflight(ctx)
+	credentials, err := c.preflight(ctx, true)
 	if err != nil {
 		c.recordCheckFailure(ctx, err)
 		return err
@@ -113,12 +113,20 @@ func (c *Coordinator) Check(ctx context.Context) error {
 }
 
 func (c *Coordinator) Change(ctx context.Context, request ChangeRequest) error {
+	return c.change(ctx, request, true)
+}
+
+func (c *Coordinator) Repair(ctx context.Context, request ChangeRequest) error {
+	return c.change(ctx, request, false)
+}
+
+func (c *Coordinator) change(ctx context.Context, request ChangeRequest, requireAligned bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := validateChangeRequest(request); err != nil {
 		return err
 	}
-	oldCredentials, err := c.preflight(ctx)
+	oldCredentials, err := c.preflight(ctx, requireAligned)
 	if err != nil {
 		c.recordCheckFailure(ctx, err)
 		return err
@@ -194,11 +202,7 @@ func (c *Coordinator) Change(ctx context.Context, request ChangeRequest) error {
 	return nil
 }
 
-func (c *Coordinator) Repair(ctx context.Context, request ChangeRequest) error {
-	return c.Change(ctx, request)
-}
-
-func (c *Coordinator) preflight(ctx context.Context) (store.UnifiedCredentials, error) {
+func (c *Coordinator) preflight(ctx context.Context, requireAligned bool) (store.UnifiedCredentials, error) {
 	capabilities, err := c.aimili.Capabilities(ctx)
 	if err != nil || !containsAll(capabilities.Capabilities, "admin.read", "admin.verify", "admin.update", "admin.sessions.issue") {
 		return store.UnifiedCredentials{}, &Error{Code: "version_incompatible"}
@@ -214,7 +218,12 @@ func (c *Coordinator) preflight(ctx context.Context) (store.UnifiedCredentials, 
 	if err != nil {
 		return store.UnifiedCredentials{}, &Error{Code: "account_drift"}
 	}
-	if err := c.verifyCredentials(ctx, credentials); err != nil {
+	if requireAligned {
+		if err := c.verifyCredentials(ctx, credentials); err != nil {
+			clear(credentials.Password)
+			return store.UnifiedCredentials{}, &Error{Code: "account_drift"}
+		}
+	} else if err := c.xui.VerifyAdmin(ctx, xuiCredentials(credentials)); err != nil {
 		clear(credentials.Password)
 		return store.UnifiedCredentials{}, &Error{Code: "account_drift"}
 	}

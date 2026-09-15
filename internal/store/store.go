@@ -66,11 +66,54 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	return store, nil
 }
 
+func OpenReadOnly(ctx context.Context, path string) (*Store, error) {
+	if strings.TrimSpace(path) == "" {
+		return nil, errors.New("database path is required")
+	}
+	absolutePath, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("resolve database path: %w", err)
+	}
+	if info, err := os.Stat(absolutePath); err != nil {
+		return nil, fmt.Errorf("open database: %w", err)
+	} else if !info.Mode().IsRegular() {
+		return nil, errors.New("database must be a regular file")
+	}
+	query := make(url.Values)
+	query.Set("mode", "ro")
+	query.Set("immutable", "1")
+	database, err := sql.Open("sqlite", "file:"+filepath.ToSlash(absolutePath)+"?"+query.Encode())
+	if err != nil {
+		return nil, fmt.Errorf("open database read-only: %w", err)
+	}
+	database.SetMaxOpenConns(1)
+	database.SetMaxIdleConns(1)
+	if err := database.PingContext(ctx); err != nil {
+		_ = database.Close()
+		return nil, fmt.Errorf("ping database read-only: %w", err)
+	}
+	return &Store{db: database}, nil
+}
+
 func (s *Store) Close() error {
 	if s == nil || s.db == nil {
 		return nil
 	}
 	return s.db.Close()
+}
+
+func (s *Store) SchemaVersion(ctx context.Context) (int, error) {
+	if s == nil || s.db == nil {
+		return 0, errors.New("database is not open")
+	}
+	var version sql.NullInt64
+	if err := s.db.QueryRowContext(ctx, `SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
+		return 0, fmt.Errorf("query schema version: %w", err)
+	}
+	if !version.Valid || version.Int64 < 1 {
+		return 0, errors.New("database schema version is missing")
+	}
+	return int(version.Int64), nil
 }
 
 func (s *Store) migrate(ctx context.Context) error {

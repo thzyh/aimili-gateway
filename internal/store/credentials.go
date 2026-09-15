@@ -36,6 +36,48 @@ func (s *Store) PutCredential(ctx context.Context, purpose string, plaintext, ma
 	return nil
 }
 
+// ReplaceMixedCredentials stores the SOCKS5H username and password in one
+// transaction so readers can never observe a half-rotated credential pair.
+func (s *Store) ReplaceMixedCredentials(ctx context.Context, username, password, masterKey []byte) error {
+	if len(username) == 0 || len(password) == 0 {
+		return errors.New("mixed username and password are required")
+	}
+	values := []struct {
+		purpose    string
+		plaintext  []byte
+		ciphertext []byte
+	}{
+		{purpose: "mixed-username", plaintext: username},
+		{purpose: "mixed-password", plaintext: password},
+	}
+	for index := range values {
+		ciphertext, err := encryptCredential(values[index].purpose, values[index].plaintext, masterKey)
+		if err != nil {
+			return err
+		}
+		values[index].ciphertext = ciphertext
+	}
+	transaction, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin mixed credential replacement: %w", err)
+	}
+	defer transaction.Rollback()
+	now := time.Now().UTC().UnixMilli()
+	for _, value := range values {
+		if _, err := transaction.ExecContext(ctx, `
+			INSERT INTO encrypted_credentials(purpose, ciphertext, key_version, created_at, updated_at)
+			VALUES(?, ?, 1, ?, ?)
+			ON CONFLICT(purpose) DO UPDATE SET ciphertext = excluded.ciphertext, updated_at = excluded.updated_at`,
+			value.purpose, value.ciphertext, now, now); err != nil {
+			return fmt.Errorf("store mixed credential pair: %w", err)
+		}
+	}
+	if err := transaction.Commit(); err != nil {
+		return fmt.Errorf("commit mixed credential replacement: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) GetCredential(ctx context.Context, purpose string, masterKey []byte) ([]byte, error) {
 	if !validCredentialPurpose(purpose) {
 		return nil, errors.New("invalid credential purpose")

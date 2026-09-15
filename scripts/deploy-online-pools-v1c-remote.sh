@@ -104,13 +104,15 @@ printf '%s\n' \
     'Environment=COLLECTOR_FAILURE_BACKOFF_SECONDS=600' \
     'Environment=FETCH_INTERVAL_SECONDS=21600' \
     'Environment=CHECK_INTERVAL_SECONDS=21600' \
+    'Environment=LOCAL_PROXY_MAX_CONNECTIONS=128' \
+    'Environment=LOCAL_PROXY_MAX_CONNECTIONS_PER_LISTENER=64' \
     'Environment=AIMILI_CONTROL_ADDRESS=127.0.0.1:8790' \
     'Environment=MALLOC_ARENA_MAX=2' \
     'Restart=on-failure' \
     'RestartSec=30' \
     'MemoryHigh=180M' \
     'MemoryMax=220M' \
-    'TasksMax=48' \
+    'TasksMax=160' \
     'CPUQuota=50%' \
     'Nice=10' \
     'OOMScoreAdjust=500' \

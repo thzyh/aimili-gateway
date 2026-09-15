@@ -78,12 +78,12 @@ func TestProxyGroupCarriesRestartSafeManagedMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	group.VLESSInboundID = 11
+	group.PublicInboundID = 11
 	group.MixedInboundID = 12
 	group.RealityPublicKey = "public-key"
 	group.RealityShortID = "short-id"
 	group.RealityServerName = "www.microsoft.com"
-	if group.VLESSInboundID != 11 || group.MixedInboundID != 12 || group.RealityPublicKey == "" || group.RealityShortID == "" || group.RealityServerName == "" {
+	if group.PublicInboundID != 11 || group.MixedInboundID != 12 || group.RealityPublicKey == "" || group.RealityShortID == "" || group.RealityServerName == "" {
 		t.Fatalf("managed metadata was not retained: %#v", group)
 	}
 }
@@ -96,5 +96,18 @@ func TestProxyGroupSupportsMainEgressSource(t *testing.T) {
 	group.EgressSource = EgressSourceMain
 	if !group.EgressSource.Valid() {
 		t.Fatal("main egress source should be valid")
+	}
+}
+
+func TestProxyGroupKeepsCandidateAndVerifiedExitMetadataSeparate(t *testing.T) {
+	group, err := NewProxyGroupIdentity("JP", ProxyTypeDatacenter, "candidate-one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	group.CandidateIP = "198.51.100.10"
+	group.ExitIP = "203.0.113.10"
+	group.ExitIPCheckedAt = 1700000005
+	if group.CandidateIP == group.ExitIP || group.ExitIPCheckedAt != 1700000005 {
+		t.Fatalf("candidate and exit metadata collapsed: %#v", group)
 	}
 }

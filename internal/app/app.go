@@ -23,6 +23,7 @@ import (
 	"github.com/thzyh/aimili-gateway/internal/httpapi"
 	"github.com/thzyh/aimili-gateway/internal/maintenance"
 	"github.com/thzyh/aimili-gateway/internal/orchestrator"
+	"github.com/thzyh/aimili-gateway/internal/protocoltxn"
 	"github.com/thzyh/aimili-gateway/internal/securefile"
 	"github.com/thzyh/aimili-gateway/internal/store"
 	"github.com/thzyh/aimili-gateway/internal/validator"
@@ -39,6 +40,7 @@ type App struct {
 }
 
 type initialReconciler interface {
+	RecoverProtocolModes(context.Context) error
 	Reconcile(context.Context) orchestrator.ReconcileResult
 }
 
@@ -108,9 +110,17 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		_ = database.Close()
 		return nil, err
 	}
+	if runtime.proxy != nil {
+		if err := startInitialReconcile(appContext, runtime.proxy); err != nil {
+			cancel()
+			_ = database.Close()
+			return nil, err
+		}
+	}
 	dependencies.ProxyManager = runtime.proxy
 	dependencies.Maintenance = runtime.maintenance
 	dependencies.BackendLogin = runtime.backendLogin
+	dependencies.Updates = newUpdateManager(cfg)
 	if cfg.PublicOrigin == "" {
 		dependencies.TestOrigin = "http://" + cfg.ListenAddress
 	}
@@ -122,21 +132,26 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		_ = json.NewEncoder(response).Encode(map[string]string{"status": "ok"})
 	})
 	mux.Handle("/api/v1/", apiHandler)
-	mux.Handle("/", webassets.Handler())
+	mux.Handle("/", webassets.Handler(webassets.Options{ExternalRoot: cfg.ExternalUIRoot, APIVersion: "v1"}))
 	var driftDone <-chan struct{}
-	if runtime.proxy != nil {
-		startInitialReconcile(appContext, runtime.proxy)
-	}
 	if runtime.accounts != nil {
 		driftDone = startAccountDriftChecks(appContext, runtime.accounts, accountCheckInitialDelay(), 6*time.Hour)
 	}
 	return &App{handler: mux, store: database, cancel: cancel, driftDone: driftDone}, nil
 }
 
-func startInitialReconcile(ctx context.Context, reconciler initialReconciler) {
+func startInitialReconcile(ctx context.Context, reconciler initialReconciler) error {
+	if err := reconciler.RecoverProtocolModes(ctx); err != nil {
+		var protocolError *orchestrator.Error
+		if errors.As(err, &protocolError) && protocolError.Code == "repair_required" {
+			return nil
+		}
+		return err
+	}
 	go func() {
 		_ = reconciler.Reconcile(ctx)
 	}()
+	return nil
 }
 
 func newMaintenanceConfig(ctx context.Context, maxOnline int, reconciler initialReconciler) maintenance.Config {
@@ -195,18 +210,25 @@ func newRuntimeServices(ctx context.Context, cfg config.Config, database *store.
 	if err := seedMixedCIDRs(ctx, database, cfg.MixedSourceCIDRs); err != nil {
 		return runtimeServices{}, err
 	}
-	publicHost := "localhost"
-	if cfg.PublicOrigin != "" {
-		parsed, parseErr := url.Parse(cfg.PublicOrigin)
-		if parseErr != nil || parsed.Hostname() == "" {
-			return runtimeServices{}, errors.New("resolve public proxy host")
+	publicHost, realityServerName, err := publicEndpointHosts(cfg.PublicOrigin)
+	if err != nil {
+		return runtimeServices{}, err
+	}
+	var protocolClient *protocoltxn.Client
+	if regularDirectoryExists(cfg.ProtocolRequestDir) && regularDirectoryExists(cfg.ProtocolResultDir) {
+		protocolClient, err = protocoltxn.New(protocoltxn.Config{
+			RequestDir: cfg.ProtocolRequestDir, ResultDir: cfg.ProtocolResultDir,
+			Timeout: time.Duration(cfg.ProtocolTimeoutSeconds) * time.Second, PollInterval: 100 * time.Millisecond,
+		})
+		if err != nil {
+			return runtimeServices{}, err
 		}
-		publicHost = parsed.Hostname()
 	}
 	proxy, err := orchestrator.New(orchestrator.Config{
 		MaxGroups: cfg.MaxProxyGroups, VLESSPortStart: cfg.VLESSPortStart, VLESSPortEnd: cfg.VLESSPortEnd,
-		MixedPortStart: cfg.MixedPortStart, MixedPortEnd: cfg.MixedPortEnd, AggregateVLESSPort: cfg.AggregateVLESSPort, MainMixedPort: cfg.MainMixedPort, PublicHost: publicHost,
-		XrayPath: cfg.XrayPath, ProbeHost: cfg.ProbeHost,
+		MixedPortStart: cfg.MixedPortStart, MixedPortEnd: cfg.MixedPortEnd, AggregateVLESSPort: cfg.AggregateVLESSPort, MainMixedPort: cfg.MainMixedPort,
+		PublicHost: publicHost, PublicOrigin: cfg.PublicOrigin, RealityServerName: realityServerName,
+		XrayPath: cfg.XrayPath, ProbeHost: cfg.ProbeHost, ProtocolTransaction: protocolClient,
 	}, database, aimiliClient, xuiClient, validator.New(20*time.Second), masterKey)
 	if err != nil {
 		return runtimeServices{}, err
@@ -232,6 +254,25 @@ func newRuntimeServices(ctx context.Context, cfg config.Config, database *store.
 	return result, nil
 }
 
+func realityServerNameForPublicHost(publicHost string) string {
+	if _, err := netip.ParseAddr(publicHost); err == nil {
+		return "reality.aimili.test"
+	}
+	return publicHost
+}
+
+func publicEndpointHosts(publicOrigin string) (string, string, error) {
+	publicHost := "localhost"
+	if publicOrigin != "" {
+		parsed, err := url.Parse(publicOrigin)
+		if err != nil || parsed.Hostname() == "" {
+			return "", "", errors.New("resolve public proxy host")
+		}
+		publicHost = parsed.Hostname()
+	}
+	return publicHost, realityServerNameForPublicHost(publicHost), nil
+}
+
 func accountCheckInitialDelay() time.Duration {
 	raw := make([]byte, 1)
 	if _, err := rand.Read(raw); err != nil {
@@ -243,6 +284,11 @@ func accountCheckInitialDelay() time.Duration {
 func regularFileExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.Mode().IsRegular()
+}
+
+func regularDirectoryExists(path string) bool {
+	info, err := os.Lstat(path)
+	return err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0
 }
 
 func ensureRuntimeCredentials(ctx context.Context, database *store.Store, masterKey []byte) error {

@@ -1,0 +1,46 @@
+[Unit]
+Description=Fetch signed Aimili Gateway releases as an unprivileged user
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/aimili-gateway/updater-enabled
+
+[Service]
+Type=oneshot
+User=aimili-gateway-updater
+Group=aimili-gateway-updater
+ExecStart=/usr/local/bin/aimili-gateway-update-fetch spool --config /etc/aimili-gateway/updater.json
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ReadOnlyPaths=/etc/aimili-gateway
+InaccessiblePaths=-/etc/aimili-gateway/config.json
+InaccessiblePaths=-/etc/aimili-gateway/xui-automation.json
+InaccessiblePaths=-/var/lib/aimili-gateway/aimili-gateway.db
+ReadOnlyPaths=/var/lib/aimili-gateway/update-spool/requests
+InaccessiblePaths=/var/lib/aimili-gateway/update-spool/results
+InaccessiblePaths=/var/lib/aimili-gateway/protocol-spool/results
+ReadWritePaths=/var/lib/aimili-gateway-update/staging
+
+[Install]
+WantedBy=multi-user.target

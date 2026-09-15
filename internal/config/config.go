@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -43,6 +44,14 @@ type Config struct {
 	XrayPath               string   `json:"xrayPath"`
 	ProbeHost              string   `json:"probeHost"`
 	MixedSourceCIDRs       []string `json:"mixedSourceCidrs"`
+	ProtocolRequestDir     string   `json:"protocolRequestDir"`
+	ProtocolResultDir      string   `json:"protocolResultDir"`
+	ProtocolTimeoutSeconds int      `json:"protocolTimeoutSeconds"`
+	ExternalUIRoot         string   `json:"externalUiRoot"`
+	UpdateRequestDir       string   `json:"updateRequestDir"`
+	UpdateResultDir        string   `json:"updateResultDir"`
+	UpdateEnabled          bool     `json:"updateEnabled"`
+	UpdateCatalogFile      string   `json:"updateCatalogFile"`
 
 	localTest bool
 }
@@ -66,6 +75,9 @@ func Load(path string) (Config, error) {
 		MainMixedPort:          31000,
 		XrayPath:               filepath.FromSlash("/usr/local/x-ui/bin/xray-linux-amd64"),
 		ProbeHost:              "api.ipify.org",
+		ProtocolRequestDir:     filepath.FromSlash("data/protocol-spool/requests"),
+		ProtocolResultDir:      filepath.FromSlash("data/protocol-spool/results"),
+		ProtocolTimeoutSeconds: 180,
 		localTest:              path == "",
 	}
 
@@ -109,6 +121,17 @@ func (c Config) WithRuntimeDefaults() Config {
 	}
 	if strings.TrimSpace(c.ProbeHost) == "" {
 		c.ProbeHost = "api.ipify.org"
+	}
+	if strings.TrimSpace(c.ProtocolRequestDir) == "" {
+		base := filepath.Dir(c.DatabasePath)
+		c.ProtocolRequestDir = filepath.Join(base, "protocol-spool", "requests")
+	}
+	if strings.TrimSpace(c.ProtocolResultDir) == "" {
+		base := filepath.Dir(c.DatabasePath)
+		c.ProtocolResultDir = filepath.Join(base, "protocol-spool", "results")
+	}
+	if c.ProtocolTimeoutSeconds == 0 {
+		c.ProtocolTimeoutSeconds = 180
 	}
 	return c
 }
@@ -162,6 +185,28 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.XrayPath) == "" || strings.TrimSpace(c.ProbeHost) == "" || net.ParseIP(c.ProbeHost) != nil || strings.ContainsAny(c.ProbeHost, "/:") {
 		return errors.New("xrayPath and a DNS probeHost are required")
+	}
+	requestDir := pathpkg.Clean(filepath.ToSlash(c.ProtocolRequestDir))
+	resultDir := pathpkg.Clean(filepath.ToSlash(c.ProtocolResultDir))
+	if c.ProtocolTimeoutSeconds < 1 || c.ProtocolTimeoutSeconds > 600 || requestDir == resultDir ||
+		pathpkg.Base(requestDir) != "requests" || pathpkg.Base(resultDir) != "results" || pathpkg.Dir(requestDir) != pathpkg.Dir(resultDir) {
+		return errors.New("protocol spool must use sibling requests and results directories")
+	}
+	if value := strings.TrimSpace(c.ExternalUIRoot); value != "" && !filepath.IsAbs(value) && !pathpkg.IsAbs(filepath.ToSlash(value)) {
+		return errors.New("externalUiRoot must be an absolute path")
+	}
+	if c.UpdateEnabled && (c.UpdateCatalogFile != "/etc/aimili-gateway/update-catalog.json" || c.UpdateRequestDir == "") {
+		return errors.New("enabled updater requires fixed trusted catalog and spool")
+	}
+	if (strings.TrimSpace(c.UpdateRequestDir) == "") != (strings.TrimSpace(c.UpdateResultDir) == "") {
+		return errors.New("updateRequestDir and updateResultDir must be configured together")
+	}
+	if c.UpdateRequestDir != "" {
+		requestDir := pathpkg.Clean(filepath.ToSlash(c.UpdateRequestDir))
+		resultDir := pathpkg.Clean(filepath.ToSlash(c.UpdateResultDir))
+		if pathpkg.Base(requestDir) != "requests" || pathpkg.Base(resultDir) != "results" || pathpkg.Dir(requestDir) != pathpkg.Dir(resultDir) {
+			return errors.New("update spool must use sibling requests and results directories")
+		}
 	}
 	for _, raw := range c.MixedSourceCIDRs {
 		prefix, err := netip.ParsePrefix(raw)
@@ -223,6 +268,11 @@ func applyEnvironment(cfg *Config) {
 		{name: "GATEWAY_EXPERT_MODE_URL", target: &cfg.ExpertModeURL},
 		{name: "GATEWAY_XRAY_PATH", target: &cfg.XrayPath},
 		{name: "GATEWAY_PROBE_HOST", target: &cfg.ProbeHost},
+		{name: "GATEWAY_PROTOCOL_REQUEST_DIR", target: &cfg.ProtocolRequestDir},
+		{name: "GATEWAY_PROTOCOL_RESULT_DIR", target: &cfg.ProtocolResultDir},
+		{name: "GATEWAY_EXTERNAL_UI_ROOT", target: &cfg.ExternalUIRoot},
+		{name: "GATEWAY_UPDATE_REQUEST_DIR", target: &cfg.UpdateRequestDir},
+		{name: "GATEWAY_UPDATE_RESULT_DIR", target: &cfg.UpdateResultDir},
 	}
 	for _, override := range overrides {
 		if value := os.Getenv(override.name); value != "" {

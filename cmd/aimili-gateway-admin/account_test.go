@@ -57,7 +57,7 @@ func TestAccountMenuGeneratesRandomPasswordOnceAndRevokesSessions(t *testing.T) 
 		&bytes.Buffer{},
 		commandDependencies{Now: environment.now, Random: bytes.NewReader(randomBytes), Synchronizer: newTestAccountSynchronizer(environment)},
 	)
-	if code != 0 {
+	if code != gatewayReloadRequiredExitCode {
 		t.Fatalf("exit code = %d", code)
 	}
 	if strings.Count(output.String(), wantPassword) != 1 {
@@ -78,6 +78,33 @@ func TestAccountMenuGeneratesRandomPasswordOnceAndRevokesSessions(t *testing.T) 
 	}
 }
 
+func TestAccountMenuRandomPasswordRepairsDetectedDrift(t *testing.T) {
+	environment := newAdminTestEnvironment(t)
+	database, _ := seedAccountAdmin(t, environment, false)
+	database.Close()
+	randomBytes := bytes.Repeat([]byte{0xCD}, 24)
+	synchronizer := &driftThenRepairSynchronizer{delegate: newTestAccountSynchronizer(environment)}
+	code := runWithDependencies(
+		[]string{"account"},
+		strings.NewReader("3\n"),
+		&bytes.Buffer{},
+		&bytes.Buffer{},
+		commandDependencies{Now: environment.now, Random: bytes.NewReader(randomBytes), Synchronizer: synchronizer},
+	)
+	if code != gatewayReloadRequiredExitCode {
+		t.Fatalf("exit code = %d", code)
+	}
+	if synchronizer.changeCalls != 1 || synchronizer.repairCalls != 1 {
+		t.Fatalf("change calls = %d, repair calls = %d", synchronizer.changeCalls, synchronizer.repairCalls)
+	}
+	wantPassword := base64.RawURLEncoding.EncodeToString(randomBytes)
+	admin := reopenAccountAdmin(t, environment)
+	matched, err := auth.VerifyPassword(string(admin.PasswordHash), []byte(wantPassword))
+	if err != nil || !matched {
+		t.Fatal("drift recovery did not commit the generated password")
+	}
+}
+
 func TestAccountMenuChangesUsernameAndRevokesSessions(t *testing.T) {
 	environment := newAdminTestEnvironment(t)
 	database, session := seedAccountAdmin(t, environment, false)
@@ -89,7 +116,7 @@ func TestAccountMenuChangesUsernameAndRevokesSessions(t *testing.T) {
 		&bytes.Buffer{},
 		commandDependencies{Now: environment.now, Random: bytes.NewReader(bytes.Repeat([]byte{4}, 64)), Synchronizer: newTestAccountSynchronizer(environment)},
 	)
-	if code != 0 {
+	if code != gatewayReloadRequiredExitCode {
 		t.Fatalf("exit code = %d", code)
 	}
 	admin := reopenAccountAdmin(t, environment)
@@ -119,7 +146,7 @@ func TestAccountMenuSetsCustomPasswordWithoutEchoingIt(t *testing.T) {
 		&bytes.Buffer{},
 		commandDependencies{Now: environment.now, Random: bytes.NewReader(bytes.Repeat([]byte{2}, 64)), Synchronizer: newTestAccountSynchronizer(environment)},
 	)
-	if code != 0 {
+	if code != gatewayReloadRequiredExitCode {
 		t.Fatalf("exit code = %d", code)
 	}
 	if strings.Contains(output.String(), password) {
@@ -145,7 +172,7 @@ func TestAccountMenuExitsAfterRepairSoGatewayCanReloadCredentials(t *testing.T) 
 		&bytes.Buffer{},
 		commandDependencies{Now: environment.now, Random: bytes.NewReader(bytes.Repeat([]byte{6}, 64)), Synchronizer: newTestAccountSynchronizer(environment)},
 	)
-	if code != 0 {
+	if code != gatewayReloadRequiredExitCode {
 		t.Fatalf("exit code = %d", code)
 	}
 	if !strings.Contains(output.String(), "Gateway 将立即重载") {
@@ -324,6 +351,26 @@ func reopenAccountAdmin(t *testing.T, environment adminTestEnvironment) store.Ad
 
 type testAccountSynchronizer struct {
 	environment adminTestEnvironment
+}
+
+type driftThenRepairSynchronizer struct {
+	delegate    *testAccountSynchronizer
+	changeCalls int
+	repairCalls int
+}
+
+func (s *driftThenRepairSynchronizer) Status(ctx context.Context) (store.AccountSyncState, error) {
+	return s.delegate.Status(ctx)
+}
+
+func (s *driftThenRepairSynchronizer) Change(context.Context, accountsync.ChangeRequest) error {
+	s.changeCalls++
+	return &accountsync.Error{Code: "account_drift"}
+}
+
+func (s *driftThenRepairSynchronizer) Repair(ctx context.Context, request accountsync.ChangeRequest) error {
+	s.repairCalls++
+	return s.delegate.Repair(ctx, request)
 }
 
 func newTestAccountSynchronizer(environment adminTestEnvironment) *testAccountSynchronizer {

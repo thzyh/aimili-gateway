@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/cookiejar"
@@ -21,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/thzyh/aimili-gateway/internal/domain"
 	"github.com/thzyh/aimili-gateway/internal/securefile"
 )
 
@@ -227,14 +229,21 @@ func (c *Client) UpdateManagedGroup(ctx context.Context, desired DesiredGroup, m
 	if err != nil {
 		return ManagedGroup{}, err
 	}
-	if err := c.verifyCurrentMixedAccount(ctx, desired, managed); err != nil {
+	originalMixed, mixedChanged, err := c.syncManagedMixedAccount(ctx, desired, managed)
+	if err != nil {
 		return ManagedGroup{}, err
 	}
 	setting, err := mergeManagedXray(snapshot.XraySetting, effectiveDesired, managed.VLESSInboundTag, managed.MixedInboundTag)
 	if err != nil {
+		if mixedChanged {
+			_ = c.updateInbound(ctx, managed.MixedInboundID, originalMixed)
+		}
 		return ManagedGroup{}, err
 	}
 	if err := c.updateXray(ctx, setting, snapshot.OutboundTestURL); err != nil {
+		if mixedChanged {
+			_ = c.updateInbound(ctx, managed.MixedInboundID, originalMixed)
+		}
 		return ManagedGroup{}, err
 	}
 	managed.Fingerprint = fingerprintDesired(effectiveDesired)
@@ -242,6 +251,316 @@ func (c *Client) UpdateManagedGroup(ctx context.Context, desired DesiredGroup, m
 	managed.ShortID = shortID
 	managed.ServerName = serverName
 	managed.MLDSA65Verify = mldsa65Verify
+	return managed, nil
+}
+
+// RepairManagedPublic verifies the exact Gateway-owned public inbound and may
+// recreate a missing VLESS/TCP inbound. Other protocol modes require material
+// that must not be guessed when the public resource is absent.
+func (c *Client) RepairManagedPublic(ctx context.Context, desired DesiredGroup, managed ManagedGroup, mode domain.ProtocolMode) (ManagedGroup, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := validateDesiredGroup(desired); err != nil {
+		return ManagedGroup{}, err
+	}
+	if managed.ResourceName != desired.ResourceName || managed.VLESSInboundID <= 0 || managed.MixedInboundID <= 0 ||
+		managed.VLESSInboundTag != desired.ResourceName+"-vless" || managed.MixedInboundTag != desired.ResourceName+"-mixed" ||
+		managed.OutboundTag != desired.ResourceName+"-socks" || !mode.Valid() {
+		return ManagedGroup{}, &AdapterError{Code: "invalid_request"}
+	}
+	if err := c.authenticate(ctx); err != nil {
+		return ManagedGroup{}, err
+	}
+	snapshot, err := c.snapshot(ctx)
+	if err != nil {
+		return ManagedGroup{}, err
+	}
+	managed, err = resolveManagedMixedInboundID(snapshot.Inbounds, desired, managed)
+	if err != nil {
+		return ManagedGroup{}, err
+	}
+	_, _, err = c.syncManagedMixedAccount(ctx, desired, managed)
+	if err != nil {
+		return ManagedGroup{}, err
+	}
+	if err := verifyManagedSocksOutbound(snapshot.XraySetting, managed.OutboundTag, desired.SOCKSPort); err != nil {
+		return ManagedGroup{}, err
+	}
+
+	expectedProtocol := "vless"
+	if mode == domain.ProtocolHysteria2QUICTLS {
+		expectedProtocol = "hysteria"
+	}
+	var public, stale *Inbound
+	for index := range snapshot.Inbounds {
+		inbound := &snapshot.Inbounds[index]
+		if inbound.ID == managed.VLESSInboundID && inbound.Tag != managed.VLESSInboundTag {
+			storedOwned := strings.HasPrefix(inbound.Tag, "agw-") && strings.HasSuffix(inbound.Tag, "-vless")
+			if !storedOwned && inbound.Tag == "in-"+strconv.Itoa(desired.VLESSPort)+"-tcp" && inbound.Remark == "Aimili Gateway "+desired.ResourceName+" VLESS" {
+				details, detailsErr := c.inboundDetails(ctx)
+				if detailsErr != nil {
+					return ManagedGroup{}, detailsErr
+				}
+				for _, detail := range details {
+					if detail.ID == inbound.ID {
+						storedOwned = xuiAutoTaggedTCPBelongsToGateway(detail, desired)
+						break
+					}
+				}
+			}
+			if stale != nil || mode != domain.ProtocolVLESSTCPRealityVision || inbound.Protocol != "vless" || inbound.Port != desired.VLESSPort ||
+				!strings.HasPrefix(inbound.Remark, "Aimili Gateway ") || !storedOwned {
+				return ManagedGroup{}, &AdapterError{Code: "ownership_conflict"}
+			}
+			stale = inbound
+			continue
+		}
+		if inbound.Tag == managed.VLESSInboundTag {
+			if public != nil || inbound.Protocol != expectedProtocol || inbound.Port != desired.VLESSPort || !strings.HasPrefix(inbound.Remark, "Aimili Gateway ") {
+				return ManagedGroup{}, &AdapterError{Code: "ownership_conflict"}
+			}
+			public = inbound
+			continue
+		}
+		if inbound.Port == desired.VLESSPort {
+			return ManagedGroup{}, &AdapterError{Code: "port_conflict"}
+		}
+	}
+	if public != nil && stale != nil {
+		return ManagedGroup{}, &AdapterError{Code: "ownership_conflict"}
+	}
+	if public != nil {
+		managed.VLESSInboundID = public.ID
+		if mode != domain.ProtocolVLESSTCPRealityVision {
+			return managed, nil
+		}
+		publicKey, shortID, serverName, verify, materialErr := c.currentRealityMaterial(ctx, desired, managed)
+		if materialErr != nil {
+			return ManagedGroup{}, materialErr
+		}
+		managed.PublicKey, managed.ShortID, managed.ServerName, managed.MLDSA65Verify = publicKey, shortID, serverName, verify
+		return managed, nil
+	}
+	if mode != domain.ProtocolVLESSTCPRealityVision {
+		return ManagedGroup{}, &AdapterError{Code: "managed_resource_missing"}
+	}
+
+	privateKey, publicKey, err := c.newX25519(ctx)
+	if err != nil {
+		return ManagedGroup{}, err
+	}
+	shortIDBytes := make([]byte, 4)
+	if _, err := rand.Read(shortIDBytes); err != nil {
+		return ManagedGroup{}, &AdapterError{Code: "random_failed"}
+	}
+	shortID := hex.EncodeToString(shortIDBytes)
+	template := vlessInbound(desired, managed.VLESSInboundTag, privateKey, publicKey, shortID)
+	var staleRaw map[string]any
+	if stale != nil {
+		details, detailsErr := c.inboundDetails(ctx)
+		if detailsErr != nil {
+			return ManagedGroup{}, detailsErr
+		}
+		for _, detail := range details {
+			if detail.ID == stale.ID {
+				staleRaw = cloneObject(detail.Raw)
+				break
+			}
+		}
+		if staleRaw == nil {
+			return ManagedGroup{}, &AdapterError{Code: "managed_resource_missing"}
+		}
+		staleSettings, staleSettingsOK := decodeObject(staleRaw["settings"])
+		templateSettings, templateSettingsOK := decodeObject(template["settings"])
+		if !staleSettingsOK || !templateSettingsOK {
+			return ManagedGroup{}, &AdapterError{Code: "invalid_response"}
+		}
+		for _, client := range asObjectSlice(staleSettings["clients"]) {
+			if stringValue(client["email"]) == managedSubscriptionEmail {
+				templateSettings["clients"] = append(asObjectSlice(templateSettings["clients"]), cloneObject(client))
+				break
+			}
+		}
+		template["settings"] = mustJSONString(templateSettings)
+		if err := c.updateInbound(ctx, stale.ID, template); err != nil {
+			return ManagedGroup{}, err
+		}
+	} else if err := c.addInbound(ctx, template); err != nil {
+		return ManagedGroup{}, err
+	}
+	updated, err := c.inbounds(ctx)
+	matches := make([]Inbound, 0, 1)
+	if err == nil {
+		for _, inbound := range updated {
+			if inbound.Tag == managed.VLESSInboundTag && inbound.Protocol == "vless" && inbound.Port == desired.VLESSPort && strings.HasPrefix(inbound.Remark, "Aimili Gateway ") {
+				matches = append(matches, inbound)
+			}
+		}
+	}
+	validWrite := len(matches) == 1 && (stale == nil || matches[0].ID == stale.ID)
+	if !validWrite {
+		if staleRaw != nil {
+			_ = c.updateInbound(ctx, stale.ID, staleRaw)
+		} else {
+			for _, inbound := range updated {
+				if inbound.Tag == managed.VLESSInboundTag && strings.HasPrefix(inbound.Remark, "Aimili Gateway ") {
+					_, _ = c.call(ctx, http.MethodPost, "panel/api/inbounds/del/"+formatInt64(inbound.ID), map[string]any{}, false)
+				}
+			}
+		}
+		return ManagedGroup{}, &AdapterError{Code: "write_verification_failed"}
+	}
+
+	originalSetting := cloneObject(snapshot.XraySetting)
+	setting := cloneObject(snapshot.XraySetting)
+	if stale != nil {
+		routing, _ := setting["routing"].(map[string]any)
+		if routing != nil {
+			kept := make([]any, 0)
+			for _, rule := range asObjectSlice(routing["rules"]) {
+				if !ruleContainsInbound(rule, stale.Tag) {
+					kept = append(kept, rule)
+				}
+			}
+			routing["rules"] = kept
+		}
+	}
+	setting, err = mergeManagedXray(setting, desired, managed.VLESSInboundTag, managed.MixedInboundTag)
+	if err == nil && !reflect.DeepEqual(originalSetting, setting) {
+		err = c.updateXray(ctx, setting, snapshot.OutboundTestURL)
+	}
+	if err != nil {
+		rollbackOK := true
+		if staleRaw != nil {
+			rollbackOK = c.updateInbound(ctx, stale.ID, staleRaw) == nil
+		} else {
+			_, deleteErr := c.call(ctx, http.MethodPost, "panel/api/inbounds/del/"+formatInt64(matches[0].ID), map[string]any{}, false)
+			rollbackOK = deleteErr == nil
+		}
+		if !reflect.DeepEqual(originalSetting, setting) && c.updateXray(ctx, originalSetting, snapshot.OutboundTestURL) != nil {
+			rollbackOK = false
+		}
+		if !rollbackOK {
+			return ManagedGroup{}, &AdapterError{Code: "partial_inbound_update"}
+		}
+		return ManagedGroup{}, err
+	}
+	managed.VLESSInboundID = matches[0].ID
+	managed.PublicKey = publicKey
+	managed.ShortID = shortID
+	managed.ServerName = desired.RealityServerName
+	managed.MLDSA65Verify = ""
+	return managed, nil
+}
+
+func xuiAutoTaggedTCPBelongsToGateway(inbound inboundDetail, desired DesiredGroup) bool {
+	if inbound.Tag != "in-"+strconv.Itoa(desired.VLESSPort)+"-tcp" || inbound.Remark != "Aimili Gateway "+desired.ResourceName+" VLESS" ||
+		inbound.Protocol != "vless" || inbound.Port != desired.VLESSPort {
+		return false
+	}
+	settings, ok := decodeObject(inbound.Settings)
+	if !ok {
+		return false
+	}
+	clients := asObjectSlice(settings["clients"])
+	if len(clients) < 1 || len(clients) > 2 {
+		return false
+	}
+	expectedManagedEmail := managedClientEmail(desired.ResourceName)
+	foundManaged := false
+	foundSubscription := false
+	for _, client := range clients {
+		if stringValue(client["id"]) != desired.VLESSClientID || stringValue(client["flow"]) != "xtls-rprx-vision" {
+			return false
+		}
+		switch stringValue(client["email"]) {
+		case expectedManagedEmail:
+			if foundManaged {
+				return false
+			}
+			foundManaged = true
+		case "aimili-gateway-subscription":
+			if foundSubscription {
+				return false
+			}
+			foundSubscription = true
+		default:
+			return false
+		}
+	}
+	stream, ok := decodeObject(inbound.StreamSettings)
+	return ok && foundManaged && stringValue(stream["network"]) == "tcp" && stringValue(stream["security"]) == "reality"
+}
+
+// UpdateManagedMixedPolicy changes only the mixed inbound routing policy. It
+// deliberately does not inspect or rewrite the public inbound because that
+// inbound may currently be VLESS/TCP, VLESS/XHTTP, or Hysteria2.
+func (c *Client) UpdateManagedMixedPolicy(ctx context.Context, desired DesiredGroup, managed ManagedGroup) (ManagedGroup, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := validateDesiredGroup(desired); err != nil {
+		return ManagedGroup{}, err
+	}
+	if managed.ResourceName != desired.ResourceName || managed.VLESSInboundID <= 0 || managed.MixedInboundID <= 0 ||
+		managed.VLESSInboundTag != desired.ResourceName+"-vless" || managed.MixedInboundTag != desired.ResourceName+"-mixed" ||
+		managed.OutboundTag != desired.ResourceName+"-socks" {
+		return ManagedGroup{}, &AdapterError{Code: "invalid_request"}
+	}
+	if err := c.authenticate(ctx); err != nil {
+		return ManagedGroup{}, err
+	}
+	snapshot, err := c.snapshot(ctx)
+	if err != nil {
+		return ManagedGroup{}, err
+	}
+	managed, err = resolveManagedMixedInboundID(snapshot.Inbounds, desired, managed)
+	if err != nil {
+		return ManagedGroup{}, err
+	}
+	originalMixed, mixedChanged, err := c.syncManagedMixedAccount(ctx, desired, managed)
+	if err != nil {
+		return ManagedGroup{}, err
+	}
+	if err := verifyManagedSocksOutbound(snapshot.XraySetting, managed.OutboundTag, desired.SOCKSPort); err != nil {
+		return ManagedGroup{}, err
+	}
+	original := cloneObject(snapshot.XraySetting)
+	setting, err := mergeMixedSourceRouting(snapshot.XraySetting, managed.MixedInboundTag, managed.OutboundTag, desired.MixedSourceRestrictionEnabled, desired.MixedSourceCIDRs)
+	if err != nil {
+		return ManagedGroup{}, err
+	}
+	if !reflect.DeepEqual(original, setting) {
+		if err := c.updateXray(ctx, setting, snapshot.OutboundTestURL); err != nil {
+			if mixedChanged {
+				_ = c.updateInbound(ctx, managed.MixedInboundID, originalMixed)
+			}
+			return ManagedGroup{}, err
+		}
+	}
+	managed.Fingerprint = fingerprintDesired(desired)
+	return managed, nil
+}
+
+func resolveManagedMixedInboundID(inbounds []Inbound, desired DesiredGroup, managed ManagedGroup) (ManagedGroup, error) {
+	var found *Inbound
+	for index := range inbounds {
+		inbound := &inbounds[index]
+		if inbound.ID == managed.MixedInboundID && inbound.Tag != managed.MixedInboundTag {
+			return ManagedGroup{}, &AdapterError{Code: "ownership_conflict"}
+		}
+		if inbound.Tag == managed.MixedInboundTag {
+			if found != nil || inbound.Protocol != "mixed" || inbound.Port != desired.MixedPort || !strings.HasPrefix(inbound.Remark, "Aimili Gateway ") {
+				return ManagedGroup{}, &AdapterError{Code: "ownership_conflict"}
+			}
+			found = inbound
+		} else if inbound.Port == desired.MixedPort {
+			return ManagedGroup{}, &AdapterError{Code: "port_conflict"}
+		}
+	}
+	if found == nil {
+		return ManagedGroup{}, &AdapterError{Code: "managed_resource_missing"}
+	}
+	managed.MixedInboundID = found.ID
 	return managed, nil
 }
 
@@ -302,30 +621,48 @@ func resolveManagedInboundIDs(inbounds []Inbound, desired DesiredGroup, managed 
 	return managed, nil
 }
 
-func (c *Client) verifyCurrentMixedAccount(ctx context.Context, desired DesiredGroup, managed ManagedGroup) error {
+// syncManagedMixedAccount repairs credentials in a Gateway-owned mixed
+// inbound after the unified admin account has rotated.  Older deployments
+// can legitimately retain the previous proxy username/password; rejecting
+// that state makes the source-restriction toggle permanently repair-required.
+// Ownership is still checked strictly by tag, protocol, port and remark.
+func (c *Client) syncManagedMixedAccount(ctx context.Context, desired DesiredGroup, managed ManagedGroup) (map[string]any, bool, error) {
 	details, err := c.inboundDetails(ctx)
 	if err != nil {
-		return err
+		return nil, false, err
 	}
 	for _, inbound := range details {
 		if inbound.ID != managed.MixedInboundID {
 			continue
 		}
 		if inbound.Tag != managed.MixedInboundTag || inbound.Protocol != "mixed" || inbound.Port != desired.MixedPort || !strings.HasPrefix(inbound.Remark, "Aimili Gateway ") {
-			return &AdapterError{Code: "ownership_conflict"}
+			return nil, false, &AdapterError{Code: "ownership_conflict"}
 		}
 		settings, ok := decodeObject(inbound.Settings)
 		if !ok {
-			return &AdapterError{Code: "invalid_response"}
+			return nil, false, &AdapterError{Code: "invalid_response"}
 		}
 		accounts := asObjectSlice(settings["accounts"])
-		if stringValue(settings["auth"]) != "password" || len(accounts) != 1 ||
-			stringValue(accounts[0]["user"]) != desired.MixedUsername || stringValue(accounts[0]["pass"]) != desired.MixedPassword {
-			return &AdapterError{Code: "managed_resource_drift"}
+		if stringValue(settings["auth"]) == "password" && len(accounts) == 1 &&
+			stringValue(accounts[0]["user"]) == desired.MixedUsername && stringValue(accounts[0]["pass"]) == desired.MixedPassword {
+			return nil, false, nil
 		}
-		return nil
+		desiredSettings := cloneObject(settings)
+		desiredSettings["auth"] = "password"
+		desiredSettings["accounts"] = []any{map[string]any{"user": desired.MixedUsername, "pass": desired.MixedPassword}}
+		desiredSettings["udp"] = true
+		if reflect.DeepEqual(settings, desiredSettings) {
+			return nil, false, nil
+		}
+		original := cloneObject(inbound.Raw)
+		updated := cloneObject(inbound.Raw)
+		updated["settings"] = mustJSONString(desiredSettings)
+		if err := c.updateInbound(ctx, managed.MixedInboundID, updated); err != nil {
+			return nil, false, err
+		}
+		return original, true, nil
 	}
-	return &AdapterError{Code: "managed_resource_missing"}
+	return nil, false, &AdapterError{Code: "managed_resource_missing"}
 }
 
 type inboundDetail struct {
@@ -334,6 +671,7 @@ type inboundDetail struct {
 	Remark         string         `json:"remark"`
 	Protocol       string         `json:"protocol"`
 	Port           int            `json:"port"`
+	SubSortIndex   int            `json:"subSortIndex"`
 	Settings       any            `json:"settings"`
 	StreamSettings any            `json:"streamSettings"`
 	Raw            map[string]any `json:"-"`
@@ -621,7 +959,7 @@ func (c *Client) inbounds(ctx context.Context) ([]Inbound, error) {
 	}
 	result := make([]Inbound, 0, len(details))
 	for _, inbound := range details {
-		result = append(result, Inbound{ID: inbound.ID, Tag: inbound.Tag, Remark: inbound.Remark, Protocol: inbound.Protocol, Port: inbound.Port})
+		result = append(result, Inbound{ID: inbound.ID, Tag: inbound.Tag, Remark: inbound.Remark, Protocol: inbound.Protocol, Port: inbound.Port, SubSortIndex: inbound.SubSortIndex})
 	}
 	return result, nil
 }
@@ -809,7 +1147,7 @@ func mergeManagedXray(setting map[string]any, desired DesiredGroup, vlessTag, mi
 }
 
 func mixedSourceRestrictionEnabled(desired DesiredGroup) bool {
-	return desired.MixedSourceRestrictionEnabled || len(desired.MixedSourceCIDRs) > 0
+	return desired.MixedSourceRestrictionEnabled
 }
 
 func managedSocksOutboundMatches(outbound map[string]any, port int) bool {
@@ -829,6 +1167,76 @@ func managedSocksOutboundMatches(outbound map[string]any, port int) bool {
 		return false
 	}
 	return int(value) == port
+}
+
+func verifyManagedSocksOutbound(setting map[string]any, tag string, port int) error {
+	found := false
+	for _, outbound := range asObjectSlice(setting["outbounds"]) {
+		if stringValue(outbound["tag"]) != tag {
+			continue
+		}
+		if found || !managedSocksOutboundMatches(outbound, port) {
+			return &AdapterError{Code: "ownership_conflict"}
+		}
+		found = true
+	}
+	if !found {
+		return &AdapterError{Code: "managed_resource_missing"}
+	}
+	return nil
+}
+
+func mergeMixedSourceRouting(setting map[string]any, mixedTag, outboundTag string, enabled bool, cidrs []string) (map[string]any, error) {
+	if strings.TrimSpace(mixedTag) == "" || strings.TrimSpace(outboundTag) == "" {
+		return nil, &AdapterError{Code: "invalid_request"}
+	}
+	if enabled {
+		foundBlackhole := false
+		outbounds := asObjectSlice(setting["outbounds"])
+		for _, outbound := range outbounds {
+			if stringValue(outbound["tag"]) != "agw-blackhole" {
+				continue
+			}
+			if foundBlackhole || stringValue(outbound["protocol"]) != "blackhole" {
+				return nil, &AdapterError{Code: "ownership_conflict"}
+			}
+			foundBlackhole = true
+		}
+		if !foundBlackhole {
+			setting["outbounds"] = append(anyObjects(outbounds), map[string]any{"tag": "agw-blackhole", "protocol": "blackhole", "settings": map[string]any{}})
+		}
+	}
+	routing, _ := setting["routing"].(map[string]any)
+	if routing == nil {
+		routing = map[string]any{"domainStrategy": "AsIs"}
+		setting["routing"] = routing
+	}
+	kept := make([]any, 0)
+	for _, rule := range asObjectSlice(routing["rules"]) {
+		if !ruleContainsInbound(rule, mixedTag) {
+			kept = append(kept, rule)
+		}
+	}
+	managed := make([]any, 0, 2)
+	if enabled {
+		allowed := append(append([]string{}, cidrs...), "127.0.0.1/32", "::1/128")
+		managed = append(managed,
+			map[string]any{"type": "field", "inboundTag": []any{mixedTag}, "source": stringsToAny(allowed), "outboundTag": outboundTag},
+			map[string]any{"type": "field", "inboundTag": []any{mixedTag}, "outboundTag": "agw-blackhole"},
+		)
+	} else {
+		managed = append(managed, map[string]any{"type": "field", "inboundTag": []any{mixedTag}, "outboundTag": outboundTag})
+	}
+	routing["rules"] = append(managed, kept...)
+	return setting, nil
+}
+
+func anyObjects(values []map[string]any) []any {
+	result := make([]any, 0, len(values)+1)
+	for _, value := range values {
+		result = append(result, value)
+	}
+	return result
 }
 
 func verifyLegacyMainChain(inbounds []Inbound, setting map[string]any, vlessPort, socksPort int) error {
@@ -865,13 +1273,105 @@ func verifyLegacyMainChain(inbounds []Inbound, setting map[string]any, vlessPort
 	return &AdapterError{Code: "managed_resource_missing"}
 }
 
+func (c *Client) bootstrapLegacyMain(ctx context.Context, snapshot Snapshot, desired LegacyMainDesired) error {
+	if strings.TrimSpace(desired.VLESSClientID) == "" {
+		return &AdapterError{Code: "invalid_request"}
+	}
+	if len(snapshot.Inbounds) != 0 {
+		return &AdapterError{Code: "managed_resource_missing"}
+	}
+	for _, outbound := range asObjectSlice(snapshot.XraySetting["outbounds"]) {
+		if stringValue(outbound["tag"]) == "aimili-socks" {
+			return &AdapterError{Code: "managed_resource_missing"}
+		}
+	}
+	routing, _ := snapshot.XraySetting["routing"].(map[string]any)
+	for _, rule := range asObjectSlice(routing["rules"]) {
+		if stringValue(rule["outboundTag"]) == "aimili-socks" || ruleContainsInbound(rule, "aimili-reality") {
+			return &AdapterError{Code: "managed_resource_missing"}
+		}
+	}
+	privateKey, publicKey, err := c.newX25519(ctx)
+	if err != nil {
+		return logLegacyMainBootstrapFailure("generate-key", err)
+	}
+	shortRaw := make([]byte, 4)
+	if _, err := rand.Read(shortRaw); err != nil {
+		return &AdapterError{Code: "random_failed"}
+	}
+	shortID := hex.EncodeToString(shortRaw)
+	originalSetting := cloneObject(snapshot.XraySetting)
+	setting := cloneObject(snapshot.XraySetting)
+	if setting == nil {
+		setting = map[string]any{}
+	}
+	outbounds := asObjectSlice(setting["outbounds"])
+	setting["outbounds"] = append(anyObjects(outbounds), map[string]any{
+		"tag": "aimili-socks", "protocol": "socks",
+		"settings": map[string]any{"servers": []any{map[string]any{"address": "127.0.0.1", "port": desired.SOCKSPort}}},
+	})
+	routing, _ = setting["routing"].(map[string]any)
+	if routing == nil {
+		routing = map[string]any{"domainStrategy": "AsIs"}
+		setting["routing"] = routing
+	}
+	routing["rules"] = append([]any{map[string]any{"type": "field", "inboundTag": []any{"aimili-reality"}, "outboundTag": "aimili-socks"}}, anyObjects(asObjectSlice(routing["rules"]))...)
+	if err := c.updateXray(ctx, setting, snapshot.OutboundTestURL); err != nil {
+		return logLegacyMainBootstrapFailure("update-xray", err)
+	}
+	template := vlessInbound(DesiredGroup{
+		ResourceName: "agw-main", SOCKSPort: desired.SOCKSPort, VLESSPort: desired.VLESSPort,
+		VLESSClientID: desired.VLESSClientID, RealityTarget: desired.RealityTarget, RealityServerName: desired.RealityServerName,
+	}, "aimili-reality", privateKey, publicKey, shortID)
+	template["remark"] = "Aimili Reality"
+	if err := c.addInbound(ctx, template); err != nil {
+		_ = c.updateXray(ctx, originalSetting, snapshot.OutboundTestURL)
+		return logLegacyMainBootstrapFailure("add-inbound", err)
+	}
+	updated, err := c.snapshot(ctx)
+	if err == nil {
+		err = verifyLegacyMainChain(updated.Inbounds, updated.XraySetting, desired.VLESSPort, desired.SOCKSPort)
+	}
+	if err == nil {
+		return nil
+	}
+	logLegacyMainBootstrapFailure("verify-chain", err)
+	rollbackFailed := false
+	if current, listErr := c.inbounds(ctx); listErr == nil {
+		for _, inbound := range current {
+			if inbound.Tag == "aimili-reality" && inbound.Remark == "Aimili Reality" {
+				if _, deleteErr := c.call(ctx, http.MethodPost, "panel/api/inbounds/del/"+formatInt64(inbound.ID), map[string]any{}, false); deleteErr != nil {
+					rollbackFailed = true
+				}
+			}
+		}
+	} else {
+		rollbackFailed = true
+	}
+	if restoreErr := c.updateXray(ctx, originalSetting, snapshot.OutboundTestURL); restoreErr != nil {
+		rollbackFailed = true
+	}
+	if rollbackFailed {
+		return &AdapterError{Code: "partial_inbound_create"}
+	}
+	return &AdapterError{Code: "write_verification_failed"}
+}
+
+func logLegacyMainBootstrapFailure(stage string, err error) error {
+	code := "unknown"
+	var adapterError *AdapterError
+	if errors.As(err, &adapterError) && adapterError.Code != "" {
+		code = adapterError.Code
+	}
+	log.Printf("xui legacy main bootstrap failed: stage=%s code=%s", stage, code)
+	return err
+}
+
 func (c *Client) EnsureLegacyMain(ctx context.Context, desired LegacyMainDesired) (LegacyMain, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if desired.VLESSPort != 8443 || desired.SOCKSPort != 7928 || desired.MixedPort < 1 || desired.MixedPort > 65535 || desired.MixedUsername == "" || desired.MixedPassword == "" ||
-		desired.RealityTarget != "127.0.0.1:443" || strings.TrimSpace(desired.RealityServerName) == "" || net.ParseIP(desired.RealityServerName) != nil || strings.ContainsAny(desired.RealityServerName, "/:") ||
-		(desired.MixedSourceRestrictionEnabled && len(desired.MixedSourceCIDRs) == 0) {
-		return LegacyMain{}, &AdapterError{Code: "invalid_request"}
+	if err := validateLegacyMainDesired(desired); err != nil {
+		return LegacyMain{}, err
 	}
 	if err := c.authenticate(ctx); err != nil {
 		return LegacyMain{}, err
@@ -881,7 +1381,17 @@ func (c *Client) EnsureLegacyMain(ctx context.Context, desired LegacyMainDesired
 		return LegacyMain{}, err
 	}
 	if err := verifyLegacyMainChain(snapshot.Inbounds, snapshot.XraySetting, desired.VLESSPort, desired.SOCKSPort); err != nil {
-		return LegacyMain{}, err
+		var adapterError *AdapterError
+		if !errors.As(err, &adapterError) || adapterError.Code != "managed_resource_missing" {
+			return LegacyMain{}, err
+		}
+		if err := c.bootstrapLegacyMain(ctx, snapshot, desired); err != nil {
+			return LegacyMain{}, err
+		}
+		snapshot, err = c.snapshot(ctx)
+		if err != nil {
+			return LegacyMain{}, err
+		}
 	}
 	originalSetting := cloneObject(snapshot.XraySetting)
 	result := LegacyMain{VLESSPort: desired.VLESSPort, MixedPort: desired.MixedPort, OutboundTag: "aimili-socks"}
@@ -917,11 +1427,13 @@ func (c *Client) EnsureLegacyMain(ctx context.Context, desired LegacyMainDesired
 		names, ids := stringValues(reality["serverNames"]), stringValues(reality["shortIds"])
 		clientSettings, ok := decodeObject(reality["settings"])
 		privateKey := stringValue(reality["privateKey"])
-		if !ok || len(names) != 1 || len(ids) != 1 || !validRealityValue(privateKey, 256) ||
-			!validRealityValue(stringValue(clientSettings["publicKey"]), 256) || !validRealityValue(ids[0], 64) {
+		selectedName, namesOK := selectLegacyRealityServerName(names, desired.RealityServerName)
+		selectedShortID, idsOK := selectLegacyRealityShortID(ids)
+		if !ok || !namesOK || !idsOK || !validRealityValue(privateKey, 256) ||
+			!validRealityValue(stringValue(clientSettings["publicKey"]), 256) || !validLegacyRealityTarget(stringValue(reality["target"])) {
 			return LegacyMain{}, &AdapterError{Code: "managed_resource_drift"}
 		}
-		result.PublicKey, result.ShortID, result.ServerName = stringValue(clientSettings["publicKey"]), ids[0], names[0]
+		result.PublicKey, result.ShortID, result.ServerName = stringValue(clientSettings["publicKey"]), selectedShortID, selectedName
 		result.MLDSA65Verify = stringValue(clientSettings["mldsa65Verify"])
 		if result.MLDSA65Verify != "" && !validRealityValue(result.MLDSA65Verify, 4096) {
 			return LegacyMain{}, &AdapterError{Code: "managed_resource_drift"}
@@ -929,8 +1441,8 @@ func (c *Client) EnsureLegacyMain(ctx context.Context, desired LegacyMainDesired
 		legacyPrivateKey = privateKey
 		currentTarget := stringValue(reality["target"])
 		switch {
-		case currentTarget == desired.RealityTarget && names[0] == desired.RealityServerName:
-		case currentTarget == "www.microsoft.com:443" && names[0] == "www.microsoft.com":
+		case currentTarget == desired.RealityTarget:
+		case currentTarget == "www.microsoft.com:443" && selectedName == "www.microsoft.com" && len(names) == 1:
 			legacyOriginal = cloneObject(inbound.Raw)
 			legacyMigrated = cloneObject(inbound.Raw)
 			migratedStream := cloneObject(stream)
@@ -940,7 +1452,9 @@ func (c *Client) EnsureLegacyMain(ctx context.Context, desired LegacyMainDesired
 			migratedStream["realitySettings"] = migratedReality
 			legacyMigrated["streamSettings"] = mustJSONString(migratedStream)
 		default:
-			return LegacyMain{}, &AdapterError{Code: "managed_resource_drift"}
+			// Existing deployments may use a different valid Reality cover target
+			// and multiple SNI/short-ID values. Preserve that user-owned key and
+			// camouflage material; Gateway only selects one valid public profile.
 		}
 	}
 	if result.VLESSInboundID == 0 || result.ClientID == "" || result.PublicKey == "" || result.ShortID == "" || result.ServerName == "" {
@@ -1065,6 +1579,101 @@ func (c *Client) EnsureLegacyMain(ctx context.Context, desired LegacyMainDesired
 		result.ServerName = desired.RealityServerName
 	}
 	return result, nil
+}
+
+// UpdateLegacyMainMixedPolicy updates only the fixed main mixed inbound's
+// source routing. The active main public protocol is intentionally untouched.
+func (c *Client) UpdateLegacyMainMixedPolicy(ctx context.Context, desired LegacyMainDesired) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := validateLegacyMainDesired(desired); err != nil {
+		return err
+	}
+	if err := c.authenticate(ctx); err != nil {
+		return err
+	}
+	snapshot, err := c.snapshot(ctx)
+	if err != nil {
+		return err
+	}
+	groupDesired := DesiredGroup{ResourceName: "agw-main", MixedPort: desired.MixedPort, MixedUsername: desired.MixedUsername, MixedPassword: desired.MixedPassword}
+	managed, err := resolveManagedMixedInboundID(snapshot.Inbounds, groupDesired, ManagedGroup{ResourceName: "agw-main", MixedInboundTag: "agw-main-mixed"})
+	if err != nil {
+		return err
+	}
+	originalMixed, mixedChanged, err := c.syncManagedMixedAccount(ctx, groupDesired, managed)
+	if err != nil {
+		return err
+	}
+	if err := verifyManagedSocksOutbound(snapshot.XraySetting, "aimili-socks", desired.SOCKSPort); err != nil {
+		return err
+	}
+	original := cloneObject(snapshot.XraySetting)
+	setting, err := mergeMixedSourceRouting(snapshot.XraySetting, managed.MixedInboundTag, "aimili-socks", desired.MixedSourceRestrictionEnabled, desired.MixedSourceCIDRs)
+	if err != nil {
+		return err
+	}
+	if reflect.DeepEqual(original, setting) {
+		return nil
+	}
+	if err := c.updateXray(ctx, setting, snapshot.OutboundTestURL); err != nil {
+		if mixedChanged {
+			_ = c.updateInbound(ctx, managed.MixedInboundID, originalMixed)
+		}
+		return err
+	}
+	return nil
+}
+
+func validateLegacyMainDesired(desired LegacyMainDesired) error {
+	if desired.VLESSPort != 8443 || desired.SOCKSPort != 7928 || desired.MixedPort < 1 || desired.MixedPort > 65535 || desired.MixedUsername == "" || desired.MixedPassword == "" ||
+		desired.RealityTarget != "127.0.0.1:443" || strings.TrimSpace(desired.RealityServerName) == "" || net.ParseIP(desired.RealityServerName) != nil || strings.ContainsAny(desired.RealityServerName, "/:") ||
+		(desired.MixedSourceRestrictionEnabled && len(desired.MixedSourceCIDRs) == 0) {
+		return &AdapterError{Code: "invalid_request"}
+	}
+	for _, raw := range desired.MixedSourceCIDRs {
+		prefix, err := netip.ParsePrefix(raw)
+		if err != nil || prefix.Bits() == 0 || prefix != prefix.Masked() {
+			return &AdapterError{Code: "invalid_request"}
+		}
+	}
+	return nil
+}
+
+func selectLegacyRealityServerName(values []string, preferred string) (string, bool) {
+	if len(values) == 0 {
+		return "", false
+	}
+	selected := ""
+	for _, value := range values {
+		if !validRealityValue(value, 256) || net.ParseIP(value) != nil || strings.ContainsAny(value, "/:") {
+			return "", false
+		}
+		if selected == "" || value == preferred {
+			selected = value
+		}
+	}
+	return selected, true
+}
+
+func selectLegacyRealityShortID(values []string) (string, bool) {
+	if len(values) == 0 {
+		return "", false
+	}
+	for _, value := range values {
+		if !validRealityValue(value, 64) {
+			return "", false
+		}
+	}
+	return values[0], true
+}
+
+func validLegacyRealityTarget(value string) bool {
+	if !validRealityValue(value, 512) {
+		return false
+	}
+	host, port, err := net.SplitHostPort(value)
+	return err == nil && strings.TrimSpace(host) != "" && port == "443"
 }
 
 func vlessInbound(desired DesiredGroup, tag, privateKey, publicKey, shortID string) map[string]any {

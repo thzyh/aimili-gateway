@@ -277,7 +277,7 @@ PUT /api/v1/proxy-groups/{id}/protocol-mode
 ### 9.2 VLESS/XHTTP/REALITY
 
 - 复用同一 VLESS UUID、Reality 密钥和数值端口。
-- `network=xhttp`、`security=reality`、XHTTP mode 使用 3x-ui/Xray `auto`。
+- `network=xhttp`、`security=reality`、XHTTP mode 使用 3x-ui/Xray `auto`；`sockopt.trustedXForwardedFor` 只允许 `127.0.0.1` 与 `::1`，不信任任何公网反代来源。
 - XHTTP path 从稳定逻辑出口 ID 派生并持久化，不在日志、验收文档或错误响应中输出其完整值。
 - `flow` 为空、`disable_flow=true`、`decryption=none`，不宣称与 TCP/Vision 等价。
 

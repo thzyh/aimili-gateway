@@ -3,8 +3,10 @@ package store
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,9 +23,9 @@ func TestProxyGroupRoundTripAndOptimisticVersion(t *testing.T) {
 	}
 	group.CountryName = "日本"
 	group.AimiliSlot = 2
-	group.VLESSPort = 20000
+	group.PublicPort = 20000
 	group.MixedPort = 30000
-	group.VLESSInboundID = 41
+	group.PublicInboundID = 41
 	group.MixedInboundID = 42
 	group.RealityPublicKey = "public-key"
 	group.RealityShortID = "short-id"
@@ -40,7 +42,7 @@ func TestProxyGroupRoundTripAndOptimisticVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	if actual.CountryCode != "JP" || actual.ProxyType != domain.ProxyTypeDatacenter || actual.Version != 1 ||
-		actual.VLESSInboundID != 41 || actual.MixedInboundID != 42 || actual.RealityPublicKey != "public-key" ||
+		actual.PublicInboundID != 41 || actual.MixedInboundID != 42 || actual.RealityPublicKey != "public-key" ||
 		actual.RealityShortID != "short-id" || actual.RealityServerName != "www.microsoft.com" || actual.RealityMLDSA65Verify != "verify-material" {
 		t.Fatalf("unexpected group: %#v", actual)
 	}
@@ -51,6 +53,7 @@ func TestProxyGroupRoundTripAndOptimisticVersion(t *testing.T) {
 	actual.CountryName = "韩国"
 	actual.ProxyType = domain.ProxyTypeResidential
 	actual.ExitIP = "203.0.113.7"
+	actual.ExitIPCheckedAt = 1_700_000_005.25
 	actual.UpdatedAt = now.Add(time.Minute)
 	if err := database.UpdateProxyGroup(ctx, actual, 1); err != nil {
 		t.Fatal(err)
@@ -59,7 +62,7 @@ func TestProxyGroupRoundTripAndOptimisticVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.CandidateID != "candidate-adopted" || updated.CandidateIP != "198.51.100.20" || updated.CountryCode != "KR" || updated.ProxyType != domain.ProxyTypeResidential {
+	if updated.CandidateID != "candidate-adopted" || updated.CandidateIP != "198.51.100.20" || updated.CountryCode != "KR" || updated.ProxyType != domain.ProxyTypeResidential || updated.ExitIPCheckedAt != 1_700_000_005.25 {
 		t.Fatalf("candidate adoption was not persisted: %#v", updated)
 	}
 	if err := database.UpdateProxyGroup(ctx, actual, 1); !errors.Is(err, ErrProxyGroupChanged) {
@@ -76,7 +79,7 @@ func TestProxyGroupUpdateCanRebindManagedResourceNameWithoutChangingStableID(t *
 		t.Fatal(err)
 	}
 	group.AimiliSlot = 2
-	group.VLESSPort = 20000
+	group.PublicPort = 20000
 	group.MixedPort = 30000
 	group.CreatedAt = now
 	group.UpdatedAt = now
@@ -103,7 +106,7 @@ func TestProxyGroupCountryAndTypeAreUnique(t *testing.T) {
 	ctx := context.Background()
 	group, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeResidential)
 	group.AimiliSlot = 1
-	group.VLESSPort = 20001
+	group.PublicPort = 20001
 	group.MixedPort = 30001
 	group.CreatedAt = time.Now().UTC()
 	group.UpdatedAt = group.CreatedAt
@@ -114,7 +117,7 @@ func TestProxyGroupCountryAndTypeAreUnique(t *testing.T) {
 	duplicate.ID = "agw-jp-res-duplicate"
 	duplicate.ResourceName = duplicate.ID
 	duplicate.AimiliSlot = 2
-	duplicate.VLESSPort = 20002
+	duplicate.PublicPort = 20002
 	duplicate.MixedPort = 30002
 	if err := database.CreateProxyGroup(ctx, duplicate); !errors.Is(err, ErrProxyGroupExists) {
 		t.Fatalf("expected duplicate error, got %v", err)
@@ -129,7 +132,7 @@ func TestProxyGroupsAllowMultipleCandidatesInOneCountryAndType(t *testing.T) {
 	second, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter, "candidate-two")
 	for index, group := range []*domain.ProxyGroup{&first, &second} {
 		group.AimiliSlot = index + 1
-		group.VLESSPort = 20100 + index
+		group.PublicPort = 20100 + index
 		group.MixedPort = 30100 + index
 		group.CandidateIP = "198.51.100.10"
 		group.CandidateLatencyMS = 25 + index
@@ -147,6 +150,77 @@ func TestProxyGroupsAllowMultipleCandidatesInOneCountryAndType(t *testing.T) {
 	}
 	if len(groups) != 2 || groups[1].CandidateID != "candidate-two" || groups[1].SOCKSLatencyMS != 71 {
 		t.Fatalf("unexpected stored candidates: %#v", groups)
+	}
+}
+
+func TestReassignProxyGroupCandidatesSwapsCandidatesAtomically(t *testing.T) {
+	database := openTestStore(t)
+	ctx := context.Background()
+	now := time.Unix(1_700_000_000, 0).UTC()
+	first, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter, "candidate-one")
+	second, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter, "candidate-two")
+	for index, group := range []*domain.ProxyGroup{&first, &second} {
+		group.AimiliSlot = index
+		group.PublicPort = 20100 + index
+		group.MixedPort = 30100 + index
+		group.Status = domain.ProxyGroupReady
+		group.CreatedAt = now
+		group.UpdatedAt = now
+		if err := database.CreateProxyGroup(ctx, *group); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	err := database.ReassignProxyGroupCandidates(ctx, map[string]string{
+		first.ID: "candidate-two", second.ID: "candidate-one",
+	}, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	updatedFirst, _ := database.GetProxyGroup(ctx, first.ID)
+	updatedSecond, _ := database.GetProxyGroup(ctx, second.ID)
+	if updatedFirst.CandidateID != "candidate-two" || updatedSecond.CandidateID != "candidate-one" || updatedFirst.Version != 2 || updatedSecond.Version != 2 {
+		t.Fatalf("atomic reassignment failed: first=%#v second=%#v", updatedFirst, updatedSecond)
+	}
+}
+
+func TestDeleteProxyGroupRemovesOnlyItsProtocolStateAndOperations(t *testing.T) {
+	database := openTestStore(t)
+	ctx := context.Background()
+	now := time.Unix(1_700_000_000, 0).UTC()
+	group, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter, "candidate-one")
+	group.AimiliSlot = 1
+	group.PublicPort = 20000
+	group.MixedPort = 30000
+	group.CreatedAt = now
+	group.UpdatedAt = now
+	if err := database.CreateProxyGroup(ctx, group); err != nil {
+		t.Fatal(err)
+	}
+	mode := domain.EgressProtocolMode{EgressID: group.ID, ActiveMode: domain.ProtocolVLESSTCPRealityVision, DesiredMode: domain.ProtocolVLESSTCPRealityVision, State: domain.ProtocolReady, Version: 1, UpdatedAt: now}
+	if err := database.CreateEgressProtocolMode(ctx, mode); err != nil {
+		t.Fatal(err)
+	}
+	operation := EgressOperation{OperationID: "operation-delete-1", EgressID: group.ID, Kind: "protocol_switch", Phase: "complete", RequestHash: strings.Repeat("c", 64), StartedAt: now, CompletedAt: now}
+	if err := database.CreateEgressOperation(ctx, operation); err != nil {
+		t.Fatal(err)
+	}
+	other := domain.EgressProtocolMode{EgressID: "agw-main", ActiveMode: domain.ProtocolVLESSTCPRealityVision, DesiredMode: domain.ProtocolVLESSTCPRealityVision, State: domain.ProtocolReady, Version: 1, UpdatedAt: now}
+	if err := database.CreateEgressProtocolMode(ctx, other); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := database.DeleteProxyGroup(ctx, group.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.GetEgressProtocolMode(ctx, group.ID); !errors.Is(err, ErrEgressProtocolNotFound) {
+		t.Fatalf("deleted protocol row err=%v", err)
+	}
+	if _, err := database.GetEgressOperationByRequestHash(ctx, group.ID, operation.Kind, operation.RequestHash); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("deleted operation row err=%v", err)
+	}
+	if _, err := database.GetEgressProtocolMode(ctx, "agw-main"); err != nil {
+		t.Fatalf("unrelated protocol state was removed: %v", err)
 	}
 }
 
@@ -177,6 +251,76 @@ func TestCredentialEncryptionUsesPurposeContextAndNeverStoresPlaintext(t *testin
 	}
 	if _, err := decryptCredential("vless-client", ciphertext, key); err == nil {
 		t.Fatal("ciphertext decrypted under a different purpose")
+	}
+}
+
+func TestReplaceMixedCredentialsCommitsUsernameAndPasswordTogether(t *testing.T) {
+	database := openTestStore(t)
+	ctx := context.Background()
+	key := bytes.Repeat([]byte{0x43}, 32)
+	if err := database.PutCredential(ctx, "mixed-username", []byte("old-user"), key); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.PutCredential(ctx, "mixed-password", []byte("old-password"), key); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := database.ReplaceMixedCredentials(ctx, []byte("new-user"), []byte("new-password"), key); err != nil {
+		t.Fatal(err)
+	}
+	for purpose, want := range map[string]string{"mixed-username": "new-user", "mixed-password": "new-password"} {
+		got, err := database.GetCredential(ctx, purpose, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != want {
+			t.Fatalf("%s = %q", purpose, got)
+		}
+	}
+
+	if err := database.ReplaceMixedCredentials(ctx, []byte("partial-user"), nil, key); err == nil {
+		t.Fatal("partial credential replacement was accepted")
+	}
+	for purpose, want := range map[string]string{"mixed-username": "new-user", "mixed-password": "new-password"} {
+		got, err := database.GetCredential(ctx, purpose, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != want {
+			t.Fatalf("%s changed after rejected pair = %q", purpose, got)
+		}
+	}
+}
+
+func TestReplaceMixedCredentialsRollsBackUsernameWhenPasswordWriteFails(t *testing.T) {
+	database := openTestStore(t)
+	ctx := context.Background()
+	key := bytes.Repeat([]byte{0x44}, 32)
+	if err := database.PutCredential(ctx, "mixed-username", []byte("old-user"), key); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.PutCredential(ctx, "mixed-password", []byte("old-password"), key); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.db.ExecContext(ctx, `
+		CREATE TRIGGER reject_mixed_password_update
+		BEFORE UPDATE OF ciphertext ON encrypted_credentials
+		WHEN OLD.purpose = 'mixed-password'
+		BEGIN SELECT RAISE(ABORT, 'blocked'); END`); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := database.ReplaceMixedCredentials(ctx, []byte("new-user"), []byte("new-password"), key); err == nil {
+		t.Fatal("injected password write failure was not returned")
+	}
+	for purpose, want := range map[string]string{"mixed-username": "old-user", "mixed-password": "old-password"} {
+		got, err := database.GetCredential(ctx, purpose, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != want {
+			t.Fatalf("%s changed despite transaction rollback = %q", purpose, got)
+		}
 	}
 }
 
@@ -257,16 +401,16 @@ func TestAggregateConfigRoundTrip(t *testing.T) {
 
 func TestMainEgressMetadataPersistsWithoutUsingASlot(t *testing.T) {
 	database := openTestStore(t)
-	want := MainEgress{ResourceName: "agw-main", CountryCode: "JP", CountryName: "日本", ProxyType: domain.ProxyTypeDatacenter, ExitIP: "203.0.113.20", VLESSInboundID: 1, MixedInboundID: 99, VLESSPort: 8443, MixedPort: 31000, Enabled: true, UpdatedAt: time.Unix(1700000000, 0).UTC()}
+	want := MainEgress{ResourceName: "agw-main", CountryCode: "JP", CountryName: "日本", ProxyType: domain.ProxyTypeDatacenter, CandidateID: "main-candidate", ExitIP: "203.0.113.20", PublicInboundID: 1, MixedInboundID: 99, PublicPort: 8443, MixedPort: 31000, Enabled: true, UpdatedAt: time.Unix(1700000000, 0).UTC()}
 	if err := database.SaveMainEgress(context.Background(), want); err != nil {
 		t.Fatal(err)
 	}
-	var name string
-	var vlessPort, mixedPort, enabled int
-	if err := database.db.QueryRowContext(context.Background(), `SELECT resource_name, vless_port, mixed_port, enabled FROM main_egress WHERE id=1`).Scan(&name, &vlessPort, &mixedPort, &enabled); err != nil {
+	var name, candidateID string
+	var publicPort, mixedPort, enabled int
+	if err := database.db.QueryRowContext(context.Background(), `SELECT resource_name, candidate_id, public_port, mixed_port, enabled FROM main_egress WHERE id=1`).Scan(&name, &candidateID, &publicPort, &mixedPort, &enabled); err != nil {
 		t.Fatal(err)
 	}
-	if name != "agw-main" || vlessPort != 8443 || mixedPort != 31000 || enabled != 1 {
-		t.Fatalf("main metadata=%q %d %d %d", name, vlessPort, mixedPort, enabled)
+	if name != "agw-main" || candidateID != "main-candidate" || publicPort != 8443 || mixedPort != 31000 || enabled != 1 {
+		t.Fatalf("main metadata=%q %q %d %d %d", name, candidateID, publicPort, mixedPort, enabled)
 	}
 }

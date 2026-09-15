@@ -1,5 +1,7 @@
 package xui
 
+import "github.com/thzyh/aimili-gateway/internal/domain"
+
 type Credentials struct {
 	Username      string `json:"username"`
 	Password      string `json:"password"`
@@ -24,11 +26,12 @@ type BrowserSession struct {
 }
 
 type Inbound struct {
-	ID       int64  `json:"id"`
-	Tag      string `json:"tag"`
-	Remark   string `json:"remark"`
-	Protocol string `json:"protocol"`
-	Port     int    `json:"port"`
+	ID           int64  `json:"id"`
+	Tag          string `json:"tag"`
+	Remark       string `json:"remark"`
+	Protocol     string `json:"protocol"`
+	Port         int    `json:"port"`
+	SubSortIndex int    `json:"subSortIndex"`
 }
 
 type Outbound struct {
@@ -85,6 +88,7 @@ type LegacyMainDesired struct {
 	VLESSPort                     int
 	MixedPort                     int
 	SOCKSPort                     int
+	VLESSClientID                 string
 	MixedUsername                 string
 	MixedPassword                 string
 	MixedSourceRestrictionEnabled bool
@@ -110,9 +114,11 @@ type LegacyMain struct {
 // Gateway-managed subscription client. Inbound IDs are filtered against the
 // authenticated 3x-ui snapshot before any write is made.
 type SubscriptionDesired struct {
-	ClientEmail string
-	ClientUUID  string
-	InboundIDs  []int64
+	ClientEmail    string
+	ClientUUID     string
+	SubscriptionID string
+	InboundIDs     []int64
+	Aliases        map[int64]string
 }
 
 type Subscription struct {
@@ -123,6 +129,20 @@ type Subscription struct {
 	SubscriptionID   string
 	InboundIDs       []int64
 	SubscriptionPath string
+	PublicProfiles   []PublicProfile
+	Aliases          map[int64]string
+}
+
+type PublicProfile struct {
+	InboundID     int64
+	Mode          domain.ProtocolMode
+	ClientID      string
+	Auth          string
+	PublicKey     string
+	ShortID       string
+	ServerName    string
+	MLDSA65Verify string
+	XHTTPPath     string
 }
 
 type AdapterError struct {

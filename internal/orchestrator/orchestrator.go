@@ -14,6 +14,7 @@ import (
 	"github.com/thzyh/aimili-gateway/internal/adapters/aimili"
 	"github.com/thzyh/aimili-gateway/internal/adapters/xui"
 	"github.com/thzyh/aimili-gateway/internal/domain"
+	"github.com/thzyh/aimili-gateway/internal/protocoltxn"
 	"github.com/thzyh/aimili-gateway/internal/store"
 	"github.com/thzyh/aimili-gateway/internal/validator"
 )
@@ -25,19 +26,22 @@ const (
 )
 
 type Config struct {
-	MaxGroups          int
-	VLESSPortStart     int
-	VLESSPortEnd       int
-	MixedPortStart     int
-	MixedPortEnd       int
-	AggregateVLESSPort int
-	MainMixedPort      int
-	PublicHost         string
-	XrayPath           string
-	ProbeHost          string
-	ReadyTimeout       time.Duration
-	PollInterval       time.Duration
-	Now                func() time.Time
+	MaxGroups           int
+	VLESSPortStart      int
+	VLESSPortEnd        int
+	MixedPortStart      int
+	MixedPortEnd        int
+	AggregateVLESSPort  int
+	MainMixedPort       int
+	PublicHost          string
+	PublicOrigin        string
+	RealityServerName   string
+	XrayPath            string
+	ProbeHost           string
+	ReadyTimeout        time.Duration
+	PollInterval        time.Duration
+	Now                 func() time.Time
+	ProtocolTransaction protocolTransactionClient
 }
 
 type EnableRequest struct {
@@ -56,14 +60,18 @@ type Country struct {
 }
 
 type Connections struct {
-	VLESSURI   string `json:"vlessUri"`
-	SOCKS5HURI string `json:"socks5hUri"`
+	ProtocolMode domain.ProtocolMode `json:"protocolMode"`
+	PublicURI    string              `json:"publicUri"`
+	VLESSURI     string              `json:"vlessUri,omitempty"`
+	VLESSError   string              `json:"vlessError,omitempty"`
+	SOCKS5HURI   string              `json:"socks5hUri"`
 }
 
 type SubscriptionResult struct {
-	URL          string    `json:"url"`
-	InboundCount int       `json:"inboundCount"`
-	UpdatedAt    time.Time `json:"updatedAt"`
+	URL            string              `json:"url"`
+	InboundCount   int                 `json:"inboundCount"`
+	UpdatedAt      time.Time           `json:"updatedAt"`
+	PublicProfiles []xui.PublicProfile `json:"-"`
 }
 
 type Error struct{ Code string }
@@ -94,17 +102,25 @@ type aimiliClient interface {
 	RotateSlot(context.Context, int) (aimili.Slot, error)
 	DeleteSlot(context.Context, int) error
 	MainStatus(context.Context) (aimili.MainStatus, error)
+	AcquireMutationLease(context.Context, string) (aimili.MutationLease, error)
+	RenewMutationLease(context.Context, string) (aimili.MutationLease, error)
+	ReleaseMutationLease(context.Context, string) error
 }
 
 type xuiClient interface {
 	EnsureManagedGroup(context.Context, xui.DesiredGroup) (xui.ManagedGroup, error)
 	UpdateManagedGroup(context.Context, xui.DesiredGroup, xui.ManagedGroup) (xui.ManagedGroup, error)
+	RepairManagedPublic(context.Context, xui.DesiredGroup, xui.ManagedGroup, domain.ProtocolMode) (xui.ManagedGroup, error)
+	UpdateManagedMixedPolicy(context.Context, xui.DesiredGroup, xui.ManagedGroup) (xui.ManagedGroup, error)
+	UpdateLegacyMainMixedPolicy(context.Context, xui.LegacyMainDesired) error
 	DeleteManagedGroup(context.Context, xui.ManagedGroup) error
 }
 
 type subscriptionXUIClient interface {
 	Snapshot(context.Context) (xui.Snapshot, error)
 	EnsureSubscriptionClient(context.Context, xui.SubscriptionDesired) (xui.Subscription, error)
+	VerifySubscriptionClient(context.Context, xui.SubscriptionDesired) (xui.Subscription, error)
+	RepairSubscriptionAliases(context.Context, xui.SubscriptionDesired) (xui.Subscription, error)
 	SubscriptionURL(context.Context, xui.Subscription) (string, error)
 }
 
@@ -115,14 +131,43 @@ type legacyAggregateCleanupXUIClient interface {
 
 type subscriptionStore interface {
 	SaveGatewaySubscription(context.Context, store.GatewaySubscription) error
+	GetGatewaySubscription(context.Context) (store.GatewaySubscription, error)
 }
 
 type mainEgressStore interface {
 	GetMainEgress(context.Context) (store.MainEgress, error)
+	SaveMainEgress(context.Context, store.MainEgress) error
+}
+
+type protocolModeStore interface {
+	CreateEgressProtocolMode(context.Context, domain.EgressProtocolMode) error
+	GetEgressProtocolMode(context.Context, string) (domain.EgressProtocolMode, error)
+	ListEgressProtocolModes(context.Context) ([]domain.EgressProtocolMode, error)
+	UpdateEgressProtocolMode(context.Context, domain.EgressProtocolMode, int64) error
+}
+
+type mixedCredentialStore interface {
+	ReplaceMixedCredentials(context.Context, []byte, []byte, []byte) error
+}
+
+type protocolTransactionClient interface {
+	Apply(context.Context, protocoltxn.Request) (protocoltxn.Result, error)
+	Renew(context.Context, string) (protocoltxn.Result, error)
+	Finalize(context.Context, string) (protocoltxn.Result, error)
+	Rollback(context.Context, string) (protocoltxn.Result, error)
 }
 
 type assignAimiliClient interface {
 	AssignSlotNode(context.Context, int, aimili.AssignSlotRequest) (aimili.Slot, error)
+}
+
+type mainAssignmentAimiliClient interface {
+	MainAssignment(context.Context) (aimili.MainAssignmentStatus, error)
+	StageMainAssignment(context.Context, aimili.MainAssignmentRequest) (aimili.MainAssignmentStatus, error)
+	CommitMainAssignment(context.Context, string) (aimili.MainAssignmentStatus, error)
+	RollbackMainAssignment(context.Context, string) (aimili.MainAssignmentStatus, error)
+	RepairCommitMainAssignment(context.Context, string) (aimili.MainAssignmentStatus, error)
+	RepairReplaceMainAssignment(context.Context, string, aimili.MainRepairRequest) (aimili.MainAssignmentStatus, error)
 }
 
 type legacyMainXUIClient interface {
@@ -132,22 +177,35 @@ type legacyMainXUIClient interface {
 type proxyValidator interface {
 	ValidateSOCKS5H(context.Context, validator.SOCKSTarget) (validator.Result, error)
 	ValidateVLESS(context.Context, validator.VLESSTarget) (validator.Result, error)
+	ValidatePublic(context.Context, validator.PublicTarget) (validator.Result, error)
 }
 
 type Orchestrator struct {
-	config    Config
-	store     groupStore
-	aimili    aimiliClient
-	xui       xuiClient
-	validator proxyValidator
-	masterKey []byte
-	locks     operationLocks
+	config                 Config
+	store                  groupStore
+	aimili                 aimiliClient
+	xui                    xuiClient
+	validator              proxyValidator
+	masterKey              []byte
+	locks                  operationLocks
+	protocolTransaction    protocolTransactionClient
+	mutationLeaseRenewWait func(context.Context, time.Duration) bool
 }
 
 func New(config Config, database groupStore, aimiliAdapter aimiliClient, xuiAdapter xuiClient, validation proxyValidator, masterKey []byte) (*Orchestrator, error) {
+	if config.PublicOrigin == "" {
+		config.PublicOrigin = "https://" + config.PublicHost
+	}
+	parsedOrigin, originErr := url.Parse(config.PublicOrigin)
+	if originErr != nil || parsedOrigin.Scheme != "https" || parsedOrigin.Host == "" || parsedOrigin.Path != "" || parsedOrigin.RawQuery != "" || parsedOrigin.Fragment != "" {
+		return nil, errors.New("invalid public origin")
+	}
+	if config.RealityServerName == "" {
+		config.RealityServerName = config.PublicHost
+	}
 	if config.MaxGroups < 1 || config.VLESSPortStart < 1 || config.VLESSPortEnd < config.VLESSPortStart ||
-		config.MixedPortStart < 1 || config.MixedPortEnd < config.MixedPortStart || net.ParseIP(config.PublicHost) != nil ||
-		strings.TrimSpace(config.PublicHost) == "" || strings.TrimSpace(config.XrayPath) == "" || strings.TrimSpace(config.ProbeHost) == "" ||
+		config.MixedPortStart < 1 || config.MixedPortEnd < config.MixedPortStart || !validPublicEndpointHost(config.PublicHost) ||
+		net.ParseIP(config.RealityServerName) != nil || strings.TrimSpace(config.RealityServerName) == "" || strings.TrimSpace(config.XrayPath) == "" || strings.TrimSpace(config.ProbeHost) == "" ||
 		database == nil || aimiliAdapter == nil || xuiAdapter == nil || validation == nil || len(masterKey) != 32 {
 		return nil, errors.New("invalid orchestrator configuration")
 	}
@@ -172,7 +230,7 @@ func New(config Config, database groupStore, aimiliAdapter aimiliClient, xuiAdap
 	if config.AggregateVLESSPort < 1 || config.AggregateVLESSPort > 65535 || (config.AggregateVLESSPort >= config.VLESSPortStart && config.AggregateVLESSPort <= config.VLESSPortEnd) {
 		return nil, errors.New("invalid aggregate VLESS port")
 	}
-	return &Orchestrator{config: config, store: database, aimili: aimiliAdapter, xui: xuiAdapter, validator: validation, masterKey: append([]byte(nil), masterKey...)}, nil
+	return &Orchestrator{config: config, store: database, aimili: aimiliAdapter, xui: xuiAdapter, validator: validation, masterKey: append([]byte(nil), masterKey...), protocolTransaction: config.ProtocolTransaction}, nil
 }
 
 func (o *Orchestrator) Countries(ctx context.Context) ([]Country, error) {
@@ -214,6 +272,8 @@ func (o *Orchestrator) List(ctx context.Context) ([]domain.ProxyGroup, error) {
 // capacity, the oldest live group is retired first. A failed switch attempts
 // to restore that previous group before returning the original error.
 func (o *Orchestrator) Activate(ctx context.Context, id string) (domain.ProxyGroup, error) {
+	ctx, mutationUnlock := o.lockMutation(ctx)
+	defer mutationUnlock()
 	unlock := o.locks.lock("activation")
 	defer unlock()
 	candidates, err := o.aimili.Candidates(ctx)
@@ -266,6 +326,8 @@ func (o *Orchestrator) Activate(ctx context.Context, id string) (domain.ProxyGro
 }
 
 func (o *Orchestrator) Enable(ctx context.Context, request EnableRequest) (domain.ProxyGroup, error) {
+	ctx, mutationUnlock := o.lockMutation(ctx)
+	defer mutationUnlock()
 	var identity domain.ProxyGroup
 	var err error
 	if strings.TrimSpace(request.CandidateID) == "" {
@@ -302,7 +364,7 @@ func (o *Orchestrator) Enable(ctx context.Context, request EnableRequest) (domai
 	identity.CandidateIP = request.CandidateIP
 	identity.CandidateLatencyMS = request.CandidateLatencyMS
 	identity.LastSeenAt = now
-	identity.VLESSPort = vlessPort
+	identity.PublicPort = vlessPort
 	identity.MixedPort = mixedPort
 	identity.CreatedAt = now
 	identity.UpdatedAt = now
@@ -315,28 +377,68 @@ func (o *Orchestrator) Enable(ctx context.Context, request EnableRequest) (domai
 		_ = o.store.DeleteProxyGroup(ctx, group.ID)
 		return domain.ProxyGroup{}, operationError(err)
 	}
+	return o.provisionGroupForSlot(ctx, group, slot, policy, credentials, true)
+}
+
+func (o *Orchestrator) adoptExistingSlot(ctx context.Context, slot aimili.Slot, groups []domain.ProxyGroup) (domain.ProxyGroup, error) {
+	proxyType := domain.ProxyType(strings.ToLower(strings.TrimSpace(slot.ProxyType)))
+	identity, err := domain.NewProxyGroupIdentity(strings.ToUpper(strings.TrimSpace(slot.Country)), proxyType, strings.TrimSpace(slot.NodeID))
+	if err != nil || slot.Number < 0 || slot.Port < 1 || slot.Port > 65535 || strings.TrimSpace(slot.CountryName) == "" || !slot.EgressOK || net.ParseIP(strings.TrimSpace(slot.ExitIP)) == nil {
+		return domain.ProxyGroup{}, &Error{Code: "invalid_response"}
+	}
+	for _, group := range groups {
+		if group.AimiliSlot == slot.Number || (group.CandidateID != "" && group.CandidateID == identity.CandidateID) {
+			return domain.ProxyGroup{}, &Error{Code: "ownership_conflict"}
+		}
+	}
+	policy, credentials, err := o.runtimeInputs(ctx)
+	if err != nil {
+		return domain.ProxyGroup{}, err
+	}
+	vlessPort, mixedPort, ok := o.allocatePorts(groups)
+	if !ok {
+		return domain.ProxyGroup{}, &Error{Code: "port_capacity_exceeded"}
+	}
+	now := o.config.Now().UTC()
+	identity.AimiliSlot = slot.Number
+	identity.CountryName = strings.TrimSpace(slot.CountryName)
+	identity.CandidateIP = strings.TrimSpace(slot.CandidateIP)
+	identity.CandidateLatencyMS = slot.LatencyMS
+	identity.LastSeenAt = now
+	identity.PublicPort = vlessPort
+	identity.MixedPort = mixedPort
+	identity.CreatedAt = now
+	identity.UpdatedAt = now
+	if err := o.store.CreateProxyGroup(ctx, identity); err != nil {
+		return domain.ProxyGroup{}, operationError(err)
+	}
+	return o.provisionGroupForSlot(ctx, identity, slot, policy, credentials, false)
+}
+
+func (o *Orchestrator) provisionGroupForSlot(ctx context.Context, group domain.ProxyGroup, slot aimili.Slot, policy store.MixedSourcePolicy, credentials runtimeCredentials, deleteSlotOnFailure bool) (domain.ProxyGroup, error) {
 	group.AimiliSlot = slot.Number
 	group.CountryName = slot.CountryName
 	checked, err := o.waitForSlot(ctx, slot.Number)
 	if err != nil || !checked.EgressOK || net.ParseIP(checked.ExitIP) == nil {
-		return domain.ProxyGroup{}, o.rollbackEnable(ctx, &group, xui.ManagedGroup{}, codeOr(err, "egress_unavailable"))
+		return domain.ProxyGroup{}, o.rollbackSlotProvision(ctx, &group, xui.ManagedGroup{}, codeOr(err, "egress_unavailable"), deleteSlotOnFailure)
 	}
 	checked, err = o.ensureUniqueExit(ctx, group.ID, checked)
 	if err != nil {
-		return domain.ProxyGroup{}, o.rollbackEnable(ctx, &group, xui.ManagedGroup{}, errorCode(err))
+		return domain.ProxyGroup{}, o.rollbackSlotProvision(ctx, &group, xui.ManagedGroup{}, errorCode(err), deleteSlotOnFailure)
 	}
 	group.ExitIP = checked.ExitIP
+	group.ExitIPCheckedAt = checked.CheckedAt
 	managed, err := o.xui.EnsureManagedGroup(ctx, xui.DesiredGroup{
-		ResourceName: group.ResourceName, SOCKSPort: checked.Port, VLESSPort: group.VLESSPort, MixedPort: group.MixedPort,
+		ResourceName: group.ResourceName, SOCKSPort: checked.Port, VLESSPort: group.PublicPort, MixedPort: group.MixedPort,
 		VLESSClientID: string(credentials.vlessID), MixedUsername: string(credentials.mixedUsername), MixedPassword: string(credentials.mixedPassword),
 		MixedSourceRestrictionEnabled: policy.Enabled, MixedSourceCIDRs: prefixStrings(policy.CIDRs),
-		RealityTarget: "127.0.0.1:443", RealityServerName: o.config.PublicHost,
+		RealityTarget: "127.0.0.1:443", RealityServerName: o.config.RealityServerName,
 	})
 	if err != nil {
-		return domain.ProxyGroup{}, o.rollbackEnable(ctx, &group, xui.ManagedGroup{}, errorCode(err))
+		return domain.ProxyGroup{}, o.rollbackSlotProvision(ctx, &group, xui.ManagedGroup{}, errorCode(err), deleteSlotOnFailure)
 	}
 	group.ConfigFingerprint = managed.Fingerprint
-	group.VLESSInboundID = managed.VLESSInboundID
+	group.PublicInboundID = managed.VLESSInboundID
 	group.MixedInboundID = managed.MixedInboundID
 	group.RealityPublicKey = managed.PublicKey
 	group.RealityShortID = managed.ShortID
@@ -344,11 +446,11 @@ func (o *Orchestrator) Enable(ctx context.Context, request EnableRequest) (domai
 	group.RealityMLDSA65Verify = managed.MLDSA65Verify
 	socksResult, err := o.validateSOCKS(ctx, group, credentials)
 	if err != nil {
-		return domain.ProxyGroup{}, o.rollbackEnable(ctx, &group, managed, errorCode(err))
+		return domain.ProxyGroup{}, o.rollbackSlotProvision(ctx, &group, managed, errorCode(err), deleteSlotOnFailure)
 	}
 	vlessResult, err := o.validateVLESS(ctx, group, credentials)
 	if err != nil {
-		return domain.ProxyGroup{}, o.rollbackEnable(ctx, &group, managed, errorCode(err))
+		return domain.ProxyGroup{}, o.rollbackSlotProvision(ctx, &group, managed, errorCode(err), deleteSlotOnFailure)
 	}
 	group.SOCKSLatencyMS = durationMillis(socksResult.Latency)
 	group.VLESSLatencyMS = durationMillis(vlessResult.Latency)
@@ -357,7 +459,17 @@ func (o *Orchestrator) Enable(ctx context.Context, request EnableRequest) (domai
 	group.LastErrorCode = ""
 	group.UpdatedAt = group.LastCheckedAt
 	if err := o.save(ctx, &group); err != nil {
-		return domain.ProxyGroup{}, o.rollbackEnable(ctx, &group, managed, "storage_failed")
+		return domain.ProxyGroup{}, o.rollbackSlotProvision(ctx, &group, managed, "storage_failed", deleteSlotOnFailure)
+	}
+	protocols, ok := o.store.(protocolModeStore)
+	if !ok {
+		return domain.ProxyGroup{}, o.rollbackSlotProvision(ctx, &group, managed, "storage_failed", deleteSlotOnFailure)
+	}
+	if err := protocols.CreateEgressProtocolMode(ctx, domain.EgressProtocolMode{
+		EgressID: group.ID, ActiveMode: domain.ProtocolVLESSTCPRealityVision, DesiredMode: domain.ProtocolVLESSTCPRealityVision,
+		State: domain.ProtocolReady, Version: 1, UpdatedAt: o.config.Now().UTC(),
+	}); err != nil {
+		return domain.ProxyGroup{}, o.rollbackSlotProvision(ctx, &group, managed, "storage_failed", deleteSlotOnFailure)
 	}
 	_, _ = o.Subscription(ctx)
 	return group, nil
@@ -406,18 +518,26 @@ func (o *Orchestrator) Check(ctx context.Context, id string) (domain.ProxyGroup,
 		return domain.ProxyGroup{}, credentialsErr
 	}
 	checked, err := o.aimili.CheckSlot(ctx, group.AimiliSlot)
-	if err == nil && checked.EgressOK {
+	if err != nil && transientSlotCheckError(err) {
+		return group, operationError(err)
+	}
+	if err == nil {
 		applySlotSnapshot(&group, checked)
-		_, err = o.validateSOCKS(ctx, group, credentials)
-		if err == nil {
-			_, err = o.validateVLESS(ctx, group, credentials)
-		}
+	}
+	if err == nil && checked.EgressOK {
+		_, _, err = o.validateGroupPathsWithExitResync(ctx, &group, credentials)
 	}
 	group.LastCheckedAt = o.config.Now().UTC()
 	group.UpdatedAt = group.LastCheckedAt
 	if err != nil || !checked.EgressOK {
 		group.Status = domain.ProxyGroupDegraded
-		group.LastErrorCode = codeOr(err, "egress_unavailable")
+		if strings.TrimSpace(checked.LastErrorCode) != "" {
+			group.LastErrorCode = strings.TrimSpace(checked.LastErrorCode)
+		} else if checked.RepairStatus == "manual_required" {
+			group.LastErrorCode = "manual_replacement_required"
+		} else {
+			group.LastErrorCode = codeOr(err, "egress_unavailable")
+		}
 	} else {
 		group.Status = domain.ProxyGroupReady
 		group.LastErrorCode = ""
@@ -428,10 +548,24 @@ func (o *Orchestrator) Check(ctx context.Context, id string) (domain.ProxyGroup,
 	if err != nil {
 		return group, operationError(err)
 	}
+	if !checked.EgressOK {
+		return group, &Error{Code: group.LastErrorCode}
+	}
 	return group, nil
 }
 
+func transientSlotCheckError(err error) bool {
+	switch errorCode(err) {
+	case "operation_busy", "maintenance_busy", "timeout":
+		return true
+	default:
+		return false
+	}
+}
+
 func (o *Orchestrator) Rotate(ctx context.Context, id string) (domain.ProxyGroup, error) {
+	ctx, mutationUnlock := o.lockMutation(ctx)
+	defer mutationUnlock()
 	unlock := o.locks.lock(id)
 	defer unlock()
 	group, err := o.store.GetProxyGroup(ctx, id)
@@ -453,10 +587,7 @@ func (o *Orchestrator) Rotate(ctx context.Context, id string) (domain.ProxyGroup
 	}
 	if err == nil && slot.EgressOK {
 		applySlotSnapshot(&group, slot)
-		_, err = o.validateSOCKS(ctx, group, credentials)
-		if err == nil {
-			_, err = o.validateVLESS(ctx, group, credentials)
-		}
+		_, _, err = o.validateGroupPathsWithExitResync(ctx, &group, credentials)
 	}
 	group.LastRotatedAt = o.config.Now().UTC()
 	group.LastCheckedAt = group.LastRotatedAt
@@ -481,8 +612,12 @@ func applySlotSnapshot(group *domain.ProxyGroup, slot aimili.Slot) {
 	if group == nil {
 		return
 	}
+	previousCandidateID := group.CandidateID
 	if nodeID := strings.TrimSpace(slot.NodeID); nodeID != "" {
 		group.CandidateID = nodeID
+		if nodeID != previousCandidateID {
+			group.ExitIPCheckedAt = 0
+		}
 	}
 	if candidateIP := strings.TrimSpace(slot.CandidateIP); net.ParseIP(candidateIP) != nil {
 		group.CandidateIP = candidateIP
@@ -496,15 +631,21 @@ func applySlotSnapshot(group *domain.ProxyGroup, slot aimili.Slot) {
 	if proxyType := domain.ProxyType(strings.ToLower(strings.TrimSpace(slot.ProxyType))); proxyType.Valid() {
 		group.ProxyType = proxyType
 	}
+	group.AutoRepairPerformed = slot.AutoRepairPerformed
 	if slot.LatencyMS >= 0 {
 		group.CandidateLatencyMS = slot.LatencyMS
 	}
 	if exitIP := strings.TrimSpace(slot.ExitIP); net.ParseIP(exitIP) != nil {
 		group.ExitIP = exitIP
+		if slot.CheckedAt > 0 {
+			group.ExitIPCheckedAt = slot.CheckedAt
+		}
 	}
 }
 
 func (o *Orchestrator) Disable(ctx context.Context, id string) error {
+	ctx, mutationUnlock := o.lockMutation(ctx)
+	defer mutationUnlock()
 	unlock := o.locks.lock("all")
 	defer unlock()
 	group, err := o.store.GetProxyGroup(ctx, id)
@@ -534,33 +675,113 @@ func (o *Orchestrator) Disable(ctx context.Context, id string) error {
 }
 
 func (o *Orchestrator) Connections(ctx context.Context, id string) (Connections, error) {
-	if id == "agw-main" {
-		return o.mainConnections(ctx)
+	persistence, ok := o.store.(protocolModeStore)
+	if !ok {
+		return Connections{}, &Error{Code: "not_configured"}
 	}
-	group, err := o.store.GetProxyGroup(ctx, id)
-	if err != nil {
-		return Connections{}, operationError(err)
-	}
-	if group.Status != domain.ProxyGroupReady {
+	state, err := persistence.GetEgressProtocolMode(ctx, id)
+	if err != nil || state.State != domain.ProtocolReady {
 		return Connections{}, &Error{Code: "not_ready"}
+	}
+	var group domain.ProxyGroup
+	if id == "agw-main" {
+		mainStore, ok := o.store.(mainEgressStore)
+		if !ok {
+			return Connections{}, &Error{Code: "not_configured"}
+		}
+		main, getErr := mainStore.GetMainEgress(ctx)
+		if getErr != nil || !main.Enabled {
+			return Connections{}, &Error{Code: "not_ready"}
+		}
+		status, statusErr := o.aimili.MainStatus(ctx)
+		if statusErr != nil || !status.Active || !status.EgressOK || status.Port != 7928 || status.ExitIP != main.ExitIP {
+			return Connections{}, &Error{Code: "not_ready"}
+		}
+		group = mainEgressGroup(main)
+	} else {
+		group, err = o.store.GetProxyGroup(ctx, id)
+		if err != nil {
+			return Connections{}, operationError(err)
+		}
+		if group.Status != domain.ProxyGroupReady {
+			return Connections{}, &Error{Code: "not_ready"}
+		}
 	}
 	_, credentials, err := o.runtimeInputs(ctx)
 	if err != nil {
 		return Connections{}, err
 	}
-	vless := url.URL{Scheme: "vless", User: url.User(string(credentials.vlessID)), Host: net.JoinHostPort(o.config.PublicHost, fmt.Sprint(group.VLESSPort)), Fragment: group.ResourceName}
-	query := vless.Query()
-	query.Set("encryption", "none")
-	query.Set("flow", "xtls-rprx-vision")
-	query.Set("security", "reality")
-	query.Set("sni", group.RealityServerName)
-	query.Set("fp", "chrome")
-	query.Set("pbk", group.RealityPublicKey)
-	query.Set("sid", group.RealityShortID)
-	query.Set("type", "tcp")
-	vless.RawQuery = query.Encode()
+	subscription, err := o.Subscription(ctx)
+	if err != nil {
+		return Connections{}, err
+	}
+	var profile *xui.PublicProfile
+	for index := range subscription.PublicProfiles {
+		candidate := &subscription.PublicProfiles[index]
+		if candidate.InboundID == group.PublicInboundID && candidate.Mode == state.ActiveMode {
+			profile = candidate
+			break
+		}
+	}
+	if profile == nil {
+		return Connections{}, &Error{Code: "subscription_pending"}
+	}
+	publicURI, err := buildPublicURI(o.config.PublicHost, group.PublicPort, group.ResourceName, *profile)
+	if err != nil {
+		return Connections{}, err
+	}
 	socks := url.URL{Scheme: "socks5h", User: url.UserPassword(string(credentials.mixedUsername), string(credentials.mixedPassword)), Host: net.JoinHostPort(o.config.PublicHost, fmt.Sprint(group.MixedPort))}
-	return Connections{VLESSURI: vless.String(), SOCKS5HURI: socks.String()}, nil
+	result := Connections{ProtocolMode: state.ActiveMode, PublicURI: publicURI, SOCKS5HURI: socks.String()}
+	if state.ActiveMode == domain.ProtocolHysteria2QUICTLS {
+		result.VLESSError = "protocol_changed"
+	} else {
+		result.VLESSURI = publicURI
+	}
+	return result, nil
+}
+
+func buildPublicURI(publicHost string, port int, name string, profile xui.PublicProfile) (string, error) {
+	if publicHost == "" || port < 1 || port > 65535 || profile.InboundID < 1 || profile.Mode.Valid() == false {
+		return "", &Error{Code: "invalid_response"}
+	}
+	if profile.Mode == domain.ProtocolHysteria2QUICTLS {
+		if profile.Auth == "" || profile.ServerName == "" {
+			return "", &Error{Code: "invalid_response"}
+		}
+		uri := url.URL{Scheme: "hysteria2", User: url.User(profile.Auth), Host: net.JoinHostPort(publicHost, fmt.Sprint(port)), Path: "/", Fragment: name}
+		query := uri.Query()
+		query.Set("sni", profile.ServerName)
+		query.Set("insecure", "0")
+		uri.RawQuery = query.Encode()
+		return uri.String(), nil
+	}
+	if profile.ClientID == "" || profile.PublicKey == "" || profile.ShortID == "" || profile.ServerName == "" {
+		return "", &Error{Code: "invalid_response"}
+	}
+	uri := url.URL{Scheme: "vless", User: url.User(profile.ClientID), Host: net.JoinHostPort(publicHost, fmt.Sprint(port)), Fragment: name}
+	query := uri.Query()
+	query.Set("encryption", "none")
+	query.Set("security", "reality")
+	query.Set("sni", profile.ServerName)
+	query.Set("fp", "chrome")
+	query.Set("pbk", profile.PublicKey)
+	query.Set("sid", profile.ShortID)
+	if profile.MLDSA65Verify != "" {
+		query.Set("pqv", profile.MLDSA65Verify)
+	}
+	if profile.Mode == domain.ProtocolVLESSXHTTPReality {
+		if profile.XHTTPPath == "" {
+			return "", &Error{Code: "invalid_response"}
+		}
+		query.Set("type", "xhttp")
+		query.Set("path", profile.XHTTPPath)
+		query.Set("mode", "auto")
+	} else {
+		query.Set("type", "tcp")
+		query.Set("flow", "xtls-rprx-vision")
+	}
+	uri.RawQuery = query.Encode()
+	return uri.String(), nil
 }
 
 func (o *Orchestrator) mainConnections(ctx context.Context) (Connections, error) {
@@ -579,7 +800,7 @@ func (o *Orchestrator) mainConnections(ctx context.Context) (Connections, error)
 	if err != nil {
 		return Connections{}, err
 	}
-	legacy, err := manager.EnsureLegacyMain(ctx, xui.LegacyMainDesired{VLESSPort: 8443, MixedPort: o.config.MainMixedPort, SOCKSPort: 7928, MixedUsername: string(credentials.mixedUsername), MixedPassword: string(credentials.mixedPassword), MixedSourceRestrictionEnabled: policy.Enabled, MixedSourceCIDRs: prefixStrings(policy.CIDRs), RealityTarget: "127.0.0.1:443", RealityServerName: o.config.PublicHost})
+	legacy, err := manager.EnsureLegacyMain(ctx, xui.LegacyMainDesired{VLESSPort: 8443, MixedPort: o.config.MainMixedPort, SOCKSPort: 7928, VLESSClientID: string(credentials.vlessID), MixedUsername: string(credentials.mixedUsername), MixedPassword: string(credentials.mixedPassword), MixedSourceRestrictionEnabled: policy.Enabled, MixedSourceCIDRs: prefixStrings(policy.CIDRs), RealityTarget: "127.0.0.1:443", RealityServerName: o.config.RealityServerName})
 	if err != nil {
 		return Connections{}, operationError(err)
 	}
@@ -591,7 +812,7 @@ func (o *Orchestrator) mainConnections(ctx context.Context) (Connections, error)
 	if len(country) != 2 {
 		country = "ZZ"
 	}
-	if err := o.store.SaveMainEgress(ctx, store.MainEgress{ResourceName: "agw-main", CountryCode: country, CountryName: status.CountryName, ProxyType: proxyType, ExitIP: status.ExitIP, VLESSInboundID: legacy.VLESSInboundID, MixedInboundID: legacy.MixedInboundID, VLESSPort: legacy.VLESSPort, MixedPort: legacy.MixedPort, Enabled: true, UpdatedAt: o.config.Now().UTC()}); err != nil {
+	if err := o.store.SaveMainEgress(ctx, store.MainEgress{ResourceName: "agw-main", CountryCode: country, CountryName: status.CountryName, ProxyType: proxyType, CandidateID: status.CandidateID, ExitIP: status.ExitIP, PublicInboundID: legacy.VLESSInboundID, MixedInboundID: legacy.MixedInboundID, PublicPort: legacy.VLESSPort, MixedPort: legacy.MixedPort, Enabled: true, UpdatedAt: o.config.Now().UTC()}); err != nil {
 		return Connections{}, &Error{Code: "storage_failed"}
 	}
 	vless := url.URL{Scheme: "vless", User: url.User(legacy.ClientID), Host: net.JoinHostPort(o.config.PublicHost, fmt.Sprint(legacy.VLESSPort)), Fragment: "aimili-main"}
@@ -641,7 +862,7 @@ func (o *Orchestrator) allocatePorts(groups []domain.ProxyGroup) (int, int, bool
 	usedV := map[int]bool{}
 	usedM := map[int]bool{}
 	for _, g := range groups {
-		usedV[g.VLESSPort] = true
+		usedV[g.PublicPort] = true
 		usedM[g.MixedPort] = true
 	}
 	v, m := 0, 0
@@ -663,7 +884,70 @@ func (o *Orchestrator) validateSOCKS(ctx context.Context, g domain.ProxyGroup, c
 	return o.validator.ValidateSOCKS5H(ctx, validator.SOCKSTarget{Address: net.JoinHostPort("127.0.0.1", fmt.Sprint(g.MixedPort)), Username: string(c.mixedUsername), Password: string(c.mixedPassword), ProbeHost: o.config.ProbeHost, ExpectedExitIP: g.ExitIP})
 }
 func (o *Orchestrator) validateVLESS(ctx context.Context, g domain.ProxyGroup, c runtimeCredentials) (validator.Result, error) {
-	return o.validator.ValidateVLESS(ctx, validator.VLESSTarget{XrayPath: o.config.XrayPath, InboundAddress: net.JoinHostPort("127.0.0.1", fmt.Sprint(g.VLESSPort)), ClientID: string(c.vlessID), PublicKey: g.RealityPublicKey, ShortID: g.RealityShortID, ServerName: g.RealityServerName, ProbeHost: o.config.ProbeHost, ExpectedExitIP: g.ExitIP, MLDSA65Verify: g.RealityMLDSA65Verify})
+	return o.validator.ValidateVLESS(ctx, validator.VLESSTarget{XrayPath: o.config.XrayPath, InboundAddress: net.JoinHostPort("127.0.0.1", fmt.Sprint(g.PublicPort)), ClientID: string(c.vlessID), PublicKey: g.RealityPublicKey, ShortID: g.RealityShortID, ServerName: g.RealityServerName, ProbeHost: o.config.ProbeHost, ExpectedExitIP: g.ExitIP, MLDSA65Verify: g.RealityMLDSA65Verify})
+}
+
+func (o *Orchestrator) validateCurrentPublic(ctx context.Context, group domain.ProxyGroup) (validator.Result, error) {
+	persistence, ok := o.store.(protocolModeStore)
+	if !ok {
+		return validator.Result{}, &Error{Code: "not_configured"}
+	}
+	state, err := persistence.GetEgressProtocolMode(ctx, group.ID)
+	if err != nil || state.State != domain.ProtocolReady || !state.ActiveMode.Valid() {
+		return validator.Result{}, &Error{Code: "not_ready"}
+	}
+	subscription, err := o.Subscription(ctx)
+	if err != nil {
+		return validator.Result{}, err
+	}
+	for index := range subscription.PublicProfiles {
+		profile := subscription.PublicProfiles[index]
+		if profile.InboundID != group.PublicInboundID || profile.Mode != state.ActiveMode {
+			continue
+		}
+		return o.validator.ValidatePublic(ctx, validator.PublicTarget{
+			Mode: state.ActiveMode, XrayPath: o.config.XrayPath, InboundAddress: net.JoinHostPort("127.0.0.1", fmt.Sprint(group.PublicPort)),
+			ClientID: profile.ClientID, Auth: profile.Auth, PublicKey: profile.PublicKey, ShortID: profile.ShortID,
+			ServerName: profile.ServerName, MLDSA65Verify: profile.MLDSA65Verify, XHTTPPath: profile.XHTTPPath,
+			TLSServerName: profile.ServerName, ProbeHost: o.config.ProbeHost, ExpectedExitIP: group.ExitIP,
+		})
+	}
+	return validator.Result{}, &Error{Code: "subscription_incomplete"}
+}
+
+// validateGroupPathsWithExitResync handles the narrow race where a VPN Gate
+// node changes its observed public IP between CheckSlot and protocol
+// validation. A real routing mismatch remains a failure: the retry only runs
+// when a fresh slot snapshot reports a different, healthy public IP.
+func (o *Orchestrator) validateGroupPathsWithExitResync(ctx context.Context, group *domain.ProxyGroup, credentials runtimeCredentials) (validator.Result, validator.Result, error) {
+	socksResult, err := o.validateSOCKS(ctx, *group, credentials)
+	var publicResult validator.Result
+	if err == nil {
+		publicResult, err = o.validateCurrentPublic(ctx, *group)
+	}
+	if errorCode(err) != "egress_mismatch" {
+		return socksResult, publicResult, err
+	}
+	previousExitIP, previousOK := normalizeExitIP(group.ExitIP)
+	checked, checkErr := o.aimili.CheckSlot(ctx, group.AimiliSlot)
+	refreshedExitIP, refreshedOK := normalizeExitIP(checked.ExitIP)
+	if checkErr != nil || !checked.EgressOK || !previousOK || !refreshedOK || refreshedExitIP == previousExitIP {
+		return socksResult, publicResult, err
+	}
+	applySlotSnapshot(group, checked)
+	socksResult, err = o.validateSOCKS(ctx, *group, credentials)
+	if err != nil {
+		return socksResult, validator.Result{}, err
+	}
+	publicResult, err = o.validateCurrentPublic(ctx, *group)
+	return socksResult, publicResult, err
+}
+
+func validPublicEndpointHost(value string) bool {
+	if value == "" || value != strings.TrimSpace(value) || len(value) > 253 || strings.ContainsAny(value, "/\\?#\x00\r\n\t ") {
+		return false
+	}
+	return net.ParseIP(value) != nil || !strings.Contains(value, ":")
 }
 
 func (o *Orchestrator) waitForSlot(ctx context.Context, slot int) (aimili.SlotCheck, error) {
@@ -748,14 +1032,19 @@ func (o *Orchestrator) save(ctx context.Context, g *domain.ProxyGroup) error {
 	return nil
 }
 func (o *Orchestrator) rollbackEnable(ctx context.Context, g *domain.ProxyGroup, managed xui.ManagedGroup, cause string) error {
+	return o.rollbackSlotProvision(ctx, g, managed, cause, true)
+}
+func (o *Orchestrator) rollbackSlotProvision(ctx context.Context, g *domain.ProxyGroup, managed xui.ManagedGroup, cause string, deleteSlot bool) error {
 	rollbackFailed := false
 	if managed.ResourceName != "" {
 		if err := o.xui.DeleteManagedGroup(ctx, managed); err != nil {
 			rollbackFailed = true
 		}
 	}
-	if err := o.aimili.DeleteSlot(ctx, g.AimiliSlot); err != nil {
-		rollbackFailed = true
+	if deleteSlot {
+		if err := o.aimili.DeleteSlot(ctx, g.AimiliSlot); err != nil {
+			rollbackFailed = true
+		}
 	}
 	if !rollbackFailed {
 		if err := o.store.DeleteProxyGroup(ctx, g.ID); err == nil {
@@ -770,7 +1059,7 @@ func (o *Orchestrator) rollbackEnable(ctx context.Context, g *domain.ProxyGroup,
 	return &Error{Code: "repair_required"}
 }
 func managedFromGroup(g domain.ProxyGroup) xui.ManagedGroup {
-	return xui.ManagedGroup{ResourceName: g.ResourceName, VLESSInboundID: g.VLESSInboundID, MixedInboundID: g.MixedInboundID, VLESSInboundTag: g.ResourceName + "-vless", MixedInboundTag: g.ResourceName + "-mixed", OutboundTag: g.ResourceName + "-socks", Fingerprint: g.ConfigFingerprint, PublicKey: g.RealityPublicKey, ShortID: g.RealityShortID, ServerName: g.RealityServerName, MLDSA65Verify: g.RealityMLDSA65Verify}
+	return xui.ManagedGroup{ResourceName: g.ResourceName, VLESSInboundID: g.PublicInboundID, MixedInboundID: g.MixedInboundID, VLESSInboundTag: g.ResourceName + "-vless", MixedInboundTag: g.ResourceName + "-mixed", OutboundTag: g.ResourceName + "-socks", Fingerprint: g.ConfigFingerprint, PublicKey: g.RealityPublicKey, ShortID: g.RealityShortID, ServerName: g.RealityServerName, MLDSA65Verify: g.RealityMLDSA65Verify}
 }
 func prefixStrings(values []netip.Prefix) []string {
 	result := make([]string, len(values))

@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+action="${1:-}"
+run_id="$(/usr/bin/od -An -N32 -tx1 /dev/urandom | /usr/bin/tr -d ' \n')"
+case "$action" in
+  gateway-rollback)
+    exec /usr/local/bin/aimili-gateway-update-install gateway-rollback \
+      --run-id "$run_id"
+    ;;
+  ui-rollback)
+    exec /usr/local/bin/aimili-gateway-update-install ui-rollback \
+      --run-id "$run_id"
+    ;;
+  *)
+    echo "usage: aimili-gateway-update-rollback <gateway-rollback|ui-rollback>" >&2
+    exit 2
+    ;;
+esac

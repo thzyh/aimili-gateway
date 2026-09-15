@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for bounded Aimili Gateway update requests
+
+[Path]
+PathChanged=/var/lib/aimili-gateway/update-spool/requests
+Unit=aimili-gateway-update-fetch.service
+
+[Install]
+WantedBy=multi-user.target

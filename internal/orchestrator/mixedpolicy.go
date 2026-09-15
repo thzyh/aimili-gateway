@@ -2,14 +2,207 @@ package orchestrator
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"log"
 	"net"
 	"net/netip"
 	"sort"
+	"time"
 
+	"github.com/thzyh/aimili-gateway/internal/adapters/aimili"
 	"github.com/thzyh/aimili-gateway/internal/adapters/xui"
 	"github.com/thzyh/aimili-gateway/internal/domain"
 	"github.com/thzyh/aimili-gateway/internal/store"
 )
+
+func (o *Orchestrator) RotateMixedCredentials(ctx context.Context) (time.Time, error) {
+	ctx, mutationUnlock := o.lockMutation(ctx)
+	defer mutationUnlock()
+	unlock := o.locks.lock("all")
+	defer unlock()
+
+	persistence, ok := o.store.(mixedCredentialStore)
+	if !ok {
+		return time.Time{}, &Error{Code: "not_configured"}
+	}
+	policy, err := o.store.GetMixedSourcePolicy(ctx)
+	if err != nil {
+		return time.Time{}, &Error{Code: "storage_failed"}
+	}
+	oldCredentials, err := o.runtimeCredentials(ctx)
+	if err != nil {
+		return time.Time{}, err
+	}
+	defer clearRuntimeCredentials(&oldCredentials)
+	newCredentials, err := generateMixedCredentials()
+	if err != nil {
+		return time.Time{}, &Error{Code: "operation_failed"}
+	}
+	newCredentials.vlessID = append([]byte(nil), oldCredentials.vlessID...)
+	defer clearRuntimeCredentials(&newCredentials)
+
+	slots, err := o.aimili.ListSlots(ctx)
+	if err != nil {
+		return time.Time{}, operationError(err)
+	}
+	slotsByNumber := make(map[int]aimili.Slot, len(slots))
+	for _, slot := range slots {
+		slotsByNumber[slot.Number] = slot
+	}
+	groups, err := o.store.ListProxyGroups(ctx)
+	if err != nil {
+		return time.Time{}, &Error{Code: "storage_failed"}
+	}
+	sort.Slice(groups, func(i, j int) bool { return groups[i].ID < groups[j].ID })
+	updates := make([]mixedPolicyUpdate, 0, len(groups))
+	for _, group := range groups {
+		if group.PublicInboundID <= 0 || group.MixedInboundID <= 0 {
+			continue
+		}
+		slot, exists := slotsByNumber[group.AimiliSlot]
+		if !exists || slot.Port < 1 {
+			return time.Time{}, &Error{Code: "not_ready"}
+		}
+		updates = append(updates, mixedPolicyUpdate{
+			group: group, original: group, managed: managedFromGroup(group),
+			desired:    o.desiredGroup(group, slot.Port, newCredentials, policy),
+			oldDesired: o.desiredGroup(group, slot.Port, oldCredentials, policy),
+		})
+	}
+
+	var mainUpdate *mixedPolicyMainUpdate
+	if mainStore, ok := o.store.(mainEgressStore); ok {
+		main, mainErr := mainStore.GetMainEgress(ctx)
+		if mainErr != nil && !errors.Is(mainErr, store.ErrProxyGroupNotFound) {
+			return time.Time{}, &Error{Code: "storage_failed"}
+		}
+		if mainErr == nil && main.Enabled {
+			mainUpdate = &mixedPolicyMainUpdate{
+				group: mainEgressGroup(main), desired: o.desiredLegacyMain(newCredentials, policy), oldDesired: o.desiredLegacyMain(oldCredentials, policy),
+			}
+		}
+	}
+	if len(updates) == 0 && mainUpdate == nil {
+		return time.Time{}, &Error{Code: "not_configured"}
+	}
+
+	applied := make([]mixedPolicyUpdate, 0, len(updates))
+	for index := range updates {
+		updates[index].updated = updates[index].managed
+		updated, updateErr := o.xui.UpdateManagedMixedPolicy(ctx, updates[index].desired, updates[index].managed)
+		if updateErr != nil {
+			log.Printf("mixed credential rotation failed: stage=update_managed id=%s slot=%d code=%s", updates[index].group.ID, updates[index].group.AimiliSlot, errorCode(updateErr))
+			return time.Time{}, o.rollbackMixedCredentialRotation(ctx, append(applied, updates[index]), nil, nil)
+		}
+		updates[index].updated = updated
+		updates[index].oldDesired.ResourceName = updated.ResourceName
+		applied = append(applied, updates[index])
+	}
+	if mainUpdate != nil {
+		if updateErr := o.xui.UpdateLegacyMainMixedPolicy(ctx, mainUpdate.desired); updateErr != nil {
+			log.Printf("mixed credential rotation failed: stage=update_main id=%s code=%s", mainUpdate.group.ID, errorCode(updateErr))
+			return time.Time{}, o.rollbackMixedCredentialRotation(ctx, applied, nil, mainUpdate)
+		}
+	}
+
+	for _, update := range applied {
+		slot := slotsByNumber[update.group.AimiliSlot]
+		if update.group.Status == domain.ProxyGroupReady && slot.EgressOK {
+			if _, validateErr := o.validateSOCKS(ctx, update.group, newCredentials); validateErr != nil {
+				log.Printf("mixed credential rotation failed: stage=validate_managed id=%s slot=%d code=%s", update.group.ID, update.group.AimiliSlot, errorCode(validateErr))
+				return time.Time{}, o.rollbackMixedCredentialRotation(ctx, applied, nil, mainUpdate)
+			}
+		}
+	}
+	if mainUpdate != nil {
+		mainStatus, statusErr := o.aimili.MainStatus(ctx)
+		if statusErr != nil {
+			log.Printf("mixed credential rotation failed: stage=main_status id=%s code=%s", mainUpdate.group.ID, errorCode(statusErr))
+			return time.Time{}, o.rollbackMixedCredentialRotation(ctx, applied, nil, mainUpdate)
+		}
+		if mainStatus.Active && mainStatus.EgressOK {
+			mainUpdate.group.ExitIP = mainStatus.ExitIP
+			if _, validateErr := o.validateSOCKS(ctx, mainUpdate.group, newCredentials); validateErr != nil {
+				log.Printf("mixed credential rotation failed: stage=validate_main id=%s code=%s", mainUpdate.group.ID, errorCode(validateErr))
+				return time.Time{}, o.rollbackMixedCredentialRotation(ctx, applied, nil, mainUpdate)
+			}
+		}
+	}
+
+	saved := make([]mixedPolicyUpdate, 0, len(applied))
+	for _, update := range applied {
+		changed := update.group
+		changed.ResourceName = update.updated.ResourceName
+		changed.ConfigFingerprint = update.updated.Fingerprint
+		changed.MixedInboundID = update.updated.MixedInboundID
+		changed.UpdatedAt = o.config.Now().UTC()
+		if err := o.save(ctx, &changed); err != nil {
+			log.Printf("mixed credential rotation failed: stage=save_managed id=%s slot=%d code=%s", update.group.ID, update.group.AimiliSlot, errorCode(err))
+			return time.Time{}, o.rollbackMixedCredentialRotation(ctx, applied, saved, mainUpdate)
+		}
+		saved = append(saved, update)
+	}
+	if err := persistence.ReplaceMixedCredentials(ctx, newCredentials.mixedUsername, newCredentials.mixedPassword, o.masterKey); err != nil {
+		log.Printf("mixed credential rotation failed: stage=save_credentials code=%s", errorCode(err))
+		return time.Time{}, o.rollbackMixedCredentialRotation(ctx, applied, saved, mainUpdate)
+	}
+	return o.config.Now().UTC(), nil
+}
+
+func (o *Orchestrator) rollbackMixedCredentialRotation(ctx context.Context, applied, saved []mixedPolicyUpdate, mainUpdate *mixedPolicyMainUpdate) error {
+	rollbackFailed := false
+	if mainUpdate != nil {
+		if err := o.xui.UpdateLegacyMainMixedPolicy(ctx, mainUpdate.oldDesired); err != nil {
+			rollbackFailed = true
+		}
+	}
+	for index := len(applied) - 1; index >= 0; index-- {
+		update := applied[index]
+		if _, err := o.xui.UpdateManagedMixedPolicy(ctx, update.oldDesired, update.updated); err != nil {
+			rollbackFailed = true
+		}
+	}
+	for index := len(saved) - 1; index >= 0; index-- {
+		restored := saved[index].original
+		restored.Version++
+		restored.UpdatedAt = o.config.Now().UTC()
+		if err := o.save(ctx, &restored); err != nil {
+			rollbackFailed = true
+		}
+	}
+	if rollbackFailed {
+		return &Error{Code: "repair_required"}
+	}
+	return &Error{Code: "mixed_credentials_apply_failed"}
+}
+
+func generateMixedCredentials() (runtimeCredentials, error) {
+	username, err := randomCredentialHex(8)
+	if err != nil {
+		return runtimeCredentials{}, err
+	}
+	password, err := randomCredentialHex(24)
+	if err != nil {
+		return runtimeCredentials{}, err
+	}
+	return runtimeCredentials{mixedUsername: []byte("agw-" + username), mixedPassword: []byte(password)}, nil
+}
+
+func randomCredentialHex(size int) (string, error) {
+	value := make([]byte, size)
+	if _, err := rand.Read(value); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(value), nil
+}
+
+func clearRuntimeCredentials(credentials *runtimeCredentials) {
+	clear(credentials.vlessID)
+	clear(credentials.mixedUsername)
+	clear(credentials.mixedPassword)
+}
 
 type mixedPolicyUpdate struct {
 	group      domain.ProxyGroup
@@ -18,6 +211,12 @@ type mixedPolicyUpdate struct {
 	desired    xui.DesiredGroup
 	oldDesired xui.DesiredGroup
 	updated    xui.ManagedGroup
+}
+
+type mixedPolicyMainUpdate struct {
+	group      domain.ProxyGroup
+	desired    xui.LegacyMainDesired
+	oldDesired xui.LegacyMainDesired
 }
 
 func (o *Orchestrator) MixedPolicy(ctx context.Context) (store.MixedSourcePolicy, error) {
@@ -33,10 +232,16 @@ func (o *Orchestrator) RepairManaged(ctx context.Context) error {
 	if err != nil {
 		return &Error{Code: "storage_failed"}
 	}
-	return o.SetMixedPolicy(ctx, policy)
+	return o.setMixedPolicy(ctx, policy, true)
 }
 
 func (o *Orchestrator) SetMixedPolicy(ctx context.Context, requested store.MixedSourcePolicy) error {
+	return o.setMixedPolicy(ctx, requested, false)
+}
+
+func (o *Orchestrator) setMixedPolicy(ctx context.Context, requested store.MixedSourcePolicy, repairPublic bool) error {
+	ctx, mutationUnlock := o.lockMutation(ctx)
+	defer mutationUnlock()
 	desired, err := canonicalMixedPolicy(requested)
 	if err != nil {
 		return err
@@ -52,6 +257,18 @@ func (o *Orchestrator) SetMixedPolicy(ctx context.Context, requested store.Mixed
 	if err != nil {
 		return err
 	}
+	var mainUpdate *mixedPolicyMainUpdate
+	if mainStore, ok := o.store.(mainEgressStore); ok {
+		main, mainErr := mainStore.GetMainEgress(ctx)
+		if mainErr != nil && !errors.Is(mainErr, store.ErrProxyGroupNotFound) {
+			return &Error{Code: "storage_failed"}
+		}
+		if mainErr == nil && main.Enabled {
+			mainUpdate = &mixedPolicyMainUpdate{
+				group: mainEgressGroup(main), desired: o.desiredLegacyMain(credentials, desired), oldDesired: o.desiredLegacyMain(credentials, oldPolicy),
+			}
+		}
+	}
 	groups, err := o.store.ListProxyGroups(ctx)
 	if err != nil {
 		return &Error{Code: "storage_failed"}
@@ -59,7 +276,7 @@ func (o *Orchestrator) SetMixedPolicy(ctx context.Context, requested store.Mixed
 	sort.Slice(groups, func(i, j int) bool { return groups[i].ID < groups[j].ID })
 	updates := make([]mixedPolicyUpdate, 0, len(groups))
 	for _, group := range groups {
-		if group.VLESSInboundID <= 0 || group.MixedInboundID <= 0 {
+		if group.PublicInboundID <= 0 || group.MixedInboundID <= 0 {
 			continue
 		}
 		slot, checkErr := o.aimili.CheckSlot(ctx, group.AimiliSlot)
@@ -67,8 +284,22 @@ func (o *Orchestrator) SetMixedPolicy(ctx context.Context, requested store.Mixed
 			return &Error{Code: "egress_unavailable"}
 		}
 		original := group
-		group.ExitIP = slot.ExitIP
+		applySlotSnapshot(&group, slot)
 		managed := managedFromGroup(group)
+		if repairPublic {
+			persistence, ok := o.store.(protocolModeStore)
+			if !ok {
+				return &Error{Code: "not_configured"}
+			}
+			state, stateErr := persistence.GetEgressProtocolMode(ctx, group.ID)
+			if stateErr != nil || state.State != domain.ProtocolReady || !state.ActiveMode.Valid() {
+				return &Error{Code: "not_ready"}
+			}
+			managed, err = o.xui.RepairManagedPublic(ctx, o.desiredGroup(group, slot.Port, credentials, desired), managed, state.ActiveMode)
+			if err != nil {
+				return operationError(err)
+			}
+		}
 		updates = append(updates, mixedPolicyUpdate{
 			group: group, original: original, managed: managed,
 			desired:    o.desiredGroup(group, slot.Port, credentials, desired),
@@ -85,7 +316,7 @@ func (o *Orchestrator) SetMixedPolicy(ctx context.Context, requested store.Mixed
 
 	applied := make([]mixedPolicyUpdate, 0, len(updates))
 	for _, update := range updates {
-		updated, updateErr := o.xui.UpdateManagedGroup(ctx, update.desired, update.managed)
+		updated, updateErr := o.xui.UpdateManagedMixedPolicy(ctx, update.desired, update.managed)
 		if updateErr == nil {
 			update.updated = updated
 			update.oldDesired.ResourceName = updated.ResourceName
@@ -93,7 +324,15 @@ func (o *Orchestrator) SetMixedPolicy(ctx context.Context, requested store.Mixed
 			_, updateErr = o.validateSOCKS(ctx, update.group, credentials)
 		}
 		if updateErr != nil {
-			return o.failMixedPolicyUpdate(ctx, oldPolicy, desired, applied, nil)
+			return o.failMixedPolicyUpdate(ctx, oldPolicy, desired, applied, nil, nil)
+		}
+	}
+	if mainUpdate != nil {
+		if updateErr := o.xui.UpdateLegacyMainMixedPolicy(ctx, mainUpdate.desired); updateErr != nil {
+			return o.failMixedPolicyUpdate(ctx, oldPolicy, desired, applied, nil, mainUpdate)
+		}
+		if _, updateErr := o.validateSOCKS(ctx, mainUpdate.group, credentials); updateErr != nil {
+			return o.failMixedPolicyUpdate(ctx, oldPolicy, desired, applied, nil, mainUpdate)
 		}
 	}
 
@@ -102,7 +341,7 @@ func (o *Orchestrator) SetMixedPolicy(ctx context.Context, requested store.Mixed
 		changed := update.group
 		changed.ResourceName = update.updated.ResourceName
 		changed.ConfigFingerprint = update.updated.Fingerprint
-		changed.VLESSInboundID = update.updated.VLESSInboundID
+		changed.PublicInboundID = update.updated.VLESSInboundID
 		changed.MixedInboundID = update.updated.MixedInboundID
 		changed.RealityPublicKey = update.updated.PublicKey
 		changed.RealityShortID = update.updated.ShortID
@@ -110,22 +349,29 @@ func (o *Orchestrator) SetMixedPolicy(ctx context.Context, requested store.Mixed
 		changed.RealityMLDSA65Verify = update.updated.MLDSA65Verify
 		changed.UpdatedAt = now
 		if err := o.save(ctx, &changed); err != nil {
-			return o.failMixedPolicyUpdate(ctx, oldPolicy, desired, applied, saved)
+			return o.failMixedPolicyUpdate(ctx, oldPolicy, desired, applied, saved, mainUpdate)
 		}
 		saved = append(saved, update)
 	}
 	desired.ApplyStatus = store.MixedPolicyApplied
 	if err := o.store.ReplaceMixedSourcePolicy(ctx, desired); err != nil {
-		return o.failMixedPolicyUpdate(ctx, oldPolicy, desired, applied, saved)
+		return o.failMixedPolicyUpdate(ctx, oldPolicy, desired, applied, saved, mainUpdate)
 	}
 	return nil
 }
 
-func (o *Orchestrator) failMixedPolicyUpdate(ctx context.Context, oldPolicy, desired store.MixedSourcePolicy, applied, saved []mixedPolicyUpdate) error {
+func (o *Orchestrator) failMixedPolicyUpdate(ctx context.Context, oldPolicy, desired store.MixedSourcePolicy, applied, saved []mixedPolicyUpdate, mainUpdate *mixedPolicyMainUpdate) error {
 	rollbackFailed := false
+	if mainUpdate != nil {
+		if err := o.xui.UpdateLegacyMainMixedPolicy(ctx, mainUpdate.oldDesired); err != nil {
+			rollbackFailed = true
+		} else if _, err := o.validateSOCKS(ctx, mainUpdate.group, runtimeCredentials{mixedUsername: []byte(mainUpdate.oldDesired.MixedUsername), mixedPassword: []byte(mainUpdate.oldDesired.MixedPassword)}); err != nil {
+			rollbackFailed = true
+		}
+	}
 	for index := len(applied) - 1; index >= 0; index-- {
 		update := applied[index]
-		if _, err := o.xui.UpdateManagedGroup(ctx, update.oldDesired, update.updated); err != nil {
+		if _, err := o.xui.UpdateManagedMixedPolicy(ctx, update.oldDesired, update.updated); err != nil {
 			rollbackFailed = true
 			continue
 		}
@@ -158,10 +404,19 @@ func (o *Orchestrator) failMixedPolicyUpdate(ctx context.Context, oldPolicy, des
 
 func (o *Orchestrator) desiredGroup(group domain.ProxyGroup, socksPort int, credentials runtimeCredentials, policy store.MixedSourcePolicy) xui.DesiredGroup {
 	return xui.DesiredGroup{
-		ResourceName: group.ResourceName, SOCKSPort: socksPort, VLESSPort: group.VLESSPort, MixedPort: group.MixedPort,
+		ResourceName: group.ResourceName, SOCKSPort: socksPort, VLESSPort: group.PublicPort, MixedPort: group.MixedPort,
 		VLESSClientID: string(credentials.vlessID), MixedUsername: string(credentials.mixedUsername), MixedPassword: string(credentials.mixedPassword),
 		MixedSourceRestrictionEnabled: policy.Enabled, MixedSourceCIDRs: prefixStrings(policy.CIDRs),
-		RealityTarget: "127.0.0.1:443", RealityServerName: o.config.PublicHost,
+		RealityTarget: "127.0.0.1:443", RealityServerName: o.config.RealityServerName,
+	}
+}
+
+func (o *Orchestrator) desiredLegacyMain(credentials runtimeCredentials, policy store.MixedSourcePolicy) xui.LegacyMainDesired {
+	return xui.LegacyMainDesired{
+		VLESSPort: 8443, MixedPort: o.config.MainMixedPort, SOCKSPort: 7928,
+		VLESSClientID: string(credentials.vlessID), MixedUsername: string(credentials.mixedUsername), MixedPassword: string(credentials.mixedPassword),
+		MixedSourceRestrictionEnabled: policy.Enabled, MixedSourceCIDRs: prefixStrings(policy.CIDRs),
+		RealityTarget: "127.0.0.1:443", RealityServerName: o.config.RealityServerName,
 	}
 }
 

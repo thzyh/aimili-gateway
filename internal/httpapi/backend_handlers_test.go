@@ -138,6 +138,11 @@ func TestAimiliCountryRefreshRoutesEnforceSessionMutationAndIdempotency(t *testi
 	if len(service.startedCountries) != 1 || service.startedCountries[0] != "JP" {
 		t.Fatalf("started countries = %#v", service.startedCountries)
 	}
+	response = environment.requestWithHeaders(t, http.MethodPost, path, map[string]string{"country": "all"}, environment.origin, csrf, map[string]string{"Idempotency-Key": "refresh-all"})
+	assertResponseStatus(t, response, http.StatusAccepted)
+	if len(service.startedCountries) != 2 || service.startedCountries[1] != "ALL" {
+		t.Fatalf("all-country refresh was not forwarded: %#v", service.startedCountries)
+	}
 
 	service.startErr = &maintenance.Error{Code: "maintenance_busy"}
 	response = environment.requestWithHeaders(t, http.MethodPost, path, map[string]string{"country": "US"}, environment.origin, csrf, map[string]string{"Idempotency-Key": "refresh-us"})

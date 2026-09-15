@@ -31,6 +31,7 @@ type Dependencies struct {
 	ProxyManager  ProxyManager
 	Maintenance   MaintenanceService
 	BackendLogin  BackendLoginService
+	Updates       UpdateManager
 }
 
 type MaintenanceService interface {
@@ -63,25 +64,29 @@ type ProxyManager interface {
 	ReplaceCandidate(context.Context, string, string) (domain.ProxyGroup, error)
 	CheckMain(context.Context) (store.MainEgress, error)
 	CleanupLegacyAggregate(context.Context) (orchestrator.LegacyAggregateCleanup, error)
+	SwitchProtocolModeExpected(context.Context, string, domain.ProtocolMode, domain.ProtocolMode) (domain.EgressProtocolMode, error)
 	MixedPolicy(context.Context) (store.MixedSourcePolicy, error)
 	SetMixedPolicy(context.Context, store.MixedSourcePolicy) error
+	RotateMixedCredentials(context.Context) (time.Time, error)
 	Reconcile(context.Context) orchestrator.ReconcileResult
 }
 
 type server struct {
-	store         *store.Store
-	masterKey     []byte
-	allowedOrigin string
-	now           func() time.Time
-	limiter       *loginLimiter
-	aimiliProbe   adapters.Prober
-	xuiProbe      adapters.Prober
-	expertModeURL string
-	proxyManager  ProxyManager
-	maintenance   MaintenanceService
-	backendLogin  BackendLoginService
-	idempotencyMu sync.Mutex
-	idempotency   map[string]cachedResponse
+	store               *store.Store
+	masterKey           []byte
+	allowedOrigin       string
+	now                 func() time.Time
+	limiter             *loginLimiter
+	aimiliProbe         adapters.Prober
+	xuiProbe            adapters.Prober
+	expertModeURL       string
+	proxyManager        ProxyManager
+	maintenance         MaintenanceService
+	backendLogin        BackendLoginService
+	updates             UpdateManager
+	idempotencyMu       sync.Mutex
+	idempotency         map[string]cachedResponse
+	idempotencyRequests map[string]string
 }
 
 func NewServer(dependencies Dependencies) http.Handler {
@@ -103,18 +108,20 @@ func NewServer(dependencies Dependencies) http.Handler {
 		now = time.Now
 	}
 	server := &server{
-		store:         dependencies.Store,
-		masterKey:     append([]byte(nil), dependencies.MasterKey...),
-		allowedOrigin: origin,
-		now:           now,
-		limiter:       newLoginLimiter(),
-		aimiliProbe:   dependencies.AimiliProbe,
-		xuiProbe:      dependencies.XUIProbe,
-		expertModeURL: dependencies.ExpertModeURL,
-		proxyManager:  dependencies.ProxyManager,
-		maintenance:   dependencies.Maintenance,
-		backendLogin:  dependencies.BackendLogin,
-		idempotency:   make(map[string]cachedResponse),
+		store:               dependencies.Store,
+		masterKey:           append([]byte(nil), dependencies.MasterKey...),
+		allowedOrigin:       origin,
+		now:                 now,
+		limiter:             newLoginLimiter(),
+		aimiliProbe:         dependencies.AimiliProbe,
+		xuiProbe:            dependencies.XUIProbe,
+		expertModeURL:       dependencies.ExpertModeURL,
+		proxyManager:        dependencies.ProxyManager,
+		maintenance:         dependencies.Maintenance,
+		backendLogin:        dependencies.BackendLogin,
+		updates:             dependencies.Updates,
+		idempotency:         make(map[string]cachedResponse),
+		idempotencyRequests: make(map[string]string),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/auth/options", server.handleAuthOptions)
@@ -133,6 +140,7 @@ func NewServer(dependencies Dependencies) http.Handler {
 	mux.HandleFunc("POST /api/v1/proxy-groups/{id}/check", server.handleCheckProxyGroup)
 	mux.HandleFunc("POST /api/v1/proxy-groups/{id}/rotate", server.handleRotateProxyGroup)
 	mux.HandleFunc("POST /api/v1/proxy-groups/{id}/replace", server.handleReplaceProxyGroup)
+	mux.HandleFunc("PUT /api/v1/proxy-groups/{id}/protocol-mode", server.handleProtocolMode)
 	mux.HandleFunc("POST /api/v1/proxy-groups/agw-main/check", server.handleCheckMainProxyGroup)
 	mux.HandleFunc("DELETE /api/v1/proxy-groups/{id}", server.handleDisableProxyGroup)
 	mux.HandleFunc("GET /api/v1/proxy-groups/{id}/connections", server.handleConnections)
@@ -140,6 +148,8 @@ func NewServer(dependencies Dependencies) http.Handler {
 	mux.HandleFunc("POST /api/v1/proxy-groups/legacy-aggregate/cleanup", server.handleCleanupLegacyAggregate)
 	mux.HandleFunc("GET /api/v1/settings/mixed-source-policy", server.handleGetMixedPolicy)
 	mux.HandleFunc("PUT /api/v1/settings/mixed-source-policy", server.handleSetMixedPolicy)
+	mux.HandleFunc("POST /api/v1/settings/mixed-source-policy/authorize-current", server.handleAuthorizeCurrentMixedPolicy)
+	mux.HandleFunc("POST /api/v1/settings/socks5h-credentials/rotate", server.handleRotateMixedCredentials)
 	mux.HandleFunc("GET /api/v1/settings/summary", server.handleSettingsSummary)
 	mux.HandleFunc("GET /api/v1/settings/aimilivpn", server.handleAimiliSettings)
 	mux.HandleFunc("GET /api/v1/settings/aimilivpn/countries", server.handleAimiliCountries)
@@ -151,6 +161,10 @@ func NewServer(dependencies Dependencies) http.Handler {
 	mux.HandleFunc("POST /api/v1/settings/3x-ui/repair", server.handleRepairXUISettings)
 	mux.HandleFunc("POST /api/v1/backends/aimilivpn/login", server.handleAimiliBackendLogin)
 	mux.HandleFunc("POST /api/v1/backends/3x-ui/login", server.handleXUIBackendLogin)
+	mux.HandleFunc("GET /api/v1/system/updates", server.handleListUpdates)
+	mux.HandleFunc("POST /api/v1/system/updates/{kind}/{version}/apply", server.handleApplyUpdate)
+	mux.HandleFunc("POST /api/v1/system/updates/{kind}/rollback", server.handleRollbackUpdate)
+	mux.HandleFunc("GET /api/v1/system/updates/{runId}", server.handleUpdateStatus)
 	return noStore(mux)
 }
 

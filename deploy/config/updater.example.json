@@ -1,0 +1,24 @@
+{
+  "manifestOrigin": "https://github.com/thzyh/aimili-gateway/releases/download",
+  "redirectHosts": [
+    "github.com",
+    "release-assets.githubusercontent.com"
+  ],
+  "channels": [
+    "stable"
+  ],
+  "publicKeyFile": "/etc/aimili-gateway/release-ed25519.pub",
+  "stagingRoot": "/var/lib/aimili-gateway-update/staging",
+  "maxAssetBytes": 67108864,
+  "requestDir": "/var/lib/aimili-gateway/update-spool/requests",
+  "resultDir": "/var/lib/aimili-gateway/update-spool/results",
+  "binaryPath": "/usr/local/bin/aimili-gateway",
+  "previousPath": "/usr/local/bin/aimili-gateway.previous",
+  "gatewayConfigPath": "/etc/aimili-gateway/config.json",
+  "databasePath": "/var/lib/aimili-gateway/aimili-gateway.db",
+  "xuiDatabasePath": "/etc/x-ui/x-ui.db",
+  "healthUrl": "http://127.0.0.1:9080/healthz",
+  "uiRoot": "/var/lib/aimili-gateway/ui",
+  "allowGatewayInstall": false,
+  "fetcherUid": 0
+}
