@@ -477,7 +477,11 @@ class PoolMaintenanceTests(unittest.TestCase):
         write.assert_not_called()
 
     def test_country_refresh_busy_results_use_closed_result_codes(self):
-        with mock.patch.object(manager, "main_mutation_allowed", return_value=False):
+        with mock.patch.object(
+            manager.main_assignment_coordinator,
+            "background_mutation_allowed",
+            return_value=False,
+        ):
             operation_busy = manager.refresh_country_nodes("JP")
         self.assertEqual(operation_busy["resultCode"], "operation_busy")
 

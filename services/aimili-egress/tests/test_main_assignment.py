@@ -202,6 +202,7 @@ class MainAssignmentCoordinatorTests(unittest.TestCase):
         self.assertEqual(result["state"], "repair_required")
         self.assertEqual(result["error_code"], "rollback_failed")
         self.assertFalse(self.coordinator.mutation_allowed())
+        self.assertTrue(self.coordinator.background_mutation_allowed())
 
     def test_explicit_rollback_retries_a_repair_required_restore(self):
         self.executor.stage_result["available"] = False
@@ -1528,6 +1529,11 @@ class ManagerMainAssignmentTests(unittest.TestCase):
             mock.patch.object(
                 manager.main_assignment_coordinator,
                 "mutation_allowed",
+                return_value=False,
+            ),
+            mock.patch.object(
+                manager.main_assignment_coordinator,
+                "background_mutation_allowed",
                 return_value=False,
             ),
             mock.patch.object(

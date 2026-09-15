@@ -632,7 +632,7 @@ def main_mutation_allowed() -> bool:
     return main_assignment_coordinator.mutation_allowed()
 
 
-def _acquire_runtime_mutation(*, assignment_action: bool = False) -> bool:
+def _acquire_runtime_mutation(*, assignment_action: bool = False, allow_main_repair: bool = False) -> bool:
     if not mutation_lock.acquire(blocking=False):
         return False
     refresh_authorized = bool(
@@ -640,11 +640,12 @@ def _acquire_runtime_mutation(*, assignment_action: bool = False) -> bool:
     )
     with country_refresh_lock:
         refresh_running = country_refresh_state.get("state") == "running"
-    allowed = (
-        main_assignment_coordinator.assignment_action_allowed()
-        if assignment_action
-        else main_mutation_allowed()
-    )
+    if assignment_action:
+        allowed = main_assignment_coordinator.assignment_action_allowed()
+    elif allow_main_repair:
+        allowed = main_assignment_coordinator.background_mutation_allowed()
+    else:
+        allowed = main_mutation_allowed()
     allowed = allowed and (not refresh_running or refresh_authorized)
     if not allowed:
         mutation_lock.release()
@@ -656,12 +657,20 @@ def _release_runtime_mutation() -> None:
     mutation_lock.release()
 
 
-def _mutation_guard(busy_result: Any = None, *, raise_busy: bool = False):
+def _mutation_guard(
+    busy_result: Any = None,
+    *,
+    raise_busy: bool = False,
+    allow_main_repair: bool = False,
+):
     def decorate(function):
         @functools.wraps(function)
         def guarded(*args, **kwargs):
             authorized = bool(getattr(main_assignment_thread, "authorized", False))
-            if not _acquire_runtime_mutation(assignment_action=authorized):
+            if not _acquire_runtime_mutation(
+                assignment_action=authorized,
+                allow_main_repair=allow_main_repair,
+            ):
                 if raise_busy:
                     raise RuntimeError("主连接或 mutation lease 正在进行，请稍后再试")
                 return dict(busy_result) if isinstance(busy_result, dict) else busy_result
@@ -2634,7 +2643,7 @@ def start_country_refresh(country: str) -> dict[str, Any]:
     all_countries = normalized_country == "ALL"
     if not all_countries and not re.fullmatch(r"[A-Z]{2}", normalized_country):
         return {"state": "failed", "country": normalized_country, "errorCode": "invalid_country"}
-    if not _acquire_runtime_mutation():
+    if not _acquire_runtime_mutation(allow_main_repair=True):
         return {
             "state": "failed", "country": normalized_country,
             "resultCode": "operation_busy", "errorCode": "operation_busy",
@@ -2697,7 +2706,7 @@ def start_country_refresh(country: str) -> dict[str, Any]:
 @_mutation_guard({
     "state": "failed", "country": "", "resultCode": "operation_busy",
     "errorCode": "operation_busy",
-})
+}, allow_main_repair=True)
 def refresh_country_nodes(
     country: str,
     target_size: int = 5,
@@ -2708,7 +2717,7 @@ def refresh_country_nodes(
     normalized_country = str(country or "").strip().upper()
     if not re.fullmatch(r"[A-Z]{2}", normalized_country):
         return {"state": "failed", "country": normalized_country, "errorCode": "invalid_country"}
-    if not main_mutation_allowed():
+    if not main_assignment_coordinator.background_mutation_allowed():
         return {
             "state": "failed", "country": normalized_country,
             "resultCode": "operation_busy", "errorCode": "operation_busy",

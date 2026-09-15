@@ -95,6 +95,25 @@ class MainAssignmentCoordinator:
                 and (not isinstance(lease, dict) or lease.get("state") != "active")
             )
 
+    def background_mutation_allowed(self) -> bool:
+        """Allow pool maintenance while an unresolved main repair is pending.
+
+        A failed main assignment remains deliberately blocking for another main
+        switch, but it must not prevent independent slot maintenance or country
+        refreshes.  The repair-required state has already left the live switch
+        transaction; only active switching/commit/rollback states remain a
+        global exclusion.
+        """
+        with self._lock:
+            self._expire_mutation_lease_locked()
+            active = self._state.get("active")
+            lease = self._state.get("mutation_lease")
+            background_blocking = _BLOCKING_STATES - {"repair_required"}
+            return (
+                (not isinstance(active, dict) or active.get("state") not in background_blocking)
+                and (not isinstance(lease, dict) or lease.get("state") != "active")
+            )
+
     def assignment_action_allowed(self) -> bool:
         with self._lock:
             self._expire_mutation_lease_locked()
