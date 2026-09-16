@@ -104,3 +104,38 @@ func (f Feed) SameCountry(country, excludedID string) (Candidate, error) {
 	})
 	return candidates[0], nil
 }
+
+// InitialCandidates returns a bounded, deterministic list whose countries
+// each have at least two candidates. This preserves a same-country option for
+// the one permitted automatic replacement without scanning the full feed.
+func (f Feed) InitialCandidates(limit int) []Candidate {
+	if limit < 1 {
+		return nil
+	}
+	counts := make(map[string]int)
+	for _, candidate := range f.Candidates {
+		counts[candidate.Country]++
+	}
+	result := make([]Candidate, 0, limit)
+	for _, candidate := range f.Candidates {
+		if counts[candidate.Country] >= 2 {
+			result = append(result, candidate)
+		}
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].RiskScore != result[j].RiskScore {
+			return result[i].RiskScore < result[j].RiskScore
+		}
+		if result[i].LatencyMS != result[j].LatencyMS {
+			return result[i].LatencyMS < result[j].LatencyMS
+		}
+		if result[i].SpeedBPS != result[j].SpeedBPS {
+			return result[i].SpeedBPS > result[j].SpeedBPS
+		}
+		return result[i].CandidateID < result[j].CandidateID
+	})
+	if len(result) > limit {
+		result = result[:limit]
+	}
+	return result
+}

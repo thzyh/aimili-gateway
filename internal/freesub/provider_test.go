@@ -25,3 +25,17 @@ func TestSameCountrySelectionIsDeterministic(t *testing.T) {
 		t.Fatalf("selected candidate = %#v, err=%v", candidate, err)
 	}
 }
+
+func TestInitialCandidatesRequireSameCountryReplacementAndAreBounded(t *testing.T) {
+	feed := Feed{Candidates: []Candidate{
+		{CandidateID: "single", Country: "AE", RiskScore: 0, LatencyMS: 1},
+		{CandidateID: "us-slow", Country: "US", RiskScore: 10, LatencyMS: 80},
+		{CandidateID: "us-fast", Country: "US", RiskScore: 10, LatencyMS: 20},
+		{CandidateID: "jp-one", Country: "JP", RiskScore: 20, LatencyMS: 10},
+		{CandidateID: "jp-two", Country: "JP", RiskScore: 20, LatencyMS: 20},
+	}}
+	got := feed.InitialCandidates(2)
+	if len(got) != 2 || got[0].CandidateID != "us-fast" || got[1].CandidateID != "us-slow" {
+		t.Fatalf("initial candidates = %#v", got)
+	}
+}

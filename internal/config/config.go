@@ -52,6 +52,12 @@ type Config struct {
 	UpdateResultDir        string   `json:"updateResultDir"`
 	UpdateEnabled          bool     `json:"updateEnabled"`
 	UpdateCatalogFile      string   `json:"updateCatalogFile"`
+	FreesubFeedPath        string   `json:"freesubFeedPath"`
+	FreesubSingBoxPath     string   `json:"freesubSingBoxPath"`
+	FreesubStateDir        string   `json:"freesubStateDir"`
+	FreesubSocksPort       int      `json:"freesubSocksPort"`
+	FreesubVLESSPort       int      `json:"freesubVlessPort"`
+	FreesubMixedPort       int      `json:"freesubMixedPort"`
 
 	localTest bool
 }
@@ -78,6 +84,12 @@ func Load(path string) (Config, error) {
 		ProtocolRequestDir:     filepath.FromSlash("data/protocol-spool/requests"),
 		ProtocolResultDir:      filepath.FromSlash("data/protocol-spool/results"),
 		ProtocolTimeoutSeconds: 180,
+		FreesubFeedPath:        filepath.FromSlash("/var/lib/aimili-gateway/freesub/gateway-candidates.json"),
+		FreesubSingBoxPath:     filepath.FromSlash("/usr/local/bin/sing-box"),
+		FreesubStateDir:        filepath.FromSlash("/var/lib/aimili-gateway/freesub"),
+		FreesubSocksPort:       18080,
+		FreesubVLESSPort:       22000,
+		FreesubMixedPort:       32000,
 		localTest:              path == "",
 	}
 
@@ -132,6 +144,24 @@ func (c Config) WithRuntimeDefaults() Config {
 	}
 	if c.ProtocolTimeoutSeconds == 0 {
 		c.ProtocolTimeoutSeconds = 180
+	}
+	if strings.TrimSpace(c.FreesubFeedPath) == "" {
+		c.FreesubFeedPath = filepath.FromSlash("/var/lib/aimili-gateway/freesub/gateway-candidates.json")
+	}
+	if strings.TrimSpace(c.FreesubSingBoxPath) == "" {
+		c.FreesubSingBoxPath = filepath.FromSlash("/usr/local/bin/sing-box")
+	}
+	if strings.TrimSpace(c.FreesubStateDir) == "" {
+		c.FreesubStateDir = filepath.FromSlash("/var/lib/aimili-gateway/freesub")
+	}
+	if c.FreesubSocksPort == 0 {
+		c.FreesubSocksPort = 18080
+	}
+	if c.FreesubVLESSPort == 0 {
+		c.FreesubVLESSPort = 22000
+	}
+	if c.FreesubMixedPort == 0 {
+		c.FreesubMixedPort = 32000
 	}
 	return c
 }
@@ -197,6 +227,13 @@ func (c Config) Validate() error {
 	}
 	if c.UpdateEnabled && (c.UpdateCatalogFile != "/etc/aimili-gateway/update-catalog.json" || c.UpdateRequestDir == "") {
 		return errors.New("enabled updater requires fixed trusted catalog and spool")
+	}
+	if strings.TrimSpace(c.FreesubFeedPath) == "" || strings.TrimSpace(c.FreesubSingBoxPath) == "" || strings.TrimSpace(c.FreesubStateDir) == "" ||
+		c.FreesubSocksPort < 1 || c.FreesubSocksPort > 65535 || c.FreesubVLESSPort < 1 || c.FreesubVLESSPort > 65535 || c.FreesubMixedPort < 1 || c.FreesubMixedPort > 65535 ||
+		c.FreesubSocksPort == c.FreesubVLESSPort || c.FreesubSocksPort == c.FreesubMixedPort || c.FreesubVLESSPort == c.FreesubMixedPort ||
+		(c.FreesubVLESSPort >= c.VLESSPortStart && c.FreesubVLESSPort <= c.VLESSPortEnd) || (c.FreesubMixedPort >= c.MixedPortStart && c.FreesubMixedPort <= c.MixedPortEnd) ||
+		c.FreesubVLESSPort == c.AggregateVLESSPort || c.FreesubMixedPort == c.MainMixedPort {
+		return errors.New("invalid freesub backup ports or paths")
 	}
 	if (strings.TrimSpace(c.UpdateRequestDir) == "") != (strings.TrimSpace(c.UpdateResultDir) == "") {
 		return errors.New("updateRequestDir and updateResultDir must be configured together")
@@ -271,6 +308,9 @@ func applyEnvironment(cfg *Config) {
 		{name: "GATEWAY_PROTOCOL_REQUEST_DIR", target: &cfg.ProtocolRequestDir},
 		{name: "GATEWAY_PROTOCOL_RESULT_DIR", target: &cfg.ProtocolResultDir},
 		{name: "GATEWAY_EXTERNAL_UI_ROOT", target: &cfg.ExternalUIRoot},
+		{name: "GATEWAY_FREESUB_FEED_PATH", target: &cfg.FreesubFeedPath},
+		{name: "GATEWAY_FREESUB_SINGBOX_PATH", target: &cfg.FreesubSingBoxPath},
+		{name: "GATEWAY_FREESUB_STATE_DIR", target: &cfg.FreesubStateDir},
 		{name: "GATEWAY_UPDATE_REQUEST_DIR", target: &cfg.UpdateRequestDir},
 		{name: "GATEWAY_UPDATE_RESULT_DIR", target: &cfg.UpdateResultDir},
 	}

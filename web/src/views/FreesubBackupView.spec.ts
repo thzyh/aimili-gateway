@@ -39,4 +39,10 @@ it('keeps the card visible after automatic replacement failure', async () => {
   await flushPromises()
   expect(wrapper.get('[data-freesub-card]').text()).toContain('自动替换失败，等待人工处理')
   expect(wrapper.get('[data-replace-freesub]').attributes()).toHaveProperty('disabled')
+
+  await wrapper.get('[data-manual-provision-freesub]').trigger('click')
+  await flushPromises()
+  expect(mocks.apiFetch).toHaveBeenCalledWith('/api/v1/freesub/backup/manual-provision', {
+    method: 'POST', headers: { 'Idempotency-Key': 'test' },
+  })
 })

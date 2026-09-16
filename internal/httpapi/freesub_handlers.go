@@ -94,3 +94,19 @@ func (s *server) handleReplaceFreesubBackup(response http.ResponseWriter, reques
 	}
 	writeJSON(response, http.StatusOK, safeFreesubBackup(connection))
 }
+
+func (s *server) handleManualProvisionFreesubBackup(response http.ResponseWriter, request *http.Request) {
+	if _, ok := s.authorizeMutation(response, request); !ok {
+		return
+	}
+	if s.freesubBackup == nil {
+		writeAPIError(response, http.StatusServiceUnavailable, "freesub_backup_not_configured")
+		return
+	}
+	connection, err := s.freesubBackup.ManualProvision(request.Context())
+	if err != nil {
+		writeAPIError(response, http.StatusConflict, "freesub_backup_manual_provision_failed")
+		return
+	}
+	writeJSON(response, http.StatusOK, safeFreesubBackup(connection))
+}

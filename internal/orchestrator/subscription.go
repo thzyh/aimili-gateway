@@ -98,6 +98,10 @@ type LegacyAggregateCleanup struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
+type freesubSubscriptionStore interface {
+	GetFreesubBackup(context.Context) (domain.FreesubBackupConnection, error)
+}
+
 func (o *Orchestrator) Subscription(ctx context.Context) (SubscriptionResult, error) {
 	manager, ok := o.xui.(subscriptionXUIClient)
 	if !ok {
@@ -133,12 +137,25 @@ func (o *Orchestrator) Subscription(ctx context.Context) (SubscriptionResult, er
 			ids = append(ids, group.PublicInboundID)
 		}
 	}
+	var freesubBackup domain.FreesubBackupConnection
+	hasFreesub := false
+	if backupStore, ok := o.store.(freesubSubscriptionStore); ok {
+		backup, backupErr := backupStore.GetFreesubBackup(ctx)
+		if backupErr == nil && backup.Status == domain.FreesubBackupReady && backup.XUIInboundID > 0 {
+			freesubBackup, hasFreesub = backup, true
+			ids = append(ids, backup.XUIInboundID)
+		}
+	}
 	if len(ids) == 0 {
 		return SubscriptionResult{}, &Error{Code: "not_ready"}
 	}
 	validationOnly, _ := ctx.Value(subscriptionValidationOnlyKey{}).(bool)
 	var aliases map[int64]string
-	if !validationOnly && len(groups) > 0 && len(ids) == len(groups)+1 {
+	wantIDs := len(groups) + 1
+	if hasFreesub {
+		wantIDs++
+	}
+	if !validationOnly && len(groups) > 0 && len(ids) == wantIDs {
 		mainStore, ok := o.store.(mainEgressStore)
 		if ok {
 			main, mainErr := mainStore.GetMainEgress(ctx)
@@ -147,6 +164,9 @@ func (o *Orchestrator) Subscription(ctx context.Context) (SubscriptionResult, er
 			}
 			if mainErr == nil && main.Enabled {
 				aliases, err = subscriptionAliases(main, groups)
+				if err == nil && hasFreesub {
+					aliases[freesubBackup.XUIInboundID] = "freesub 备用_" + freesubBackup.CountryCode
+				}
 				if err != nil || len(aliases) != len(ids) {
 					return SubscriptionResult{}, &Error{Code: "not_ready"}
 				}

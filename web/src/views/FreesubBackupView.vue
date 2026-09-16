@@ -26,15 +26,16 @@ async function load(): Promise<void> {
   catch { show('error', '备用连接读取失败', '无法读取 freesub 独立状态。') }
 }
 
-async function run(action: 'check' | 'replace'): Promise<void> {
+async function run(action: 'check' | 'replace' | 'manual-provision'): Promise<void> {
   busy.value = action
-  show('progress', action === 'check' ? '正在检测备用连接' : '正在更换备用节点', '操作只针对 freesub 独立进程。')
+  const manual = action === 'manual-provision'
+  show('progress', action === 'check' ? '正在检测备用连接' : manual ? '正在人工重新配置' : '正在更换备用节点', manual ? '将串行复检有限候选，可能由人工操作更换国家。' : '操作只针对 freesub 独立进程。')
   try {
     backup.value = await apiFetch<FreesubBackupPayload>(`/api/v1/freesub/backup/${action}`, { method: 'POST', headers: idempotencyHeaders() })
-    show('success', action === 'check' ? '检测完成' : '备用节点已更换')
+    show('success', action === 'check' ? '检测完成' : manual ? '人工重新配置完成' : '备用节点已更换')
   } catch {
     await load()
-    show('error', action === 'check' ? '检测失败' : '更换失败', backup.value?.status === 'waiting_manual' ? '自动替换失败，等待人工处理。' : '运行时尚未配置或本地复检失败。')
+    show('error', action === 'check' ? '检测失败' : manual ? '人工重新配置失败' : '更换失败', backup.value?.status === 'waiting_manual' ? '仍在等待人工处理；没有触发循环自动替换。' : '运行时尚未配置或本地复检失败。')
   } finally { busy.value = '' }
 }
 
@@ -60,6 +61,7 @@ onMounted(load)
         <div class="actions">
           <button data-check-freesub :disabled="!!busy || !backup.candidateId" type="button" @click="run('check')">{{ busy === 'check' ? '检测中' : '检测' }}</button>
           <button data-replace-freesub class="secondary" :disabled="!!busy || !canReplace" type="button" @click="run('replace')">{{ busy === 'replace' ? '更换中' : '更换备用节点' }}</button>
+          <button v-if="backup.status === 'waiting_manual'" data-manual-provision-freesub class="secondary" :disabled="!!busy" type="button" @click="run('manual-provision')">{{ busy === 'manual-provision' ? '配置中' : '人工重新配置（可能更换国家）' }}</button>
         </div>
       </article>
     </section>

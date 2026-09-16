@@ -37,6 +37,7 @@ type Dependencies struct {
 
 type FreesubBackupManager interface {
 	Summary(context.Context) (domain.FreesubBackupConnection, error)
+	ManualProvision(context.Context) (domain.FreesubBackupConnection, error)
 	Check(context.Context) (domain.FreesubBackupConnection, error)
 	Replace(context.Context) (domain.FreesubBackupConnection, error)
 }
@@ -144,6 +145,7 @@ func NewServer(dependencies Dependencies) http.Handler {
 	mux.HandleFunc("GET /api/v1/freesub/backup", server.handleFreesubBackup)
 	mux.HandleFunc("POST /api/v1/freesub/backup/check", server.handleCheckFreesubBackup)
 	mux.HandleFunc("POST /api/v1/freesub/backup/replace", server.handleReplaceFreesubBackup)
+	mux.HandleFunc("POST /api/v1/freesub/backup/manual-provision", server.handleManualProvisionFreesubBackup)
 	mux.HandleFunc("GET /api/v1/proxy-groups/export", server.handleProxyGroupExport)
 	mux.HandleFunc("GET /api/v1/proxy-groups/subscription", server.handleProxySubscription)
 	mux.HandleFunc("POST /api/v1/proxy-groups", server.handleEnableProxyGroup)
