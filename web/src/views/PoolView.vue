@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { apiDownloadText, apiFetch, idempotencyHeaders, type CandidateCountryPayload, type ConnectionsPayload, type CountryRefreshPayload, type ProtocolMode, type ProtocolModePayload, type ProxyGroupPayload, type ProxyType, type SubscriptionPayload } from '../api/client'
+import { apiDownloadText, apiFetch, idempotencyHeaders, type CandidateCountryPayload, type ConnectionsPayload, type CountryRefreshPayload, type DedicatedStandbyConfigPayload, type DedicatedStandbyPayload, type ProtocolMode, type ProtocolModePayload, type ProxyGroupPayload, type ProxyType, type SubscriptionPayload } from '../api/client'
 import AppShell from '../components/AppShell.vue'
 import PoolFilters from '../components/PoolFilters.vue'
 import PoolTable from '../components/PoolTable.vue'
 import UiNotice from '../components/UiNotice.vue'
 import { codeFromError, countryDisplayName, messageForCode, type NoticeKind, type UiNoticeData } from '../components/errorMessages'
 import { poolStatusGroup, type PoolStatusGroup } from '../components/poolStatus'
+import DedicatedStandbys from '../components/DedicatedStandbys.vue'
 
 const props = defineProps<{ protocol: 'vless' | 'socks5h' }>()
 const groups = ref<ProxyGroupPayload[]>([])
@@ -27,6 +28,8 @@ const replacementCandidate = ref<ProxyGroupPayload | null>(null)
 const replacementCandidateID = ref('')
 const replacementTarget = ref('')
 const refreshNoticeFingerprint = ref('')
+const dedicatedStandbys = ref<DedicatedStandbyPayload[]>([])
+const standbyBusy = ref(false)
 let refreshTimer: ReturnType<typeof setTimeout> | undefined
 let noticeSequence = 0
 
@@ -100,7 +103,34 @@ onMounted(loadInitial)
 onBeforeUnmount(() => { if (refreshTimer !== undefined) clearTimeout(refreshTimer) })
 
 async function loadInitial(): Promise<void> {
-  await Promise.all([loadGroups(), loadCatalog(), readRefreshStatus()])
+  await Promise.all([loadGroups(), loadCatalog(), readRefreshStatus(), loadDedicatedStandbys()])
+}
+
+async function loadDedicatedStandbys(): Promise<void> {
+  try {
+    const result = await apiFetch<DedicatedStandbyPayload[]>('/api/v1/settings/aimilivpn/standbys')
+    dedicatedStandbys.value = Array.isArray(result) ? result : []
+  }
+  catch { dedicatedStandbys.value = [] }
+}
+
+async function saveDedicatedStandbys(configs: DedicatedStandbyConfigPayload[]): Promise<void> {
+  standbyBusy.value = true
+  try {
+    const result = await apiFetch<DedicatedStandbyPayload[]>('/api/v1/settings/aimilivpn/standbys', { method: 'PUT', body: JSON.stringify({ standbys: configs }) })
+    dedicatedStandbys.value = Array.isArray(result) ? result : []
+    topNotice.value = makeNotice('success', '专属备用设置已保存', '系统会先验证备用节点，验证成功后才显示已就绪。')
+  } catch (error) { topNotice.value = makeNotice('error', '专属备用设置失败', localizedError(error, '备用设置未应用，请稍后重试。')) }
+  finally { standbyBusy.value = false; await loadDedicatedStandbys() }
+}
+
+async function assignDedicatedStandby(index: number, candidateId: string): Promise<void> {
+  standbyBusy.value = true
+  try {
+    await apiFetch(`/api/v1/settings/aimilivpn/standbys/${index}/assign`, { method: 'POST', body: JSON.stringify({ candidateId }) })
+    topNotice.value = makeNotice('success', `备用 ${index + 1} 已重新验证`, '备用节点已通过真实出口检测。')
+  } catch (error) { topNotice.value = makeNotice('error', '备用节点设置失败', localizedError(error, '该候选没有通过真实出口检测。')) }
+  finally { standbyBusy.value = false; await loadDedicatedStandbys() }
 }
 
 async function loadGroups(showLoading = true): Promise<void> {
@@ -277,7 +307,7 @@ async function confirmReplacement(): Promise<void> {
     topNotice.value = target === 'agw-main'
       ? makeNotice('success', '主连接替换成功', '失败回滚边界已保留。')
       : makeNotice('success', '出口位替换成功', '端口与入站保持不变。')
-    await loadGroups(false)
+    await Promise.all([loadGroups(false), loadDedicatedStandbys()])
   } catch (error) {
     replacementNotice.value = makeNotice('error', '出口替换失败', localizedError(error, '出口替换失败，请重试或选择其他候选。'))
     await loadGroups(false)
@@ -436,6 +466,7 @@ function formatRefreshTime(value?: number): string {
       <div data-pool-stats class="pool-stats"><span data-pool-stats-official class="pool-stat official">官方 <strong>{{ poolStats?.officialCandidateTotal ?? candidateCountries.reduce((sum,item) => sum + item.candidateCount, 0) }}</strong></span><span data-pool-stats-target class="pool-stat target">常规目标 <strong>{{ poolStats?.targetValidNodeCount ?? 64 }}</strong></span><span data-pool-stats-valid class="pool-stat valid">当前有效 <strong>{{ poolStats?.validNodeCount ?? groups.length }}</strong></span><span data-pool-stats-maximum class="pool-stat maximum">紧急保护 <strong>{{ poolStats?.maxValidNodeCount ?? 150 }}</strong></span><span data-pool-stats-countries class="pool-stat countries"><strong>{{ poolStats?.validCountryCount ?? countries.length }}</strong> 国</span></div>
     </section>
     <UiNotice v-if="refreshNotice" :key="refreshNotice.id" data-refresh-notice class="refresh-notice" :notice="refreshNotice" @close="dismissRefreshNotice" />
+    <DedicatedStandbys v-if="protocol === 'vless' && dedicatedStandbys.length === 2" :rows="dedicatedStandbys" :countries="candidateCountries" :groups="groups" :candidates="groups" :busy="standbyBusy || busy !== ''" @save="saveDedicatedStandbys" @assign="assignDedicatedStandby" />
     <div v-if="loading" class="loading">正在读取代理池…</div>
     <PoolTable v-else :rows="rows" :protocol="protocol" :busy="busy" @copy="copyAddress" @replace="openReplacement" @check="checkRow" @protocol="switchProtocol" />
     <div v-if="replacementCandidate" class="dialog-backdrop" @click.self="closeReplacement">

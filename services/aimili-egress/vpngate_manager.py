@@ -130,6 +130,8 @@ REPAIR_CANDIDATE_FRESH_SECONDS = env_int("REPAIR_CANDIDATE_FRESH_SECONDS", 120, 
 OPENVPN_TEST_TIMEOUT_SECONDS = env_int("OPENVPN_TEST_TIMEOUT_SECONDS", 35, 1)
 OPENVPN_CONNECT_RETRY_MAX = env_int("OPENVPN_CONNECT_RETRY_MAX", 3, 1, 10)
 OPENVPN_TEST_CONCURRENCY = env_int("OPENVPN_TEST_CONCURRENCY", 4, 1, 16)
+MAX_OPENVPN_PROCESSES = env_int("MAX_OPENVPN_PROCESSES", 9, 1, 32)
+MAX_OPENVPN_PROBES = env_int("MAX_OPENVPN_PROBES", 2, 1, 8)
 TCP_PRESCREEN_CONCURRENCY = env_int("TCP_PRESCREEN_CONCURRENCY", 100, 1, 512)
 TEST_ROUTE_TABLE_BASE = 61000
 COLLECTOR_INITIAL_DELAY_SECONDS = env_int("COLLECTOR_INITIAL_DELAY_SECONDS", 0, 0)
@@ -149,12 +151,20 @@ SLOT_PORT_BASE = env_int("SLOT_PORT_BASE", 17928, 1024, 60000)
 # 与主代理的 LOCAL_PROXY_HOST 解耦，避免主代理对公网开放时连带暴露所有住宅出口。
 SLOT_PROXY_HOST = os.environ.get("SLOT_PROXY_HOST", "127.0.0.1")
 SLOT_PROCESS_MARKER = "AIMILI_SLOT"
+STANDBY_PROCESS_MARKER = "AIMILI_STANDBY"
 EXIT_SLOTS_CHECK_INTERVAL = env_int("EXIT_SLOTS_CHECK_INTERVAL", 30, 5)
 # 槽位出口连通性健康检测：真实经 socks 端口 curl 一次，验证节点是否真转发流量
 SLOT_EGRESS_CHECK_INTERVAL = env_int("SLOT_EGRESS_CHECK_INTERVAL", 45, 10)
 SLOT_EGRESS_FAIL_THRESHOLD = env_int("SLOT_EGRESS_FAIL_THRESHOLD", 3, 1)
 SLOT_BAD_NODE_COOLDOWN = env_int("SLOT_BAD_NODE_COOLDOWN", 600, 60)
 MANAGED_SLOT_CANDIDATE_ATTEMPTS = 4
+DEDICATED_STANDBY_COUNT = 2
+DEDICATED_STANDBY_CHECK_INTERVAL = env_int("DEDICATED_STANDBY_CHECK_INTERVAL", 30, 10)
+DEDICATED_STANDBY_FAIL_THRESHOLD = env_int("DEDICATED_STANDBY_FAIL_THRESHOLD", 2, 1)
+DEDICATED_STANDBY_CANDIDATE_ATTEMPTS = 4
+STANDBY_DEV_BASE = SLOT_DEV_BASE + MAX_EXIT_SLOTS
+STANDBY_TABLE_BASE = SLOT_TABLE_BASE + MAX_EXIT_SLOTS
+STANDBY_PORT_BASE = SLOT_PORT_BASE + MAX_EXIT_SLOTS
 # 主连接(7928)出口加固：与多出口槽位对齐。
 #   - 连续失败阈值：避免单次抖动即切换，减少无谓漂移。
 #   - 坏节点冷却：切走“握手成功但不转发”的假活节点后，冷却期内不再选回它，防止 flapping。
@@ -215,6 +225,7 @@ COUNTRY_CATALOG_FILE = DATA_DIR / "country_catalog.json"
 POOL_METADATA_FILE = DATA_DIR / "pool_metadata.json"
 MAIN_ASSIGNMENT_FILE = DATA_DIR / "main_assignment.json"
 EGRESS_REPAIR_FILE = DATA_DIR / "egress_repair.json"
+STANDBYS_FILE = DATA_DIR / "standbys.json"
 
 lock = threading.RLock()
 mutation_lock = threading.RLock()
@@ -243,6 +254,9 @@ country_refresh_state: dict[str, Any] = {
 active_sessions: dict[str, float] = {}
 active_openvpn_process: subprocess.Popen[str] | None = None
 active_openvpn_node_id = ""
+active_openvpn_device = "tun0"
+active_openvpn_table = 100
+active_openvpn_config_path = ""
 is_connecting = True
 last_active_ping_time = 0.0
 last_active_latency = 0
@@ -253,6 +267,73 @@ main_proxy_registry = proxy_server.ConnRegistry()  # 主代理活跃下游连接
 main_assignment_coordinator = MainAssignmentCoordinator(MAIN_ASSIGNMENT_FILE)
 egress_repair_store = egress_repair.RepairStore(EGRESS_REPAIR_FILE)
 main_assignment_thread = threading.local()
+openvpn_capacity = threading.BoundedSemaphore(MAX_OPENVPN_PROCESSES)
+openvpn_probe_capacity = threading.BoundedSemaphore(MAX_OPENVPN_PROBES)
+candidate_reservation_lock = threading.RLock()
+pending_candidate_ids: set[str] = set()
+
+
+def pending_candidate_snapshot() -> set[str]:
+    with candidate_reservation_lock:
+        return set(pending_candidate_ids)
+
+
+def candidate_ip_identity(node: dict[str, Any] | None) -> str:
+    """Return the real numeric exit identity used for cross-node deduplication."""
+    if not isinstance(node, dict):
+        return ""
+    for field in ("exit_ip", "ip", "remote_host"):
+        value = str(node.get(field) or "").strip()
+        if not value:
+            continue
+        try:
+            return str(ipaddress.ip_address(value))
+        except ValueError:
+            continue
+    return ""
+
+
+def candidate_ip_identities(candidate_ids: set[str]) -> set[str]:
+    ids = {str(candidate_id or "").strip() for candidate_id in candidate_ids}
+    ids.discard("")
+    if not ids:
+        return set()
+    return {
+        identity
+        for node in read_nodes()
+        if str(node.get("id") or "").strip() in ids
+        and (identity := candidate_ip_identity(node))
+    }
+
+
+def candidate_conflicts_with_ids(node: dict[str, Any], candidate_ids: set[str]) -> bool:
+    candidate_id = str(node.get("id") or "").strip()
+    normalized_ids = {str(item or "").strip() for item in candidate_ids}
+    if candidate_id and candidate_id in normalized_ids:
+        return True
+    identity = candidate_ip_identity(node)
+    return bool(identity and identity in candidate_ip_identities(normalized_ids))
+
+
+def reserve_candidate(candidate_id: str, used_ids: set[str]) -> bool:
+    candidate_id = str(candidate_id or "").strip()
+    if not candidate_id:
+        return False
+    with candidate_reservation_lock:
+        reserved_ids = set(used_ids) | pending_candidate_ids
+        candidate = next(
+            (node for node in read_nodes() if str(node.get("id") or "").strip() == candidate_id),
+            {"id": candidate_id},
+        )
+        if candidate_conflicts_with_ids(candidate, reserved_ids):
+            return False
+        pending_candidate_ids.add(candidate_id)
+        return True
+
+
+def release_candidate_reservation(candidate_id: str) -> None:
+    with candidate_reservation_lock:
+        pending_candidate_ids.discard(str(candidate_id or "").strip())
 
 last_collector_heartbeat = 0.0
 last_checker_heartbeat = 0.0
@@ -627,7 +708,11 @@ def cleanup_unreferenced_node_configs(
 def manual_required_candidate_ids() -> set[str]:
     """返回已经确认故障并等待人工处理的候选，避免继续计入健康节点池。"""
     result: set[str] = set()
-    for key in ["main", *(f"slot:{index}" for index in range(MAX_EXIT_SLOTS))]:
+    for key in [
+        "main",
+        *(f"slot:{index}" for index in range(MAX_EXIT_SLOTS)),
+        *(f"standby:{index}" for index in range(DEDICATED_STANDBY_COUNT)),
+    ]:
         row = egress_repair_store.get(key)
         if row.get("status") != "manual_required":
             continue
@@ -672,7 +757,7 @@ def get_state() -> dict[str, Any]:
     return state
 
 def safe_main_status() -> dict[str, Any]:
-    """Return the non-secret main tun0/7928 egress status for Gateway."""
+    """Return the non-secret main egress status for Gateway."""
     state = get_state()
     active_id = str(active_openvpn_node_id or state.get("active_openvpn_node_id") or "")
     active = next((node for node in read_nodes() if str(node.get("id") or "") == active_id), {})
@@ -794,7 +879,17 @@ def main_reserved_candidate_ids() -> set[str]:
     active_id = str(active_openvpn_node_id or "").strip()
     if active_id:
         reserved.add(active_id)
+    reserved.update(dedicated_standby_candidate_ids())
+    reserved.update(pending_candidate_snapshot())
     return reserved
+
+
+def current_main_device() -> str:
+    return str(active_openvpn_device or "tun0")
+
+
+def current_main_table() -> int:
+    return int(active_openvpn_table or 100)
 
 
 def _main_connection_snapshot() -> dict[str, Any]:
@@ -842,7 +937,7 @@ def _stage_main_candidate(candidate_id: str) -> dict[str, bool]:
             tunnel_running = active_openvpn_running()
             tunnel_egress_ok = False
             if tunnel_running:
-                tunnel_egress_ok, _exit_ip = check_interface_exit_ip("tun0")
+                tunnel_egress_ok, _exit_ip = check_interface_exit_ip(current_main_device())
             if not tunnel_egress_ok:
                 reason_code = (
                     "candidate_egress_failed"
@@ -914,6 +1009,10 @@ def _stage_main_assignment_unlocked(
         or normalize_proxy_type(candidate.get("ip_type")) != proxy_type
     ):
         return {"ok": False, "error_code": "candidate_mismatch"}
+    if candidate_conflicts_with_ids(
+        candidate, main_reserved_candidate_ids() | reserved_slot_candidate_ids()
+    ):
+        return {"ok": False, "error_code": "candidate_in_use"}
     main_assignment_thread.candidate_failure_code = ""
     result = main_assignment_coordinator.stage(
         candidate_id=candidate_id,
@@ -1831,7 +1930,7 @@ def kill_existing_openvpn_processes() -> None:
             if "openvpn" not in executable and "openvpn" not in cmdline.lower():
                 continue
             # 多出口槽位隧道带有 AIMILI_SLOT 标记，由槽位供给器单独管理，主连接清理时不得误杀
-            if SLOT_PROCESS_MARKER in cmdline:
+            if SLOT_PROCESS_MARKER in cmdline or STANDBY_PROCESS_MARKER in cmdline:
                 continue
             if any(marker and marker in cmdline for marker in own_markers):
                 try:
@@ -1877,6 +1976,12 @@ def update_handshake_status(line_lower: str) -> None:
 
 def run_openvpn_until_ready(config_file: str, keep_alive: bool, route_nopull: bool, timeout: int | None = None, dev: str = "tun0", extra_args: list[str] | None = None, report_status: bool = True) -> tuple[bool, str, subprocess.Popen[str] | None]:
     limit = timeout if timeout is not None else OPENVPN_TEST_TIMEOUT_SECONDS
+    # Every OpenVPN launch, including short-lived probes, shares one hard process
+    # budget.  With five active exits and two hot standbys this leaves exactly
+    # two probe positions, so a country refresh cannot overwhelm a 512 MiB VPS.
+    if not openvpn_capacity.acquire(timeout=max(1, limit + 5)):
+        return False, "[错误代码 2010] [ERR_OVPN_CAPACITY] OpenVPN 进程已达到安全上限，请稍后重试。", None
+    capacity_owned = True
     try:
         process = subprocess.Popen(
             openvpn_command(config_file, route_nopull, dev, extra_args),
@@ -1888,9 +1993,29 @@ def run_openvpn_until_ready(config_file: str, keep_alive: bool, route_nopull: bo
             cwd=str(ROOT_DIR),
         )
     except FileNotFoundError:
+        openvpn_capacity.release()
         return False, "[错误代码 2001] [ERR_OVPN_CMD_NOT_FOUND] 未找到 openvpn 命令。原因: 系统未安装 openvpn，或 PATH 环境变量不正确。", None
     except OSError as exc:
+        openvpn_capacity.release()
         return False, f"[错误代码 2002] [ERR_OVPN_START_FAILED] openvpn 启动失败: {exc}。原因: 系统权限不足或配置冲突。", None
+
+    def release_capacity_when_process_exits() -> None:
+        nonlocal capacity_owned
+        try:
+            process.wait()
+        finally:
+            if capacity_owned:
+                capacity_owned = False
+                openvpn_capacity.release()
+
+    try:
+        threading.Thread(target=release_capacity_when_process_exits, daemon=True).start()
+    except Exception as exc:
+        stop_process(process)
+        if capacity_owned:
+            capacity_owned = False
+            openvpn_capacity.release()
+        return False, f"OpenVPN capacity watcher failed: {exc}", None
 
     lines: queue.Queue[str | None] = queue.Queue()
     startup_done = [False]
@@ -2080,18 +2205,22 @@ def ensure_policy_routing(interface: str, table: int) -> bool:
 @_mutation_guard(raise_busy=True)
 def stop_active_openvpn() -> None:
     global active_openvpn_process, active_openvpn_node_id
+    global active_openvpn_device, active_openvpn_table, active_openvpn_config_path
     with lock:
-        cleanup_policy_routing()
-        config_to_delete = None
+        cleanup_policy_routing(current_main_table())
+        config_to_delete = active_openvpn_config_path or None
         if active_openvpn_node_id:
             nodes = read_nodes()
             node = next((item for item in nodes if item.get("id") == active_openvpn_node_id), None)
-            if node:
+            if node and not config_to_delete:
                 config_to_delete = node.get("config_file")
 
         stop_process(active_openvpn_process)
         active_openvpn_process = None
         active_openvpn_node_id = ""
+        active_openvpn_device = "tun0"
+        active_openvpn_table = 100
+        active_openvpn_config_path = ""
         kill_existing_openvpn_processes()
 
         if config_to_delete:
@@ -2222,12 +2351,18 @@ def test_node_by_id(node_id: str) -> dict[str, Any]:
     latency = vpn_utils.ping_latency_ms(h, p, fallback_ping)
 
     idx = None
+    probe_capacity_owned = False
     try:
+        probe_capacity_owned = openvpn_probe_capacity.acquire(timeout=17)
+        if not probe_capacity_owned:
+            raise RuntimeError("OpenVPN 临时检测已达到 2 路安全上限，请稍后重试")
         idx = get_free_test_index()
         ok, message, _ = run_openvpn_until_ready(str(temp_path), keep_alive=False, route_nopull=True, timeout=12, dev=f"tun{idx}")
     finally:
         if idx is not None:
             release_test_index(idx)
+        if probe_capacity_owned:
+            openvpn_probe_capacity.release()
         try:
             if temp_path.exists():
                 temp_path.unlink()
@@ -2376,9 +2511,29 @@ def _probe_one_node(node: dict[str, Any]) -> dict[str, Any]:
     tun_index = None
     test_route_table = None
     process = None
+    probe_capacity_owned = False
     exit_ip = ""
     exit_ip_checked_at = 0.0
     try:
+        probe_capacity_owned = openvpn_probe_capacity.acquire(
+            timeout=max(1, OPENVPN_TEST_TIMEOUT_SECONDS + 5)
+        )
+        if not probe_capacity_owned:
+            ok = False
+            message = "OpenVPN 临时检测已达到 2 路安全上限，请稍后重试"
+            return {
+                **node,
+                "latency_ms": latency,
+                "probe_status": "unavailable",
+                "probe_message": message,
+                "probed_at": time.time(),
+                "owner": "",
+                "asn": "",
+                "as_name": "",
+                "location": "",
+                "ip_type": "",
+                "quality": "",
+            }
         tun_index = get_free_test_index()
         ok, message, process = run_openvpn_until_ready(
             str(temp_path),
@@ -2409,6 +2564,8 @@ def _probe_one_node(node: dict[str, Any]) -> dict[str, Any]:
         stop_process(process)
         if tun_index is not None:
             release_test_index(tun_index)
+        if probe_capacity_owned:
+            openvpn_probe_capacity.release()
         try:
             temp_path.unlink(missing_ok=True)
         except OSError:
@@ -3050,7 +3207,7 @@ def reset_main_proxy_connections() -> None:
     main_egress_fail_count = 0
     try:
         n = main_proxy_registry.close_all()
-        proxy_server.purge_dns_cache("tun0")
+        proxy_server.purge_dns_cache(current_main_device())
         if n:
             print(f"[主代理] 节点切换完成，已重置 {n} 条下游连接并清隧道 DNS 缓存，强制其重连新隧道", flush=True)
             log_to_json("INFO", "Proxy", f"主连接切换后重置 {n} 条下游连接，强制重连新隧道")
@@ -3064,11 +3221,13 @@ def automatic_main_candidates(country: str) -> list[dict[str, Any]]:
     if not re.fullmatch(r"[A-Z]{2}", country):
         return []
     reserved = reserved_slot_candidate_ids() | main_bad_node_ids()
+    reserved_ips = candidate_ip_identities(reserved)
     candidates = [
         node
         for node in read_nodes()
         if node.get("probe_status") == "available"
         and str(node.get("id") or "") not in reserved
+        and candidate_ip_identity(node) not in reserved_ips
         and str(node.get("country_short") or "").strip().upper() == country
     ]
     candidates.sort(
@@ -3131,6 +3290,9 @@ def repair_main_once(failed_snapshot: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "error_code": "manual_repair_required"}
     if failed_id:
         mark_main_bad_node(failed_id)
+    if promote_dedicated_standby_to_main():
+        return {"ok": True, "candidate_id": str(active_openvpn_node_id or ""), "standby_promoted": True}
+    release_unhealthy_target_standbys("main")
     candidates = automatic_main_candidates(country)
     candidate = validated_repair_candidate(candidates)
     if candidate is None:
@@ -3206,6 +3368,7 @@ def auto_switch_node(attempt: int = 0) -> None:
         return
 
     slot_candidate_ids = reserved_slot_candidate_ids()
+    slot_candidate_ips = candidate_ip_identities(slot_candidate_ids)
     # Find the next best available node
     with lock:
         nodes = read_nodes()
@@ -3217,6 +3380,7 @@ def auto_switch_node(attempt: int = 0) -> None:
             and not n.get("active")
             and n.get("id") not in bad
             and n.get("id") not in slot_candidate_ids
+            and candidate_ip_identity(n) not in slot_candidate_ips
         ]
 
         if routing_mode == "fixed_region" and target_country:
@@ -3285,13 +3449,21 @@ def auto_switch_node(attempt: int = 0) -> None:
 @_mutation_guard(raise_busy=True)
 def connect_node(node_id: str) -> str:
     global active_openvpn_process, active_openvpn_node_id, is_connecting
+    global active_openvpn_device, active_openvpn_table, active_openvpn_config_path
     if not main_mutation_allowed() and not bool(getattr(main_assignment_thread, "authorized", False)):
         raise RuntimeError("主连接事务正在进行，请稍后再试")
     node_id = str(node_id or "").strip()
     if not node_id:
         raise ValueError("Node id is required")
-    if node_id in reserved_slot_candidate_ids():
+    reserved_ids = reserved_slot_candidate_ids()
+    if node_id in reserved_ids:
         raise RuntimeError("该候选已被普通槽位占用")
+    requested_node = next(
+        (item for item in read_nodes() if str(item.get("id") or "").strip() == node_id),
+        None,
+    )
+    if requested_node is not None and candidate_conflicts_with_ids(requested_node, reserved_ids):
+        raise RuntimeError("该候选的实际出口 IP 已被其他出口占用")
     stopped_existing = False
     with lock:
         if is_connecting:
@@ -3356,13 +3528,19 @@ def connect_node(node_id: str) -> str:
         with lock:
             active_openvpn_process = process
             active_openvpn_node_id = node_id
+            active_openvpn_device = "tun0"
+            active_openvpn_table = 100
+            active_openvpn_config_path = str(config_path)
 
         set_state(active_node_latency="配置路由", last_check_message="正在配置策略路由规则与流量转发...")
-        if not setup_policy_routing("tun0"):
+        if not setup_policy_routing(current_main_device(), current_main_table()):
             stop_process(process)
             with lock:
                 active_openvpn_process = None
                 active_openvpn_node_id = ""
+                active_openvpn_device = "tun0"
+                active_openvpn_table = 100
+                active_openvpn_config_path = ""
             raise RuntimeError("policy_routing_failed")
 
         global last_active_ping_time, last_active_latency
@@ -3739,11 +3917,20 @@ slot_operation_locks: dict[int, threading.RLock] = {}
 exit_slots: dict[int, dict[str, Any]] = {}
 exit_slot_proxy_stops: dict[int, threading.Event] = {}
 exit_slot_proxy_registries: dict[int, proxy_server.ConnRegistry] = {}
+exit_slot_proxy_devices: dict[int, str] = {}
 slot_bad_nodes: dict[str, float] = {}          # node_id -> 冷却到期时间(出口不通的坏节点，暂时排除)
 slot_egress_fail_counts: dict[int, int] = {}   # slot_index -> 连续出口失败次数
 slot_reconnect_hints: dict[int, str] = {}      # 进程重启后优先恢复上次槽位节点；每槽仅消费一次
+dedicated_standbys: dict[int, dict[str, Any]] = {}
+dedicated_standby_lock = threading.RLock()
+dedicated_standby_resources: dict[int, dict[str, Any]] = {}
+dedicated_standby_operation_locks = [threading.RLock() for _ in range(DEDICATED_STANDBY_COUNT)]
+dedicated_standby_proxy_stops: dict[int, threading.Event] = {}
+dedicated_standby_proxy_registries: dict[int, proxy_server.ConnRegistry] = {}
+dedicated_standby_fail_counts: dict[int, int] = {}
 last_exit_slots_heartbeat = 0.0
 last_slot_egress_heartbeat = 0.0
+last_dedicated_standby_heartbeat = 0.0
 
 
 def slot_operation_lock(i: int) -> threading.RLock:
@@ -3792,7 +3979,9 @@ def kill_slot_openvpn_processes() -> None:
             if not raw:
                 continue
             cmdline = " ".join(part.decode("utf-8", errors="replace") for part in raw.split(b"\0") if part)
-            if "openvpn" not in cmdline.lower() or SLOT_PROCESS_MARKER not in cmdline:
+            if "openvpn" not in cmdline.lower() or (
+                SLOT_PROCESS_MARKER not in cmdline and STANDBY_PROCESS_MARKER not in cmdline
+            ):
                 continue
             try:
                 os.kill(pid, signal.SIGTERM)
@@ -3810,6 +3999,8 @@ def kill_slot_openvpn_processes() -> None:
         # 同步清理可能残留的槽位策略路由表
         for i in range(MAX_EXIT_SLOTS):
             cleanup_policy_routing(SLOT_TABLE_BASE + i)
+        for index in range(DEDICATED_STANDBY_COUNT):
+            cleanup_policy_routing(standby_table(index))
     except Exception as e:
         print(f"[多出口] 清理遗留槽位进程失败: {e}", flush=True)
 
@@ -3864,6 +4055,125 @@ def slot_port(i: int) -> int:
 
 def slot_config_path(i: int) -> Path:
     return CONFIG_DIR / f".slot_{i}.ovpn"
+
+
+def runtime_slot_device(i: int) -> str:
+    with exit_slots_lock:
+        return str(exit_slots.get(i, {}).get("device") or slot_device(i))
+
+
+def runtime_slot_table(i: int) -> int:
+    with exit_slots_lock:
+        return parse_int(exit_slots.get(i, {}).get("table")) or slot_table(i)
+
+
+def standby_device(index: int) -> str:
+    with dedicated_standby_lock:
+        override = str(dedicated_standby_resources.get(index, {}).get("device") or "")
+    return override or f"tun{STANDBY_DEV_BASE + index}"
+
+
+def standby_table(index: int) -> int:
+    with dedicated_standby_lock:
+        override = parse_int(dedicated_standby_resources.get(index, {}).get("table"))
+    return override or STANDBY_TABLE_BASE + index
+
+
+def standby_port(index: int) -> int:
+    return STANDBY_PORT_BASE + index
+
+
+def standby_config_path(index: int) -> Path:
+    return CONFIG_DIR / f".standby_{index}.ovpn"
+
+
+def detach_promoted_standby_config(index: int, runtime: dict[str, Any], target: str) -> str:
+    source = Path(str(runtime.get("config_path") or standby_config_path(index)))
+    safe_target = re.sub(r"[^a-z0-9_-]+", "-", str(target or "egress").lower()).strip("-") or "egress"
+    destination = CONFIG_DIR / f".promoted_{safe_target}_{uuid.uuid4().hex[:10]}.ovpn"
+    try:
+        if source.exists():
+            source.replace(destination)
+            return str(destination)
+    except OSError:
+        pass
+    # OpenVPN has already loaded the file.  Even if a stale/missing source cannot
+    # be renamed, give the promoted runtime a unique cleanup path so a newly
+    # provisioned standby can safely reuse .standby_N.ovpn.
+    return str(destination)
+
+
+def _normalize_standby_target(value: Any) -> str:
+    target = str(value or "").strip().lower()
+    if target == "main":
+        return target
+    match = re.fullmatch(r"slot:(\d+)", target)
+    if match and int(match.group(1)) < MAX_EXIT_SLOTS:
+        return f"slot:{int(match.group(1))}"
+    return ""
+
+
+def _normalize_standby_countries(value: Any) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    return sorted({
+        country
+        for raw in value
+        if re.fullmatch(r"[A-Z]{2}", country := str(raw or "").strip().upper())
+    })[:32]
+
+
+def dedicated_standby_config_snapshot() -> list[dict[str, Any]]:
+    raw = load_ui_config().get("dedicated_standbys") or []
+    by_index = {
+        parse_int(item.get("index")): item
+        for item in raw
+        if isinstance(item, dict) and 0 <= parse_int(item.get("index")) < DEDICATED_STANDBY_COUNT
+    } if isinstance(raw, list) else {}
+    return [
+        {
+            "index": index,
+            "target": _normalize_standby_target(by_index.get(index, {}).get("target")),
+            "countries": _normalize_standby_countries(by_index.get(index, {}).get("countries")),
+        }
+        for index in range(DEDICATED_STANDBY_COUNT)
+    ]
+
+
+def set_dedicated_standby_config(rows: Any) -> dict[str, Any]:
+    if not isinstance(rows, list) or len(rows) != DEDICATED_STANDBY_COUNT:
+        return {"ok": False, "error_code": "invalid_request"}
+    normalized: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    active_slots = set(get_active_slots())
+    for item in rows:
+        if not isinstance(item, dict):
+            return {"ok": False, "error_code": "invalid_request"}
+        index = parse_int(item.get("index"))
+        target = _normalize_standby_target(item.get("target"))
+        countries = _normalize_standby_countries(item.get("countries"))
+        if index in seen or not 0 <= index < DEDICATED_STANDBY_COUNT:
+            return {"ok": False, "error_code": "invalid_request"}
+        if target.startswith("slot:") and parse_int(target.split(":", 1)[1]) not in active_slots:
+            return {"ok": False, "error_code": "slot_not_found"}
+        seen.add(index)
+        normalized.append({"index": index, "target": target, "countries": countries})
+    if seen != set(range(DEDICATED_STANDBY_COUNT)):
+        return {"ok": False, "error_code": "invalid_request"}
+    normalized.sort(key=lambda item: item["index"])
+    previous = dedicated_standby_config_snapshot()
+    with lock:
+        cfg = load_ui_config()
+        cfg["dedicated_standbys"] = normalized
+        _write_ui_config_atomic(cfg)
+    for item in normalized:
+        index = item["index"]
+        if item != previous[index]:
+            egress_repair_store.clear(f"standby:{index}")
+            dedicated_standby_fail_counts[index] = 0
+            tear_down_dedicated_standby(index)
+    threading.Thread(target=maintain_dedicated_standbys_once, daemon=True).start()
+    return {"ok": True, "standbys": dedicated_standby_snapshot()}
 
 def _normalize_index_list(raw: Any) -> list[int]:
     out: set[int] = set()
@@ -4025,11 +4335,13 @@ def safe_candidate_snapshot() -> list[dict[str, Any]]:
         | main_assignment_coordinator.reserved_candidate_ids()
     )
     reserved.discard("")
+    reserved_ips = candidate_ip_identities(reserved)
     result: list[dict[str, Any]] = []
     for node in read_nodes():
         if (
             node.get("probe_status") != "available"
             or str(node.get("id") or "").strip() in reserved
+            or candidate_ip_identity(node) in reserved_ips
         ):
             continue
         proxy_type = normalize_proxy_type(node.get("ip_type"))
@@ -4194,6 +4506,15 @@ def persisted_slot_node_id(slot: int) -> str:
     return ""
 
 
+def dedicated_standby_candidate_ids(*, exclude_index: int | None = None) -> set[str]:
+    with dedicated_standby_lock:
+        return {
+            str(runtime.get("node_id") or "").strip()
+            for index, runtime in dedicated_standbys.items()
+            if index != exclude_index and str(runtime.get("node_id") or "").strip()
+        }
+
+
 def reserved_slot_candidate_ids(*, exclude_slot: int | None = None) -> set[str]:
     """返回普通槽位已运行或已 pin 的候选；可排除正在操作的槽位自身。"""
     reserved = set(current_slot_node_ids()) | persisted_slot_node_ids(exclude_slot=exclude_slot)
@@ -4212,6 +4533,8 @@ def reserved_slot_candidate_ids(*, exclude_slot: int | None = None) -> set[str]:
         if exclude_slot is None or str(slot) != str(exclude_slot)
     )
     reserved.discard("")
+    reserved.update(dedicated_standby_candidate_ids())
+    reserved.update(pending_candidate_snapshot())
     return reserved
 
 def pick_slot_node(i: int, used_ids: set[str]) -> dict[str, Any] | None:
@@ -4260,10 +4583,13 @@ def select_slot_nodes(
         return []
     now = time.time()
     used_ids = set(used_ids) | main_reserved_candidate_ids()
+    used_ips = candidate_ip_identities(used_ids)
     bad = {nid for nid, until in slot_bad_nodes.items() if until > now}
     pool: list[dict[str, Any]] = []
     for n in read_nodes():
         if n.get("id") in used_ids or n.get("id") in bad:
+            continue
+        if candidate_ip_identity(n) in used_ips:
             continue
         if n.get("probe_status") != "available":
             continue
@@ -4281,28 +4607,588 @@ def select_slot_nodes(
     pool.sort(key=lambda n: (parse_int(n.get("latency_ms")) or 999999, -parse_int(n.get("score"))))
     return pool[:need]
 
-def ensure_slot_proxy(i: int) -> None:
-    with exit_slots_lock:
-        if i in exit_slot_proxy_stops:
+
+def _standby_target_profile(target: str) -> dict[str, str]:
+    if target == "main":
+        status = safe_main_status()
+        return {
+            "country": str(status.get("country") or "").strip().upper(),
+            "proxy_type": normalize_proxy_type(status.get("proxy_type")),
+        }
+    match = re.fullmatch(r"slot:(\d+)", target)
+    if not match:
+        return {"country": "", "proxy_type": ""}
+    snapshot = managed_slot_snapshot(int(match.group(1)))
+    return {
+        "country": str(snapshot.get("country") or "").strip().upper(),
+        "proxy_type": normalize_proxy_type(snapshot.get("proxy_type")),
+    }
+
+
+def select_dedicated_standby_candidates(
+    index: int, *, include_bad: bool = False
+) -> list[dict[str, Any]]:
+    configs = dedicated_standby_config_snapshot()
+    if not 0 <= index < len(configs):
+        return []
+    config = configs[index]
+    target = str(config.get("target") or "")
+    if not target:
+        return []
+    profile = _standby_target_profile(target)
+    countries = list(config.get("countries") or [])
+    if not countries and profile["country"]:
+        countries = [profile["country"]]
+    current_id = ""
+    with dedicated_standby_lock:
+        current_id = str(dedicated_standbys.get(index, {}).get("node_id") or "")
+    used = (
+        reserved_slot_candidate_ids()
+        | main_reserved_candidate_ids()
+        | dedicated_standby_candidate_ids(exclude_index=index)
+    )
+    used.discard(current_id)
+    used_ips = candidate_ip_identities(used)
+    now = time.time()
+    bad = (
+        set()
+        if include_bad
+        else {node_id for node_id, until in slot_bad_nodes.items() if until > now}
+    )
+    candidates = []
+    for node in read_nodes():
+        node_id = str(node.get("id") or "").strip()
+        if not node_id or node_id in used or node_id in bad:
+            continue
+        if candidate_ip_identity(node) in used_ips:
+            continue
+        if node.get("probe_status") != "available":
+            continue
+        if countries and str(node.get("country_short") or "").strip().upper() not in countries:
+            continue
+        node_type = normalize_proxy_type(node.get("ip_type"))
+        if profile["proxy_type"] and node_type != profile["proxy_type"]:
+            continue
+        candidates.append(node)
+    candidates.sort(key=lambda node: (
+        0 if normalize_proxy_type(node.get("ip_type")) == "residential" else 1,
+        parse_int(node.get("latency_ms")) or 999999,
+        -parse_int(node.get("score")),
+    ))
+    return candidates
+
+
+def ensure_dedicated_standby_proxy(index: int) -> None:
+    with dedicated_standby_lock:
+        if index in dedicated_standby_proxy_stops:
             return
+        stop_event = threading.Event()
+        registry = proxy_server.ConnRegistry()
+        dedicated_standby_proxy_stops[index] = stop_event
+        dedicated_standby_proxy_registries[index] = registry
+    threading.Thread(
+        target=proxy_server.start_proxy_server,
+        args=(SLOT_PROXY_HOST, standby_port(index), standby_device(index), stop_event, registry),
+        daemon=True,
+    ).start()
+
+
+def tear_down_dedicated_standby(
+    index: int,
+    *,
+    keep_tunnel: bool = False,
+    wait_for_proxy: bool = True,
+) -> dict[str, Any]:
+    with dedicated_standby_lock:
+        runtime = dedicated_standbys.pop(index, {})
+        stop_event = dedicated_standby_proxy_stops.pop(index, None)
+        registry = dedicated_standby_proxy_registries.pop(index, None)
+    if registry is not None:
+        registry.close_all()
+    if stop_event is not None:
+        stop_event.set()
+        if wait_for_proxy:
+            time.sleep(1.05)
+    if not keep_tunnel:
+        stop_process(runtime.get("process"))
+        cleanup_policy_routing(parse_int(runtime.get("table")) or standby_table(index))
+        try:
+            path = Path(str(runtime.get("config_path") or standby_config_path(index)))
+            if path.exists():
+                path.unlink()
+        except OSError:
+            pass
+    return runtime
+
+
+def bring_up_dedicated_standby(index: int, node: dict[str, Any]) -> bool:
+    if not 0 <= index < DEDICATED_STANDBY_COUNT:
+        return False
+    node_id = str(node.get("id") or "").strip()
+    if not node_id:
+        return False
+    used = (
+        reserved_slot_candidate_ids()
+        | main_reserved_candidate_ids()
+        | dedicated_standby_candidate_ids(exclude_index=index)
+    )
+    with dedicated_standby_lock:
+        used.discard(str(dedicated_standbys.get(index, {}).get("node_id") or ""))
+    if not reserve_candidate(node_id, used):
+        return False
+    try:
+        return _bring_up_reserved_dedicated_standby(index, node, node_id)
+    finally:
+        release_candidate_reservation(node_id)
+
+
+def _bring_up_reserved_dedicated_standby(
+    index: int, node: dict[str, Any], node_id: str
+) -> bool:
+    tear_down_dedicated_standby(index)
+    config_path = standby_config_path(index)
+    try:
+        CONFIG_DIR.mkdir(exist_ok=True, parents=True)
+        config_path.write_text(str(node.get("config_text") or ""), encoding="utf-8")
+    except OSError:
+        return False
+    ok, message, process = run_openvpn_until_ready(
+        str(config_path),
+        keep_alive=True,
+        route_nopull=True,
+        timeout=OPENVPN_TEST_TIMEOUT_SECONDS,
+        dev=standby_device(index),
+        extra_args=["--setenv", STANDBY_PROCESS_MARKER, str(index)],
+        report_status=False,
+    )
+    if not ok or process is None:
+        try:
+            config_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        failure_code = _candidate_dial_failure_code(message)
+        if failure_code:
+            mark_candidate_unavailable(node_id, failure_code)
+        return False
+    if not setup_policy_routing(standby_device(index), standby_table(index)):
+        stop_process(process)
+        cleanup_policy_routing(standby_table(index))
+        return False
+    with dedicated_standby_lock:
+        dedicated_standbys[index] = {
+            "index": index,
+            "device": standby_device(index),
+            "table": standby_table(index),
+            "port": standby_port(index),
+            "node_id": node_id,
+            "country": str(node.get("country") or ""),
+            "country_short": str(node.get("country_short") or "").upper(),
+            "proxy_type": normalize_proxy_type(node.get("ip_type")),
+            "candidate_ip": str(node.get("ip") or node.get("remote_host") or ""),
+            "process": process,
+            "config_path": str(config_path),
+            "status": "checking",
+            "egress_ok": False,
+            "exit_ip": "",
+            "checked_at": 0.0,
+        }
+    ensure_dedicated_standby_proxy(index)
+    time.sleep(0.1)
+    egress_ok, exit_ip = check_slot_egress(standby_port(index))
+    checked_at = time.time()
+    with dedicated_standby_lock:
+        runtime = dedicated_standbys.get(index)
+        if runtime is not None:
+            runtime["egress_ok"] = egress_ok
+            runtime["exit_ip"] = exit_ip if egress_ok else ""
+            runtime["checked_at"] = checked_at
+            runtime["status"] = "ready" if egress_ok else "failed"
+    if not egress_ok:
+        mark_candidate_unavailable(node_id, "candidate_egress_failed")
+        tear_down_dedicated_standby(index)
+        return False
+    dedicated_standby_fail_counts[index] = 0
+    egress_repair_store.mark_healthy(f"standby:{index}", node_id)
+    write_dedicated_standby_state()
+    return True
+
+
+def write_dedicated_standby_state() -> None:
+    DATA_DIR.mkdir(exist_ok=True, parents=True)
+    write_json(STANDBYS_FILE, {
+        "standbys": dedicated_standby_snapshot(),
+        "updated_at": time.time(),
+    })
+
+
+def dedicated_standby_snapshot() -> list[dict[str, Any]]:
+    configs = dedicated_standby_config_snapshot()
+    result = []
+    with dedicated_standby_lock:
+        runtimes = {index: dict(runtime) for index, runtime in dedicated_standbys.items()}
+    for config in configs:
+        index = config["index"]
+        runtime = runtimes.get(index, {})
+        process = runtime.get("process")
+        alive = process is not None and process.poll() is None
+        repair = egress_repair_store.get(f"standby:{index}")
+        if not config["target"]:
+            status = "disabled"
+        elif repair.get("status") == "manual_required":
+            status = "waiting_manual"
+        elif alive and runtime.get("egress_ok"):
+            status = "ready"
+        elif alive:
+            status = "degraded"
+        else:
+            status = "preparing"
+        result.append({
+            "index": index,
+            "target": config["target"],
+            "countries": list(config["countries"]),
+            "status": status,
+            "node_id": str(runtime.get("node_id") or ""),
+            "country": str(runtime.get("country_short") or ""),
+            "proxy_type": str(runtime.get("proxy_type") or ""),
+            "candidate_ip": str(runtime.get("candidate_ip") or ""),
+            "exit_ip": str(runtime.get("exit_ip") or "") if runtime.get("egress_ok") else "",
+            "egress_ok": bool(runtime.get("egress_ok") and alive),
+            "checked_at": float(runtime.get("checked_at") or 0),
+            "last_error_code": str(repair.get("error_code") or ""),
+        })
+    return result
+
+
+def _replenish_standby_scope(index: int) -> None:
+    config = dedicated_standby_config_snapshot()[index]
+    countries = list(config.get("countries") or [])
+    if not countries:
+        profile = _standby_target_profile(str(config.get("target") or ""))
+        if profile["country"]:
+            countries = [profile["country"]]
+    for country in countries:
+        result = replenish_repair_country(country)
+        if result.get("resultCode") == "operation_busy":
+            return
+        if select_dedicated_standby_candidates(index):
+            return
+
+
+def provision_dedicated_standby(index: int, candidate_id: str = "") -> bool:
+    # 自动补位继续避开冷却中的坏节点；管理员明确指定时则允许真正
+    # 重试一次，否则前端可见候选会被后端在拨号前直接拒绝。
+    candidates = select_dedicated_standby_candidates(
+        index, include_bad=bool(candidate_id)
+    )
+    if candidate_id:
+        candidates = [
+            node for node in candidates
+            if str(node.get("id") or "").strip() == str(candidate_id).strip()
+        ]
+    if not candidates and not candidate_id:
+        _replenish_standby_scope(index)
+        candidates = select_dedicated_standby_candidates(index)
+    for node in candidates[:DEDICATED_STANDBY_CANDIDATE_ATTEMPTS]:
+        if bring_up_dedicated_standby(index, node):
+            return True
+        node_id = str(node.get("id") or "").strip()
+        if node_id:
+            slot_bad_nodes[node_id] = time.time() + SLOT_BAD_NODE_COOLDOWN
+    return False
+
+
+def assign_dedicated_standby(index: int, candidate_id: str) -> dict[str, Any]:
+    if not 0 <= index < DEDICATED_STANDBY_COUNT or not str(candidate_id or "").strip():
+        return {"ok": False, "error_code": "invalid_request"}
+    config = dedicated_standby_config_snapshot()[index]
+    if not config["target"]:
+        return {"ok": False, "error_code": "standby_disabled"}
+    operation_lock = dedicated_standby_operation_locks[index]
+    if not operation_lock.acquire(blocking=False):
+        return {"ok": False, "error_code": "operation_busy"}
+    try:
+        egress_repair_store.clear(f"standby:{index}")
+        if not provision_dedicated_standby(index, str(candidate_id).strip()):
+            egress_repair_store.require_manual(f"standby:{index}", "manual_candidate_failed", str(candidate_id).strip())
+            write_dedicated_standby_state()
+            return {"ok": False, "error_code": "candidate_unavailable"}
+        return {"ok": True, "standby": dedicated_standby_snapshot()[index]}
+    finally:
+        operation_lock.release()
+
+
+def maintain_dedicated_standbys_once() -> None:
+    configs = dedicated_standby_config_snapshot()
+    for config in configs:
+        index = config["index"]
+        operation_lock = dedicated_standby_operation_locks[index]
+        if not operation_lock.acquire(blocking=False):
+            continue
+        try:
+            if not config["target"]:
+                tear_down_dedicated_standby(index)
+                egress_repair_store.clear(f"standby:{index}")
+                continue
+            repair = egress_repair_store.get(f"standby:{index}")
+            if repair.get("status") == "manual_required":
+                tear_down_dedicated_standby(index)
+                continue
+            with dedicated_standby_lock:
+                runtime = dict(dedicated_standbys.get(index) or {})
+            process = runtime.get("process")
+            if process is not None and process.poll() is None:
+                route_ok = ensure_policy_routing(standby_device(index), standby_table(index))
+                ok, exit_ip = check_slot_egress(standby_port(index)) if route_ok else (False, "")
+                with dedicated_standby_lock:
+                    current = dedicated_standbys.get(index)
+                    if current is not None:
+                        current["egress_ok"] = ok
+                        current["exit_ip"] = exit_ip if ok else ""
+                        current["checked_at"] = time.time()
+                        current["status"] = "ready" if ok else "degraded"
+                if ok:
+                    dedicated_standby_fail_counts[index] = 0
+                    egress_repair_store.mark_healthy(f"standby:{index}", str(runtime.get("node_id") or ""))
+                    continue
+                dedicated_standby_fail_counts[index] = dedicated_standby_fail_counts.get(index, 0) + 1
+                if dedicated_standby_fail_counts[index] < DEDICATED_STANDBY_FAIL_THRESHOLD:
+                    continue
+            dedicated_standby_fail_counts[index] = 0
+            failed_id = str(runtime.get("node_id") or "")
+            countries = ",".join(config["countries"])
+            if not egress_repair_store.claim(f"standby:{index}", failed_id, countries):
+                tear_down_dedicated_standby(index)
+                continue
+            if failed_id:
+                mark_candidate_unavailable(failed_id, "candidate_egress_failed")
+                slot_bad_nodes[failed_id] = time.time() + SLOT_BAD_NODE_COOLDOWN
+            tear_down_dedicated_standby(index)
+            if not provision_dedicated_standby(index):
+                egress_repair_store.require_manual(f"standby:{index}", "no_standby_candidate")
+        finally:
+            operation_lock.release()
+    write_dedicated_standby_state()
+
+
+def dedicated_standby_loop() -> None:
+    global last_dedicated_standby_heartbeat
+    time.sleep(10)
+    while True:
+        last_dedicated_standby_heartbeat = time.time()
+        try:
+            maintain_dedicated_standbys_once()
+        except Exception as exc:
+            print(f"[专属备用] 维护异常: {exc}", flush=True)
+            log_to_json("ERROR", "Standby", f"专属备用维护异常: {exc}")
+        time.sleep(DEDICATED_STANDBY_CHECK_INTERVAL)
+
+
+def _healthy_dedicated_standby_index(target: str) -> int | None:
+    for config in dedicated_standby_config_snapshot():
+        index = config["index"]
+        if config["target"] != target:
+            continue
+        with dedicated_standby_lock:
+            runtime = dict(dedicated_standbys.get(index) or {})
+        process = runtime.get("process")
+        if process is None or process.poll() is not None:
+            continue
+        if not ensure_policy_routing(standby_device(index), standby_table(index)):
+            continue
+        ok, exit_ip = check_slot_egress(standby_port(index))
+        if not ok:
+            continue
+        with dedicated_standby_lock:
+            current = dedicated_standbys.get(index)
+            if current is not None:
+                current["egress_ok"] = True
+                current["exit_ip"] = exit_ip
+                current["checked_at"] = time.time()
+        return index
+    return None
+
+
+def release_unhealthy_target_standbys(target: str) -> None:
+    """Release swapped target resources before falling back to a cold repair."""
+    for config in dedicated_standby_config_snapshot():
+        index = config["index"]
+        if config["target"] != target:
+            continue
+        operation_lock = dedicated_standby_operation_locks[index]
+        if not operation_lock.acquire(blocking=False):
+            continue
+        try:
+            tear_down_dedicated_standby(index)
+            with dedicated_standby_lock:
+                dedicated_standby_resources.pop(index, None)
+            egress_repair_store.clear(f"standby:{index}")
+        finally:
+            operation_lock.release()
+
+
+def promote_dedicated_standby_to_slot(slot: int) -> bool:
+    index = _healthy_dedicated_standby_index(f"slot:{slot}")
+    if index is None:
+        return False
+    operation_lock = dedicated_standby_operation_locks[index]
+    if not operation_lock.acquire(blocking=False):
+        return False
+    try:
+        with exit_slots_lock:
+            previous_target = dict(exit_slots.get(slot) or {})
+        released_device = str(previous_target.get("device") or slot_device(slot))
+        released_table = parse_int(previous_target.get("table")) or slot_table(slot)
+        runtime = tear_down_dedicated_standby(index, keep_tunnel=True, wait_for_proxy=False)
+        process = runtime.get("process")
+        if process is None or process.poll() is not None:
+            return False
+        tear_down_slot(slot, stop_proxy=False)
+        runtime["config_path"] = detach_promoted_standby_config(index, runtime, f"slot-{slot}")
+        with dedicated_standby_lock:
+            dedicated_standby_resources[index] = {
+                "device": released_device,
+                "table": released_table,
+            }
+        with exit_slots_lock:
+            exit_slots[slot] = {
+                "slot": slot,
+                "device": runtime.get("device"),
+                "table": runtime.get("table"),
+                "port": slot_port(slot),
+                "node_id": runtime.get("node_id"),
+                "country": runtime.get("country"),
+                "country_short": runtime.get("country_short"),
+                "ip": runtime.get("candidate_ip"),
+                "ip_type": runtime.get("proxy_type"),
+                "location": "",
+                "owner": "",
+                "latency_ms": 0,
+                "process": process,
+                "status": "up",
+                "since": time.time(),
+                "message": "已切换到专属备用",
+                "config_path": runtime.get("config_path"),
+                "egress_ok": True,
+                "exit_ip": runtime.get("exit_ip"),
+                "egress_checked_at": time.time(),
+            }
+        ensure_slot_proxy(slot, str(runtime.get("device") or ""))
+        node_id = str(runtime.get("node_id") or "")
+        country = str(runtime.get("country_short") or "")
+        proxy_type = str(runtime.get("proxy_type") or "")
+        set_slot_pin(slot, "")
+        set_slot_country(slot, country)
+        set_slot_type(slot, proxy_type)
+        egress_repair_store.mark_healthy(f"slot:{slot}", node_id)
+        egress_repair_store.clear(f"standby:{index}")
+        write_slots_state()
+        write_dedicated_standby_state()
+        threading.Thread(target=maintain_dedicated_standbys_once, daemon=True).start()
+        log_to_json("INFO", "Standby", f"出口位 {slot} 已提升专属备用 {index + 1}")
+        return True
+    finally:
+        operation_lock.release()
+
+
+def promote_dedicated_standby_to_main() -> bool:
+    global active_openvpn_process, active_openvpn_node_id
+    global active_openvpn_device, active_openvpn_table, active_openvpn_config_path
+    index = _healthy_dedicated_standby_index("main")
+    if index is None:
+        return False
+    operation_lock = dedicated_standby_operation_locks[index]
+    if not operation_lock.acquire(blocking=False):
+        return False
+    try:
+        released_device = current_main_device()
+        released_table = current_main_table()
+        runtime = tear_down_dedicated_standby(index, keep_tunnel=True, wait_for_proxy=False)
+        process = runtime.get("process")
+        if process is None or process.poll() is not None:
+            return False
+        stop_active_openvpn()
+        runtime["config_path"] = detach_promoted_standby_config(index, runtime, "main")
+        with dedicated_standby_lock:
+            dedicated_standby_resources[index] = {
+                "device": released_device,
+                "table": released_table,
+            }
+        node_id = str(runtime.get("node_id") or "")
+        with lock:
+            active_openvpn_process = process
+            active_openvpn_node_id = node_id
+            active_openvpn_device = str(runtime.get("device") or standby_device(index))
+            active_openvpn_table = parse_int(runtime.get("table")) or standby_table(index)
+            active_openvpn_config_path = str(runtime.get("config_path") or "")
+            nodes = read_nodes()
+            for node in nodes:
+                node["active"] = str(node.get("id") or "") == node_id
+            write_json(NODES_FILE, sort_all_nodes(nodes))
+        reset_main_proxy_connections()
+        validation = check_proxy_health()
+        if not validation.get("ok"):
+            stop_active_openvpn()
+            return False
+        set_state(
+            active_openvpn_node_id=node_id,
+            proxy_ok=True,
+            proxy_ip=validation.get("ip", ""),
+            proxy_latency_ms=validation.get("latency_ms", 0),
+            proxy_error="",
+            last_check_message="主连接已切换到专属备用",
+        )
+        egress_repair_store.mark_healthy("main", node_id)
+        egress_repair_store.clear(f"standby:{index}")
+        write_dedicated_standby_state()
+        threading.Thread(target=maintain_dedicated_standbys_once, daemon=True).start()
+        log_to_json("INFO", "Standby", f"主连接已提升专属备用 {index + 1}")
+        return True
+    finally:
+        operation_lock.release()
+
+def ensure_slot_proxy(i: int, device: str | None = None) -> None:
+    selected_device = str(device or runtime_slot_device(i))
+    previous_stop = None
+    previous_registry = None
+    with exit_slots_lock:
+        if i in exit_slot_proxy_stops and exit_slot_proxy_devices.get(i) == selected_device:
+            return
+        previous_stop = exit_slot_proxy_stops.pop(i, None)
+        previous_registry = exit_slot_proxy_registries.pop(i, None)
+        exit_slot_proxy_devices.pop(i, None)
+    if previous_registry is not None:
+        previous_registry.close_all()
+    if previous_stop is not None:
+        previous_stop.set()
+        time.sleep(1.05)
+    with exit_slots_lock:
         stop_ev = threading.Event()
         registry = proxy_server.ConnRegistry()
         exit_slot_proxy_stops[i] = stop_ev
         exit_slot_proxy_registries[i] = registry
+        exit_slot_proxy_devices[i] = selected_device
     threading.Thread(
         target=proxy_server.start_proxy_server,
-        args=(SLOT_PROXY_HOST, slot_port(i), slot_device(i), stop_ev, registry),
+        args=(SLOT_PROXY_HOST, slot_port(i), selected_device, stop_ev, registry),
         daemon=True,
     ).start()
 
 def bring_up_slot(i: int, node: dict[str, Any]) -> bool:
     main_assignment_thread.slot_candidate_failure_code = ""
     candidate_id = str(node.get("id") or "").strip()
-    if candidate_id in (
+    used = (
         main_reserved_candidate_ids()
         | reserved_slot_candidate_ids(exclude_slot=i)
-    ):
+    )
+    if not reserve_candidate(candidate_id, used):
         return False
+    try:
+        return _bring_up_reserved_slot(i, node, candidate_id)
+    finally:
+        release_candidate_reservation(candidate_id)
+
+
+def _bring_up_reserved_slot(i: int, node: dict[str, Any], candidate_id: str) -> bool:
     dev = slot_device(i)
     kill_unregistered_slot_openvpn_processes(i)
     cfg_path = slot_config_path(i)
@@ -4347,6 +5233,7 @@ def bring_up_slot(i: int, node: dict[str, Any]) -> bool:
             "ip_type": node.get("ip_type"), "location": node.get("location"),
             "owner": node.get("owner"), "latency_ms": node.get("latency_ms"),
             "process": process, "status": "up", "since": time.time(), "message": "",
+            "config_path": str(cfg_path),
         }
     print(f"[多出口] 槽位 {i} 已就绪: {node.get('country')} {node.get('ip')} -> 代理 127.0.0.1:{slot_port(i)} (设备 {dev})", flush=True)
     log_to_json("INFO", "MultiExit", f"槽位 {i} 就绪: {node.get('country')} {node.get('ip')} 端口 {slot_port(i)}")
@@ -4407,15 +5294,17 @@ def tear_down_slot(i: int, stop_proxy: bool = True) -> None:
         slot = exit_slots.pop(i, None)
         stop_ev = exit_slot_proxy_stops.pop(i, None) if stop_proxy else None
         registry = exit_slot_proxy_registries.pop(i, None) if stop_proxy else exit_slot_proxy_registries.get(i)
+        if stop_proxy:
+            exit_slot_proxy_devices.pop(i, None)
     if registry is not None:
         closed = registry.close_all()
         if closed:
             print(f"[多出口] 槽位 {i} 切换前已重置 {closed} 条下游连接", flush=True)
     if slot and slot.get("process"):
         stop_process(slot["process"])
-    cleanup_policy_routing(slot_table(i))
+    cleanup_policy_routing(parse_int((slot or {}).get("table")) or slot_table(i))
     try:
-        p = slot_config_path(i)
+        p = Path(str((slot or {}).get("config_path") or slot_config_path(i)))
         if p.exists():
             p.unlink()
     except Exception:
@@ -4611,10 +5500,11 @@ def assign_node_to_slot(i: int, node_id: str) -> dict[str, Any]:
         return {"ok": False, "error": "未找到该节点"}
     if node.get("probe_status") != "available":
         return {"ok": False, "error": "该节点当前不可用，请先在列表中检测/更新"}
-    if node_id in (
+    used_ids = (
         main_reserved_candidate_ids()
         | reserved_slot_candidate_ids(exclude_slot=i)
-    ):
+    )
+    if candidate_conflicts_with_ids(node, used_ids):
         return {"ok": False, "error_code": "candidate_in_use"}
     with exit_slots_lock:
         for idx, s in exit_slots.items():
@@ -4653,7 +5543,9 @@ def add_slot_with_node(node_id: str) -> dict[str, Any]:
         return {"ok": False, "error": "未找到该节点"}
     if node.get("probe_status") != "available":
         return {"ok": False, "error": "该节点当前不可用，请先在列表中检测/更新"}
-    if node_id in (main_reserved_candidate_ids() | reserved_slot_candidate_ids()):
+    if candidate_conflicts_with_ids(
+        node, main_reserved_candidate_ids() | reserved_slot_candidate_ids()
+    ):
         return {"ok": False, "error_code": "candidate_in_use"}
     with exit_slots_lock:
         for idx, s in exit_slots.items():
@@ -4765,10 +5657,11 @@ def assign_managed_slot(i: int, node_id: str, country: str = "", proxy_type: str
         return {"ok": False, "error_code": "slot_not_found" if slot not in active else "candidate_not_found"}
     if node.get("probe_status") != "available":
         return {"ok": False, "error_code": "candidate_unavailable"}
-    if node_id in (
+    used_ids = (
         main_reserved_candidate_ids()
         | reserved_slot_candidate_ids(exclude_slot=slot)
-    ):
+    )
+    if candidate_conflicts_with_ids(node, used_ids):
         return {"ok": False, "error_code": "candidate_in_use"}
     normalized_country = str(country or node.get("country_short") or "").strip().upper()
     normalized_type = normalize_proxy_type(proxy_type or node.get("proxy_type") or node.get("ip_type"))
@@ -4834,7 +5727,7 @@ def create_managed_slot(country: str, proxy_type: str, candidate_id: str = "") -
             or normalize_proxy_type(candidate.get("ip_type")) != normalized_type
         ):
             return {"ok": False, "error_code": "candidate_mismatch"}
-        if candidate_id in used_ids:
+        if candidate_conflicts_with_ids(candidate, used_ids):
             return {"ok": False, "error_code": "candidate_in_use"}
         candidates = [candidate]
     else:
@@ -4887,7 +5780,7 @@ def check_managed_slot(i: int) -> dict[str, Any]:
         return snapshot
 
     tunnel_running = slot_process_alive(i)
-    route_ok = ensure_policy_routing(slot_device(i), slot_table(i)) if tunnel_running else False
+    route_ok = ensure_policy_routing(runtime_slot_device(i), runtime_slot_table(i)) if tunnel_running else False
     ok, exit_ip = check_slot_egress(parse_int(snapshot.get("port"))) if route_ok else (False, "")
     checked_at = time.time()
     with exit_slots_lock:
@@ -4910,7 +5803,7 @@ def check_managed_slot(i: int) -> dict[str, Any]:
 
     candidate_id = str(snapshot.get("node_id") or "").strip()
     if tunnel_running:
-        tunnel_egress_ok, _tunnel_exit_ip = check_interface_exit_ip(slot_device(i))
+        tunnel_egress_ok, _tunnel_exit_ip = check_interface_exit_ip(runtime_slot_device(i))
         if tunnel_egress_ok:
             return {
                 "ok": False,
@@ -5026,6 +5919,12 @@ def repair_slot_once(i: int, failed_snapshot: dict[str, Any]) -> dict[str, Any]:
             if failure_code not in CANDIDATE_FAILURE_CODES:
                 failure_code = "candidate_egress_failed"
             mark_candidate_unavailable(failed_id, failure_code)
+        if promote_dedicated_standby_to_slot(i):
+            result = managed_slot_snapshot(i)
+            result["auto_repair_performed"] = True
+            result["standby_promoted"] = True
+            return result
+        release_unhealthy_target_standbys(f"slot:{i}")
         candidates = automatic_slot_candidates(i, country)
         candidate = validated_repair_candidate(candidates)
         if candidate is None:
@@ -5089,7 +5988,7 @@ def slot_egress_checker_loop() -> None:
             for i in sorted(active):
                 if i in paused or not slot_process_alive(i):
                     continue
-                route_ok = ensure_policy_routing(slot_device(i), slot_table(i))
+                route_ok = ensure_policy_routing(runtime_slot_device(i), runtime_slot_table(i))
                 ok, ip = check_slot_egress(slot_port(i)) if route_ok else (False, "")
                 with exit_slots_lock:
                     s = exit_slots.get(i)
@@ -8554,14 +9453,16 @@ def check_proxy_health() -> dict[str, Any]:
             except Exception:
                 pass
 
-    # 2. 检测虚拟网卡 tun0 是否存在 (Linux 下)
-    tun_path = Path("/sys/class/net/tun0")
+    # 2. 检测当前主连接实际使用的虚拟网卡。热备用提升后它可能不是 tun0。
+    main_device = current_main_device()
+    main_table = current_main_table()
+    tun_path = Path("/sys/class/net") / main_device
     if sys.platform.startswith("linux") and not tun_path.exists():
         return {
             "ok": False,
-            "error": "[错误代码 3004] [ERR_ROUTE_DEV_NOT_FOUND] VPN 虚拟网卡 (tun0) 未启用，请确保当前已成功连接 VPN 节点"
+            "error": f"[错误代码 3004] [ERR_ROUTE_DEV_NOT_FOUND] VPN 虚拟网卡 ({main_device}) 未启用，请确保当前已成功连接 VPN 节点"
         }
-    if not ensure_policy_routing("tun0", 100):
+    if not ensure_policy_routing(main_device, main_table):
         return {
             "ok": False,
             "error": "[错误代码 3003] [ERR_ROUTE_TABLE_ADD_FAILED] VPN 策略路由缺失且自动恢复失败"
@@ -8998,8 +9899,8 @@ class Handler(BaseHTTPRequestHandler):
             if ovpn_ok:
                 ovpn_details = f"已连接节点: {active_openvpn_node_id}"
                 if sys.platform.startswith("linux"):
-                    if not Path("/sys/class/net/tun0").exists():
-                        ovpn_err = "[警告] 虚拟网卡 (tun0) 未启用，可能存在策略路由配置问题。"
+                    if not (Path("/sys/class/net") / current_main_device()).exists():
+                        ovpn_err = f"[警告] 虚拟网卡 ({current_main_device()}) 未启用，可能存在策略路由配置问题。"
             else:
                 if active_openvpn_node_id:
                     ovpn_err = "连接已中断或 OpenVPN 核心程序异常退出。"
@@ -9645,7 +10546,7 @@ def main() -> None:
             "blacklisted_nodes": 0,
         },
     )
-    threading.Thread(target=proxy_server.start_proxy_server, args=(LOCAL_PROXY_HOST, LOCAL_PROXY_PORT, "tun0", None, main_proxy_registry), daemon=True).start()
+    threading.Thread(target=proxy_server.start_proxy_server, args=(LOCAL_PROXY_HOST, LOCAL_PROXY_PORT, current_main_device, None, main_proxy_registry), daemon=True).start()
 
     # Wait for the gateway to officially start
     print("[网关] 正在启动代理网关...", flush=True)
@@ -9698,6 +10599,7 @@ def main() -> None:
     threading.Thread(target=active_node_pinger, daemon=True).start()
     threading.Thread(target=exit_slots_loop, daemon=True).start()
     threading.Thread(target=slot_egress_checker_loop, daemon=True).start()
+    threading.Thread(target=dedicated_standby_loop, daemon=True).start()
 
     start_control_plane()
 

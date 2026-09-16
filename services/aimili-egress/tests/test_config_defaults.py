@@ -14,6 +14,8 @@ class ConfigDefaultsTests(unittest.TestCase):
         environment.pop("TARGET_VALID_POOL_SIZE", None)
         environment.pop("MAX_VALID_POOL_SIZE", None)
         environment.pop("OPENVPN_TEST_CONCURRENCY", None)
+        environment.pop("MAX_OPENVPN_PROCESSES", None)
+        environment.pop("MAX_OPENVPN_PROBES", None)
         environment.pop("MAIN_EGRESS_FAIL_THRESHOLD", None)
         environment.pop("SLOT_EGRESS_FAIL_THRESHOLD", None)
         environment.pop("COLLECTOR_BUSY_RETRY_SECONDS", None)
@@ -29,6 +31,8 @@ print(json.dumps({
     "state": manager.get_state(),
     "maximum": getattr(manager, "MAX_VALID_POOL_SIZE", 0),
     "probeConcurrency": getattr(manager, "OPENVPN_TEST_CONCURRENCY", 0),
+    "openvpnLimit": getattr(manager, "MAX_OPENVPN_PROCESSES", 0),
+    "probeLimit": getattr(manager, "MAX_OPENVPN_PROBES", 0),
     "mainFailureThreshold": getattr(manager, "MAIN_EGRESS_FAIL_THRESHOLD", 0),
     "slotFailureThreshold": getattr(manager, "SLOT_EGRESS_FAIL_THRESHOLD", 0),
     "busyRetry": getattr(manager, "COLLECTOR_BUSY_RETRY_SECONDS", 0),
@@ -50,6 +54,8 @@ print(json.dumps({
         self.assertEqual(result["state"]["target_valid_nodes"], 64)
         self.assertEqual(result["maximum"], 150)
         self.assertEqual(result["probeConcurrency"], 4)
+        self.assertEqual(result["openvpnLimit"], 9)
+        self.assertEqual(result["probeLimit"], 2)
         self.assertEqual(result["mainFailureThreshold"], 3)
         self.assertEqual(result["slotFailureThreshold"], 3)
         self.assertEqual(result["busyRetry"], 600)

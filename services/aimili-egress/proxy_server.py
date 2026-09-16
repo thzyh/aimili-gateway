@@ -99,6 +99,13 @@ def parse_int(value: Any) -> int:
     except (TypeError, ValueError):
         return 0
 
+
+def resolve_device(device: Any) -> str:
+    """Resolve a fixed device name or a thread-safe provider for new connections."""
+    value = device() if callable(device) else device
+    normalized = str(value or "").strip()
+    return normalized or "tun0"
+
 def recv_exact(sock: socket.socket, size: int) -> bytes:
     data = b""
     while len(data) < size:
@@ -566,7 +573,7 @@ def proxy_client(client: socket.socket, address: tuple[str, int], device: str = 
 def start_proxy_client_thread(
     client: socket.socket,
     address: tuple[str, int],
-    device: str,
+    device: Any,
     listener_key: str,
     capacity: ProxyCapacity,
     registry: ConnRegistry | None = None,
@@ -583,7 +590,7 @@ def start_proxy_client_thread(
         try:
             if registry is not None:
                 registry.add(client)
-            proxy_client(client, address, device)
+            proxy_client(client, address, resolve_device(device))
         finally:
             if registry is not None:
                 registry.discard(client)
@@ -601,7 +608,7 @@ def start_proxy_client_thread(
     return True
 
 
-def start_proxy_server(host: str, port: int, device: str = "tun0", stop_event: threading.Event | None = None, registry: ConnRegistry | None = None, capacity: ProxyCapacity | None = None) -> None:
+def start_proxy_server(host: str, port: int, device: Any = "tun0", stop_event: threading.Event | None = None, registry: ConnRegistry | None = None, capacity: ProxyCapacity | None = None) -> None:
     is_ipv6 = ":" in host or host == ""
     af = socket.AF_INET6 if is_ipv6 else socket.AF_INET
     server = None
@@ -668,7 +675,7 @@ def start_proxy_server(host: str, port: int, device: str = "tun0", stop_event: t
                 server.close()
             except OSError:
                 pass
-            print(f"[代理网关] 已停止监听 {host}:{port} ({device})", flush=True)
+            print(f"[代理网关] 已停止监听 {host}:{port} ({resolve_device(device)})", flush=True)
             return
         try:
             client, address = server.accept()

@@ -121,6 +121,27 @@ type Slot struct {
 
 type SlotCheck = Slot
 
+type DedicatedStandby struct {
+	Index         int      `json:"index"`
+	Target        string   `json:"target"`
+	Countries     []string `json:"countries"`
+	Status        string   `json:"status"`
+	NodeID        string   `json:"node_id"`
+	Country       string   `json:"country"`
+	ProxyType     string   `json:"proxy_type"`
+	CandidateIP   string   `json:"candidate_ip"`
+	ExitIP        string   `json:"exit_ip"`
+	EgressOK      bool     `json:"egress_ok"`
+	CheckedAt     float64  `json:"checked_at"`
+	LastErrorCode string   `json:"last_error_code"`
+}
+
+type DedicatedStandbyConfig struct {
+	Index     int      `json:"index"`
+	Target    string   `json:"target"`
+	Countries []string `json:"countries"`
+}
+
 type MainStatus struct {
 	CandidateID         string `json:"candidate_id"`
 	Country             string `json:"country"`
@@ -364,6 +385,82 @@ func (c *Client) ListSlots(ctx context.Context) ([]Slot, error) {
 	var result []Slot
 	err := c.do(ctx, c.readTimeout, http.MethodGet, "control/v1/slots", nil, &result)
 	return result, err
+}
+
+func (c *Client) DedicatedStandbys(ctx context.Context) ([]DedicatedStandby, error) {
+	var result []DedicatedStandby
+	if err := c.do(ctx, c.readTimeout, http.MethodGet, "control/v1/standbys", nil, &result); err != nil {
+		return nil, err
+	}
+	if !validDedicatedStandbys(result) {
+		return nil, &AdapterError{Code: "invalid_response"}
+	}
+	return result, nil
+}
+
+func (c *Client) ConfigureDedicatedStandbys(ctx context.Context, configs []DedicatedStandbyConfig) ([]DedicatedStandby, error) {
+	input := struct {
+		Standbys []DedicatedStandbyConfig `json:"standbys"`
+	}{Standbys: configs}
+	var result struct {
+		Standbys []DedicatedStandby `json:"standbys"`
+	}
+	if err := c.do(ctx, c.operationTimeout, http.MethodPut, "control/v1/standbys", input, &result); err != nil {
+		return nil, err
+	}
+	if !validDedicatedStandbys(result.Standbys) {
+		return nil, &AdapterError{Code: "invalid_response"}
+	}
+	return result.Standbys, nil
+}
+
+func (c *Client) AssignDedicatedStandby(ctx context.Context, index int, candidateID string) (DedicatedStandby, error) {
+	input := struct {
+		CandidateID string `json:"candidateId"`
+	}{CandidateID: candidateID}
+	var result struct {
+		Standby DedicatedStandby `json:"standby"`
+	}
+	path := fmt.Sprintf("control/v1/standbys/%d/assign", index)
+	if err := c.do(ctx, c.operationTimeout, http.MethodPost, path, input, &result); err != nil {
+		return DedicatedStandby{}, err
+	}
+	if !validDedicatedStandbys([]DedicatedStandby{result.Standby}) {
+		return DedicatedStandby{}, &AdapterError{Code: "invalid_response"}
+	}
+	return result.Standby, nil
+}
+
+func validDedicatedStandbys(rows []DedicatedStandby) bool {
+	if len(rows) != 2 {
+		return false
+	}
+	seen := map[int]bool{}
+	for _, row := range rows {
+		if row.Index < 0 || row.Index > 1 || seen[row.Index] || row.CheckedAt < 0 {
+			return false
+		}
+		seen[row.Index] = true
+		if row.Target != "" && row.Target != "main" && !regexp.MustCompile(`^slot:\d+$`).MatchString(row.Target) {
+			return false
+		}
+		switch row.Status {
+		case "disabled", "preparing", "ready", "degraded", "waiting_manual":
+		default:
+			return false
+		}
+		for _, country := range append(append([]string{}, row.Countries...), row.Country) {
+			if country != "" && (len(country) != 2 || country != strings.ToUpper(country)) {
+				return false
+			}
+		}
+		for _, address := range []string{row.CandidateIP, row.ExitIP} {
+			if address != "" && net.ParseIP(address) == nil {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func (c *Client) MainStatus(ctx context.Context) (MainStatus, error) {

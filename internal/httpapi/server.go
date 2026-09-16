@@ -37,9 +37,9 @@ type Dependencies struct {
 
 type FreesubBackupManager interface {
 	Summary(context.Context) (domain.FreesubBackupConnection, error)
-	ManualProvision(context.Context) (domain.FreesubBackupConnection, error)
 	Check(context.Context) (domain.FreesubBackupConnection, error)
 	Replace(context.Context) (domain.FreesubBackupConnection, error)
+	ManualProvision(context.Context) (domain.FreesubBackupConnection, error)
 }
 
 type MaintenanceService interface {
@@ -52,6 +52,12 @@ type MaintenanceService interface {
 	XUI(context.Context) (maintenance.XUISummary, error)
 	CheckXUI(context.Context) (maintenance.XUISummary, error)
 	RepairXUI(context.Context) (maintenance.XUISummary, error)
+}
+
+type DedicatedStandbyService interface {
+	DedicatedStandbys(context.Context) ([]aimili.DedicatedStandby, error)
+	ConfigureDedicatedStandbys(context.Context, []aimili.DedicatedStandbyConfig) ([]aimili.DedicatedStandby, error)
+	AssignDedicatedStandby(context.Context, int, string) (aimili.DedicatedStandby, error)
 }
 
 type BackendLoginService interface {
@@ -170,6 +176,9 @@ func NewServer(dependencies Dependencies) http.Handler {
 	mux.HandleFunc("GET /api/v1/settings/aimilivpn/refresh", server.handleAimiliRefreshStatus)
 	mux.HandleFunc("POST /api/v1/settings/aimilivpn/refresh", server.handleRefreshAimiliSettings)
 	mux.HandleFunc("POST /api/v1/settings/aimilivpn/check", server.handleCheckAimiliSettings)
+	mux.HandleFunc("GET /api/v1/settings/aimilivpn/standbys", server.handleDedicatedStandbys)
+	mux.HandleFunc("PUT /api/v1/settings/aimilivpn/standbys", server.handleConfigureDedicatedStandbys)
+	mux.HandleFunc("POST /api/v1/settings/aimilivpn/standbys/{index}/assign", server.handleAssignDedicatedStandby)
 	mux.HandleFunc("GET /api/v1/settings/3x-ui", server.handleXUISettings)
 	mux.HandleFunc("POST /api/v1/settings/3x-ui/check", server.handleCheckXUISettings)
 	mux.HandleFunc("POST /api/v1/settings/3x-ui/repair", server.handleRepairXUISettings)

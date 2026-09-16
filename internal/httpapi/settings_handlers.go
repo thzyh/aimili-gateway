@@ -3,10 +3,75 @@ package httpapi
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
+	"github.com/thzyh/aimili-gateway/internal/adapters/aimili"
 	"github.com/thzyh/aimili-gateway/internal/maintenance"
 )
+
+func (s *server) dedicatedStandbyService(response http.ResponseWriter) (DedicatedStandbyService, bool) {
+	service, ok := s.maintenance.(DedicatedStandbyService)
+	if !ok {
+		writeAPIError(response, http.StatusServiceUnavailable, "not_configured")
+	}
+	return service, ok
+}
+
+func (s *server) handleDedicatedStandbys(response http.ResponseWriter, request *http.Request) {
+	if _, ok := s.authenticateOrWrite(response, request); !ok {
+		return
+	}
+	service, ok := s.dedicatedStandbyService(response)
+	if !ok {
+		return
+	}
+	result, err := service.DedicatedStandbys(request.Context())
+	writeMaintenanceResult(response, result, err)
+}
+
+func (s *server) handleConfigureDedicatedStandbys(response http.ResponseWriter, request *http.Request) {
+	if _, ok := s.authorizeSessionMutation(response, request); !ok {
+		return
+	}
+	service, ok := s.dedicatedStandbyService(response)
+	if !ok {
+		return
+	}
+	var input struct {
+		Standbys []aimili.DedicatedStandbyConfig `json:"standbys"`
+	}
+	if decodeJSON(request, &input) != nil || len(input.Standbys) != 2 {
+		writeAPIError(response, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	result, err := service.ConfigureDedicatedStandbys(request.Context(), input.Standbys)
+	writeMaintenanceResult(response, result, err)
+}
+
+func (s *server) handleAssignDedicatedStandby(response http.ResponseWriter, request *http.Request) {
+	if _, ok := s.authorizeSessionMutation(response, request); !ok {
+		return
+	}
+	service, ok := s.dedicatedStandbyService(response)
+	if !ok {
+		return
+	}
+	index, err := strconv.Atoi(request.PathValue("index"))
+	if err != nil || index < 0 || index > 1 {
+		writeAPIError(response, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	var input struct {
+		CandidateID string `json:"candidateId"`
+	}
+	if decodeJSON(request, &input) != nil || strings.TrimSpace(input.CandidateID) == "" || len(input.CandidateID) > 256 {
+		writeAPIError(response, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	result, callErr := service.AssignDedicatedStandby(request.Context(), index, strings.TrimSpace(input.CandidateID))
+	writeMaintenanceResult(response, result, callErr)
+}
 
 func (s *server) handleSettingsSummary(response http.ResponseWriter, request *http.Request) {
 	if _, ok := s.authenticateOrWrite(response, request); !ok {
@@ -149,9 +214,9 @@ func writeMaintenanceError(response http.ResponseWriter, err error) {
 		code = maintenanceError.Code
 	}
 	status := http.StatusServiceUnavailable
-	if code == "repair_failed" || code == "check_failed" || code == "maintenance_busy" {
+	if code == "repair_failed" || code == "check_failed" || code == "maintenance_busy" || code == "operation_busy" || code == "candidate_unavailable" || code == "candidate_in_use" {
 		status = http.StatusConflict
-	} else if code == "invalid_request" || code == "country_required" {
+	} else if code == "invalid_request" || code == "country_required" || code == "slot_not_found" || code == "standby_disabled" {
 		status = http.StatusBadRequest
 	}
 	writeAPIError(response, status, code)

@@ -63,6 +63,13 @@ export type MixedPolicyApplyStatus = 'pending' | 'applying' | 'applied' | 'faile
 export interface SettingsSummaryPayload { accountSyncStatus: AccountSyncStatus; candidateCount: number; onlineCount: number; maxOnline: number }
 export interface MixedSourcePolicyPayload { enabled: boolean; cidrs: string[]; applyStatus: MixedPolicyApplyStatus }
 export interface CandidateCountryPayload { code: string; name: string; candidateCount: number; observedAt: number; officialCandidateTotal?: number; validNodeCount?: number; validCountryCount?: number; targetValidNodeCount?: number; maxValidNodeCount?: number }
+export type DedicatedStandbyStatus = 'disabled' | 'preparing' | 'ready' | 'degraded' | 'waiting_manual'
+export interface DedicatedStandbyPayload {
+  index: number; target: string; countries: string[]; status: DedicatedStandbyStatus
+  node_id?: string; country?: string; proxy_type?: ProxyType; candidate_ip?: string; exit_ip?: string
+  egress_ok: boolean; checked_at?: number; last_error_code?: string
+}
+export interface DedicatedStandbyConfigPayload { index: number; target: string; countries: string[] }
 export type CountryRefreshState = 'idle' | 'running' | 'completed' | 'failed'
 export interface CountryRefreshPayload {
   state: CountryRefreshState; country: string; phase: string

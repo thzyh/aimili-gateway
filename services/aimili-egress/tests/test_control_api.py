@@ -20,6 +20,8 @@ class FakeManager:
         self.main_repair_commits = []
         self.main_repair_replacements = []
         self.mutation_leases = []
+        self.standby_updates = []
+        self.standby_assignments = []
         self.main_assignment_result = {
             "ok": True,
             "operation_id": "operation-safe-1",
@@ -134,6 +136,20 @@ class FakeManager:
     def managed_slots_snapshot(self):
         return [self.managed_slot_snapshot(2)]
 
+    def dedicated_standby_snapshot(self):
+        return [
+            {"index": 0, "target": "main", "countries": ["JP"], "status": "ready", "egress_ok": True},
+            {"index": 1, "target": "slot:2", "countries": ["US", "VN"], "status": "waiting_manual", "egress_ok": False},
+        ]
+
+    def set_dedicated_standby_config(self, rows):
+        self.standby_updates.append(rows)
+        return {"ok": True, "standbys": self.dedicated_standby_snapshot()}
+
+    def assign_dedicated_standby(self, index, candidate_id):
+        self.standby_assignments.append((index, candidate_id))
+        return {"ok": True, "standby": dict(self.dedicated_standby_snapshot()[index], node_id=candidate_id)}
+
     def managed_slot_snapshot(self, slot):
         if slot != 2:
             return {"ok": False, "error_code": "slot_not_found"}
@@ -217,6 +233,9 @@ class ControlAPITests(unittest.TestCase):
                 "slots.check",
                 "slots.assign",
                 "slots.delete",
+                "standbys.read",
+                "standbys.configure",
+                "standbys.assign",
                 "main.read",
                 "main.assignment.read",
                 "main.assign",
@@ -480,6 +499,35 @@ class ControlAPITests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(payload["data"][0]["slot"], 2)
         self.assertNotIn("process", json.dumps(payload))
+
+    def test_dedicated_standby_routes_keep_a_closed_safe_contract(self):
+        status, _, payload = self.request("GET", "/control/v1/standbys")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(payload["data"]), 2)
+
+        config = {
+            "standbys": [
+                {"index": 0, "target": "main", "countries": ["JP"]},
+                {"index": 1, "target": "slot:2", "countries": ["US", "VN"]},
+            ]
+        }
+        status, _, payload = self.request("PUT", "/control/v1/standbys", config)
+        self.assertEqual(status, 200)
+        self.assertEqual(self.manager.standby_updates, [config["standbys"]])
+        self.assertEqual(len(payload["data"]["standbys"]), 2)
+
+        status, _, payload = self.request(
+            "POST", "/control/v1/standbys/1/assign", {"candidateId": "node-safe"}
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(self.manager.standby_assignments, [(1, "node-safe")])
+        self.assertEqual(payload["data"]["standby"]["node_id"], "node-safe")
+
+        status, _, payload = self.request(
+            "POST", "/control/v1/standbys/1/assign", {"candidateId": "node-safe", "config": "forbidden"}
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(payload, {"error": {"code": "invalid_request"}})
 
     def test_create_slot_rejects_unknown_fields_before_calling_manager(self):
         status, _, payload = self.request(

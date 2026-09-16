@@ -26,6 +26,9 @@ CAPABILITIES = [
     "slots.check",
     "slots.assign",
     "slots.delete",
+    "standbys.read",
+    "standbys.configure",
+    "standbys.assign",
     "main.read",
     "main.assignment.read",
     "main.assign",
@@ -164,6 +167,27 @@ class ControlHandler(BaseHTTPRequestHandler):
             return
         if self.command == "GET" and path == f"{API_PREFIX}/candidates":
             self._manager_result(self.server.manager.safe_candidate_snapshot())
+            return
+        if self.command == "GET" and path == f"{API_PREFIX}/standbys":
+            self._manager_result(self.server.manager.dedicated_standby_snapshot())
+            return
+        if self.command == "PUT" and path == f"{API_PREFIX}/standbys":
+            payload = self._read_object({"standbys"})
+            self._manager_result(
+                self.server.manager.set_dedicated_standby_config(payload.get("standbys"))
+            )
+            return
+        standby_assign = re.fullmatch(r"/control/v1/standbys/(\d+)/assign", path)
+        if self.command == "POST" and standby_assign:
+            payload = self._read_object({"candidateId"})
+            candidate_id = str(payload.get("candidateId") or "").strip()
+            if not candidate_id or len(candidate_id) > 256:
+                raise ValueError("invalid request")
+            self._manager_result(
+                self.server.manager.assign_dedicated_standby(
+                    int(standby_assign.group(1)), candidate_id
+                )
+            )
             return
         if self.command == "GET" and path == f"{API_PREFIX}/main":
             self._manager_result(self.server.manager.safe_main_status())

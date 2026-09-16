@@ -17,6 +17,14 @@ class FailingThread:
 
 
 class ProxyCapacityTests(unittest.TestCase):
+    def test_device_provider_is_resolved_for_each_new_connection(self):
+        current = {"device": "tun0"}
+        provider = lambda: current["device"]
+
+        self.assertEqual(proxy_server.resolve_device(provider), "tun0")
+        current["device"] = "tun140"
+        self.assertEqual(proxy_server.resolve_device(provider), "tun140")
+
     def test_default_capacity_keeps_listener_headroom_and_global_isolation(self):
         capacity = proxy_server.ProxyCapacity(
             global_limit=proxy_server.MAX_PROXY_CONNECTIONS,

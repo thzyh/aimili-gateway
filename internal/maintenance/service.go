@@ -57,6 +57,12 @@ type aimiliSource interface {
 	CheckSlot(context.Context, int) (aimili.SlotCheck, error)
 }
 
+type dedicatedStandbySource interface {
+	DedicatedStandbys(context.Context) ([]aimili.DedicatedStandby, error)
+	ConfigureDedicatedStandbys(context.Context, []aimili.DedicatedStandbyConfig) ([]aimili.DedicatedStandby, error)
+	AssignDedicatedStandby(context.Context, int, string) (aimili.DedicatedStandby, error)
+}
+
 type xuiSource interface {
 	Snapshot(context.Context) (xui.Snapshot, error)
 }
@@ -201,6 +207,53 @@ func (service *Service) AimiliVPNRefresh(ctx context.Context) (aimili.CountryRef
 		return aimili.CountryRefresh{}, countryRefreshError(err)
 	}
 	return refresh, nil
+}
+
+func (service *Service) DedicatedStandbys(ctx context.Context) ([]aimili.DedicatedStandby, error) {
+	source, ok := service.aimili.(dedicatedStandbySource)
+	if !ok {
+		return nil, &Error{Code: "not_configured"}
+	}
+	result, err := source.DedicatedStandbys(ctx)
+	if err != nil {
+		return nil, standbyError(err)
+	}
+	return result, nil
+}
+
+func (service *Service) ConfigureDedicatedStandbys(ctx context.Context, configs []aimili.DedicatedStandbyConfig) ([]aimili.DedicatedStandby, error) {
+	source, ok := service.aimili.(dedicatedStandbySource)
+	if !ok {
+		return nil, &Error{Code: "not_configured"}
+	}
+	result, err := source.ConfigureDedicatedStandbys(ctx, configs)
+	if err != nil {
+		return nil, standbyError(err)
+	}
+	return result, nil
+}
+
+func (service *Service) AssignDedicatedStandby(ctx context.Context, index int, candidateID string) (aimili.DedicatedStandby, error) {
+	source, ok := service.aimili.(dedicatedStandbySource)
+	if !ok {
+		return aimili.DedicatedStandby{}, &Error{Code: "not_configured"}
+	}
+	result, err := source.AssignDedicatedStandby(ctx, index, candidateID)
+	if err != nil {
+		return aimili.DedicatedStandby{}, standbyError(err)
+	}
+	return result, nil
+}
+
+func standbyError(err error) error {
+	var adapterError *aimili.AdapterError
+	if errors.As(err, &adapterError) {
+		switch adapterError.Code {
+		case "invalid_request", "slot_not_found", "standby_disabled", "candidate_unavailable", "candidate_in_use", "operation_busy":
+			return &Error{Code: adapterError.Code}
+		}
+	}
+	return &Error{Code: "service_unavailable"}
 }
 
 func (service *Service) pollAimiliVPNRefresh() {
