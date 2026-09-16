@@ -11,6 +11,23 @@ from egress_repair import RepairStore
 
 
 class ExitSlotTypeTests(unittest.TestCase):
+    def setUp(self):
+        validator = mock.patch.object(
+            manager,
+            "validated_repair_candidate",
+            side_effect=lambda candidates: candidates[0] if candidates else None,
+        )
+        replenisher = mock.patch.object(
+            manager,
+            "replenish_repair_country",
+            return_value={"state": "completed", "resultCode": "no_usable_nodes"},
+        )
+        validator.start()
+        replenisher.start()
+        self.addCleanup(validator.stop)
+        self.addCleanup(replenisher.stop)
+        self.validator_patch = validator
+
     def test_main_automatic_repair_uses_only_one_candidate_and_then_requires_manual_action(self):
         repair_store = mock.Mock()
         repair_store.claim.return_value = True
@@ -34,6 +51,41 @@ class ExitSlotTypeTests(unittest.TestCase):
             "replacement_failed",
             "jp-home",
         )
+
+    def test_main_repair_checks_same_country_feed_when_hot_spare_is_empty(self):
+        repair_store = mock.Mock()
+        repair_store.claim.return_value = True
+        candidate = {"id": "jp-new", "country_short": "JP", "probe_status": "available"}
+        with (
+            mock.patch.object(manager, "egress_repair_store", repair_store),
+            mock.patch.object(manager, "automatic_main_candidates", side_effect=[[], [candidate]]),
+            mock.patch.object(manager, "validated_repair_candidate", side_effect=[None, candidate]),
+            mock.patch.object(manager, "replenish_repair_country", return_value={"state": "completed"}) as replenish,
+            mock.patch.object(manager, "connect_node"),
+            mock.patch.object(manager, "_main_validation", return_value={"tunnel": True, "route": True, "proxy": True}),
+        ):
+            result = manager.repair_main_once({"candidate_id": "jp-old", "country": "JP"})
+
+        self.assertTrue(result["ok"])
+        replenish.assert_called_once_with("JP")
+        repair_store.mark_healthy.assert_called_once_with("main", "jp-new")
+
+    def test_repair_candidate_validation_rejects_stale_candidate_before_switch(self):
+        self.validator_patch.stop()
+        first = {"id": "jp-stale", "probe_status": "available"}
+        second = {"id": "jp-live", "probe_status": "available"}
+        results = [
+            {**first, "probe_status": "unavailable"},
+            {**second, "probe_status": "available", "exit_ip": "198.51.100.50"},
+        ]
+        with (
+            mock.patch.object(manager, "probe_nodes", return_value=results),
+            mock.patch.object(manager, "mark_candidate_unavailable") as mark,
+        ):
+            selected = manager.validated_repair_candidate([first, second])
+
+        self.assertEqual(selected["id"], "jp-live")
+        mark.assert_called_once_with("jp-stale", "candidate_egress_failed")
 
     def test_main_automatic_repair_does_not_repeat_after_restart_record(self):
         repair_store = mock.Mock()
@@ -702,6 +754,25 @@ class ExitSlotTypeTests(unittest.TestCase):
 
 
 class ManagedSlotFacadeTests(unittest.TestCase):
+    def setUp(self):
+        validator = mock.patch.object(
+            manager,
+            "validated_repair_candidate",
+            side_effect=lambda candidates: candidates[0] if candidates else None,
+        )
+        replenisher = mock.patch.object(
+            manager,
+            "replenish_repair_country",
+            return_value={"state": "completed", "resultCode": "no_usable_nodes"},
+        )
+        marker = mock.patch.object(manager, "mark_candidate_unavailable", return_value=True)
+        validator.start()
+        replenisher.start()
+        marker.start()
+        self.addCleanup(validator.stop)
+        self.addCleanup(replenisher.stop)
+        self.addCleanup(marker.stop)
+
     def test_automatic_slot_repair_prefers_one_same_country_residential_candidate(self):
         repair_store = mock.Mock()
         repair_store.claim.return_value = True
@@ -732,6 +803,32 @@ class ManagedSlotFacadeTests(unittest.TestCase):
         bring_up.assert_called_once_with(0, residential)
         repair_store.claim.assert_called_once_with("slot:0", "jp-old", "JP")
         repair_store.mark_healthy.assert_called_once_with("slot:0", "jp-home")
+
+    def test_slot_repair_checks_same_country_feed_when_hot_spare_is_empty(self):
+        repair_store = mock.Mock()
+        repair_store.claim.return_value = True
+        candidate = {"id": "jp-new", "country_short": "JP", "probe_status": "available"}
+        with (
+            mock.patch.object(manager, "egress_repair_store", repair_store),
+            mock.patch.object(manager, "slot_operation_locks", {}),
+            mock.patch.object(manager, "automatic_slot_candidates", side_effect=[[], [candidate]]),
+            mock.patch.object(manager, "validated_repair_candidate", side_effect=[None, candidate]),
+            mock.patch.object(manager, "replenish_repair_country", return_value={"state": "completed"}) as replenish,
+            mock.patch.object(manager, "tear_down_slot"),
+            mock.patch.object(manager, "bring_up_slot", return_value=True),
+            mock.patch.object(manager, "ensure_policy_routing", return_value=True),
+            mock.patch.object(manager, "check_slot_egress", return_value=(True, "198.51.100.51")),
+            mock.patch.object(manager, "set_slot_pin"),
+            mock.patch.object(manager, "set_slot_country"),
+            mock.patch.object(manager, "set_slot_type"),
+            mock.patch.object(manager, "write_slots_state"),
+            mock.patch.object(manager, "managed_slot_snapshot", return_value={"ok": True}),
+        ):
+            result = manager.repair_slot_once(0, {"node_id": "jp-old", "country": "JP"})
+
+        self.assertTrue(result["ok"])
+        replenish.assert_called_once_with("JP")
+        repair_store.mark_healthy.assert_called_once_with("slot:0", "jp-new")
 
     def test_automatic_slot_repair_does_not_retry_claimed_failure(self):
         repair_store = mock.Mock()

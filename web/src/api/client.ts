@@ -68,7 +68,7 @@ export interface CountryRefreshPayload {
   state: CountryRefreshState; country: string; phase: string
   resultCode?: 'success' | 'no_official_candidates' | 'no_usable_nodes' | 'operation_busy' | 'maintenance_busy' | 'upstream_unavailable'
   officialCount?: number; usableCount?: number; newUsableCount?: number; retainedCount?: number
-  catalogCount?: number; countryCandidateCount?: number; testedCount: number; validCount: number; preservedCount?: number
+  catalogCount?: number; countryCandidateCount?: number; testedCount: number; passedCount?: number; failedCount?: number; revalidatedCount?: number; validCount: number; preservedCount?: number
   startedAt?: number; finishedAt?: number; errorCode?: string
   stopReason?: string; cacheTotal?: number; countryValidCount?: number; targetValidNodeCount?: number; maxValidNodeCount?: number
 }

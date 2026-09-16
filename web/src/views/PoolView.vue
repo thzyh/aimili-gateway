@@ -374,7 +374,8 @@ function refreshNoticeFor(current: CountryRefreshPayload): UiNoticeData | null {
   if (current.state === 'idle') return null
   const name = refreshCountryName(current.country)
   if (current.state === 'running') {
-    return makeNotice('progress', `${name}正在刷新`, `已精验 ${current.testedCount} 个候选，当前在线代理不会中断。`)
+    const total = current.countryCandidateCount ?? 0
+    return makeNotice('progress', `${name}正在刷新`, `正在检查全部去重候选 · 已检测 ${current.testedCount}${total ? `/${total}` : ''} · 通过 ${current.passedCount ?? 0} · 失败 ${current.failedCount ?? 0}，当前在线代理不会中断。`)
   }
   const official = current.officialCount ?? current.catalogCount ?? 0
   const usable = current.usableCount ?? current.validCount
@@ -382,7 +383,7 @@ function refreshNoticeFor(current: CountryRefreshPayload): UiNoticeData | null {
   const poolTotal = current.cacheTotal ?? usable
   const counts = current.country === 'ALL'
     ? `官方候选 ${official} · 本次检测 ${current.testedCount} · 最终保留 ${poolTotal} · 节点池共 ${poolTotal}${time ? ` · ${time}` : ''}`
-    : `官方候选 ${official} · 本次检测 ${current.testedCount} · 新通过 ${current.newUsableCount ?? 0} · 原有保留 ${current.retainedCount ?? 0} · 该国现有 ${current.countryValidCount ?? usable} · 节点池临时增加至 ${poolTotal}${time ? ` · ${time}` : ''}`
+    : `官方原始 ${official} · 去重候选 ${current.countryCandidateCount ?? 0} · 本次检测 ${current.testedCount} · 检测通过 ${current.passedCount ?? 0} · 复验通过 ${current.revalidatedCount ?? 0} · 新增节点 ${current.newUsableCount ?? 0} · 检测失败 ${current.failedCount ?? 0} · 该国现有 ${current.countryValidCount ?? usable} · 节点池共 ${poolTotal}${time ? ` · ${time}` : ''}`
   if (current.state === 'completed' && (!current.resultCode || current.resultCode === 'success')) {
     return makeNotice('success', `最后刷新：${name} · 成功`, `刷新已完成 · ${counts}`)
   }
@@ -432,7 +433,7 @@ function formatRefreshTime(value?: number): string {
     <UiNotice v-if="topNotice" :key="topNotice.id" data-top-notice :notice="topNotice" @close="topNotice=null" />
     <section class="pool-toolbar">
       <PoolFilters :countries="countries" :official-countries="officialCountries" :country="country" :supplement-country="supplementCountry" :proxy-type="proxyType" :status="status" :sort="sort" @country="country=$event" @supplement-country="supplementCountry=$event" @proxy-type="proxyType=$event" @status="status=$event" @sort="sort=$event" />
-      <div data-pool-stats class="pool-stats"><span data-pool-stats-official class="pool-stat official">官方 <strong>{{ poolStats?.officialCandidateTotal ?? candidateCountries.reduce((sum,item) => sum + item.candidateCount, 0) }}</strong></span><span data-pool-stats-target class="pool-stat target">常规目标 <strong>{{ poolStats?.targetValidNodeCount ?? 64 }}</strong></span><span data-pool-stats-valid class="pool-stat valid">当前有效 <strong>{{ poolStats?.validNodeCount ?? groups.length }}</strong></span><span data-pool-stats-maximum class="pool-stat maximum">临时上限 <strong>{{ poolStats?.maxValidNodeCount ?? 80 }}</strong></span><span data-pool-stats-countries class="pool-stat countries"><strong>{{ poolStats?.validCountryCount ?? countries.length }}</strong> 国</span></div>
+      <div data-pool-stats class="pool-stats"><span data-pool-stats-official class="pool-stat official">官方 <strong>{{ poolStats?.officialCandidateTotal ?? candidateCountries.reduce((sum,item) => sum + item.candidateCount, 0) }}</strong></span><span data-pool-stats-target class="pool-stat target">常规目标 <strong>{{ poolStats?.targetValidNodeCount ?? 64 }}</strong></span><span data-pool-stats-valid class="pool-stat valid">当前有效 <strong>{{ poolStats?.validNodeCount ?? groups.length }}</strong></span><span data-pool-stats-maximum class="pool-stat maximum">紧急保护 <strong>{{ poolStats?.maxValidNodeCount ?? 150 }}</strong></span><span data-pool-stats-countries class="pool-stat countries"><strong>{{ poolStats?.validCountryCount ?? countries.length }}</strong> 国</span></div>
     </section>
     <UiNotice v-if="refreshNotice" :key="refreshNotice.id" data-refresh-notice class="refresh-notice" :notice="refreshNotice" @close="dismissRefreshNotice" />
     <div v-if="loading" class="loading">正在读取代理池…</div>

@@ -35,7 +35,10 @@ if [[ "${1:-}" == restart ]]; then
   grep -qx 'MULTI_EXIT_SLOTS=3' "$AIMILI_ENV_FILE"
   grep -qx 'MAX_EXIT_SLOTS=16' "$AIMILI_ENV_FILE"
   grep -qx 'TARGET_VALID_POOL_SIZE=64' "$AIMILI_ENV_FILE"
-  grep -qx 'MAX_VALID_POOL_SIZE=80' "$AIMILI_ENV_FILE"
+  grep -qx 'MAX_VALID_POOL_SIZE=150' "$AIMILI_ENV_FILE"
+  grep -qx 'OPENVPN_TEST_CONCURRENCY=4' "$AIMILI_ENV_FILE"
+  grep -qx 'MAIN_EGRESS_FAIL_THRESHOLD=3' "$AIMILI_ENV_FILE"
+  grep -qx 'SLOT_EGRESS_FAIL_THRESHOLD=3' "$AIMILI_ENV_FILE"
   grep -qx 'COLLECTOR_BUSY_RETRY_SECONDS=600' "$AIMILI_ENV_FILE"
   grep -qx 'UI_HOST=127.0.0.1' "$AIMILI_ENV_FILE"
   python3 - "$AIMILI_UI_CONFIG" <<'PY'
@@ -102,7 +105,10 @@ grep -qx 'OTHER_SETTING=preserved' "$env_file"
 [[ "$(grep -c '^MULTI_EXIT_SLOTS=3$' "$env_file")" -eq 1 ]]
 [[ "$(grep -c '^MAX_EXIT_SLOTS=16$' "$env_file")" -eq 1 ]]
 [[ "$(grep -c '^TARGET_VALID_POOL_SIZE=64$' "$env_file")" -eq 1 ]]
-[[ "$(grep -c '^MAX_VALID_POOL_SIZE=80$' "$env_file")" -eq 1 ]]
+[[ "$(grep -c '^MAX_VALID_POOL_SIZE=150$' "$env_file")" -eq 1 ]]
+[[ "$(grep -c '^OPENVPN_TEST_CONCURRENCY=4$' "$env_file")" -eq 1 ]]
+[[ "$(grep -c '^MAIN_EGRESS_FAIL_THRESHOLD=3$' "$env_file")" -eq 1 ]]
+[[ "$(grep -c '^SLOT_EGRESS_FAIL_THRESHOLD=3$' "$env_file")" -eq 1 ]]
 [[ "$(grep -c '^COLLECTOR_BUSY_RETRY_SECONDS=600$' "$env_file")" -eq 1 ]]
 [[ "$(grep -c '^UI_HOST=127.0.0.1$' "$env_file")" -eq 1 ]]
 python3 - "$ui_config" <<'PY'

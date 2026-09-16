@@ -47,7 +47,7 @@ class PoolMaintenanceTests(unittest.TestCase):
             catalog = manager.country_catalog_snapshot()
 
         self.assertEqual(catalog[0]["targetValidNodeCount"], 64)
-        self.assertEqual(catalog[0]["maxValidNodeCount"], 80)
+        self.assertEqual(catalog[0]["maxValidNodeCount"], 150)
 
     def test_completed_country_refresh_keeps_its_final_counts_after_pool_changes(self):
         original_state = dict(manager.country_refresh_state)
@@ -405,8 +405,176 @@ class PoolMaintenanceTests(unittest.TestCase):
         self.assertEqual(result["retainedCount"], 1)
         self.assertEqual(result["countryValidCount"], 3)
         self.assertEqual(result["targetValidNodeCount"], 64)
-        self.assertEqual(result["maxValidNodeCount"], 80)
+        self.assertEqual(result["maxValidNodeCount"], 150)
         self.assertEqual(stored_metadata["manualProtectedIds"], ["jp-new-0", "jp-new-1"])
+
+    def test_default_country_refresh_probes_every_unique_candidate_and_keeps_all_usable(self):
+        existing = [
+            country_node(f"us-old-{index:02d}", "US", "available")
+            for index in range(64)
+        ]
+        candidates = [country_node(f"jp-{index:02d}", "JP") for index in range(27)]
+        stored_nodes = []
+
+        def store(path, payload):
+            if path == manager.NODES_FILE:
+                stored_nodes[:] = payload
+
+        with (
+            mock.patch.object(manager, "read_nodes", return_value=existing),
+            mock.patch.object(manager, "fetch_candidates", return_value=candidates),
+            mock.patch.object(
+                manager,
+                "country_catalog_snapshot",
+                return_value=[{"code": "JP", "candidateCount": 42}],
+            ),
+            mock.patch.object(manager, "current_slot_node_ids", return_value=set()),
+            mock.patch.object(manager.main_assignment_coordinator, "reserved_candidate_ids", return_value=set()),
+            mock.patch.object(
+                manager,
+                "probe_nodes",
+                side_effect=lambda batch: [dict(item, probe_status="available") for item in batch],
+            ),
+            mock.patch.object(manager, "load_blacklist", return_value={}),
+            mock.patch.object(manager, "load_pool_metadata", return_value=manager.default_pool_metadata()),
+            mock.patch.object(manager, "store_pool_metadata"),
+            mock.patch.object(manager, "write_json", side_effect=store),
+            mock.patch.object(manager, "set_state"),
+            mock.patch.object(manager, "cleanup_unreferenced_node_configs", return_value={}),
+        ):
+            result = manager.refresh_country_nodes("JP")
+
+        self.assertEqual(result["officialCount"], 42)
+        self.assertEqual(result["countryCandidateCount"], 27)
+        self.assertEqual(result["testedCount"], 27)
+        self.assertEqual(result["passedCount"], 27)
+        self.assertEqual(result["failedCount"], 0)
+        self.assertEqual(result["newUsableCount"], 27)
+        self.assertEqual(result["countryValidCount"], 27)
+        self.assertEqual(result["cacheTotal"], 91)
+        self.assertEqual(result["stopReason"], "candidates_exhausted")
+        self.assertEqual(len(stored_nodes), 91)
+
+    def test_explicit_country_refresh_rechecks_candidates_in_failure_cooldown(self):
+        candidates = [
+            country_node("jp-cooled", "JP"),
+            country_node("jp-fresh", "JP"),
+        ]
+        probed = []
+
+        def probe(batch):
+            probed.extend(item["id"] for item in batch)
+            return [dict(item, probe_status="available") for item in batch]
+
+        with (
+            mock.patch.object(manager, "read_nodes", return_value=[]),
+            mock.patch.object(manager, "fetch_candidates", return_value=candidates),
+            mock.patch.object(manager, "country_catalog_snapshot", return_value=[{"code": "JP", "candidateCount": 2}]),
+            mock.patch.object(manager, "current_slot_node_ids", return_value=set()),
+            mock.patch.object(manager.main_assignment_coordinator, "reserved_candidate_ids", return_value=set()),
+            mock.patch.object(manager, "probe_nodes", side_effect=probe),
+            mock.patch.object(
+                manager,
+                "load_blacklist",
+                return_value={"jp-cooled": {"until": time.time() + 3600}},
+            ),
+            mock.patch.object(manager, "load_pool_metadata", return_value=manager.default_pool_metadata()),
+            mock.patch.object(manager, "store_pool_metadata"),
+            mock.patch.object(manager, "write_json"),
+            mock.patch.object(manager, "set_state"),
+            mock.patch.object(manager, "cleanup_unreferenced_node_configs", return_value={}),
+        ):
+            result = manager.refresh_country_nodes("JP")
+
+        self.assertEqual(probed, ["jp-cooled", "jp-fresh"])
+        self.assertEqual(result["testedCount"], 2)
+        self.assertEqual(result["passedCount"], 2)
+
+    def test_country_refresh_drops_manual_required_candidate_from_available_pool(self):
+        broken = country_node("jp-broken", "JP", "available")
+        replacement = country_node("jp-new", "JP")
+        stored_nodes = []
+
+        def repair_state(key):
+            if key == "slot:1":
+                return {"status": "manual_required", "failed_candidate_id": "jp-broken"}
+            return {}
+
+        def store(path, payload):
+            if path == manager.NODES_FILE:
+                stored_nodes[:] = payload
+
+        with (
+            mock.patch.object(manager, "read_nodes", return_value=[broken]),
+            mock.patch.object(manager.egress_repair_store, "get", side_effect=repair_state),
+            mock.patch.object(manager, "fetch_candidates", return_value=[replacement]),
+            mock.patch.object(manager, "country_catalog_snapshot", return_value=[{"code": "JP", "candidateCount": 1}]),
+            mock.patch.object(manager, "current_slot_node_ids", return_value={"jp-broken"}),
+            mock.patch.object(manager, "reserved_slot_candidate_ids", return_value={"jp-broken"}),
+            mock.patch.object(manager.main_assignment_coordinator, "reserved_candidate_ids", return_value=set()),
+            mock.patch.object(manager, "probe_nodes", return_value=[dict(replacement, probe_status="available")]),
+            mock.patch.object(manager, "load_blacklist", return_value={}),
+            mock.patch.object(manager, "load_pool_metadata", return_value=manager.default_pool_metadata()),
+            mock.patch.object(manager, "store_pool_metadata"),
+            mock.patch.object(manager, "write_json", side_effect=store),
+            mock.patch.object(manager, "set_state"),
+            mock.patch.object(manager, "cleanup_unreferenced_node_configs", return_value={}),
+        ):
+            result = manager.refresh_country_nodes("JP")
+
+        self.assertNotIn("jp-broken", {item["id"] for item in stored_nodes})
+        self.assertEqual(result["preservedCount"], 0)
+        self.assertEqual(result["countryValidCount"], 1)
+
+    def test_config_cleanup_removes_only_unreferenced_regular_node_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_dir = Path(directory)
+            keep = config_dir / "keep.ovpn"
+            stale = config_dir / "stale.ovpn"
+            slot = config_dir / ".slot_0.ovpn"
+            probe = config_dir / ".test_active.ovpn"
+            for path in (keep, stale, slot, probe):
+                path.write_text("config", encoding="utf-8")
+
+            with mock.patch.object(manager, "CONFIG_DIR", config_dir):
+                result = manager.cleanup_unreferenced_node_configs([
+                    {"id": "keep", "config_file": str(keep)},
+                ])
+
+            self.assertTrue(keep.exists())
+            self.assertFalse(stale.exists())
+            self.assertTrue(slot.exists())
+            self.assertTrue(probe.exists())
+            self.assertEqual(result["removedFiles"], 1)
+
+    def test_config_cleanup_preserves_running_main_and_slot_candidates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_dir = Path(directory)
+            main = config_dir / "main-live.ovpn"
+            slot = config_dir / "slot-live.ovpn"
+            stale = config_dir / "stale.ovpn"
+            for path in (main, slot, stale):
+                path.write_text("config", encoding="utf-8")
+
+            original_active_id = manager.active_openvpn_node_id
+            manager.active_openvpn_node_id = "main-live"
+            try:
+                with (
+                    mock.patch.object(manager, "CONFIG_DIR", config_dir),
+                    mock.patch.object(
+                        manager,
+                        "reserved_slot_candidate_ids",
+                        return_value={"slot-live"},
+                    ),
+                ):
+                    result = manager.cleanup_unreferenced_node_configs([])
+            finally:
+                manager.active_openvpn_node_id = original_active_id
+
+            self.assertTrue(main.exists())
+            self.assertTrue(slot.exists())
+            self.assertFalse(stale.exists())
+            self.assertEqual(result["removedFiles"], 1)
 
     def test_country_refresh_stops_after_twenty_failed_real_probes(self):
         candidates = [country_node(f"jp-{index}", "JP") for index in range(30)]

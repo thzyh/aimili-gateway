@@ -537,7 +537,7 @@ func TestClientCountryRefreshUsesVersionedClosedRequests(t *testing.T) {
 			if request.Method != http.MethodGet || request.URL.Path != "/control/v1/candidates/refresh" {
 				t.Fatalf("unexpected status request %s %s", request.Method, request.URL.Path)
 			}
-			fmt.Fprint(response, `{"data":{"state":"completed","country":"JP","phase":"","resultCode":"success","catalogCount":20,"officialCount":8,"countryCandidateCount":8,"testedCount":5,"usableCount":4,"newUsableCount":3,"retainedCount":1,"validCount":4,"preservedCount":1,"cacheTotal":66,"countryValidCount":4,"targetValidNodeCount":64,"maxValidNodeCount":80,"startedAt":1700000000,"finishedAt":1700000010,"errorCode":""}}`)
+			fmt.Fprint(response, `{"data":{"state":"completed","country":"JP","phase":"","resultCode":"success","catalogCount":20,"officialCount":8,"countryCandidateCount":8,"testedCount":5,"passedCount":4,"failedCount":1,"revalidatedCount":1,"usableCount":4,"newUsableCount":3,"retainedCount":1,"validCount":4,"preservedCount":1,"cacheTotal":66,"countryValidCount":4,"targetValidNodeCount":64,"maxValidNodeCount":150,"startedAt":1700000000,"finishedAt":1700000010,"errorCode":""}}`)
 		default:
 			t.Fatalf("unexpected extra request %d", requests)
 		}
@@ -556,7 +556,7 @@ func TestClientCountryRefreshUsesVersionedClosedRequests(t *testing.T) {
 		t.Fatalf("started = %#v, err = %v", started, err)
 	}
 	status, err := client.CountryRefresh(context.Background())
-	if err != nil || status.State != "completed" || status.ResultCode != "success" || status.OfficialCount != 8 || status.TestedCount != 5 || status.UsableCount != 4 || status.NewUsableCount != 3 || status.RetainedCount != 1 || status.ValidCount != 4 || status.TargetValidNodeCount != 64 || status.MaxValidNodeCount != 80 {
+	if err != nil || status.State != "completed" || status.ResultCode != "success" || status.OfficialCount != 8 || status.TestedCount != 5 || status.PassedCount != 4 || status.FailedCount != 1 || status.RevalidatedCount != 1 || status.UsableCount != 4 || status.NewUsableCount != 3 || status.RetainedCount != 1 || status.ValidCount != 4 || status.TargetValidNodeCount != 64 || status.MaxValidNodeCount != 150 {
 		t.Fatalf("status = %#v, err = %v", status, err)
 	}
 }

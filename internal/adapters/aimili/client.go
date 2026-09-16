@@ -69,6 +69,9 @@ type CountryRefresh struct {
 	OfficialCount         int     `json:"officialCount"`
 	CountryCandidateCount int     `json:"countryCandidateCount"`
 	TestedCount           int     `json:"testedCount"`
+	PassedCount           int     `json:"passedCount"`
+	FailedCount           int     `json:"failedCount"`
+	RevalidatedCount      int     `json:"revalidatedCount"`
 	UsableCount           int     `json:"usableCount"`
 	NewUsableCount        int     `json:"newUsableCount"`
 	RetainedCount         int     `json:"retainedCount"`
@@ -346,7 +349,7 @@ func validCountryRefresh(refresh CountryRefresh) bool {
 		}
 	}
 	return refresh.CatalogCount >= 0 && refresh.OfficialCount >= 0 && refresh.CountryCandidateCount >= 0 && refresh.TestedCount >= 0 &&
-		refresh.UsableCount >= 0 && refresh.NewUsableCount >= 0 && refresh.RetainedCount >= 0 &&
+		refresh.UsableCount >= 0 && refresh.PassedCount >= 0 && refresh.FailedCount >= 0 && refresh.RevalidatedCount >= 0 && refresh.NewUsableCount >= 0 && refresh.RetainedCount >= 0 &&
 		refresh.ValidCount >= 0 && refresh.PreservedCount >= 0 && refresh.StartedAt >= 0 && refresh.FinishedAt >= 0 &&
 		refresh.CacheTotal >= 0 && refresh.CountryValidCount >= 0 && refresh.TargetValidNodeCount >= 0 && refresh.MaxValidNodeCount >= 0
 }

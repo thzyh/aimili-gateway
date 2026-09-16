@@ -119,15 +119,17 @@ FETCH_INTERVAL_SECONDS = env_int("FETCH_INTERVAL_SECONDS", 21600, 1)
 CHECK_INTERVAL_SECONDS = env_int("CHECK_INTERVAL_SECONDS", 21600, 1)
 _legacy_max_scan_rows = env_int("MAX_SCAN_ROWS", 300, 1)
 MAX_FETCH_ROWS = env_int("MAX_FETCH_ROWS", _legacy_max_scan_rows, 1)
-_legacy_target_valid_nodes = env_int("TARGET_VALID_NODES", 64, 1, 80)
-TARGET_VALID_POOL_SIZE = env_int("TARGET_VALID_POOL_SIZE", _legacy_target_valid_nodes, 1, 80)
+_legacy_target_valid_nodes = env_int("TARGET_VALID_NODES", 64, 1, 150)
+TARGET_VALID_POOL_SIZE = env_int("TARGET_VALID_POOL_SIZE", _legacy_target_valid_nodes, 1, 150)
 TARGET_VALID_NODES = TARGET_VALID_POOL_SIZE
-MAX_VALID_POOL_SIZE = env_int("MAX_VALID_POOL_SIZE", 80, TARGET_VALID_POOL_SIZE, 80)
+MAX_VALID_POOL_SIZE = env_int("MAX_VALID_POOL_SIZE", 150, TARGET_VALID_POOL_SIZE, 150)
 NODE_TEST_BATCH_SIZE = env_int("NODE_TEST_BATCH_SIZE", 10, 1)
 PROBE_FAILURE_COOLDOWN_SECONDS = env_int("PROBE_FAILURE_COOLDOWN_SECONDS", 1800, 1)
+REPAIR_CANDIDATE_PROBE_LIMIT = env_int("REPAIR_CANDIDATE_PROBE_LIMIT", 8, 1, 20)
+REPAIR_CANDIDATE_FRESH_SECONDS = env_int("REPAIR_CANDIDATE_FRESH_SECONDS", 120, 10, 600)
 OPENVPN_TEST_TIMEOUT_SECONDS = env_int("OPENVPN_TEST_TIMEOUT_SECONDS", 35, 1)
 OPENVPN_CONNECT_RETRY_MAX = env_int("OPENVPN_CONNECT_RETRY_MAX", 3, 1, 10)
-OPENVPN_TEST_CONCURRENCY = env_int("OPENVPN_TEST_CONCURRENCY", 8, 1, 64)
+OPENVPN_TEST_CONCURRENCY = env_int("OPENVPN_TEST_CONCURRENCY", 4, 1, 16)
 TCP_PRESCREEN_CONCURRENCY = env_int("TCP_PRESCREEN_CONCURRENCY", 100, 1, 512)
 TEST_ROUTE_TABLE_BASE = 61000
 COLLECTOR_INITIAL_DELAY_SECONDS = env_int("COLLECTOR_INITIAL_DELAY_SECONDS", 0, 0)
@@ -150,14 +152,14 @@ SLOT_PROCESS_MARKER = "AIMILI_SLOT"
 EXIT_SLOTS_CHECK_INTERVAL = env_int("EXIT_SLOTS_CHECK_INTERVAL", 30, 5)
 # 槽位出口连通性健康检测：真实经 socks 端口 curl 一次，验证节点是否真转发流量
 SLOT_EGRESS_CHECK_INTERVAL = env_int("SLOT_EGRESS_CHECK_INTERVAL", 45, 10)
-SLOT_EGRESS_FAIL_THRESHOLD = env_int("SLOT_EGRESS_FAIL_THRESHOLD", 2, 1)
+SLOT_EGRESS_FAIL_THRESHOLD = env_int("SLOT_EGRESS_FAIL_THRESHOLD", 3, 1)
 SLOT_BAD_NODE_COOLDOWN = env_int("SLOT_BAD_NODE_COOLDOWN", 600, 60)
 MANAGED_SLOT_CANDIDATE_ATTEMPTS = 4
 # 主连接(7928)出口加固：与多出口槽位对齐。
 #   - 连续失败阈值：避免单次抖动即切换，减少无谓漂移。
 #   - 坏节点冷却：切走“握手成功但不转发”的假活节点后，冷却期内不再选回它，防止 flapping。
 # 二者共同保证主连接切换后落到“真能转发”的节点，配合下游连接重置根治“切换后需重启 Xray”。
-MAIN_EGRESS_FAIL_THRESHOLD = env_int("MAIN_EGRESS_FAIL_THRESHOLD", 2, 1)
+MAIN_EGRESS_FAIL_THRESHOLD = env_int("MAIN_EGRESS_FAIL_THRESHOLD", 3, 1)
 MAIN_BAD_NODE_COOLDOWN = env_int("MAIN_BAD_NODE_COOLDOWN", 600, 60)
 OPENVPN_CMD = os.environ.get("OPENVPN_CMD", "openvpn")
 OPENVPN_AUTH_USER = os.environ.get("OPENVPN_AUTH_USER", "vpn")
@@ -226,6 +228,10 @@ country_refresh_state: dict[str, Any] = {
     "officialCount": 0,
     "countryCandidateCount": 0,
     "testedCount": 0,
+    "passedCount": 0,
+    "failedCount": 0,
+    "revalidatedCount": 0,
+    "newUsableCount": 0,
     "usableCount": 0,
     "retainedCount": 0,
     "validCount": 0,
@@ -567,6 +573,69 @@ def read_nodes() -> list[dict[str, Any]]:
         if isinstance(item, dict)
         and str(item.get("id") or "").strip() not in blacklisted_ids
     ]
+
+
+def cleanup_unreferenced_node_configs(
+    nodes: list[dict[str, Any]] | None = None,
+) -> dict[str, int]:
+    """删除已不在候选池中的普通节点配置，保留槽位和正在使用的临时配置。"""
+    CONFIG_DIR.mkdir(exist_ok=True, parents=True)
+    current_nodes = read_nodes() if nodes is None else nodes
+    referenced: set[Path] = set()
+    for node in current_nodes:
+        raw_path = str(node.get("config_file") or "").strip()
+        if not raw_path:
+            continue
+        path = Path(raw_path)
+        try:
+            resolved = path.resolve()
+        except OSError:
+            continue
+        if resolved.parent == CONFIG_DIR.resolve():
+            referenced.add(resolved)
+    runtime_ids = {str(active_openvpn_node_id or "").strip()}
+    try:
+        runtime_ids.update(reserved_slot_candidate_ids())
+    except Exception:
+        pass
+    for candidate_id in runtime_ids:
+        if not candidate_id:
+            continue
+        try:
+            referenced.add((CONFIG_DIR / f"{safe_name(candidate_id)}.ovpn").resolve())
+        except OSError:
+            continue
+
+    removed_files = 0
+    removed_bytes = 0
+    for path in CONFIG_DIR.glob("*.ovpn"):
+        if path.name.startswith("."):
+            continue
+        try:
+            resolved = path.resolve()
+            if resolved in referenced:
+                continue
+            size = path.stat().st_size
+            path.unlink()
+            removed_files += 1
+            removed_bytes += size
+        except OSError:
+            continue
+    return {"removedFiles": removed_files, "removedBytes": removed_bytes}
+
+
+def manual_required_candidate_ids() -> set[str]:
+    """返回已经确认故障并等待人工处理的候选，避免继续计入健康节点池。"""
+    result: set[str] = set()
+    for key in ["main", *(f"slot:{index}" for index in range(MAX_EXIT_SLOTS))]:
+        row = egress_repair_store.get(key)
+        if row.get("status") != "manual_required":
+            continue
+        for field in ("failed_candidate_id", "replacement_candidate_id"):
+            candidate_id = str(row.get(field) or "").strip()
+            if candidate_id:
+                result.add(candidate_id)
+    return result
 
 def get_state() -> dict[str, Any]:
     global active_openvpn_node_id, is_connecting
@@ -1491,11 +1560,11 @@ def mark_candidate_unavailable(
         )
         protected_ids.update(main_assignment_coordinator.reserved_candidate_ids())
         rebalanced = node_pool.rebalance_valid_pool(
-            updated, [], protected_ids, set(), limit=TARGET_VALID_POOL_SIZE
+            updated, [], protected_ids, set(), limit=MAX_VALID_POOL_SIZE
         )
         if (
             candidate_id not in {str(item.get("id") or "") for item in rebalanced}
-            and len(rebalanced) < TARGET_VALID_POOL_SIZE
+            and len(rebalanced) < MAX_VALID_POOL_SIZE
         ):
             rebalanced.append(failed)
         write_json(BLACKLIST_FILE, blacklist)
@@ -2671,6 +2740,10 @@ def start_country_refresh(country: str) -> dict[str, Any]:
         officialCount=0,
         countryCandidateCount=0,
         testedCount=0,
+        passedCount=0,
+        failedCount=0,
+        revalidatedCount=0,
+        newUsableCount=0,
         usableCount=0,
         retainedCount=0,
         validCount=0,
@@ -2709,11 +2782,11 @@ def start_country_refresh(country: str) -> dict[str, Any]:
 }, allow_main_repair=True)
 def refresh_country_nodes(
     country: str,
-    target_size: int = 5,
-    max_probes: int = 20,
+    target_size: int | None = None,
+    max_probes: int | None = None,
     _lock_held: bool = False,
 ) -> dict[str, Any]:
-    """串行补充单个国家的节点，并原子合并回全局有效池。"""
+    """分批检查指定国家的全部候选，并把所有通过节点原子合并到全局池。"""
     normalized_country = str(country or "").strip().upper()
     if not re.fullmatch(r"[A-Z]{2}", normalized_country):
         return {"state": "failed", "country": normalized_country, "errorCode": "invalid_country"}
@@ -2729,7 +2802,12 @@ def refresh_country_nodes(
         }
 
     try:
-        existing_nodes = read_nodes()
+        manual_failed_ids = manual_required_candidate_ids()
+        existing_nodes = [
+            item
+            for item in read_nodes()
+            if str(item.get("id") or "").strip() not in manual_failed_ids
+        ]
         try:
             candidates = fetch_candidates(normalized_country)
             catalog = country_catalog_snapshot()
@@ -2774,11 +2852,13 @@ def refresh_country_nodes(
             list(reserved_slot_candidate_ids()),
         )
         protected_ids.update(main_assignment_coordinator.reserved_candidate_ids())
+        protected_ids.difference_update(manual_failed_ids)
         protected_country_nodes = [
             item
             for item in existing_nodes
             if str(item.get("country_short") or "").strip().upper() == normalized_country
             and str(item.get("id") or "").strip() in protected_ids
+            and item.get("probe_status") == "available"
         ]
         existing_country_available_ids = {
             str(item.get("id") or "").strip()
@@ -2798,13 +2878,27 @@ def refresh_country_nodes(
         tested_ids: set[str] = set()
         selected = list(protected_country_nodes)
         tested_count = 0
-        stop_reason = "target_reached"
+        passed_ids: set[str] = set()
+        failed_ids: set[str] = set()
+        full_country_scan = target_size is None
+        explicit_full_country_scan = target_size is None and max_probes is None
+        selection_limit = (
+            MAX_VALID_POOL_SIZE
+            if full_country_scan
+            else max(len(selected), min(MAX_VALID_POOL_SIZE, max(0, int(target_size))))
+        )
+        probe_limit = (
+            len(candidates)
+            if max_probes is None
+            else max(0, min(len(candidates), int(max_probes)))
+        )
+        stop_reason = "candidates_exhausted" if full_country_scan else "target_reached"
 
-        while len(selected) < target_size and tested_count < max_probes:
+        while tested_count < probe_limit and (full_country_scan or len(selected) < selection_limit):
             queue = node_pool.candidate_queue(
                 candidates,
                 selected,
-                blacklist,
+                {} if explicit_full_country_scan else blacklist,
                 tested_ids,
                 time.time(),
                 preferred_ids,
@@ -2812,8 +2906,8 @@ def refresh_country_nodes(
             if not queue:
                 stop_reason = "candidates_exhausted"
                 break
-            remaining = max_probes - tested_count
-            needed = target_size - len(selected)
+            remaining = probe_limit - tested_count
+            needed = remaining if full_country_scan else selection_limit - len(selected)
             batch = queue[: min(NODE_TEST_BATCH_SIZE, remaining, needed)]
             batch_ids = {str(item.get("id") or "").strip() for item in batch}
             tested_ids.update(batch_ids)
@@ -2831,13 +2925,18 @@ def refresh_country_nodes(
                         }
                     )
             tested_count += len(batch)
-            if _lock_held:
-                _set_country_refresh(testedCount=tested_count)
-            selected, failed = node_pool.merge_probe_results(selected, results, target_size)
+            passed_ids.update(
+                str(item.get("id") or "").strip()
+                for item in results
+                if item.get("probe_status") == "available"
+                and str(item.get("id") or "").strip()
+            )
+            selected, failed = node_pool.merge_probe_results(selected, results, selection_limit)
             for item in failed:
                 node_id = str(item.get("id") or "").strip()
                 if not node_id:
                     continue
+                failed_ids.add(node_id)
                 blacklist[node_id] = {
                     "id": node_id,
                     "ip": item.get("ip") or item.get("remote_host") or "",
@@ -2846,8 +2945,17 @@ def refresh_country_nodes(
                     "marked_at": time.time(),
                     "until": time.time() + PROBE_FAILURE_COOLDOWN_SECONDS,
                 }
+            if _lock_held:
+                _set_country_refresh(
+                    testedCount=tested_count,
+                    passedCount=len(passed_ids),
+                    failedCount=len(failed_ids),
+                )
 
-        if len(selected) < target_size and tested_count >= max_probes:
+        if tested_count >= probe_limit and (
+            (not full_country_scan and len(selected) < selection_limit)
+            or (full_country_scan and probe_limit < len(candidates))
+        ):
             stop_reason = "probe_limit_reached"
 
         if _lock_held:
@@ -2873,6 +2981,7 @@ def refresh_country_nodes(
                 config_path.write_text(config_text, encoding="utf-8")
         write_json(BLACKLIST_FILE, blacklist)
         write_json(NODES_FILE, merged)
+        cleanup_unreferenced_node_configs(merged)
         country_available_ids = {
             str(item.get("id") or "").strip()
             for item in merged
@@ -2883,6 +2992,7 @@ def refresh_country_nodes(
         valid_count = len(country_available_ids)
         new_usable_count = len(country_available_ids - existing_country_available_ids)
         retained_count = len(country_available_ids & existing_country_available_ids)
+        revalidated_count = len(passed_ids & existing_country_available_ids)
         result = {
             "state": "completed",
             "country": normalized_country,
@@ -2895,6 +3005,9 @@ def refresh_country_nodes(
             "officialCount": official_count,
             "countryCandidateCount": len(candidates),
             "testedCount": tested_count,
+            "passedCount": len(passed_ids),
+            "failedCount": len(failed_ids),
+            "revalidatedCount": revalidated_count,
             "usableCount": valid_count,
             "newUsableCount": new_usable_count,
             "retainedCount": retained_count,
@@ -2968,6 +3081,48 @@ def automatic_main_candidates(country: str) -> list[dict[str, Any]]:
     return candidates
 
 
+def validated_repair_candidate(
+    candidates: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """在拆旧隧道前用临时 TUN 验证候选，最多并发 OPENVPN_TEST_CONCURRENCY 个。"""
+    now = time.time()
+    for candidate in candidates:
+        probed_at = float(candidate.get("probed_at") or 0)
+        if (
+            candidate.get("probe_status") == "available"
+            and candidate.get("exit_ip")
+            and now - probed_at <= REPAIR_CANDIDATE_FRESH_SECONDS
+        ):
+            return candidate
+
+    batch = candidates[:REPAIR_CANDIDATE_PROBE_LIMIT]
+    if not batch:
+        return None
+    results = list(probe_nodes(batch) or [])
+    by_id = {
+        str(item.get("id") or "").strip(): item
+        for item in results
+        if str(item.get("id") or "").strip()
+    }
+    for candidate in batch:
+        candidate_id = str(candidate.get("id") or "").strip()
+        result = by_id.get(candidate_id)
+        if result and result.get("probe_status") == "available":
+            return result
+        if candidate_id:
+            mark_candidate_unavailable(candidate_id, "candidate_egress_failed")
+    return None
+
+
+def replenish_repair_country(country: str) -> dict[str, Any]:
+    """没有热备时即时检测少量同国候选，不等待下一轮六小时维护。"""
+    return refresh_country_nodes(
+        country,
+        target_size=None,
+        max_probes=REPAIR_CANDIDATE_PROBE_LIMIT,
+    )
+
+
 def repair_main_once(failed_snapshot: dict[str, Any]) -> dict[str, Any]:
     """同一次主连接故障只替换一个同国候选，失败后等待人工处理。"""
     failed_id = str(failed_snapshot.get("candidate_id") or "").strip()
@@ -2977,7 +3132,12 @@ def repair_main_once(failed_snapshot: dict[str, Any]) -> dict[str, Any]:
     if failed_id:
         mark_main_bad_node(failed_id)
     candidates = automatic_main_candidates(country)
-    if not candidates:
+    candidate = validated_repair_candidate(candidates)
+    if candidate is None:
+        replenish_repair_country(country)
+        candidates = automatic_main_candidates(country)
+        candidate = validated_repair_candidate(candidates)
+    if candidate is None:
         stop_active_openvpn()
         egress_repair_store.require_manual("main", "no_same_country_candidate")
         set_state(
@@ -2987,7 +3147,6 @@ def repair_main_once(failed_snapshot: dict[str, Any]) -> dict[str, Any]:
         )
         return {"ok": False, "error_code": "no_same_country_candidate"}
 
-    candidate = candidates[0]
     candidate_id = str(candidate.get("id") or "").strip()
     try:
         main_assignment_thread.automatic_repair = True
@@ -4519,17 +4678,32 @@ def add_slot_with_node(node_id: str) -> dict[str, Any]:
     return result
 
 def check_slot_egress(port: int) -> tuple[bool, str]:
-    """经槽位本地 socks 端口实测出口连通性，返回(是否通, 出口IP)。验证节点真的转发流量。"""
-    for url in ("http://ip.sb", "http://api.ipify.org"):
+    """经槽位 SOCKS 检查 IP 与普通 HTTPS，避免单一检测站抖动误杀节点。"""
+    proxy_url = f"socks5h://127.0.0.1:{port}"
+    for url in ("https://api.ipify.org", "https://icanhazip.com", "https://ifconfig.me/ip"):
         try:
             res = subprocess.run(
-                ["curl", "-s", "-x", f"socks5h://127.0.0.1:{port}", url, "--max-time", "6"],
+                ["curl", "-sS", "-x", proxy_url, url, "--max-time", "6"],
                 capture_output=True, text=True, timeout=8,
             )
             ip = (res.stdout or "").strip()
             if res.returncode == 0 and ip and len(ip) <= 64:
                 return True, ip
         except Exception:
+            pass
+    for url in ("https://www.gstatic.com/generate_204", "https://cp.cloudflare.com/generate_204"):
+        try:
+            res = subprocess.run(
+                [
+                    "curl", "-sS", "-o", os.devnull, "-w", "%{http_code}",
+                    "-x", proxy_url, url, "--max-time", "6",
+                ],
+                capture_output=True, text=True, timeout=8,
+            )
+            status = int((res.stdout or "0").strip())
+            if res.returncode == 0 and 200 <= status < 400:
+                return True, ""
+        except (OSError, subprocess.SubprocessError, ValueError):
             pass
     return False, ""
 
@@ -4848,8 +5022,17 @@ def repair_slot_once(i: int, failed_snapshot: dict[str, Any]) -> dict[str, Any]:
             }
         if failed_id:
             slot_bad_nodes[failed_id] = time.time() + SLOT_BAD_NODE_COOLDOWN
+            failure_code = str(failed_snapshot.get("failure_code") or "candidate_egress_failed")
+            if failure_code not in CANDIDATE_FAILURE_CODES:
+                failure_code = "candidate_egress_failed"
+            mark_candidate_unavailable(failed_id, failure_code)
         candidates = automatic_slot_candidates(i, country)
-        if not candidates:
+        candidate = validated_repair_candidate(candidates)
+        if candidate is None:
+            replenish_repair_country(country)
+            candidates = automatic_slot_candidates(i, country)
+            candidate = validated_repair_candidate(candidates)
+        if candidate is None:
             reason = f"未找到同国家 {country or '未知'} 的可用替换节点，等待人工处理"
             tear_down_slot(i, stop_proxy=False)
             mark_slot_disconnected(i, reason, candidate_id=failed_id, country=country)
@@ -4861,7 +5044,6 @@ def repair_slot_once(i: int, failed_snapshot: dict[str, Any]) -> dict[str, Any]:
                 "auto_repair_performed": True,
             }
 
-        candidate = candidates[0]
         candidate_id = str(candidate.get("id") or "").strip()
         set_slot_pin(i, "")
         tear_down_slot(i, stop_proxy=False)
@@ -4912,7 +5094,7 @@ def slot_egress_checker_loop() -> None:
                 with exit_slots_lock:
                     s = exit_slots.get(i)
                     if s is not None:
-                        s["exit_ip"] = ip if ok else ""
+                        s["exit_ip"] = (ip or str(s.get("exit_ip") or "")) if ok else ""
                         s["egress_ok"] = ok
                     nid = s.get("node_id") if s else ""
                 if ok:
@@ -8448,9 +8630,11 @@ def check_proxy_health() -> dict[str, Any]:
         return False
 
     try:
-        result = _curl_check_ip("http://ip.sb")
-        if not result:
-            result = _curl_check_ip("http://api.ipify.org")
+        result = None
+        for url in ("https://api.ipify.org", "https://icanhazip.com", "https://ifconfig.me/ip"):
+            result = _curl_check_ip(url)
+            if result:
+                break
         if result and LOCAL_PROXY_REQUIRED_URL:
             if not _curl_check_required_url(LOCAL_PROXY_REQUIRED_URL):
                 return {
@@ -8460,6 +8644,32 @@ def check_proxy_health() -> dict[str, Any]:
                 }
         if result:
             return result
+
+        connectivity_ok = False
+        if LOCAL_PROXY_REQUIRED_URL:
+            connectivity_ok = _curl_check_required_url(LOCAL_PROXY_REQUIRED_URL)
+            if not connectivity_ok:
+                return {
+                    "ok": False,
+                    "error_code": "client_probe_unreachable",
+                    "error": "[ERR_CLIENT_PROBE_UNREACHABLE] 客户端延迟检测目标无法通过当前 VPN 出口访问",
+                }
+        else:
+            connectivity_ok = any(
+                _curl_check_required_url(url)
+                for url in (
+                    "https://www.gstatic.com/generate_204",
+                    "https://cp.cloudflare.com/generate_204",
+                )
+            )
+        if connectivity_ok:
+            previous = get_state()
+            return {
+                "ok": True,
+                "ip": str(previous.get("proxy_ip") or "-"),
+                "latency_ms": int(previous.get("proxy_latency_ms") or 0),
+                "probe_degraded": True,
+            }
 
         # 此时外网测试失败，检测本地代理端口是否依然能连通。若仍能连通，直接抛出出口测试失败，不调用占用诊断
         port_still_listening = False
@@ -8494,7 +8704,7 @@ def check_proxy_health() -> dict[str, Any]:
             if diag:
                 return {"ok": False, "error": f"出口连接测试失败 | 本机诊断结果: {diag[1]}"}
 
-        return {"ok": False, "error": "出口连接测试失败 (ip.sb 和 api.ipify.org 均无法连通，可能是节点已失效或 VPS 防火墙限制了 UDP/TCP 出站端口)"}
+        return {"ok": False, "error": "出口连接测试失败（3 个 IP 查询站和 2 个普通 HTTPS 目标均无法连通）"}
     except Exception as e:
         return {"ok": False, "error": f"出口连接测试异常: {e}"}
 

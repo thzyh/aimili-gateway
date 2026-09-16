@@ -17,6 +17,38 @@ class _ListeningSocket:
 
 
 class ProxyHealthTests(unittest.TestCase):
+    def test_slot_health_keeps_tunnel_when_ip_providers_fail_but_https_works(self):
+        def run_curl(command, **_kwargs):
+            if "generate_204" in " ".join(command):
+                return subprocess.CompletedProcess(command, 0, stdout="204", stderr="")
+            return subprocess.CompletedProcess(command, 28, stdout="", stderr="timeout")
+
+        with mock.patch.object(manager.subprocess, "run", side_effect=run_curl):
+            ok, exit_ip = manager.check_slot_egress(17928)
+
+        self.assertTrue(ok)
+        self.assertEqual(exit_ip, "")
+
+    def test_main_health_uses_cached_ip_when_only_ip_providers_are_unavailable(self):
+        def run_curl(command, **_kwargs):
+            if "generate_204" in " ".join(command):
+                return subprocess.CompletedProcess(command, 0, stdout="204", stderr="")
+            return subprocess.CompletedProcess(command, 28, stdout="", stderr="timeout")
+
+        with (
+            mock.patch.object(manager.sys, "platform", "win32"),
+            mock.patch.object(manager.socket, "socket", return_value=_ListeningSocket()),
+            mock.patch.object(manager.subprocess, "run", side_effect=run_curl),
+            mock.patch.object(manager, "ensure_policy_routing", return_value=True),
+            mock.patch.object(manager, "get_state", return_value={"proxy_ip": "198.51.100.9", "proxy_latency_ms": 250}),
+            mock.patch.object(manager, "LOCAL_PROXY_REQUIRED_URL", ""),
+        ):
+            result = manager.check_proxy_health()
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["probe_degraded"])
+        self.assertEqual(result["ip"], "198.51.100.9")
+
     def test_required_client_probe_failure_rejects_otherwise_live_egress(self):
         required_url = "https://www.google.com/generate_204"
 

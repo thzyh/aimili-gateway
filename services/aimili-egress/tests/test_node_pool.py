@@ -57,15 +57,15 @@ class NodePoolTests(unittest.TestCase):
 
         self.assertEqual(len(result), 40)
 
-    def test_rebalance_supports_a_temporary_eighty_node_candidate_pool(self):
+    def test_rebalance_supports_a_one_hundred_fifty_node_safety_limit(self):
         existing = [
             {**node(f"n{index}", "available"), "country_short": "JP", "latency_ms": index}
-            for index in range(85)
+            for index in range(175)
         ]
 
-        result = rebalance_valid_pool(existing, [], set(), set(), limit=80)
+        result = rebalance_valid_pool(existing, [], set(), set(), limit=150)
 
-        self.assertEqual(len(result), 80)
+        self.assertEqual(len(result), 150)
 
     def test_country_filter_runs_on_raw_rows_without_global_truncation(self):
         rows = [
