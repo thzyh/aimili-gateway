@@ -52,6 +52,12 @@ export interface ProtocolModePayload {
   availableProtocolModes: ProtocolMode[]; lastErrorCode?: string; updatedAt: string
 }
 export interface SubscriptionPayload { url: string; inboundCount: number; updatedAt: string }
+export type FreesubBackupStatus = 'standby' | 'provisioning' | 'ready' | 'degraded' | 'repair_required' | 'waiting_manual'
+export interface FreesubBackupPayload {
+  id: 'agw-freesub'; candidateId?: string; countryCode?: string; protocol?: 'vless' | 'vmess' | 'trojan' | 'shadowsocks'
+  candidateIp?: string; exitIp?: string; socksPort?: number; publicPort?: number; status: FreesubBackupStatus
+  repairAttempts: number; failureFingerprint?: string; lastErrorCode?: string; version: number; lastCheckedAt?: string
+}
 export type AccountSyncStatus = 'reset_required' | 'synced' | 'checking' | 'repair_required' | 'incompatible'
 export type MixedPolicyApplyStatus = 'pending' | 'applying' | 'applied' | 'failed' | 'repair_required'
 export interface SettingsSummaryPayload { accountSyncStatus: AccountSyncStatus; candidateCount: number; onlineCount: number; maxOnline: number }

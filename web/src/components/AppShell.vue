@@ -17,6 +17,7 @@ async function logout(): Promise<void> {
       <nav aria-label="主导航">
         <RouterLink to="/">VPN 节点池</RouterLink>
         <RouterLink to="/socks5h">SOCKS5H 代理池</RouterLink>
+        <RouterLink to="/freesub">freesub 备用</RouterLink>
         <RouterLink to="/settings">高级设置</RouterLink>
       </nav>
       <button data-logout class="ghost-button" type="button" @click="logout">退出</button>

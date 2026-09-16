@@ -29,9 +29,16 @@ type Dependencies struct {
 	XUIProbe      adapters.Prober
 	ExpertModeURL string
 	ProxyManager  ProxyManager
+	FreesubBackup FreesubBackupManager
 	Maintenance   MaintenanceService
 	BackendLogin  BackendLoginService
 	Updates       UpdateManager
+}
+
+type FreesubBackupManager interface {
+	Summary(context.Context) (domain.FreesubBackupConnection, error)
+	Check(context.Context) (domain.FreesubBackupConnection, error)
+	Replace(context.Context) (domain.FreesubBackupConnection, error)
 }
 
 type MaintenanceService interface {
@@ -81,6 +88,7 @@ type server struct {
 	xuiProbe            adapters.Prober
 	expertModeURL       string
 	proxyManager        ProxyManager
+	freesubBackup       FreesubBackupManager
 	maintenance         MaintenanceService
 	backendLogin        BackendLoginService
 	updates             UpdateManager
@@ -117,6 +125,7 @@ func NewServer(dependencies Dependencies) http.Handler {
 		xuiProbe:            dependencies.XUIProbe,
 		expertModeURL:       dependencies.ExpertModeURL,
 		proxyManager:        dependencies.ProxyManager,
+		freesubBackup:       dependencies.FreesubBackup,
 		maintenance:         dependencies.Maintenance,
 		backendLogin:        dependencies.BackendLogin,
 		updates:             dependencies.Updates,
@@ -132,6 +141,9 @@ func NewServer(dependencies Dependencies) http.Handler {
 	mux.HandleFunc("GET /api/v1/navigation", server.handleNavigation)
 	mux.HandleFunc("GET /api/v1/countries", server.handleCountries)
 	mux.HandleFunc("GET /api/v1/proxy-groups", server.handleProxyGroups)
+	mux.HandleFunc("GET /api/v1/freesub/backup", server.handleFreesubBackup)
+	mux.HandleFunc("POST /api/v1/freesub/backup/check", server.handleCheckFreesubBackup)
+	mux.HandleFunc("POST /api/v1/freesub/backup/replace", server.handleReplaceFreesubBackup)
 	mux.HandleFunc("GET /api/v1/proxy-groups/export", server.handleProxyGroupExport)
 	mux.HandleFunc("GET /api/v1/proxy-groups/subscription", server.handleProxySubscription)
 	mux.HandleFunc("POST /api/v1/proxy-groups", server.handleEnableProxyGroup)
