@@ -112,6 +112,9 @@ func (m *Manager) Check(ctx context.Context) (domain.FreesubBackupConnection, er
 			return c, saveErr
 		}
 		c.Version++
+		if c.RepairAttempts == 0 {
+			return m.replaceLocked(ctx, c)
+		}
 		return c, errors.New("freesub backup runtime unavailable")
 	}
 	exit, probeErr := probeViaSOCKS(ctx, c.SocksPort)

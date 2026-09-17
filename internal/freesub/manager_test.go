@@ -81,6 +81,42 @@ func TestCheckAutomaticallyReservesSingleReplacementAttempt(t *testing.T) {
 	}
 }
 
+func TestCheckAutomaticallyReplacesUnavailableRuntime(t *testing.T) {
+	ctx := context.Background()
+	database, err := store.Open(ctx, filepath.Join(t.TempDir(), "gateway.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	key := []byte("01234567890123456789012345678901")
+	connection := domain.FreesubBackupConnection{
+		ID: "agw-freesub", CandidateID: "fs-us-one", CountryCode: "US", Protocol: "vless",
+		Status: domain.FreesubBackupReady, Version: 1, CandidateConfig: []byte(`{"type":"vless"}`),
+	}
+	if err := database.PutFreesubBackup(ctx, connection, 0, key); err != nil {
+		t.Fatal(err)
+	}
+	manager := &Manager{
+		cfg:       ManagerConfig{FeedPath: filepath.Join(t.TempDir(), "missing.json")},
+		store:     database,
+		masterKey: key,
+	}
+	got, gotErr := manager.Check(ctx)
+	if gotErr == nil || got.Status != domain.FreesubBackupWaitingManual || got.RepairAttempts != 1 || got.LastErrorCode != "feed_unavailable" {
+		t.Fatalf("result = %#v, err=%v", got, gotErr)
+	}
+	if _, err := manager.Check(ctx); err == nil {
+		t.Fatal("second check unexpectedly retried replacement")
+	}
+	persisted, err := database.GetFreesubBackup(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Status != domain.FreesubBackupWaitingManual || persisted.RepairAttempts != 1 {
+		t.Fatalf("persisted = %#v", persisted)
+	}
+}
+
 func TestFailedReplacementPersistsWaitingManualAfterReservationVersionAdvance(t *testing.T) {
 	ctx := context.Background()
 	database, err := store.Open(ctx, filepath.Join(t.TempDir(), "gateway.db"))
