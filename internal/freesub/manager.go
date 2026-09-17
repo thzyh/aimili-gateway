@@ -76,6 +76,11 @@ func (m *Manager) Recover(ctx context.Context) error {
 		if saveErr := m.store.PutFreesubBackup(ctx, c, c.Version, m.masterKey); saveErr != nil {
 			return errors.Join(err, saveErr)
 		}
+		c.Version++
+		if c.RepairAttempts == 0 {
+			_, replaceErr := m.replaceLocked(ctx, c)
+			return replaceErr
+		}
 		return err
 	}
 	return m.store.PutFreesubBackup(ctx, c, c.Version, m.masterKey)

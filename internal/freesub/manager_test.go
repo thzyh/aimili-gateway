@@ -179,6 +179,54 @@ func TestRecoverDoesNotRetryWaitingManualConnection(t *testing.T) {
 	}
 }
 
+func TestRecoverAutomaticallyReservesSingleReplacementAttempt(t *testing.T) {
+	ctx := context.Background()
+	database, err := store.Open(ctx, filepath.Join(t.TempDir(), "gateway.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	key := []byte("01234567890123456789012345678901")
+	connection := domain.FreesubBackupConnection{
+		ID: "agw-freesub", CandidateID: "fs-us-one", CountryCode: "US", Protocol: "vless",
+		Status: domain.FreesubBackupReady, Version: 1, CandidateConfig: []byte(`{"type":"vless","tag":"node"}`),
+	}
+	if err := database.PutFreesubBackup(ctx, connection, 0, key); err != nil {
+		t.Fatal(err)
+	}
+	manager := &Manager{
+		cfg: ManagerConfig{
+			FeedPath:    filepath.Join(t.TempDir(), "missing-feed.json"),
+			SingBoxPath: filepath.Join(t.TempDir(), "missing-sing-box"),
+			StateDir:    t.TempDir(),
+			SocksPort:   18080,
+		},
+		store:     database,
+		masterKey: key,
+	}
+	if err := manager.Recover(ctx); err == nil {
+		t.Fatal("recovery unexpectedly succeeded")
+	}
+	persisted, err := database.GetFreesubBackup(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Status != domain.FreesubBackupWaitingManual || persisted.RepairAttempts != 1 || persisted.LastErrorCode != "feed_unavailable" {
+		t.Fatalf("persisted = %#v", persisted)
+	}
+	version := persisted.Version
+	if err := manager.Recover(ctx); err != nil {
+		t.Fatal(err)
+	}
+	again, err := database.GetFreesubBackup(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Version != version || again.RepairAttempts != 1 || again.Status != domain.FreesubBackupWaitingManual {
+		t.Fatalf("second recovery changed terminal state: before=%#v after=%#v", persisted, again)
+	}
+}
+
 func TestCheckKeepsWaitingManualTerminalState(t *testing.T) {
 	ctx := context.Background()
 	database, err := store.Open(ctx, filepath.Join(t.TempDir(), "gateway.db"))
