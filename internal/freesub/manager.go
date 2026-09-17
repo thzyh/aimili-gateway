@@ -57,11 +57,18 @@ func (m *Manager) Recover(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	c, err := m.store.GetFreesubBackupConfig(ctx, m.masterKey)
-	if errors.Is(err, store.ErrFreesubBackupNotFound) || (err == nil && c.Status != domain.FreesubBackupReady) {
+	if errors.Is(err, store.ErrFreesubBackupNotFound) {
 		return nil
 	}
 	if err != nil {
 		return err
+	}
+	if c.Status != domain.FreesubBackupReady {
+		if c.Status == domain.FreesubBackupDegraded && c.RepairAttempts == 0 {
+			_, replaceErr := m.replaceLocked(ctx, c)
+			return replaceErr
+		}
+		return nil
 	}
 	var config map[string]any
 	if err := json.Unmarshal(c.CandidateConfig, &config); err != nil {

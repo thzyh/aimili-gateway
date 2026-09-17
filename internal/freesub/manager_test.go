@@ -227,6 +227,38 @@ func TestRecoverAutomaticallyReservesSingleReplacementAttempt(t *testing.T) {
 	}
 }
 
+func TestRecoverAutomaticallyReplacesPersistedDegradedRuntime(t *testing.T) {
+	ctx := context.Background()
+	database, err := store.Open(ctx, filepath.Join(t.TempDir(), "gateway.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	key := []byte("01234567890123456789012345678901")
+	connection := domain.FreesubBackupConnection{
+		ID: "agw-freesub", CandidateID: "fs-us-one", CountryCode: "US", Protocol: "vless",
+		Status: domain.FreesubBackupDegraded, Version: 1, CandidateConfig: []byte(`{"type":"vless"}`),
+	}
+	if err := database.PutFreesubBackup(ctx, connection, 0, key); err != nil {
+		t.Fatal(err)
+	}
+	manager := &Manager{
+		cfg:       ManagerConfig{FeedPath: filepath.Join(t.TempDir(), "missing-feed.json")},
+		store:     database,
+		masterKey: key,
+	}
+	if err := manager.Recover(ctx); err == nil {
+		t.Fatal("degraded recovery unexpectedly succeeded")
+	}
+	persisted, err := database.GetFreesubBackup(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Status != domain.FreesubBackupWaitingManual || persisted.RepairAttempts != 1 || persisted.LastErrorCode != "feed_unavailable" {
+		t.Fatalf("persisted = %#v", persisted)
+	}
+}
+
 func TestCheckKeepsWaitingManualTerminalState(t *testing.T) {
 	ctx := context.Background()
 	database, err := store.Open(ctx, filepath.Join(t.TempDir(), "gateway.db"))
