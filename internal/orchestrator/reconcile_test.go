@@ -87,6 +87,56 @@ func TestPoolPrefersLiveGroupWhenReplacementIdentityMatchesCatalogCandidate(t *t
 	}
 }
 
+func TestPoolOverlaysHealthyRuntimeSlotAfterDedicatedStandbyPromotion(t *testing.T) {
+	fixture := newFixture()
+	fixture.aimili.candidates = []aimili.Candidate{
+		{ID: "old-node", CountryCode: "JP", CountryName: "日本", IP: "198.51.100.10", ProxyType: "datacenter", LatencyMS: 21, ProbeStatus: "available", ExitIP: "203.0.113.10"},
+		{ID: "promoted-standby", CountryCode: "MY", CountryName: "马来西亚", IP: "198.51.100.20", ProxyType: "residential", LatencyMS: 12, ProbeStatus: "available", ExitIP: "203.0.113.20"},
+	}
+	group, err := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter, "old-node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	group.Status = domain.ProxyGroupReady
+	group.CountryName = "日本"
+	group.AimiliSlot = 0
+	group.PublicPort = 20000
+	group.MixedPort = 30000
+	group.ExitIP = "203.0.113.10"
+	fixture.store.groups[group.ID] = group
+	fixture.aimili.createdSlots = map[int]aimili.Slot{
+		0: {
+			Number: 0, Country: "MY", CountryName: "马来西亚", ProxyType: "residential",
+			Status: "up", NodeID: "promoted-standby", CandidateIP: "198.51.100.20",
+			ExitIP: "203.0.113.20", EgressOK: true, CheckedAt: 1_700_000_020,
+		},
+	}
+
+	pool, err := fixture.orchestratorWithMax(t, 4).Pool(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var live *domain.ProxyGroup
+	liveRows := 0
+	for index := range pool {
+		row := &pool[index]
+		if row.ID == group.ID {
+			live = row
+			liveRows++
+		}
+	}
+	if live == nil || live.CandidateID != "promoted-standby" || live.CountryCode != "MY" || live.CountryName != "马来西亚" || live.ExitIP != "203.0.113.20" {
+		t.Fatalf("pool kept stale slot metadata after standby promotion: %#v", live)
+	}
+	if liveRows != 1 {
+		t.Fatalf("runtime overlay emitted duplicate live rows: %#v", pool)
+	}
+	if stored := fixture.store.groups[group.ID]; stored.CandidateID != "old-node" || stored.ExitIP != "203.0.113.10" {
+		t.Fatalf("read-only pool view persisted runtime overlay: %#v", stored)
+	}
+}
+
 func TestActivateStandbyCandidateReplacesTheSingleActiveGroup(t *testing.T) {
 	fixture := newFixture()
 	fixture.aimili.candidates = []aimili.Candidate{

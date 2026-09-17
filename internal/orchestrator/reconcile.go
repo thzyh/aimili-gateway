@@ -321,6 +321,7 @@ func (o *Orchestrator) Pool(ctx context.Context) ([]domain.ProxyGroup, error) {
 	if err != nil {
 		return nil, &Error{Code: "storage_failed"}
 	}
+	groups = o.overlayLiveSlotSnapshots(ctx, groups)
 	byCandidate := make(map[string]domain.ProxyGroup, len(groups))
 	byIdentity := make(map[string]domain.ProxyGroup, len(groups))
 	legacy := make([]domain.ProxyGroup, 0)
@@ -438,6 +439,36 @@ func (o *Orchestrator) Pool(ctx context.Context) ([]domain.ProxyGroup, error) {
 		return nil, err
 	}
 	return result, nil
+}
+
+// overlayLiveSlotSnapshots keeps the read-only pool view aligned with the
+// current AimiliVPN runtime after a dedicated standby is promoted. The local
+// proxy port and Gateway-owned inbounds do not change during that handoff, so
+// no resource rebuild is required. Durable convergence remains Reconcile's
+// responsibility; a GET request must not write the database.
+func (o *Orchestrator) overlayLiveSlotSnapshots(ctx context.Context, groups []domain.ProxyGroup) []domain.ProxyGroup {
+	slots, err := o.aimili.ListSlots(ctx)
+	if err != nil || len(slots) == 0 || len(groups) == 0 {
+		return groups
+	}
+	byNumber := make(map[int]aimili.Slot, len(slots))
+	for _, slot := range slots {
+		if slot.Number < 0 || !slot.EgressOK || (slot.Status != "up" && slot.Status != "ready") {
+			continue
+		}
+		byNumber[slot.Number] = slot
+	}
+	result := append([]domain.ProxyGroup(nil), groups...)
+	for index := range result {
+		group := &result[index]
+		if group.AimiliSlot < 0 || !strings.HasPrefix(group.ID, "agw-") {
+			continue
+		}
+		if slot, ok := byNumber[group.AimiliSlot]; ok {
+			applySlotSnapshot(group, slot)
+		}
+	}
+	return result
 }
 
 func (o *Orchestrator) attachProtocolModes(ctx context.Context, groups []domain.ProxyGroup) error {
