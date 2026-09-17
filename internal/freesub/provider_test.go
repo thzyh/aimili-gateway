@@ -39,3 +39,16 @@ func TestInitialCandidatesRequireSameCountryReplacementAndAreBounded(t *testing.
 		t.Fatalf("initial candidates = %#v", got)
 	}
 }
+
+func TestInitialCandidatesReserveSpaceForEachProtocol(t *testing.T) {
+	feed := Feed{Candidates: []Candidate{
+		{CandidateID: "us-vless-fast", Country: "US", Protocol: "vless", RiskScore: 1, LatencyMS: 10},
+		{CandidateID: "us-vless-two", Country: "US", Protocol: "vless", RiskScore: 1, LatencyMS: 20},
+		{CandidateID: "us-vless-three", Country: "US", Protocol: "vless", RiskScore: 1, LatencyMS: 30},
+		{CandidateID: "us-ss", Country: "US", Protocol: "shadowsocks", RiskScore: 10, LatencyMS: 5},
+	}}
+	got := feed.InitialCandidates(3)
+	if len(got) != 3 || got[0].CandidateID != "us-vless-fast" || got[1].CandidateID != "us-ss" || got[2].CandidateID != "us-vless-two" {
+		t.Fatalf("initial candidates = %#v", got)
+	}
+}

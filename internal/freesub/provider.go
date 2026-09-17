@@ -116,26 +116,47 @@ func (f Feed) InitialCandidates(limit int) []Candidate {
 	for _, candidate := range f.Candidates {
 		counts[candidate.Country]++
 	}
-	result := make([]Candidate, 0, limit)
+	eligible := make([]Candidate, 0, len(f.Candidates))
 	for _, candidate := range f.Candidates {
 		if counts[candidate.Country] >= 2 {
-			result = append(result, candidate)
+			eligible = append(eligible, candidate)
 		}
 	}
-	sort.SliceStable(result, func(i, j int) bool {
-		if result[i].RiskScore != result[j].RiskScore {
-			return result[i].RiskScore < result[j].RiskScore
+	sort.SliceStable(eligible, func(i, j int) bool {
+		if eligible[i].RiskScore != eligible[j].RiskScore {
+			return eligible[i].RiskScore < eligible[j].RiskScore
 		}
-		if result[i].LatencyMS != result[j].LatencyMS {
-			return result[i].LatencyMS < result[j].LatencyMS
+		if eligible[i].LatencyMS != eligible[j].LatencyMS {
+			return eligible[i].LatencyMS < eligible[j].LatencyMS
 		}
-		if result[i].SpeedBPS != result[j].SpeedBPS {
-			return result[i].SpeedBPS > result[j].SpeedBPS
+		if eligible[i].SpeedBPS != eligible[j].SpeedBPS {
+			return eligible[i].SpeedBPS > eligible[j].SpeedBPS
 		}
-		return result[i].CandidateID < result[j].CandidateID
+		return eligible[i].CandidateID < eligible[j].CandidateID
 	})
-	if len(result) > limit {
-		result = result[:limit]
+	result := make([]Candidate, 0, limit)
+	selected := make(map[string]bool)
+	protocolSeen := make(map[string]bool)
+	for _, candidate := range eligible {
+		protocol := strings.ToLower(candidate.Protocol)
+		if protocolSeen[protocol] {
+			continue
+		}
+		result = append(result, candidate)
+		selected[candidate.CandidateID] = true
+		protocolSeen[protocol] = true
+		if len(result) == limit {
+			return result
+		}
+	}
+	for _, candidate := range eligible {
+		if selected[candidate.CandidateID] {
+			continue
+		}
+		result = append(result, candidate)
+		if len(result) == limit {
+			break
+		}
 	}
 	return result
 }
