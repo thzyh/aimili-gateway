@@ -83,15 +83,23 @@ func (c Candidate) Validate() error {
 }
 
 func (f Feed) SameCountry(country, excludedID string) (Candidate, error) {
+	candidates := f.SameCountryCandidates(country, excludedID, 1)
+	if len(candidates) == 0 {
+		return Candidate{}, ErrNoSameCountryCandidate
+	}
+	return candidates[0], nil
+}
+
+func (f Feed) SameCountryCandidates(country, excludedID string, limit int) []Candidate {
+	if limit < 1 {
+		return nil
+	}
 	country = strings.ToUpper(strings.TrimSpace(country))
 	var candidates []Candidate
 	for _, candidate := range f.Candidates {
 		if candidate.Country == country && candidate.CandidateID != excludedID {
 			candidates = append(candidates, candidate)
 		}
-	}
-	if len(candidates) == 0 {
-		return Candidate{}, ErrNoSameCountryCandidate
 	}
 	sort.SliceStable(candidates, func(i, j int) bool {
 		if candidates[i].RiskScore != candidates[j].RiskScore {
@@ -102,7 +110,10 @@ func (f Feed) SameCountry(country, excludedID string) (Candidate, error) {
 		}
 		return candidates[i].CandidateID < candidates[j].CandidateID
 	})
-	return candidates[0], nil
+	if len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	return candidates
 }
 
 // InitialCandidates returns a bounded, deterministic list whose countries

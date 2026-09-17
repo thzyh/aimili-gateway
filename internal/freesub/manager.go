@@ -262,8 +262,8 @@ func (m *Manager) failReplacement(ctx context.Context, c domain.FreesubBackupCon
 }
 
 // ManualProvision starts a new failure cycle only after an operator explicitly
-// requests it. Unlike automatic replacement it may choose a different country,
-// but it still probes a bounded list serially and runs only one candidate.
+// requests it. It probes a bounded same-country list serially and runs only one
+// candidate, so manual recovery cannot silently change the requested country.
 func (m *Manager) ManualProvision(ctx context.Context) (domain.FreesubBackupConnection, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -278,7 +278,7 @@ func (m *Manager) ManualProvision(ctx context.Context) (domain.FreesubBackupConn
 	if err != nil {
 		return current, err
 	}
-	candidates := feed.InitialCandidates(12)
+	candidates := feed.SameCountryCandidates(current.CountryCode, current.CandidateID, 12)
 	if len(candidates) == 0 {
 		return current, ErrNoSameCountryCandidate
 	}
