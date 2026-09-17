@@ -449,7 +449,11 @@ func (m *Manager) activateCandidate(ctx context.Context, c *domain.FreesubBackup
 		return err
 	}
 	_ = logFile.Close()
-	go func() { _ = cmd.Wait() }()
+	processDone := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		close(processDone)
+	}()
 	m.process = cmd
 	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
@@ -463,7 +467,13 @@ func (m *Manager) activateCandidate(ctx context.Context, c *domain.FreesubBackup
 	exit, probeErr := probeViaSOCKS(ctx, m.cfg.SocksPort)
 	if probeErr != nil {
 		_ = cmd.Process.Kill()
-		logFile.Close()
+		select {
+		case <-processDone:
+		case <-time.After(2 * time.Second):
+		}
+		if m.process == cmd {
+			m.process = nil
+		}
 		return probeErr
 	}
 	c.CandidateID, c.CountryCode, c.Protocol, c.CandidateIP, c.ExitIP = candidate.CandidateID, candidate.Country, candidate.Protocol, candidate.ExitIP, exit
