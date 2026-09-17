@@ -328,3 +328,23 @@ func TestNormalizeLegacyFreesubClientUUID(t *testing.T) {
 		t.Fatalf("uuid=%q err=%v", got, err)
 	}
 }
+
+func TestNeedsPublicProvision(t *testing.T) {
+	tests := []struct {
+		name       string
+		connection domain.FreesubBackupConnection
+		want       bool
+	}{
+		{name: "missing both", want: true},
+		{name: "missing inbound", connection: domain.FreesubBackupConnection{PublicPort: 22000}, want: true},
+		{name: "missing public port", connection: domain.FreesubBackupConnection{XUIInboundID: 60}, want: true},
+		{name: "existing managed resources", connection: domain.FreesubBackupConnection{XUIInboundID: 60, PublicPort: 22000}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := needsPublicProvision(tt.connection); got != tt.want {
+				t.Fatalf("needsPublicProvision() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

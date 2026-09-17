@@ -266,9 +266,11 @@ func (m *Manager) ManualProvision(ctx context.Context) (domain.FreesubBackupConn
 		if activationErr = m.activateCandidate(ctx, &next, candidate); activationErr != nil {
 			continue
 		}
-		if err := m.ensurePublic(ctx, &next); err != nil {
-			m.stopPID(next.RuntimePID)
-			return current, err
+		if needsPublicProvision(next) {
+			if err := m.ensurePublic(ctx, &next); err != nil {
+				m.stopPID(next.RuntimePID)
+				return current, err
+			}
 		}
 		next.RepairAttempts = 0
 		next.FailureFingerprint = ""
@@ -334,6 +336,10 @@ func (m *Manager) provisionLocked(ctx context.Context) (domain.FreesubBackupConn
 func candidateServer(candidate Candidate) string {
 	server, _ := candidate.Config["server"].(string)
 	return server
+}
+
+func needsPublicProvision(c domain.FreesubBackupConnection) bool {
+	return c.XUIInboundID == 0 || c.PublicPort == 0
 }
 
 func (m *Manager) ensurePublic(ctx context.Context, c *domain.FreesubBackupConnection) error {
