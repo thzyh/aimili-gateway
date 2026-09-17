@@ -68,6 +68,10 @@ func (m *Manager) Recover(ctx context.Context) error {
 			_, replaceErr := m.replaceLocked(ctx, c)
 			return replaceErr
 		}
+		if c.Status == domain.FreesubBackupDegraded && c.RepairAttempts > 0 {
+			c.Status = domain.FreesubBackupWaitingManual
+			return m.store.PutFreesubBackup(ctx, c, c.Version, m.masterKey)
+		}
 		return nil
 	}
 	var config map[string]any
@@ -77,6 +81,9 @@ func (m *Manager) Recover(ctx context.Context) error {
 	candidate := Candidate{CandidateID: c.CandidateID, Country: c.CountryCode, Protocol: c.Protocol, ExitIP: c.ExitIP, Config: config}
 	if err := m.activateCandidate(ctx, &c, candidate); err != nil {
 		c.Status = domain.FreesubBackupDegraded
+		if c.RepairAttempts > 0 {
+			c.Status = domain.FreesubBackupWaitingManual
+		}
 		c.RuntimePID = 0
 		c.SocksPort = 0
 		c.LastErrorCode = "runtime_recovery_failed"
@@ -118,6 +125,9 @@ func (m *Manager) Check(ctx context.Context) (domain.FreesubBackupConnection, er
 	}
 	if c.SocksPort == 0 || !m.processAlive(c.RuntimePID) {
 		c.Status = domain.FreesubBackupDegraded
+		if c.RepairAttempts > 0 {
+			c.Status = domain.FreesubBackupWaitingManual
+		}
 		c.LastErrorCode = "runtime_unavailable"
 		c.LastCheckedAt = time.Now().UTC()
 		if saveErr := m.store.PutFreesubBackup(ctx, c, c.Version, m.masterKey); saveErr != nil {
@@ -133,6 +143,9 @@ func (m *Manager) Check(ctx context.Context) (domain.FreesubBackupConnection, er
 	c.LastCheckedAt = time.Now().UTC()
 	if probeErr != nil {
 		c.Status = domain.FreesubBackupDegraded
+		if c.RepairAttempts > 0 {
+			c.Status = domain.FreesubBackupWaitingManual
+		}
 		c.LastErrorCode = "probe_failed"
 	} else {
 		c.Status = domain.FreesubBackupReady
@@ -502,13 +515,21 @@ func (m *Manager) stopPID(pid int64) {
 // probeViaSOCKS uses a minimal SOCKS5 client, avoiding a new runtime dependency.
 func probeViaSOCKS(ctx context.Context, port int) (string, error) {
 	endpoints := []struct{ host, path string }{{"api.ipify.org", "/"}, {"icanhazip.com", "/"}}
+	var exits []string
 	var failures []error
 	for _, endpoint := range endpoints {
 		value, err := probeEndpointViaSOCKS(ctx, port, endpoint.host, endpoint.path)
 		if err == nil {
-			return value, nil
+			exits = append(exits, value)
+			continue
 		}
 		failures = append(failures, err)
+	}
+	if len(exits) > 1 && exits[0] != exits[1] {
+		return "", fmt.Errorf("inconsistent freesub exit IPs: %s and %s", exits[0], exits[1])
+	}
+	if len(exits) > 0 {
+		return exits[0], nil
 	}
 	return "", errors.Join(failures...)
 }

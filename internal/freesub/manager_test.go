@@ -117,6 +117,40 @@ func TestCheckAutomaticallyReplacesUnavailableRuntime(t *testing.T) {
 	}
 }
 
+func TestCheckMovesExhaustedUnavailableRuntimeToWaitingManual(t *testing.T) {
+	ctx := context.Background()
+	database, err := store.Open(ctx, filepath.Join(t.TempDir(), "gateway.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	key := []byte("01234567890123456789012345678901")
+	connection := domain.FreesubBackupConnection{
+		ID: "agw-freesub", CandidateID: "fs-us-two", CountryCode: "US", Protocol: "vless",
+		Status: domain.FreesubBackupReady, RepairAttempts: 1, Version: 1,
+		CandidateConfig: []byte(`{"type":"vless"}`),
+	}
+	if err := database.PutFreesubBackup(ctx, connection, 0, key); err != nil {
+		t.Fatal(err)
+	}
+	manager := &Manager{store: database, masterKey: key}
+	got, gotErr := manager.Check(ctx)
+	if gotErr == nil || got.Status != domain.FreesubBackupWaitingManual || got.RepairAttempts != 1 {
+		t.Fatalf("result = %#v, err=%v", got, gotErr)
+	}
+	before := got.Version
+	if _, err := manager.Check(ctx); err == nil {
+		t.Fatal("waiting-manual check unexpectedly succeeded")
+	}
+	persisted, err := database.GetFreesubBackup(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Version != before || persisted.Status != domain.FreesubBackupWaitingManual || persisted.RepairAttempts != 1 {
+		t.Fatalf("second check changed terminal state: %#v", persisted)
+	}
+}
+
 func TestFailedReplacementPersistsWaitingManualAfterReservationVersionAdvance(t *testing.T) {
 	ctx := context.Background()
 	database, err := store.Open(ctx, filepath.Join(t.TempDir(), "gateway.db"))
