@@ -5,6 +5,38 @@ import (
 	"testing"
 )
 
+func qualifiedCandidate(id, country string, risk int) Candidate {
+	return Candidate{
+		CandidateID: id, Protocol: "vless", Country: country, ExitIP: "122.118.150.43",
+		NetworkType: "residential", RiskScore: risk, Config: map[string]any{"type": "vless"},
+		Quality: CandidateQuality{
+			Source: "ping0", RiskScore: risk, NativeIP: true, NativeLabel: "原生 IP", CheckedAt: "2026-09-17T00:00:00Z",
+			ScenarioStars: map[string]int{"tiktok": 5, "cross_border_ecommerce": 5, "social_media": 5, "ai": 5},
+		},
+	}
+}
+
+func TestFeedValidationRequiresStrictQualifiedEvidence(t *testing.T) {
+	good := qualifiedCandidate("fs-tw-good", "TW", 9)
+	feed := Feed{SchemaVersion: 2, GeneratedAt: "2026-09-17T00:00:00Z", Candidates: []Candidate{good}}
+	if err := feed.Validate(); err != nil {
+		t.Fatalf("qualified feed rejected: %v", err)
+	}
+
+	bad := good
+	bad.Quality.ScenarioStars = map[string]int{"tiktok": 5, "cross_border_ecommerce": 5, "social_media": 5, "ai": 3}
+	feed.Candidates = []Candidate{bad}
+	if err := feed.Validate(); !errors.Is(err, ErrInvalidFeed) {
+		t.Fatalf("low-star feed error = %v", err)
+	}
+	bad = good
+	bad.RiskScore = 16
+	feed.Candidates = []Candidate{bad}
+	if err := feed.Validate(); !errors.Is(err, ErrInvalidFeed) {
+		t.Fatalf("high-risk feed error = %v", err)
+	}
+}
+
 func TestSameCountryNeverFallsBackToAnotherCountry(t *testing.T) {
 	feed := Feed{SchemaVersion: 1, GeneratedAt: "2026-09-16T00:00:00Z", Candidates: []Candidate{
 		{CandidateID: "fs-in-1", Protocol: "vless", Country: "IN", RiskScore: 20, LatencyMS: 80, Config: map[string]any{"type": "vless"}},

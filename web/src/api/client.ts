@@ -57,6 +57,12 @@ export interface FreesubBackupPayload {
   id: 'agw-freesub'; candidateId?: string; countryCode?: string; protocol?: 'vless' | 'vmess' | 'trojan' | 'shadowsocks'
   candidateIp?: string; exitIp?: string; socksPort?: number; publicPort?: number; status: FreesubBackupStatus
   repairAttempts: number; failureFingerprint?: string; lastErrorCode?: string; version: number; lastCheckedAt?: string
+  riskScore?: number; nativeIp?: boolean; nativeLabel?: string; scenarioStars?: FreesubScenarioStars; qualityCheckedAt?: string
+}
+export interface FreesubScenarioStars { tiktok: number; crossBorderEcommerce: number; socialMedia: number; ai: number }
+export interface FreesubCandidatePayload {
+  candidateId: string; countryCode: string; protocol: 'vless' | 'vmess' | 'trojan' | 'shadowsocks'; exitIp: string
+  riskScore: number; nativeIp: boolean; nativeLabel?: string; scenarioStars: FreesubScenarioStars
 }
 export type AccountSyncStatus = 'reset_required' | 'synced' | 'checking' | 'repair_required' | 'incompatible'
 export type MixedPolicyApplyStatus = 'pending' | 'applying' | 'applied' | 'failed' | 'repair_required'

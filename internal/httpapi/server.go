@@ -12,6 +12,7 @@ import (
 	"github.com/thzyh/aimili-gateway/internal/adapters/aimili"
 	"github.com/thzyh/aimili-gateway/internal/backendlogin"
 	"github.com/thzyh/aimili-gateway/internal/domain"
+	"github.com/thzyh/aimili-gateway/internal/freesub"
 	"github.com/thzyh/aimili-gateway/internal/maintenance"
 	"github.com/thzyh/aimili-gateway/internal/orchestrator"
 	"github.com/thzyh/aimili-gateway/internal/store"
@@ -37,9 +38,10 @@ type Dependencies struct {
 
 type FreesubBackupManager interface {
 	Summary(context.Context) (domain.FreesubBackupConnection, error)
+	Candidates(context.Context) ([]freesub.Candidate, error)
 	Check(context.Context) (domain.FreesubBackupConnection, error)
 	Replace(context.Context) (domain.FreesubBackupConnection, error)
-	ManualProvision(context.Context) (domain.FreesubBackupConnection, error)
+	ManualProvision(context.Context, string) (domain.FreesubBackupConnection, error)
 }
 
 type MaintenanceService interface {
@@ -149,6 +151,7 @@ func NewServer(dependencies Dependencies) http.Handler {
 	mux.HandleFunc("GET /api/v1/countries", server.handleCountries)
 	mux.HandleFunc("GET /api/v1/proxy-groups", server.handleProxyGroups)
 	mux.HandleFunc("GET /api/v1/freesub/backup", server.handleFreesubBackup)
+	mux.HandleFunc("GET /api/v1/freesub/candidates", server.handleFreesubCandidates)
 	mux.HandleFunc("POST /api/v1/freesub/backup/check", server.handleCheckFreesubBackup)
 	mux.HandleFunc("POST /api/v1/freesub/backup/replace", server.handleReplaceFreesubBackup)
 	mux.HandleFunc("POST /api/v1/freesub/backup/manual-provision", server.handleManualProvisionFreesubBackup)

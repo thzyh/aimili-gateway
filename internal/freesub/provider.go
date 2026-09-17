@@ -4,14 +4,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"sort"
 	"strings"
+	"time"
 )
 
 var (
 	ErrInvalidFeed            = errors.New("invalid freesub candidate feed")
 	ErrNoSameCountryCandidate = errors.New("no same-country freesub candidate")
+	ErrCandidateNotFound      = errors.New("freesub candidate not found")
 )
 
 var supportedProtocols = map[string]bool{
@@ -19,19 +22,29 @@ var supportedProtocols = map[string]bool{
 }
 
 type Candidate struct {
-	CandidateID     string         `json:"candidate_id"`
-	Protocol        string         `json:"protocol"`
-	Country         string         `json:"country"`
-	ExitIP          string         `json:"exit_ip"`
-	NetworkType     string         `json:"network_type"`
-	ASN             any            `json:"asn"`
-	ISP             string         `json:"isp"`
-	UpstreamSources []string       `json:"upstream_sources"`
-	LatencyMS       int            `json:"latency_ms"`
-	SpeedBPS        int            `json:"speed_bps"`
-	RiskScore       int            `json:"risk_score"`
-	TestedAt        string         `json:"tested_at"`
-	Config          map[string]any `json:"config"`
+	CandidateID     string           `json:"candidate_id"`
+	Protocol        string           `json:"protocol"`
+	Country         string           `json:"country"`
+	ExitIP          string           `json:"exit_ip"`
+	NetworkType     string           `json:"network_type"`
+	ASN             any              `json:"asn"`
+	ISP             string           `json:"isp"`
+	UpstreamSources []string         `json:"upstream_sources"`
+	LatencyMS       int              `json:"latency_ms"`
+	SpeedBPS        int              `json:"speed_bps"`
+	RiskScore       int              `json:"risk_score"`
+	Quality         CandidateQuality `json:"quality"`
+	TestedAt        string           `json:"tested_at"`
+	Config          map[string]any   `json:"config"`
+}
+
+type CandidateQuality struct {
+	Source        string         `json:"source"`
+	RiskScore     int            `json:"risk_score"`
+	NativeIP      bool           `json:"native_ip"`
+	NativeLabel   string         `json:"native_label"`
+	ScenarioStars map[string]int `json:"scenario_stars"`
+	CheckedAt     string         `json:"checked_at"`
 }
 
 type Feed struct {
@@ -57,7 +70,7 @@ func Load(path string) (Feed, error) {
 }
 
 func (f Feed) Validate() error {
-	if f.SchemaVersion != 1 || strings.TrimSpace(f.GeneratedAt) == "" {
+	if f.SchemaVersion != 2 || strings.TrimSpace(f.GeneratedAt) == "" {
 		return ErrInvalidFeed
 	}
 	seen := make(map[string]struct{}, len(f.Candidates))
@@ -76,8 +89,19 @@ func (f Feed) Validate() error {
 func (c Candidate) Validate() error {
 	if strings.TrimSpace(c.CandidateID) == "" || len(c.CandidateID) > 256 ||
 		len(c.Country) != 2 || c.Country != strings.ToUpper(c.Country) ||
-		!supportedProtocols[strings.ToLower(c.Protocol)] || c.Config == nil || c.RiskScore < 0 || c.RiskScore > 100 {
+		!supportedProtocols[strings.ToLower(c.Protocol)] || c.Config == nil || net.ParseIP(strings.TrimSpace(c.ExitIP)) == nil ||
+		(c.NetworkType != "residential" && c.NetworkType != "mobile") || c.RiskScore < 0 || c.RiskScore > 15 ||
+		c.Quality.Source != "ping0" || !c.Quality.NativeIP || c.Quality.NativeLabel != "原生 IP" ||
+		c.Quality.RiskScore != c.RiskScore {
 		return ErrInvalidFeed
+	}
+	if _, err := time.Parse(time.RFC3339, c.Quality.CheckedAt); err != nil {
+		return ErrInvalidFeed
+	}
+	for _, scene := range []string{"tiktok", "cross_border_ecommerce", "social_media", "ai"} {
+		if c.Quality.ScenarioStars[scene] < 4 || c.Quality.ScenarioStars[scene] > 5 {
+			return ErrInvalidFeed
+		}
 	}
 	return nil
 }
@@ -88,6 +112,16 @@ func (f Feed) SameCountry(country, excludedID string) (Candidate, error) {
 		return Candidate{}, ErrNoSameCountryCandidate
 	}
 	return candidates[0], nil
+}
+
+func (f Feed) Candidate(candidateID string) (Candidate, error) {
+	candidateID = strings.TrimSpace(candidateID)
+	for _, candidate := range f.Candidates {
+		if candidate.CandidateID == candidateID {
+			return candidate, nil
+		}
+	}
+	return Candidate{}, ErrCandidateNotFound
 }
 
 func (f Feed) SameCountryCandidates(country, excludedID string, limit int) []Candidate {

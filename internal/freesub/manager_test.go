@@ -32,11 +32,8 @@ func TestCheckRetiresCandidateRemovedFromLatestFeed(t *testing.T) {
 	}
 	feedPath := filepath.Join(t.TempDir(), "gateway-candidates.json")
 	feed := Feed{
-		SchemaVersion: 1, GeneratedAt: "2026-09-17T00:00:00Z",
-		Candidates: []Candidate{{
-			CandidateID: "fs-tr-one", Country: "TR", Protocol: "vless", RiskScore: 20,
-			Config: map[string]any{"type": "vless"},
-		}},
+		SchemaVersion: 2, GeneratedAt: "2026-09-17T00:00:00Z",
+		Candidates: []Candidate{qualifiedCandidate("fs-tr-one", "TR", 10)},
 	}
 	data, err := json.Marshal(feed)
 	if err != nil {

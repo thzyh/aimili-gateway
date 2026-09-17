@@ -111,6 +111,17 @@ func (m *Manager) Summary(ctx context.Context) (domain.FreesubBackupConnection, 
 	return c, err
 }
 
+func (m *Manager) Candidates(ctx context.Context) ([]Candidate, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	feed, err := Load(m.cfg.FeedPath)
+	if err != nil {
+		return nil, err
+	}
+	return append([]Candidate(nil), feed.Candidates...), nil
+}
+
 func (m *Manager) Check(ctx context.Context) (domain.FreesubBackupConnection, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -264,54 +275,80 @@ func (m *Manager) failReplacement(ctx context.Context, c domain.FreesubBackupCon
 // ManualProvision starts a new failure cycle only after an operator explicitly
 // requests it. It probes a bounded same-country list serially and runs only one
 // candidate, so manual recovery cannot silently change the requested country.
-func (m *Manager) ManualProvision(ctx context.Context) (domain.FreesubBackupConnection, error) {
+func (m *Manager) ManualProvision(ctx context.Context, candidateID string) (domain.FreesubBackupConnection, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	current, err := m.store.GetFreesubBackupConfig(ctx, m.masterKey)
 	if err != nil {
 		return current, err
 	}
-	if current.Status != domain.FreesubBackupWaitingManual && current.Status != domain.FreesubBackupRepairRequired {
-		return current, errors.New("manual freesub recovery is not available")
+	if current.Status == domain.FreesubBackupProvisioning {
+		return current, errors.New("manual freesub replacement is not available while provisioning")
 	}
 	feed, err := Load(m.cfg.FeedPath)
 	if err != nil {
 		return current, err
 	}
-	candidates := feed.SameCountryCandidates(current.CountryCode, current.CandidateID, 12)
-	if len(candidates) == 0 {
-		return current, ErrNoSameCountryCandidate
+	candidate, err := feed.Candidate(candidateID)
+	if err != nil {
+		return current, err
+	}
+	if candidate.CandidateID == current.CandidateID {
+		return current, errors.New("manual freesub replacement candidate is already active")
 	}
 	if m.processAlive(current.RuntimePID) {
 		m.stopPID(current.RuntimePID)
 	}
-	var activationErr error
-	for _, candidate := range candidates {
-		next := current
-		next.Status = domain.FreesubBackupProvisioning
-		if activationErr = m.activateCandidate(ctx, &next, candidate); activationErr != nil {
-			continue
+	next := current
+	next.Status = domain.FreesubBackupProvisioning
+	if err := m.activateCandidate(ctx, &next, candidate); err != nil {
+		return m.restoreAfterManualFailure(ctx, current, err)
+	}
+	if needsPublicProvision(next) {
+		if err := m.ensurePublic(ctx, &next); err != nil {
+			m.stopPID(next.RuntimePID)
+			return m.restoreAfterManualFailure(ctx, current, err)
 		}
-		if needsPublicProvision(next) {
-			if err := m.ensurePublic(ctx, &next); err != nil {
-				m.stopPID(next.RuntimePID)
-				return current, err
+	}
+	next.RepairAttempts = 0
+	next.FailureFingerprint = ""
+	next.LastErrorCode = ""
+	if err := m.store.PutFreesubBackup(ctx, next, current.Version, m.masterKey); err != nil {
+		m.stopPID(next.RuntimePID)
+		return m.restoreAfterManualFailure(ctx, current, err)
+	}
+	next.Version++
+	if m.cfg.RefreshSubscription != nil {
+		_ = m.cfg.RefreshSubscription(ctx)
+	}
+	return next, nil
+}
+
+func (m *Manager) restoreAfterManualFailure(ctx context.Context, current domain.FreesubBackupConnection, cause error) (domain.FreesubBackupConnection, error) {
+	var config map[string]any
+	if err := json.Unmarshal(current.CandidateConfig, &config); err == nil {
+		previous := Candidate{
+			CandidateID: current.CandidateID, Country: current.CountryCode, Protocol: current.Protocol,
+			ExitIP: current.ExitIP, Config: config,
+		}
+		restored := current
+		if restoreErr := m.activateCandidate(ctx, &restored, previous); restoreErr == nil {
+			restored.LastErrorCode = "manual_candidate_start_failed"
+			if saveErr := m.store.PutFreesubBackup(ctx, restored, current.Version, m.masterKey); saveErr == nil {
+				restored.Version++
+				return restored, cause
 			}
 		}
-		next.RepairAttempts = 0
-		next.FailureFingerprint = ""
-		next.LastErrorCode = ""
-		if err := m.store.PutFreesubBackup(ctx, next, current.Version, m.masterKey); err != nil {
-			m.stopPID(next.RuntimePID)
-			return current, err
-		}
-		next.Version++
-		if m.cfg.RefreshSubscription != nil {
-			_ = m.cfg.RefreshSubscription(ctx)
-		}
-		return next, nil
 	}
-	return current, activationErr
+	current.Status = domain.FreesubBackupWaitingManual
+	current.RuntimePID = 0
+	current.SocksPort = 0
+	current.LastErrorCode = "manual_replacement_failed"
+	if err := m.store.PutFreesubBackup(ctx, current, current.Version, m.masterKey); err != nil {
+		return current, errors.Join(cause, err)
+	}
+	current.Version++
+	return current, cause
 }
 
 func (m *Manager) provisionLocked(ctx context.Context) (domain.FreesubBackupConnection, error) {
