@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -122,6 +123,31 @@ func (m *Manager) Check(ctx context.Context) (domain.FreesubBackupConnection, er
 	}
 	if c.Status == domain.FreesubBackupWaitingManual {
 		return c, errors.New("freesub backup is waiting for manual recovery")
+	}
+	// A feed refresh may retire a candidate because new risk intelligence marked
+	// it unsuitable even though the transport still works. Treat retirement as
+	// a real failure signal so the one-shot, same-country replacement rules also
+	// apply to risk removals. A temporarily unreadable feed does not invalidate
+	// an otherwise healthy runtime; replacement will still validate the feed.
+	feed, feedErr := Load(m.cfg.FeedPath)
+	candidateRetired := feedErr == nil && !slices.ContainsFunc(feed.Candidates, func(candidate Candidate) bool {
+		return candidate.CandidateID == c.CandidateID
+	})
+	if candidateRetired {
+		c.Status = domain.FreesubBackupDegraded
+		if c.RepairAttempts > 0 {
+			c.Status = domain.FreesubBackupWaitingManual
+		}
+		c.LastErrorCode = "candidate_retired"
+		c.LastCheckedAt = time.Now().UTC()
+		if saveErr := m.store.PutFreesubBackup(ctx, c, c.Version, m.masterKey); saveErr != nil {
+			return c, saveErr
+		}
+		c.Version++
+		if c.RepairAttempts == 0 {
+			return m.replaceLocked(ctx, c)
+		}
+		return c, errors.New("freesub backup candidate retired from feed")
 	}
 	if c.SocksPort == 0 || !m.processAlive(c.RuntimePID) {
 		c.Status = domain.FreesubBackupDegraded

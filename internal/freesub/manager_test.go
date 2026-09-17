@@ -2,6 +2,7 @@ package freesub
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"os"
@@ -12,6 +13,55 @@ import (
 	"github.com/thzyh/aimili-gateway/internal/domain"
 	"github.com/thzyh/aimili-gateway/internal/store"
 )
+
+func TestCheckRetiresCandidateRemovedFromLatestFeed(t *testing.T) {
+	ctx := context.Background()
+	database, err := store.Open(ctx, filepath.Join(t.TempDir(), "gateway.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	key := []byte("01234567890123456789012345678901")
+	connection := domain.FreesubBackupConnection{
+		ID: "agw-freesub", CandidateID: "fs-us-one", CountryCode: "US", Protocol: "vless",
+		Status: domain.FreesubBackupReady, Version: 1, CandidateConfig: []byte(`{"type":"vless"}`),
+		RuntimePID: int64(os.Getpid()), SocksPort: 1,
+	}
+	if err := database.PutFreesubBackup(ctx, connection, 0, key); err != nil {
+		t.Fatal(err)
+	}
+	feedPath := filepath.Join(t.TempDir(), "gateway-candidates.json")
+	feed := Feed{
+		SchemaVersion: 1, GeneratedAt: "2026-09-17T00:00:00Z",
+		Candidates: []Candidate{{
+			CandidateID: "fs-tr-one", Country: "TR", Protocol: "vless", RiskScore: 20,
+			Config: map[string]any{"type": "vless"},
+		}},
+	}
+	data, err := json.Marshal(feed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(feedPath, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	currentProcess, err := os.FindProcess(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := &Manager{
+		cfg: ManagerConfig{FeedPath: feedPath}, store: database, masterKey: key,
+		process: &exec.Cmd{Process: currentProcess},
+	}
+
+	got, gotErr := manager.Check(ctx)
+	if gotErr == nil || got.Status != domain.FreesubBackupWaitingManual || got.RepairAttempts != 1 {
+		t.Fatalf("result = %#v, err=%v", got, gotErr)
+	}
+	if got.FailureFingerprint != "fs-us-one:candidate_retired" || got.LastErrorCode != "no_same_country_candidate" {
+		t.Fatalf("candidate retirement was not persisted: %#v", got)
+	}
+}
 
 func TestCheckAutomaticallyReservesSingleReplacementAttempt(t *testing.T) {
 	ctx := context.Background()
