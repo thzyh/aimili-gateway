@@ -31,6 +31,7 @@ const refreshNoticeFingerprint = ref('')
 const dedicatedStandbys = ref<DedicatedStandbyPayload[]>([])
 const standbyBusy = ref(false)
 let refreshTimer: ReturnType<typeof setTimeout> | undefined
+let standbyTimer: ReturnType<typeof setTimeout> | undefined
 let noticeSequence = 0
 
 const dismissedRefreshStorageKey = 'aimili-gateway:pool-refresh-notice-dismissed:v1'
@@ -100,18 +101,34 @@ function refreshCountryName(code = supplementCountry.value): string {
 }
 
 onMounted(loadInitial)
-onBeforeUnmount(() => { if (refreshTimer !== undefined) clearTimeout(refreshTimer) })
+onBeforeUnmount(() => {
+  if (refreshTimer !== undefined) clearTimeout(refreshTimer)
+  if (standbyTimer !== undefined) clearTimeout(standbyTimer)
+})
 
 async function loadInitial(): Promise<void> {
   await Promise.all([loadGroups(), loadCatalog(), readRefreshStatus(), loadDedicatedStandbys()])
+  if (props.protocol === 'vless') scheduleStandbyPoll()
 }
 
-async function loadDedicatedStandbys(): Promise<void> {
+async function loadDedicatedStandbys(preserveCurrent = false): Promise<void> {
   try {
     const result = await apiFetch<DedicatedStandbyPayload[]>('/api/v1/settings/aimilivpn/standbys')
     dedicatedStandbys.value = Array.isArray(result) ? result : []
   }
-  catch { dedicatedStandbys.value = [] }
+  catch { if (!preserveCurrent) dedicatedStandbys.value = [] }
+}
+
+function scheduleStandbyPoll(): void {
+  if (standbyTimer !== undefined) clearTimeout(standbyTimer)
+  standbyTimer = setTimeout(pollDedicatedStandbys, 15_000)
+}
+
+async function pollDedicatedStandbys(): Promise<void> {
+  standbyTimer = undefined
+  if (props.protocol !== 'vless') return
+  if (!standbyBusy.value && busy.value === '') await loadDedicatedStandbys(true)
+  scheduleStandbyPoll()
 }
 
 async function saveDedicatedStandbys(configs: DedicatedStandbyConfigPayload[]): Promise<void> {
@@ -466,7 +483,7 @@ function formatRefreshTime(value?: number): string {
       <div data-pool-stats class="pool-stats"><span data-pool-stats-official class="pool-stat official">官方 <strong>{{ poolStats?.officialCandidateTotal ?? candidateCountries.reduce((sum,item) => sum + item.candidateCount, 0) }}</strong></span><span data-pool-stats-target class="pool-stat target">常规目标 <strong>{{ poolStats?.targetValidNodeCount ?? 64 }}</strong></span><span data-pool-stats-valid class="pool-stat valid">当前有效 <strong>{{ poolStats?.validNodeCount ?? groups.length }}</strong></span><span data-pool-stats-maximum class="pool-stat maximum">紧急保护 <strong>{{ poolStats?.maxValidNodeCount ?? 150 }}</strong></span><span data-pool-stats-countries class="pool-stat countries"><strong>{{ poolStats?.validCountryCount ?? countries.length }}</strong> 国</span></div>
     </section>
     <UiNotice v-if="refreshNotice" :key="refreshNotice.id" data-refresh-notice class="refresh-notice" :notice="refreshNotice" @close="dismissRefreshNotice" />
-    <DedicatedStandbys v-if="protocol === 'vless' && dedicatedStandbys.length === 2" :rows="dedicatedStandbys" :countries="candidateCountries" :groups="groups" :candidates="groups" :busy="standbyBusy || busy !== ''" @save="saveDedicatedStandbys" @assign="assignDedicatedStandby" />
+    <DedicatedStandbys v-if="protocol === 'vless' && dedicatedStandbys.length === 2" :rows="dedicatedStandbys" :countries="candidateCountries" :groups="groups" :busy="standbyBusy || busy !== ''" @save="saveDedicatedStandbys" @assign="assignDedicatedStandby" />
     <div v-if="loading" class="loading">正在读取代理池…</div>
     <PoolTable v-else :rows="rows" :protocol="protocol" :busy="busy" @copy="copyAddress" @replace="openReplacement" @check="checkRow" @protocol="switchProtocol" />
     <div v-if="replacementCandidate" class="dialog-backdrop" @click.self="closeReplacement">

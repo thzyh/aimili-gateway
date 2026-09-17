@@ -18,6 +18,7 @@ const codeMessages: Record<string, string> = {
   candidate_egress_failed: '候选节点的真实出口检测失败，已从可用缓存移除',
   egress_check_failed: '出口节点本身仍能联网，但本地代理或路由不可用，因此没有更换 IP，请检查该出口服务',
   no_same_country_candidate: '已执行本次故障唯一一次自动修复，但没有找到同国家可用节点。出口会保留为未连接，请人工选择新的出口 IP',
+  no_standby_candidate: '没有找到可用的专属备用候选，请调整候选国家或人工指定节点',
   replacement_failed: '已自动尝试一个同国家候选，但新节点也无法连通。出口会保留为未连接，请人工选择新的出口 IP',
   manual_repair_required: '本次故障此前已经自动尝试过一次，系统不会因重复检测或服务重启继续换节点，请人工选择新的出口 IP',
   manual_replacement_required: '本次故障已经自动尝试一次但未成功，出口会保留为未连接，请人工选择新的出口 IP',

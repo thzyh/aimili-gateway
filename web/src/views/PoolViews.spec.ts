@@ -807,6 +807,35 @@ it('polls a running country refresh and reloads the pool after completion', asyn
 	wrapper.unmount()
 })
 
+it('refreshes dedicated standby health in place without reloading the whole page', async () => {
+	vi.useFakeTimers()
+	let standbyReads = 0
+	mocks.apiFetch.mockImplementation((path: string) => {
+		if (path === '/api/v1/proxy-groups') return Promise.resolve(rows)
+		if (path === '/api/v1/settings/aimilivpn/countries') return Promise.resolve([{ code: 'JP', name: '日本', candidateCount: 8, observedAt: 1_700_000_000 }])
+		if (path === '/api/v1/settings/aimilivpn/refresh') return Promise.resolve({ state: 'idle', country: '', phase: '', testedCount: 0, validCount: 0 })
+		if (path === '/api/v1/settings/aimilivpn/standbys') {
+			standbyReads++
+			return Promise.resolve([
+				{ index: 0, target: 'slot:0', countries: ['JP'], status: standbyReads === 1 ? 'preparing' : 'ready', country: 'JP', exit_ip: standbyReads === 1 ? '' : '198.51.100.20', candidate_ip: '203.0.113.20', node_id: 'jp-standby', proxy_type: 'datacenter', egress_ok: standbyReads > 1, checked_at: 1_700_000_000 + standbyReads, last_error_code: '' },
+				{ index: 1, target: '', countries: [], status: 'disabled', country: '', exit_ip: '', candidate_ip: '', node_id: '', proxy_type: '', egress_ok: false, checked_at: 0, last_error_code: '' },
+			])
+		}
+		return Promise.resolve(undefined)
+	})
+	const wrapper = mount(VpnPoolView)
+	await flushPromises()
+	expect(wrapper.get('[data-standby-index="0"]').text()).toContain('正在准备')
+
+	await vi.advanceTimersByTimeAsync(15_000)
+	await flushPromises()
+
+	expect(standbyReads).toBe(2)
+	expect(wrapper.get('[data-standby-index="0"]').text()).toContain('出口有效，可随时接替')
+	expect(wrapper.get('[data-standby-index="0"]').text()).toContain('198.51.100.20')
+	wrapper.unmount()
+})
+
 it('copies all filtered addresses without a trailing newline and leaves the clipboard unchanged for an empty export', async () => {
 	const wrapper = mount(VpnPoolView)
 	await flushPromises()
