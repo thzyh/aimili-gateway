@@ -63,6 +63,19 @@ func TestCheckRetiresCandidateRemovedFromLatestFeed(t *testing.T) {
 	}
 }
 
+func TestValidateCandidateExitRequiresScreenedAddress(t *testing.T) {
+	candidate := Candidate{CandidateID: "fs-us-one", ExitIP: "155.117.19.106"}
+	if err := validateCandidateExit(candidate, "155.117.19.106"); err != nil {
+		t.Fatalf("matching exit rejected: %v", err)
+	}
+	if err := validateCandidateExit(candidate, "142.4.37.136"); err == nil {
+		t.Fatal("different local exit unexpectedly accepted")
+	}
+	if err := validateCandidateExit(Candidate{CandidateID: "fs-us-two"}, "155.117.19.106"); err == nil {
+		t.Fatal("candidate without screened exit unexpectedly accepted")
+	}
+}
+
 func TestCheckAutomaticallyReservesSingleReplacementAttempt(t *testing.T) {
 	ctx := context.Background()
 	database, err := store.Open(ctx, filepath.Join(t.TempDir(), "gateway.db"))

@@ -497,6 +497,9 @@ func (m *Manager) activateCandidate(ctx context.Context, c *domain.FreesubBackup
 		time.Sleep(100 * time.Millisecond)
 	}
 	exit, probeErr := probeViaSOCKS(ctx, m.cfg.SocksPort)
+	if probeErr == nil {
+		probeErr = validateCandidateExit(candidate, exit)
+	}
 	if probeErr != nil {
 		_ = cmd.Process.Kill()
 		select {
@@ -515,6 +518,15 @@ func (m *Manager) activateCandidate(ctx context.Context, c *domain.FreesubBackup
 	c.Status = domain.FreesubBackupReady
 	c.LastCheckedAt = time.Now().UTC()
 	c.LastErrorCode = ""
+	return nil
+}
+
+func validateCandidateExit(candidate Candidate, actual string) error {
+	expectedIP := net.ParseIP(strings.TrimSpace(candidate.ExitIP))
+	actualIP := net.ParseIP(strings.TrimSpace(actual))
+	if expectedIP == nil || actualIP == nil || !expectedIP.Equal(actualIP) {
+		return errors.New("freesub candidate exit differs from screened feed")
+	}
 	return nil
 }
 
