@@ -30,6 +30,14 @@ it('shows two independent protection targets and emits both saved configurations
     } as any,
   })
 
+  expect(wrapper.get('[data-toggle-standbys]').attributes('aria-expanded')).toBe('false')
+  expect(wrapper.findAll('[data-standby-summary]')).toHaveLength(2)
+  expect(wrapper.get('[data-standby-summary="0"]').text()).toContain('备用 1')
+  expect(wrapper.get('[data-standby-summary="0"]').text()).toContain('保护出口 1')
+  expect(wrapper.get('[data-standby-summary="0"]').text()).toContain('日本')
+  expect(wrapper.get('[data-standby-summary="0"]').text()).toContain('198.51.100.10')
+  expect(wrapper.find('[data-save-standbys]').exists()).toBe(false)
+  await wrapper.get('[data-toggle-standbys]').trigger('click')
   expect(wrapper.findAll('[data-standby-index]')).toHaveLength(2)
   expect(wrapper.text()).toContain('总 OpenVPN 上限固定为 9')
   expect(wrapper.text()).toContain('出口 1')
@@ -41,7 +49,7 @@ it('shows two independent protection targets and emits both saved configurations
   ])
 })
 
-it('keeps a failed standby visible and offers a matching manual candidate', () => {
+it('keeps a failed standby visible and offers a matching manual candidate', async () => {
   const wrapper = mount(DedicatedStandbys, {
     props: {
       rows: [
@@ -54,6 +62,9 @@ it('keeps a failed standby visible and offers a matching manual candidate', () =
     } as any,
   })
 
+  expect(wrapper.get('[data-standby-summary="0"]').text()).toContain('等待人工指定')
+  expect(wrapper.get('[data-standby-summary="0"]').text()).toContain('真实出口无效')
+  await wrapper.get('[data-toggle-standbys]').trigger('click')
   const failed = wrapper.get('[data-standby-index="0"]')
   expect(failed.text()).toContain('等待人工指定')
   expect(failed.text()).toContain('203.0.113.8')
@@ -73,6 +84,7 @@ it('lists every country in the candidate pool and supports direct checkbox multi
     } as any,
   })
 
+  await wrapper.get('[data-toggle-standbys]').trigger('click')
   const first = wrapper.get('[data-standby-index="0"]')
   expect(first.text()).toContain('日本')
   expect(first.text()).toContain('越南')
@@ -87,7 +99,7 @@ it('lists every country in the candidate pool and supports direct checkbox multi
   expect((wrapper.emitted('save') as any)?.[0]?.[0]?.[0]).toEqual({ index: 0, target: 'slot:0', countries: ['JP', 'VN', 'IN'] })
 })
 
-it('shows useful runtime health details for ready, preparing, and failed standbys', () => {
+it('shows useful runtime health details for ready, preparing, and failed standbys', async () => {
   const wrapper = mount(DedicatedStandbys, {
     props: {
       rows: [
@@ -100,6 +112,7 @@ it('shows useful runtime health details for ready, preparing, and failed standby
     } as any,
   })
 
+  await wrapper.get('[data-toggle-standbys]').trigger('click')
   const healthy = wrapper.get('[data-standby-index="0"]')
   expect(healthy.text()).toContain('出口有效，可随时接替')
   expect(healthy.text()).toContain('真实出口')
@@ -122,6 +135,7 @@ it('does not overwrite unsaved country choices when a status poll updates the sa
     props: { rows: initialRows, countries, groups, busy: false } as any,
   })
 
+  await wrapper.get('[data-toggle-standbys]').trigger('click')
   await wrapper.get('[data-standby-index="0"] [data-country-option="VN"]').setValue(true)
   await wrapper.setProps({ rows: [{ ...initialRows[0], status: 'ready', egress_ok: true, exit_ip: '198.51.100.10' }, initialRows[1]] })
   await wrapper.get('[data-save-standbys]').trigger('click')

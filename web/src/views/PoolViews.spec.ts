@@ -825,14 +825,15 @@ it('refreshes dedicated standby health in place without reloading the whole page
 	})
 	const wrapper = mount(VpnPoolView)
 	await flushPromises()
-	expect(wrapper.get('[data-standby-index="0"]').text()).toContain('正在准备')
+	expect(wrapper.get('[data-standby-summary="0"]').text()).toContain('正在准备')
 
 	await vi.advanceTimersByTimeAsync(15_000)
 	await flushPromises()
 
 	expect(standbyReads).toBe(2)
-	expect(wrapper.get('[data-standby-index="0"]').text()).toContain('出口有效，可随时接替')
-	expect(wrapper.get('[data-standby-index="0"]').text()).toContain('198.51.100.20')
+	expect(wrapper.get('[data-standby-summary="0"]').text()).toContain('已就绪')
+	expect(wrapper.get('[data-standby-summary="0"]').text()).toContain('真实出口有效')
+	expect(wrapper.get('[data-standby-summary="0"]').text()).toContain('198.51.100.20')
 	wrapper.unmount()
 })
 

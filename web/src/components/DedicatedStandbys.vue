@@ -16,6 +16,7 @@ const emit = defineEmits<{
 
 const drafts = ref<DedicatedStandbyConfigPayload[]>([])
 const manualCandidates = ref<Record<number, string>>({})
+const expanded = ref(false)
 const serverConfigSignature = computed(() => JSON.stringify(props.rows.map(row => ({
   index: row.index,
   target: row.target,
@@ -114,10 +115,27 @@ function candidateOptions(row: DedicatedStandbyPayload) {
         <h2>专属备用</h2>
         <p>两条备用连接持续检测，正式出口故障时优先快速接替。总 OpenVPN 上限固定为 9 个。</p>
       </div>
-      <button data-save-standbys :disabled="busy || drafts.length !== 2" @click="emit('save', drafts)">{{ busy ? '正在处理…' : '保存备用设置' }}</button>
+      <div class="heading-actions">
+        <button v-if="expanded" data-save-standbys :disabled="busy || drafts.length !== 2" @click="emit('save', drafts)">{{ busy ? '正在处理…' : '保存备用设置' }}</button>
+        <button data-toggle-standbys class="secondary toggle-button" type="button" :aria-expanded="expanded" aria-controls="dedicated-standby-details" @click="expanded = !expanded">{{ expanded ? '收起设置' : '展开设置' }}<span aria-hidden="true">{{ expanded ? '⌃' : '⌄' }}</span></button>
+      </div>
     </div>
 
-    <div class="standby-grid">
+    <div v-if="!expanded" class="compact-grid">
+      <article v-for="row in rows" :key="row.index" :data-standby-summary="row.index" class="compact-card" :class="`state-${row.status}`">
+        <div class="compact-title">
+          <strong>备用 {{ row.index + 1 }} · {{ row.target ? `保护${targetLabel(row.target)}` : '未启用' }}</strong>
+          <span class="state-badge"><i />{{ stateText(row) }}</span>
+        </div>
+        <div class="compact-runtime">
+          <span>{{ row.country ? countryDisplayName(row.country, countries) : '未分配国家' }}</span>
+          <strong>{{ row.exit_ip || row.candidate_ip || '尚未分配 IP' }}</strong>
+          <span :class="row.egress_ok ? 'health-ok' : 'health-bad'">真实出口{{ row.egress_ok ? '有效' : '无效' }}</span>
+        </div>
+      </article>
+    </div>
+
+    <div v-else id="dedicated-standby-details" class="standby-grid">
       <article v-for="(row, position) in rows" :key="row.index" :data-standby-index="row.index" class="standby-card" :class="`state-${row.status}`">
         <header class="card-title">
           <div><span class="standby-number">备用 {{ row.index + 1 }}</span><strong>{{ row.target ? `保护${targetLabel(row.target)}` : '尚未启用' }}</strong></div>
@@ -178,13 +196,14 @@ function candidateOptions(row: DedicatedStandbyPayload) {
 
 <style scoped>
 .standby-panel{margin:0 0 16px;padding:18px;border:1px solid var(--border);border-radius:16px;background:var(--panel);box-shadow:0 8px 28px rgba(15,23,42,.04)}
-.standby-heading{display:flex;align-items:flex-end;justify-content:space-between;gap:20px}.eyebrow{margin:0 0 4px;color:var(--accent);font-size:10px;font-weight:800;letter-spacing:.14em}.standby-heading h2{margin:0;font-size:20px;letter-spacing:-.02em}.standby-heading p:not(.eyebrow){margin:6px 0 0;color:var(--muted-text);font-size:12px}.standby-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px;margin-top:16px}
+.standby-heading{display:flex;align-items:flex-end;justify-content:space-between;gap:20px}.eyebrow{margin:0 0 4px;color:var(--accent);font-size:10px;font-weight:800;letter-spacing:.14em}.standby-heading h2{margin:0;font-size:20px;letter-spacing:-.02em}.standby-heading p:not(.eyebrow){margin:6px 0 0;color:var(--muted-text);font-size:12px}.heading-actions{display:flex;align-items:center;gap:8px;flex:none}.toggle-button{display:inline-flex;align-items:center;justify-content:center;gap:7px}.toggle-button span{font-size:14px}.compact-grid,.standby-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px;margin-top:16px}.compact-card{display:grid;gap:8px;min-width:0;padding:12px 14px;border:1px solid var(--border);border-radius:11px;background:var(--subtle);box-shadow:inset 3px 0 0 transparent}.compact-card.state-ready{border-color:rgba(34,197,94,.4);box-shadow:inset 3px 0 0 #22c55e}.compact-card.state-preparing{border-color:rgba(59,130,246,.35);box-shadow:inset 3px 0 0 #3b82f6}.compact-card.state-degraded,.compact-card.state-waiting_manual{border-color:rgba(239,68,68,.4);box-shadow:inset 3px 0 0 #ef4444}.compact-title,.compact-runtime{display:flex;align-items:center;gap:10px}.compact-title{justify-content:space-between}.compact-title>strong{font-size:13px}.compact-runtime{min-width:0;color:var(--muted-text);font-size:11px}.compact-runtime>strong{overflow:hidden;color:var(--text);font-size:12px;text-overflow:ellipsis;white-space:nowrap}.compact-runtime>span:last-child{margin-left:auto;white-space:nowrap}
 .standby-card{display:grid;align-content:start;gap:14px;min-width:0;padding:16px;border:1px solid var(--border);border-radius:14px;background:var(--subtle);box-shadow:inset 3px 0 0 transparent}.standby-card.state-ready{border-color:rgba(34,197,94,.45);box-shadow:inset 3px 0 0 #22c55e}.standby-card.state-preparing{border-color:rgba(59,130,246,.4);box-shadow:inset 3px 0 0 #3b82f6}.standby-card.state-degraded,.standby-card.state-waiting_manual{border-color:rgba(239,68,68,.42);box-shadow:inset 3px 0 0 #ef4444}
 .card-title{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.card-title>div{display:grid;gap:3px}.standby-number{color:var(--muted-text);font-size:11px;font-weight:700}.card-title strong{font-size:15px}.state-badge{display:inline-flex;align-items:center;gap:6px;padding:5px 9px;border-radius:999px;background:rgba(100,116,139,.12);color:var(--muted-text);font-size:11px;font-weight:800;white-space:nowrap}.state-badge i{width:7px;height:7px;border-radius:50%;background:#94a3b8}.state-ready .state-badge{background:rgba(34,197,94,.12);color:#159447}.state-ready .state-badge i{background:#22c55e}.state-preparing .state-badge{background:rgba(59,130,246,.12);color:#2877d2}.state-preparing .state-badge i{background:#3b82f6;box-shadow:0 0 0 3px rgba(59,130,246,.15)}.state-degraded .state-badge,.state-waiting_manual .state-badge{background:rgba(239,68,68,.11);color:var(--danger)}.state-degraded .state-badge i,.state-waiting_manual .state-badge i{background:#ef4444}
 .health-summary{display:grid;gap:11px;padding:13px;border:1px solid var(--border);border-radius:11px;background:var(--panel)}.health-main{display:grid;gap:4px}.health-main strong{font-size:12px}.error-detail{color:var(--danger);font-size:11px;line-height:1.55}.runtime-grid{display:grid;grid-template-columns:1.35fr .8fr .8fr .7fr;gap:10px;margin:0}.runtime-grid>div{min-width:0}.runtime-grid dt{margin:0 0 3px;color:var(--muted-text);font-size:10px}.runtime-grid dd{overflow:hidden;margin:0;font-size:11px;font-weight:700;text-overflow:ellipsis;white-space:nowrap}.runtime-grid .checked-row{grid-column:1/-1}.health-ok{color:#159447}.health-bad{color:var(--danger)}
 .settings-block{display:grid;gap:12px}.settings-block>label{display:grid;gap:6px;font-size:12px;font-weight:800}select{min-height:38px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;background:var(--input);color:var(--text)}.country-picker{min-width:0;margin:0;padding:0;border:0}.country-picker legend{margin:0 0 6px;padding:0;font-size:12px;font-weight:800}.country-picker-heading{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px;color:var(--muted-text);font-size:10px}.country-actions{display:flex;gap:8px}.text-button{min-height:auto;padding:0;border:0;background:transparent;color:var(--accent);font-size:11px;font-weight:800}.country-options{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;max-height:174px;overflow:auto;padding:2px}.country-option{display:flex;align-items:center;gap:7px;min-width:0;padding:8px;border:1px solid var(--border);border-radius:9px;background:var(--panel);cursor:pointer}.country-option:hover,.country-option.selected{border-color:var(--accent);background:rgba(94,112,255,.08)}.country-option input{flex:none;margin:0;accent-color:var(--accent)}.country-option span{display:grid;min-width:0}.country-option strong{overflow:hidden;font-size:11px;text-overflow:ellipsis;white-space:nowrap}.country-option small{color:var(--muted-text);font-size:9px}.country-help,.empty-countries{display:block;margin:7px 0 0;color:var(--muted-text);font-size:10px}.empty-countries{padding:12px;border:1px dashed var(--border);border-radius:9px;text-align:center}
 .manual-box{display:grid;grid-template-columns:minmax(0,1fr) minmax(150px,1fr) auto;align-items:end;gap:9px;padding:12px;border:1px solid rgba(239,68,68,.28);border-radius:10px;background:rgba(239,68,68,.06)}.manual-box>div{display:grid;gap:3px;color:var(--danger);font-size:11px}.manual-box>div span{color:var(--muted-text);font-size:10px;line-height:1.4}.manual-box button{white-space:nowrap}
 @media(max-width:1100px){.country-options{grid-template-columns:repeat(2,minmax(0,1fr))}.manual-box{grid-template-columns:1fr}.manual-box button{justify-self:start}}
-@media(max-width:760px){.standby-panel{padding:14px}.standby-heading{align-items:flex-start;flex-direction:column}.standby-heading>button{width:100%}.standby-grid{grid-template-columns:1fr}.country-options{grid-template-columns:repeat(2,minmax(0,1fr))}.runtime-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.runtime-grid .checked-row{grid-column:1/-1}}
+@media(max-width:760px){.standby-panel{padding:14px}.standby-heading{align-items:flex-start;flex-direction:column}.heading-actions{width:100%}.heading-actions button{flex:1}.compact-grid,.standby-grid{grid-template-columns:1fr}.country-options{grid-template-columns:repeat(2,minmax(0,1fr))}.runtime-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.runtime-grid .checked-row{grid-column:1/-1}}
+@media(max-width:520px){.compact-runtime{align-items:flex-start;flex-wrap:wrap}.compact-runtime>span:last-child{margin-left:0;width:100%}}
 @media(max-width:420px){.country-picker-heading{align-items:flex-start;flex-direction:column}.country-options{grid-template-columns:1fr}}
 </style>
