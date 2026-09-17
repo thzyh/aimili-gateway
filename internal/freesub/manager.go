@@ -128,6 +128,9 @@ func (m *Manager) Check(ctx context.Context) (domain.FreesubBackupConnection, er
 		return c, saveErr
 	}
 	c.Version++
+	if probeErr != nil && c.RepairAttempts == 0 {
+		return m.replaceLocked(ctx, c)
+	}
 	if c.Status == domain.FreesubBackupReady && m.cfg.RefreshSubscription != nil {
 		_ = m.cfg.RefreshSubscription(ctx)
 	}
@@ -144,6 +147,10 @@ func (m *Manager) Replace(ctx context.Context) (domain.FreesubBackupConnection, 
 	if err != nil {
 		return c, err
 	}
+	return m.replaceLocked(ctx, c)
+}
+
+func (m *Manager) replaceLocked(ctx context.Context, c domain.FreesubBackupConnection) (domain.FreesubBackupConnection, error) {
 	if c.Status != domain.FreesubBackupDegraded || c.RepairAttempts != 0 {
 		return c, errors.New("automatic replacement is not available")
 	}
@@ -447,6 +454,9 @@ func (m *Manager) processAlive(pid int64) bool {
 		return false
 	}
 	if m.process != nil && m.process.Process != nil && m.process.Process.Pid == int(pid) {
+		if runtime.GOOS == "windows" {
+			return m.process.ProcessState == nil || !m.process.ProcessState.Exited()
+		}
 		return m.process.Process.Signal(syscall.Signal(0)) == nil
 	}
 	p, err := os.FindProcess(int(pid))

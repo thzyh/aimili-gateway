@@ -3,12 +3,83 @@ package freesub
 import (
 	"context"
 	"errors"
+	"net"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
 	"github.com/thzyh/aimili-gateway/internal/domain"
 	"github.com/thzyh/aimili-gateway/internal/store"
 )
+
+func TestCheckAutomaticallyReservesSingleReplacementAttempt(t *testing.T) {
+	ctx := context.Background()
+	database, err := store.Open(ctx, filepath.Join(t.TempDir(), "gateway.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		for {
+			connection, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			_, _ = connection.Write([]byte{5, 0xff})
+			_ = connection.Close()
+		}
+	}()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := []byte("01234567890123456789012345678901")
+	connection := domain.FreesubBackupConnection{
+		ID: "agw-freesub", CandidateID: "fs-us-one", CountryCode: "US", Protocol: "vless",
+		Status: domain.FreesubBackupReady, Version: 1, CandidateConfig: []byte(`{"type":"vless"}`),
+		RuntimePID: int64(os.Getpid()), SocksPort: listener.Addr().(*net.TCPAddr).Port,
+	}
+	if err := database.PutFreesubBackup(ctx, connection, 0, key); err != nil {
+		t.Fatal(err)
+	}
+	currentProcess, err := os.FindProcess(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := &Manager{
+		cfg:       ManagerConfig{FeedPath: filepath.Join(t.TempDir(), "missing.json"), SingBoxPath: executable},
+		store:     database,
+		masterKey: key,
+		process:   &exec.Cmd{Process: currentProcess},
+	}
+	got, gotErr := manager.Check(ctx)
+	if gotErr == nil || got.Status != domain.FreesubBackupWaitingManual || got.RepairAttempts != 1 {
+		t.Fatalf("result = %#v, err=%v", got, gotErr)
+	}
+	persisted, err := database.GetFreesubBackup(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Status != domain.FreesubBackupWaitingManual || persisted.RepairAttempts != 1 || persisted.LastErrorCode != "feed_unavailable" {
+		t.Fatalf("persisted = %#v", persisted)
+	}
+	if _, err := manager.Check(ctx); err == nil {
+		t.Fatal("second check unexpectedly retried replacement")
+	}
+	again, err := database.GetFreesubBackup(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Version != persisted.Version || again.RepairAttempts != 1 {
+		t.Fatalf("second check changed terminal state: before=%#v after=%#v", persisted, again)
+	}
+}
 
 func TestFailedReplacementPersistsWaitingManualAfterReservationVersionAdvance(t *testing.T) {
 	ctx := context.Background()
