@@ -15,6 +15,7 @@ import secrets
 import shlex
 import signal
 import socket
+import statistics
 import subprocess
 import threading
 import time
@@ -132,8 +133,26 @@ OPENVPN_CONNECT_RETRY_MAX = env_int("OPENVPN_CONNECT_RETRY_MAX", 3, 1, 10)
 OPENVPN_TEST_CONCURRENCY = env_int("OPENVPN_TEST_CONCURRENCY", 4, 1, 16)
 MAX_OPENVPN_PROCESSES = env_int("MAX_OPENVPN_PROCESSES", 9, 1, 32)
 MAX_OPENVPN_PROBES = env_int("MAX_OPENVPN_PROBES", 2, 1, 8)
+OPENVPN_PROBE_SUCCESS_ROUNDS = env_int("OPENVPN_PROBE_SUCCESS_ROUNDS", 2, 1, 3)
 TCP_PRESCREEN_CONCURRENCY = env_int("TCP_PRESCREEN_CONCURRENCY", 100, 1, 512)
 TEST_ROUTE_TABLE_BASE = 61000
+EGRESS_PROBE_TIMEOUT_SECONDS = env_int("EGRESS_PROBE_TIMEOUT_SECONDS", 8, 1, 30)
+EGRESS_PROBE_URLS = tuple(
+    url.strip()
+    for url in os.environ.get(
+        "EGRESS_PROBE_URLS",
+        "https://www.gstatic.com/generate_204,https://cp.cloudflare.com/generate_204",
+    ).split(",")
+    if url.strip()
+)
+EGRESS_IP_CHECK_URLS = tuple(
+    url.strip()
+    for url in os.environ.get(
+        "EGRESS_IP_CHECK_URLS",
+        "https://api.ipify.org,https://icanhazip.com",
+    ).split(",")
+    if url.strip()
+)
 COLLECTOR_INITIAL_DELAY_SECONDS = env_int("COLLECTOR_INITIAL_DELAY_SECONDS", 0, 0)
 COLLECTOR_FAILURE_BACKOFF_SECONDS = env_int("COLLECTOR_FAILURE_BACKOFF_SECONDS", 30, 30)
 COLLECTOR_BUSY_RETRY_SECONDS = env_int("COLLECTOR_BUSY_RETRY_SECONDS", 600, 30)
@@ -1476,6 +1495,45 @@ def fetch_api_text_via_proxy(url: str, ptype: str, phost: str, pport: int, use_s
 
     return body_part.decode('utf-8', errors='replace')
 
+def fetch_api_text_via_interface(
+    url: str,
+    interface: str,
+    use_ssl_verify: bool = True,
+) -> str:
+    """通过现有 TUN 获取官方列表，避免本地网络对目标 TLS 的干扰。"""
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]+", interface):
+        raise ValueError(f"无效的网络接口: {interface}")
+    command = [
+        "curl",
+        "--silent",
+        "--show-error",
+        "--fail",
+        "--location",
+        "--ipv4",
+        "--noproxy",
+        "*",
+        "--interface",
+        interface,
+        "--connect-timeout",
+        "8",
+        "--max-time",
+        "25",
+    ]
+    if url.startswith("https://") and not use_ssl_verify:
+        command.append("--insecure")
+    command.append(url)
+    completed = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        timeout=27,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or "curl 请求失败").strip().splitlines()[-1]
+        raise RuntimeError(f"经 {interface} 获取 API 失败: {detail[-180:]}")
+    return completed.stdout
+
+
 def fetch_api_text(url: str | None = None, use_ssl_verify: bool = True) -> str:
     if url is None:
         url = API_URL
@@ -1496,14 +1554,26 @@ def fetch_api_text(url: str | None = None, use_ssl_verify: bool = True) -> str:
             "Accept": "text/plain,*/*",
         },
     )
-    if url.startswith("https://") and not use_ssl_verify:
-        import ssl
-        ctx = ssl._create_unverified_context()
-        with urllib.request.urlopen(request, timeout=12, context=ctx) as response:
-            return response.read().decode("utf-8", errors="replace")
-    else:
+    try:
+        if url.startswith("https://") and not use_ssl_verify:
+            import ssl
+            ctx = ssl._create_unverified_context()
+            with urllib.request.urlopen(request, timeout=12, context=ctx) as response:
+                return response.read().decode("utf-8", errors="replace")
         with urllib.request.urlopen(request, timeout=12) as response:
             return response.read().decode("utf-8", errors="replace")
+    except Exception as direct_error:
+        if active_openvpn_running() and policy_routing_ready("tun0", 100):
+            try:
+                print("[fetch_api_text] 直连失败，尝试经现有主隧道 tun0 获取 API...", flush=True)
+                return fetch_api_text_via_interface(url, "tun0", use_ssl_verify)
+            except Exception as tunnel_error:
+                log_to_json(
+                    "WARNING",
+                    "Main",
+                    f"经主隧道 tun0 获取 API 失败: {tunnel_error}",
+                )
+        raise direct_error
 
 def parse_vpngate_rows(text: str) -> list[dict[str, str]]:
     lines = [line for line in text.splitlines() if line and not line.startswith("*")]
@@ -2029,7 +2099,7 @@ def run_openvpn_until_ready(config_file: str, keep_alive: bool, route_nopull: bo
                 openvpn_logs.append(line_str)
                 lines.put(line_str)
             else:
-                if keep_alive:
+                if keep_alive and report_status:
                     print(f"[OpenVPN] {line_str}", flush=True)
                     level = "INFO"
                     line_lower = line_str.lower()
@@ -2062,7 +2132,7 @@ def run_openvpn_until_ready(config_file: str, keep_alive: bool, route_nopull: bo
         if line:
             tail.append(line)
             tail = tail[-50:]
-            if keep_alive:
+            if keep_alive and report_status:
                 print(f"[OpenVPN] {line}", flush=True)
         lower = line.lower()
         if keep_alive and report_status:
@@ -2162,6 +2232,35 @@ def cleanup_policy_routing(table: int = 100) -> None:
     except Exception:
         pass
 
+
+def cleanup_orphaned_test_policy_routes() -> None:
+    """清理服务异常退出时未执行 finally 而遗留的候选测试规则。"""
+    if not sys.platform.startswith("linux"):
+        return
+    try:
+        result = subprocess.run(
+            ["ip", "rule", "show"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except Exception:
+        return
+    if result.returncode != 0:
+        return
+
+    first_table = TEST_ROUTE_TABLE_BASE + 2
+    last_table = TEST_ROUTE_TABLE_BASE + 99
+    orphaned_tables = {
+        int(match.group(1))
+        for line in result.stdout.splitlines()
+        if (match := re.search(r"\b(?:lookup|table)\s+(\d+)\b", line))
+        and first_table <= int(match.group(1)) <= last_table
+    }
+    for table in sorted(orphaned_tables):
+        cleanup_policy_routing(table)
+
+
 def policy_routing_ready(interface: str, table: int) -> bool:
     """确认指定 TUN 仍同时拥有默认路由和按出口接口选表规则。"""
     if not sys.platform.startswith("linux"):
@@ -2234,6 +2333,23 @@ def stop_active_openvpn() -> None:
 def active_openvpn_running() -> bool:
     return active_openvpn_process is not None and active_openvpn_process.poll() is None
 
+
+def node_quality_key(node: dict[str, Any]) -> tuple[int, int, int, int, int]:
+    """真实出口测速优先；没有出口数据时兼容回退到服务器端口延迟。"""
+    egress_latency = parse_int(node.get("egress_latency_ms"))
+    egress_checked_at = parse_int(node.get("egress_latency_checked_at"))
+    has_egress_latency = egress_latency > 0 and egress_checked_at > 0
+    server_latency = parse_int(node.get("latency_ms")) or 999999
+    protocol_priority = 0 if str(node.get("proto") or "").lower().startswith("udp") else 1
+    return (
+        0 if has_egress_latency else 1,
+        egress_latency if has_egress_latency else server_latency,
+        protocol_priority,
+        server_latency,
+        -parse_int(node.get("score")),
+    )
+
+
 def sort_all_nodes(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     runtime_active_id = str(active_openvpn_node_id or "")
     reserved_ids = main_assignment_coordinator.reserved_candidate_ids()
@@ -2245,11 +2361,7 @@ def sort_all_nodes(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
             or (runtime_active_id and str(n.get("id") or "") == runtime_active_id)
             or str(n.get("id") or "") in reserved_ids
         ],
-        key=lambda n: (
-            0 if n.get("ip_type") in ("residential", "mobile") else 1,
-            parse_int(n.get("latency_ms")) or 999999,
-            -parse_int(n.get("score"))
-        )
+        key=node_quality_key,
     )
     return available_nodes
 
@@ -2337,43 +2449,47 @@ def test_node_by_id(node_id: str) -> dict[str, Any]:
         if not node:
             raise ValueError(f"Node not found: {node_id}")
         config_text = node.get("config_text") or ""
-        h = str(node.get("remote_host") or node.get("ip"))
-        p = parse_int(node.get("remote_port"))
+        host = str(node.get("remote_host") or node.get("ip"))
+        port = parse_int(node.get("remote_port"))
         fallback_ping = parse_int(node.get("ping"))
 
     temp_path = test_config_path(node_id)
     try:
         CONFIG_DIR.mkdir(exist_ok=True, parents=True)
         temp_path.write_text(config_text, encoding="utf-8")
-    except Exception as e:
-        raise RuntimeError(f"Failed to write temp config file: {e}")
+    except Exception as exc:
+        raise RuntimeError(f"Failed to write temp config file: {exc}") from exc
 
-    latency = vpn_utils.ping_latency_ms(h, p, fallback_ping)
-
-    idx = None
+    latency = vpn_utils.ping_latency_ms(host, port, fallback_ping)
+    index = None
     probe_capacity_owned = False
     try:
         probe_capacity_owned = openvpn_probe_capacity.acquire(timeout=17)
         if not probe_capacity_owned:
             raise RuntimeError("OpenVPN 临时检测已达到 2 路安全上限，请稍后重试")
-        idx = get_free_test_index()
-        ok, message, _ = run_openvpn_until_ready(str(temp_path), keep_alive=False, route_nopull=True, timeout=12, dev=f"tun{idx}")
+        index = get_free_test_index()
+        ok, message, _ = run_openvpn_until_ready(
+            str(temp_path),
+            keep_alive=False,
+            route_nopull=True,
+            timeout=12,
+            dev=f"tun{index}",
+        )
     finally:
-        if idx is not None:
-            release_test_index(idx)
+        if index is not None:
+            release_test_index(index)
         if probe_capacity_owned:
             openvpn_probe_capacity.release()
         try:
-            if temp_path.exists():
-                temp_path.unlink()
-        except Exception:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
             pass
 
-    temp_node = {
+    enriched = {
         "id": node_id,
-        "ip": h,
-        "remote_host": h,
-        "remote_port": p,
+        "ip": host,
+        "remote_host": host,
+        "remote_port": port,
         "owner": "",
         "asn": "",
         "as_name": "",
@@ -2382,7 +2498,7 @@ def test_node_by_id(node_id: str) -> dict[str, Any]:
         "quality": "",
     }
     if ok:
-        vpn_utils.enrich_ip_info([temp_node])
+        vpn_utils.enrich_ip_info([enriched])
 
     with lock:
         nodes = read_nodes()
@@ -2393,12 +2509,12 @@ def test_node_by_id(node_id: str) -> dict[str, Any]:
             node["probe_message"] = message
             node["probed_at"] = time.time()
             if ok:
-                node["owner"] = temp_node["owner"]
-                node["asn"] = temp_node["asn"]
-                node["as_name"] = temp_node["as_name"]
-                node["location"] = temp_node["location"]
-                node["ip_type"] = temp_node["ip_type"]
-                node["quality"] = temp_node["quality"]
+                node["owner"] = enriched["owner"]
+                node["asn"] = enriched["asn"]
+                node["as_name"] = enriched["as_name"]
+                node["location"] = enriched["location"]
+                node["ip_type"] = enriched["ip_type"]
+                node["quality"] = enriched["quality"]
             else:
                 mark_blacklisted(node, message)
 
@@ -2450,9 +2566,179 @@ def tcp_prescreen_dead(nodes: list[dict[str, Any]]) -> dict[str, dict[str, Any]]
     return dead
 
 
+def probe_tunnel_egress(
+    interface: str,
+    urls: tuple[str, ...] | None = None,
+    ip_check_urls: tuple[str, ...] | None = None,
+    timeout: int | None = None,
+    known_ip: str = "",
+) -> dict[str, Any]:
+    """先确认指定 TUN 的出口 IP，再测量常用 204 目标的中位耗时。"""
+    targets = urls if urls is not None else EGRESS_PROBE_URLS
+    ip_targets = ip_check_urls if ip_check_urls is not None else EGRESS_IP_CHECK_URLS
+    limit = timeout if timeout is not None else EGRESS_PROBE_TIMEOUT_SECONDS
+    total_latencies: list[int] = []
+    connect_latencies: list[int] = []
+    failures: list[str] = []
+    egress_ip = str(known_ip or "").strip()
+    ip_marker = "__AIMILI_EGRESS_IP__"
+    marker = "__AIMILI_EGRESS_METRICS__"
+
+    for url in (() if egress_ip else ip_targets):
+        try:
+            completed = subprocess.run(
+                [
+                    "curl",
+                    "--silent",
+                    "--show-error",
+                    "--fail",
+                    "--location",
+                    "--ipv4",
+                    "--noproxy",
+                    "*",
+                    "--interface",
+                    interface,
+                    "--connect-timeout",
+                    str(limit),
+                    "--max-time",
+                    str(limit),
+                    "--write-out",
+                    f"\n{ip_marker}",
+                    url,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=limit + 2,
+            )
+        except FileNotFoundError:
+            failures.append("未找到 curl 命令")
+            break
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            failures.append(f"{url}: {type(exc).__name__}")
+            continue
+
+        if completed.returncode != 0:
+            detail = (completed.stderr or "curl 请求失败").strip().splitlines()[-1]
+            failures.append(f"{url}: {detail[-160:]}")
+            continue
+
+        stdout = completed.stdout or ""
+        body = stdout.rsplit(ip_marker, 1)[0] if ip_marker in stdout else stdout
+        ip_text = body.strip()
+        try:
+            ipaddress.ip_address(ip_text)
+        except ValueError:
+            failures.append(f"{url}: 返回内容不是有效出口 IP")
+            continue
+        egress_ip = ip_text
+        break
+
+    if not egress_ip:
+        detail = "; ".join(failures[-2:]) or "没有配置出口 IP 校验地址"
+        return {
+            "ok": False,
+            "ip": "",
+            "latency_ms": 0,
+            "connect_latency_ms": 0,
+            "successes": 0,
+            "message": f"真实出口 IP 校验失败：{detail}",
+        }
+
+    if not targets:
+        return {
+            "ok": True,
+            "ip": egress_ip,
+            "latency_ms": 0,
+            "connect_latency_ms": 0,
+            "successes": 0,
+            "message": "真实出口 IP 校验成功",
+        }
+
+    failures.clear()
+    for url in targets:
+        try:
+            completed = subprocess.run(
+                [
+                    "curl",
+                    "--silent",
+                    "--show-error",
+                    "--fail",
+                    "--location",
+                    "--ipv4",
+                    "--noproxy",
+                    "*",
+                    "--interface",
+                    interface,
+                    "--connect-timeout",
+                    str(limit),
+                    "--max-time",
+                    str(limit),
+                    "--output",
+                    os.devnull,
+                    "--write-out",
+                    f"{marker}%{{http_code}}\t%{{time_connect}}\t%{{time_total}}",
+                    url,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=limit + 2,
+            )
+        except FileNotFoundError:
+            failures.append("未找到 curl 命令")
+            break
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            failures.append(f"{url}: {type(exc).__name__}")
+            continue
+        if completed.returncode != 0:
+            detail = (completed.stderr or "curl 请求失败").strip().splitlines()[-1]
+            failures.append(f"{url}: {detail[-160:]}")
+            continue
+        stdout = completed.stdout or ""
+        if marker not in stdout:
+            failures.append(f"{url}: 缺少测速结果")
+            continue
+        _, metrics = stdout.rsplit(marker, 1)
+        try:
+            status_text, connect_text, total_text = metrics.strip().split("\t", 2)
+            status_code = int(status_text)
+            connect_seconds = float(connect_text)
+            total_seconds = float(total_text)
+        except (ValueError, TypeError):
+            failures.append(f"{url}: 返回耗时格式无效")
+            continue
+        if not 200 <= status_code < 400:
+            failures.append(f"{url}: HTTP {status_code}")
+            continue
+        if connect_seconds <= 0 or total_seconds <= 0:
+            failures.append(f"{url}: 返回耗时无效")
+            continue
+        connect_latencies.append(max(1, round(connect_seconds * 1000)))
+        total_latencies.append(max(1, round(total_seconds * 1000)))
+
+    if not total_latencies:
+        detail = "; ".join(failures[-2:]) or "没有配置出口探测地址"
+        return {
+            "ok": False,
+            "ip": egress_ip,
+            "latency_ms": 0,
+            "connect_latency_ms": 0,
+            "successes": 0,
+            "message": f"真实出口探测失败：{detail}",
+        }
+
+    return {
+        "ok": True,
+        "ip": egress_ip,
+        "latency_ms": round(statistics.median(total_latencies)),
+        "connect_latency_ms": round(statistics.median(connect_latencies)),
+        "successes": len(total_latencies),
+        "message": f"真实出口探测成功 {len(total_latencies)}/{len(targets)}",
+    }
+
+
 def check_interface_exit_ip(interface: str, timeout: int = 6) -> tuple[bool, str]:
     """通过指定测试隧道读取并校验公网出口 IP。"""
-    for url in ("https://api.ipify.org", "https://icanhazip.com"):
+    for url in EGRESS_IP_CHECK_URLS:
         try:
             result = subprocess.run(
                 [
@@ -2512,14 +2798,15 @@ def _probe_one_node(node: dict[str, Any]) -> dict[str, Any]:
     test_route_table = None
     process = None
     probe_capacity_owned = False
+    ok = False
+    message = "OpenVPN 未完成初始化"
     exit_ip = ""
-    exit_ip_checked_at = 0.0
+    egress_rounds: list[dict[str, Any]] = []
     try:
         probe_capacity_owned = openvpn_probe_capacity.acquire(
             timeout=max(1, OPENVPN_TEST_TIMEOUT_SECONDS + 5)
         )
         if not probe_capacity_owned:
-            ok = False
             message = "OpenVPN 临时检测已达到 2 路安全上限，请稍后重试"
             return {
                 **node,
@@ -2535,29 +2822,37 @@ def _probe_one_node(node: dict[str, Any]) -> dict[str, Any]:
                 "quality": "",
             }
         tun_index = get_free_test_index()
+        interface = f"tun{tun_index}"
         ok, message, process = run_openvpn_until_ready(
             str(temp_path),
             keep_alive=True,
             route_nopull=True,
             timeout=12,
-            dev=f"tun{tun_index}",
+            dev=interface,
         )
         if ok:
             test_route_table = TEST_ROUTE_TABLE_BASE + tun_index
-            if not setup_policy_routing(f"tun{tun_index}", test_route_table):
+            if not setup_policy_routing(interface, test_route_table):
                 ok = False
                 message = "临时出口路由配置失败"
             else:
                 try:
-                    exit_ok, exit_ip = check_interface_exit_ip(f"tun{tun_index}")
+                    exit_ok, exit_ip = check_interface_exit_ip(interface)
                 except Exception:
                     exit_ok = False
                     exit_ip = ""
+                    message = "公网出口检测失败"
                 if exit_ok:
-                    exit_ip_checked_at = time.time()
+                    for _ in range(OPENVPN_PROBE_SUCCESS_ROUNDS):
+                        measured = probe_tunnel_egress(interface, known_ip=exit_ip)
+                        if measured.get("ok"):
+                            egress_rounds.append(measured)
+                    if egress_rounds:
+                        message = str(egress_rounds[-1].get("message") or message)
                 else:
                     ok = False
-                    message = "公网出口检测失败"
+                    if not message or message == "OpenVPN connected":
+                        message = "公网出口检测失败"
     finally:
         if test_route_table is not None:
             cleanup_policy_routing(test_route_table)
@@ -2571,12 +2866,28 @@ def _probe_one_node(node: dict[str, Any]) -> dict[str, Any]:
         except OSError:
             pass
 
+    egress_latency = (
+        round(statistics.median(parse_int(item.get("latency_ms")) for item in egress_rounds))
+        if egress_rounds else 0
+    )
+    egress_connect_latency = (
+        round(statistics.median(parse_int(item.get("connect_latency_ms")) for item in egress_rounds))
+        if egress_rounds else 0
+    )
+    egress_successes = sum(parse_int(item.get("successes")) for item in egress_rounds)
+
     result = {
         **node,
         "ip": node.get("ip") or host,
         "remote_host": host,
         "remote_port": port,
         "latency_ms": latency,
+        "egress_ip": exit_ip if ok else "",
+        "egress_latency_ms": egress_latency if ok else 0,
+        "egress_connect_latency_ms": egress_connect_latency if ok else 0,
+        "egress_latency_checked_at": time.time() if ok else 0,
+        "egress_probe_successes": egress_successes if ok else 0,
+        "egress_probe_rounds": len(egress_rounds) if ok else 0,
         "probe_status": "available" if ok else "unavailable",
         "probe_message": message,
         "probed_at": time.time(),
@@ -2589,7 +2900,7 @@ def _probe_one_node(node: dict[str, Any]) -> dict[str, Any]:
     }
     if ok:
         result["exit_ip"] = exit_ip
-        result["exit_ip_checked_at"] = exit_ip_checked_at
+        result["exit_ip_checked_at"] = time.time()
     return result
 
 
@@ -2662,6 +2973,7 @@ def replenish_valid_pool(
     blacklist: dict[str, dict[str, Any]],
     probe_batch,
     now: float | None = None,
+    revalidate_existing: bool = True,
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]], dict[str, Any]]:
     """复验既有节点并分批补池，直到达到目标或候选耗尽。"""
     checked_at = time.time() if now is None else now
@@ -2669,11 +2981,32 @@ def replenish_valid_pool(
         active_openvpn_node_id,
         [*current_slot_node_ids(), *get_slot_pin_map().values()],
     )
-    pool = [
+    protected_pool = [
         item
         for item in existing_nodes
         if str(item.get("id") or "").strip() in protected_ids
     ]
+    if revalidate_existing:
+        pool = protected_pool
+    else:
+        seen_ids = {
+            str(item.get("id") or "")
+            for item in protected_pool
+            if str(item.get("id") or "")
+        }
+        retained = []
+        for item in existing_nodes:
+            node_id = str(item.get("id") or "")
+            if (
+                not node_id
+                or node_id in seen_ids
+                or item.get("probe_status") != "available"
+            ):
+                continue
+            retained.append(item)
+            seen_ids.add(node_id)
+        remaining_capacity = max(0, TARGET_VALID_POOL_SIZE - len(protected_pool))
+        pool = protected_pool + retained[:remaining_capacity]
     failed_entries = dict(blacklist)
     for item in existing_nodes:
         node_id = str(item.get("id") or "")
@@ -2690,12 +3023,16 @@ def replenish_valid_pool(
                 "marked_at": checked_at,
                 "until": checked_at + PROBE_FAILURE_COOLDOWN_SECONDS,
             }
-    preferred_ids = {
-        str(item.get("id") or "")
-        for item in existing_nodes
-        if item.get("probe_status") == "available"
-        and str(item.get("id") or "") not in protected_ids
-    }
+    preferred_ids = (
+        {
+            str(item.get("id") or "")
+            for item in existing_nodes
+            if item.get("probe_status") == "available"
+            and str(item.get("id") or "") not in protected_ids
+        }
+        if revalidate_existing
+        else set()
+    )
     tested_ids: set[str] = set()
     tested_count = 0
     batch_count = 0
@@ -2716,7 +3053,13 @@ def replenish_valid_pool(
                 "stop_reason": "candidates_exhausted",
             }
 
-        batch = queue[:NODE_TEST_BATCH_SIZE]
+        batch_size = NODE_TEST_BATCH_SIZE
+        if not revalidate_existing:
+            batch_size = min(
+                batch_size,
+                max(1, TARGET_VALID_POOL_SIZE - len(pool)),
+            )
+        batch = queue[:batch_size]
         batch_ids = {str(item.get("id") or "") for item in batch}
         tested_ids.update(batch_ids)
         results = list(probe_batch(batch) or [])
@@ -3416,7 +3759,7 @@ def auto_switch_node(attempt: int = 0) -> None:
                     if any(kw in (str(n.get("owner", "")) + " " + str(n.get("as_name", "")) + " " + str(n.get("asn", ""))).lower() for kw in kws)
                 ]
 
-        candidates.sort(key=lambda n: (parse_int(n.get("latency_ms")) or 999999, -parse_int(n.get("score"))))
+        candidates.sort(key=node_quality_key)
 
     if candidates:
         next_node = candidates[0]
@@ -3601,7 +3944,6 @@ def connect_node(node_id: str) -> str:
         with lock:
             is_connecting = False
 
-
 @_mutation_guard({"ok": False, "error_code": "operation_busy"})
 def disconnect_main_connection() -> dict[str, Any]:
     global last_active_ping_time, last_active_latency
@@ -3624,7 +3966,10 @@ def disconnect_main_connection() -> dict[str, Any]:
     return {"ok": True}
 
 @_mutation_guard("operation_busy")
-def maintain_valid_nodes(force: bool = False) -> str:
+def maintain_valid_nodes(
+    force: bool = False,
+    revalidate_existing: bool = True,
+) -> str:
     global active_openvpn_process, active_openvpn_node_id, is_connecting
     if not main_mutation_allowed():
         return "operation_busy"
@@ -3641,6 +3986,7 @@ def maintain_valid_nodes(force: bool = False) -> str:
             and country_refresh_state.get("country") == "ALL"
             else 0.0
         )
+    cached_recovery_attempted = False
     try:
         if force:
             with lock:
@@ -3668,8 +4014,18 @@ def maintain_valid_nodes(force: bool = False) -> str:
                         if active_openvpn_node_id:
                             has_active_id = True
                             stop_active_openvpn()
-                    if has_active_id:
-                        print("[维护线程] 检测到当前 OpenVPN 进程已意外退出，准备自动切换节点", flush=True)
+                    has_cached_candidate = any(
+                        node.get("probe_status") == "available"
+                        for node in read_nodes()
+                    )
+                    if has_active_id or has_cached_candidate:
+                        cached_recovery_attempted = True
+                        reason = (
+                            "当前 OpenVPN 进程已意外退出"
+                            if has_active_id
+                            else "服务启动后存在缓存有效节点"
+                        )
+                        print(f"[维护线程] 检测到{reason}，准备先恢复主连接", flush=True)
                         is_connecting = False
                         auto_switch_node()
                         is_connecting = True
@@ -3697,6 +4053,7 @@ def maintain_valid_nodes(force: bool = False) -> str:
                 ui_cfg.get("connection_enabled", True)
                 and ui_cfg.get("routing_mode", "auto") != "fixed_ip"
                 and not active_openvpn_running()
+                and not cached_recovery_attempted
             ):
                 is_connecting = False
                 try:
@@ -3733,6 +4090,7 @@ def maintain_valid_nodes(force: bool = False) -> str:
             candidates,
             load_blacklist(),
             probe_nodes,
+            revalidate_existing=revalidate_existing,
         )
         metadata = load_pool_metadata()
         next_round = int(metadata.get("maintenanceRound") or 0) + 1
@@ -3884,7 +4242,10 @@ def maintain_valid_nodes(force: bool = False) -> str:
         maintenance_lock.release()
 
 
-def schedule_valid_pool_replenishment(reason: str = "") -> bool:
+def schedule_valid_pool_replenishment(
+    reason: str = "",
+    revalidate_existing: bool = False,
+) -> bool:
     """维护锁空闲时启动后台有效池补充。"""
     if maintenance_lock.locked():
         return False
@@ -3893,7 +4254,10 @@ def schedule_valid_pool_replenishment(reason: str = "") -> bool:
         try:
             if reason:
                 log_to_json("INFO", "Main", f"节点失效后触发补池：{reason}")
-            maintain_valid_nodes(force=False)
+            maintain_valid_nodes(
+                force=False,
+                revalidate_existing=revalidate_existing,
+            )
         except Exception as exc:
             log_to_json("ERROR", "Main", f"后台补池失败：{exc}")
 
@@ -4604,7 +4968,7 @@ def select_slot_nodes(
             if not any(kw in hay for kw in isp_kws):
                 continue
         pool.append(n)
-    pool.sort(key=lambda n: (parse_int(n.get("latency_ms")) or 999999, -parse_int(n.get("score"))))
+    pool.sort(key=node_quality_key)
     return pool[:need]
 
 
@@ -10355,7 +10719,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
         elif effective_path == "/api/refresh_nodes":
             try:
-                started = schedule_valid_pool_replenishment("用户手动更新全部节点")
+                started = schedule_valid_pool_replenishment(
+                    "用户手动更新全部节点",
+                    revalidate_existing=True,
+                )
                 if not started:
                     self.send_json({"ok": True, "message": "节点维护任务正在运行，请稍后再试", "running": True})
                 else:
@@ -10520,6 +10887,7 @@ def main() -> None:
     slot_reconnect_hints.update(load_slot_reconnect_hints())
     kill_existing_openvpn_processes()
     kill_slot_openvpn_processes()
+    cleanup_orphaned_test_policy_routes()
 
     log_file = DATA_DIR / "vpngate.log"
     tee = Tee(str(log_file))

@@ -30,7 +30,10 @@ class ProjectContractTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("/opt/aimili-gateway/services/aimili-egress/vpngate_manager.py", unit)
-        self.assertIn("VPNGATE_DATA_DIR=/opt/aimilivpn/vpngate_data", unit)
+        self.assertIn(
+            "VPNGATE_DATA_DIR=/var/lib/aimili-gateway/aimili-egress", unit
+        )
+        self.assertNotIn("/opt/aimilivpn", unit)
         self.assertIn("AIMILI_CONTROL_ADDRESS=127.0.0.1:8790", unit)
 
     def test_split_repository_installer_is_not_copied(self):

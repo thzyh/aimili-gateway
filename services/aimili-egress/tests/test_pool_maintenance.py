@@ -202,8 +202,9 @@ class PoolMaintenanceTests(unittest.TestCase):
     def test_replenishment_scheduler_starts_background_maintenance(self):
         completed = manager.threading.Event()
 
-        def maintain(force=False):
+        def maintain(force=False, revalidate_existing=True):
             self.assertFalse(force)
+            self.assertFalse(revalidate_existing)
             completed.set()
 
         with (
@@ -216,6 +217,31 @@ class PoolMaintenanceTests(unittest.TestCase):
             mock.patch.object(manager, "log_to_json"),
         ):
             self.assertTrue(manager.schedule_valid_pool_replenishment("test"))
+            self.assertTrue(completed.wait(1))
+
+    def test_full_refresh_scheduler_revalidates_existing_nodes(self):
+        completed = manager.threading.Event()
+
+        def maintain(force=False, revalidate_existing=False):
+            self.assertFalse(force)
+            self.assertTrue(revalidate_existing)
+            completed.set()
+
+        with (
+            mock.patch.object(
+                manager,
+                "maintenance_lock",
+                mock.Mock(locked=mock.Mock(return_value=False)),
+            ),
+            mock.patch.object(manager, "maintain_valid_nodes", side_effect=maintain),
+            mock.patch.object(manager, "log_to_json"),
+        ):
+            self.assertTrue(
+                manager.schedule_valid_pool_replenishment(
+                    "manual refresh",
+                    revalidate_existing=True,
+                )
+            )
             self.assertTrue(completed.wait(1))
 
     def test_country_refresh_runs_in_background_and_exposes_safe_status(self):
@@ -907,6 +933,65 @@ class PoolMaintenanceTests(unittest.TestCase):
         self.assertEqual(set(blacklist), {"n2", "n3"})
         self.assertEqual(stats["stop_reason"], "target_reached")
 
+    def test_failure_replenishment_keeps_valid_pool_and_only_probes_gap(self):
+        existing = [
+            node(0, "available"),
+            node(1, "available"),
+            node(2, "available"),
+            node(3, "available"),
+            node(4, "unavailable"),
+        ]
+        candidates = [*existing, node(5), node(6)]
+        calls = []
+
+        def probe(batch):
+            calls.append([item["id"] for item in batch])
+            return [dict(item, probe_status="available") for item in batch]
+
+        with (
+            mock.patch.object(manager, "TARGET_VALID_POOL_SIZE", 5),
+            mock.patch.object(manager, "NODE_TEST_BATCH_SIZE", 2),
+        ):
+            pool, _, stats = manager.replenish_valid_pool(
+                existing,
+                candidates,
+                {},
+                probe,
+                now=100.0,
+                revalidate_existing=False,
+            )
+
+        self.assertEqual([item["id"] for item in pool], ["n0", "n1", "n2", "n3", "n5"])
+        self.assertEqual(calls, [["n5"]])
+        self.assertEqual(stats["tested"], 1)
+        self.assertEqual(stats["stop_reason"], "target_reached")
+
+    def test_replenishment_preserves_runtime_slot_nodes_without_redialing_them(self):
+        existing = [
+            {**node(0, "available"), "id": "main-live"},
+            {**node(1, "available"), "id": "slot-live"},
+            {**node(2, "available"), "id": "ordinary"},
+        ]
+        calls = []
+
+        def probe(batch):
+            calls.extend(item["id"] for item in batch)
+            return [dict(item, probe_status="available") for item in batch]
+
+        with (
+            mock.patch.object(manager, "active_openvpn_node_id", "main-live"),
+            mock.patch.object(manager, "current_slot_node_ids", return_value={"slot-live"}),
+            mock.patch.object(manager, "TARGET_VALID_POOL_SIZE", 3),
+            mock.patch.object(manager, "NODE_TEST_BATCH_SIZE", 3),
+        ):
+            pool, _, stats = manager.replenish_valid_pool(
+                existing, existing, {}, probe, now=100.0
+            )
+
+        self.assertEqual([item["id"] for item in pool[:2]], ["main-live", "slot-live"])
+        self.assertEqual(calls, ["ordinary"])
+        self.assertEqual(stats["stop_reason"], "target_reached")
+
     def test_stops_when_candidates_are_exhausted(self):
         def fail(batch):
             return [
@@ -1000,8 +1085,17 @@ class PoolMaintenanceTests(unittest.TestCase):
 
     def test_api_failure_recovers_main_connection_from_cached_pool(self):
         existing = [node(1, "available")]
+        runtime = {"connected": False}
+
+        def connect_cached_node():
+            runtime["connected"] = True
+
         with (
-            mock.patch.object(manager, "active_openvpn_running", return_value=False),
+            mock.patch.object(
+                manager,
+                "active_openvpn_running",
+                side_effect=lambda: runtime["connected"],
+            ),
             mock.patch.object(manager, "read_nodes", return_value=existing),
             mock.patch.object(
                 manager, "fetch_candidates", side_effect=RuntimeError("API down")
@@ -1013,7 +1107,11 @@ class PoolMaintenanceTests(unittest.TestCase):
                 return_value=(1000, "API down"),
             ),
             mock.patch.object(manager, "load_ui_config", return_value={"connection_enabled": True, "routing_mode": "auto"}),
-            mock.patch.object(manager, "auto_switch_node") as auto_switch,
+            mock.patch.object(
+                manager,
+                "auto_switch_node",
+                side_effect=connect_cached_node,
+            ) as auto_switch,
             mock.patch.object(manager, "set_state"),
         ):
             message = manager.maintain_valid_nodes()

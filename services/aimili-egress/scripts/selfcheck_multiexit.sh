@@ -5,11 +5,11 @@
 #   ① tun 设备是否存在  ② 策略路由表/规则是否就绪  ③ 本地代理端口是否监听
 #   ④ 经该槽位代理的真实出口 IP（验证流量确实走了对应隧道）
 # 用法:  bash scripts/selfcheck_multiexit.sh [数据目录]
-#   数据目录默认: $VPNGATE_DATA_DIR 或 /opt/aimilivpn/vpngate_data
+#   数据目录默认: $VPNGATE_DATA_DIR 或 /var/lib/aimili-gateway/aimili-egress
 # ============================================================================
 set -u
 
-DATA_DIR="${1:-${VPNGATE_DATA_DIR:-/opt/aimilivpn/vpngate_data}}"
+DATA_DIR="${1:-${VPNGATE_DATA_DIR:-/var/lib/aimili-gateway/aimili-egress}}"
 SLOTS_FILE="${DATA_DIR}/slots.json"
 NODES_FILE="${DATA_DIR}/nodes.json"
 PROXY_HOST="127.0.0.1"

@@ -10,7 +10,7 @@ Aimili Gateway 是 Gateway 控制台与 Aimili 出口引擎的统一源码仓库
 
 截至 2026-09-09，本机 VMware Ubuntu 的 AimiliVPN、3x-ui/Xray、Aimili Gateway 和 Caddy 原生部署已经完成内外门禁、重启复验及 v2rayN 订阅导入；用户入口为 `https://192.168.88.4:8080`。当前 manifest 使用 6 个 OpenVPN、1 个 Xray 和 6 个逻辑出口，但数量不是永久上限。v2rayN 的 `local` 已通过当前用户 Caddy 根 CA 信任成功更新为 6 个节点；用户仍负责选择节点后的实际使用体验验收。完整证据见 `docs/verification/2026-09-07-local-vm-real-deployment.md`。
 
-ny VPS 已于 2026-09-11 切换到统一仓库布局：Gateway 仍作为独立低权限服务运行，出口引擎则从 `/opt/aimili-gateway/services/aimili-egress` 启动并继续复用 `/opt/aimilivpn/vpngate_data`。纯 UI 外部静态资源免重启发布、回退与恢复均已通过生产验证，内嵌 UI 仍作为安全兜底；具体版本和当前出口状态以交接与验证记录为准，不能用本机 VM 结果替代生产验收。
+ny VPS 使用统一仓库布局：Gateway 仍作为独立低权限服务运行，出口引擎从 `/opt/aimili-gateway/services/aimili-egress` 启动，持久数据统一放在 `/var/lib/aimili-gateway/aimili-egress`。纯 UI 外部静态资源免重启发布、回退与恢复均已通过生产验证，内嵌 UI 仍作为安全兜底；具体版本和当前出口状态以交接与验证记录为准，不能用本机 VM 结果替代生产验收。
 
 外部 UI Stage A 使用 `scripts/build-ui-release.ps1` 生成 `manifest.json`、`manifest.sig` 和 `ui.tar.gz`，由离线 `aimili-gateway-update-install` 校验并原子切换 `current`/`previous`。首次启用需要随 Gateway 二进制部署并只重启 Gateway；启用后日常签名 UI 发布和回退不重启 Gateway，也不触碰 AimiliVPN、x-ui/Xray 或 Caddy。
 

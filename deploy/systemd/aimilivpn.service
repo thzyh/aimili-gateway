@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=/opt/aimili-gateway/services/aimili-egress
 ExecStart=/usr/bin/python3 /opt/aimili-gateway/services/aimili-egress/vpngate_manager.py
-Environment=VPNGATE_DATA_DIR=/opt/aimilivpn/vpngate_data
+Environment=VPNGATE_DATA_DIR=/var/lib/aimili-gateway/aimili-egress
 Environment=AIMILI_CONTROL_ADDRESS=127.0.0.1:8790
 Environment=AIMILI_CONTROL_TOKEN_FILE=/etc/aimilivpn/control.token
 EnvironmentFile=-/etc/default/aimilivpn
