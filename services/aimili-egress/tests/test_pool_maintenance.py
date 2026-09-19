@@ -286,6 +286,35 @@ class PoolMaintenanceTests(unittest.TestCase):
         self.assertEqual(snapshot["testedCount"], 1)
         self.assertNotIn("exception", snapshot)
 
+    def test_country_refresh_worker_uses_bounded_country_contract(self):
+        original_state = manager.country_refresh_snapshot()
+        gate = manager.threading.Event()
+        gate.set()
+        manager._set_country_refresh(
+            state="running",
+            country="JP",
+            phase="fetching",
+            startedAt=1_700_000_000,
+        )
+        try:
+            with mock.patch.object(
+                manager,
+                "refresh_country_nodes",
+                return_value={"state": "completed", "country": "JP", "resultCode": "success"},
+            ) as refresh:
+                manager._country_refresh_worker("JP", gate)
+
+            refresh.assert_called_once_with(
+                "JP",
+                target_size=5,
+                max_probes=20,
+                _lock_held=True,
+            )
+        finally:
+            manager._replace_country_refresh(**original_state)
+            if manager.maintenance_lock.locked():
+                manager.maintenance_lock.release()
+
     def test_all_country_refresh_runs_global_maintenance_and_exposes_aggregate_status(self):
         existing = [country_node("jp-old", "JP", "available")]
         refreshed = [

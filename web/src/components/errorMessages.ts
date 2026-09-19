@@ -20,6 +20,7 @@ const codeMessages: Record<string, string> = {
   no_same_country_candidate: '已执行本次故障唯一一次自动修复，但没有找到同国家可用节点。出口会保留为未连接，请人工选择新的出口 IP',
   no_standby_candidate: '没有找到可用的专属备用候选，请调整候选国家或人工指定节点',
   replacement_failed: '已自动尝试一个同国家候选，但新节点也无法连通。出口会保留为未连接，请人工选择新的出口 IP',
+  repair_interrupted: '上次自动修复在服务重启前未完成，已保留唯一一次尝试记录，不会继续自动更换节点，请人工选择新的出口 IP',
   manual_repair_required: '本次故障此前已经自动尝试过一次，系统不会因重复检测或服务重启继续换节点，请人工选择新的出口 IP',
   manual_replacement_required: '本次故障已经自动尝试一次但未成功，出口会保留为未连接，请人工选择新的出口 IP',
   mixed_credentials_apply_failed: '随机用户名和密码未能应用到全部出口，系统已恢复原来的账号密码',

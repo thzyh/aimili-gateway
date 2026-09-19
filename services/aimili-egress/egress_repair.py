@@ -84,6 +84,25 @@ class RepairStore:
             })
             self._write(document)
 
+    def recover_interrupted(self) -> list[str]:
+        """把上次进程中断时未结束的自动修复转为人工处理。"""
+        recovered: list[str] = []
+        with self.lock:
+            document = self._read()
+            for key, current in document["egresses"].items():
+                if not isinstance(current, dict) or current.get("status") != "repairing":
+                    continue
+                current.update({
+                    "status": "manual_required",
+                    "attempt_count": max(1, int(current.get("attempt_count") or 0)),
+                    "error_code": "repair_interrupted",
+                    "finished_at": self.now(),
+                })
+                recovered.append(str(key))
+            if recovered:
+                self._write(document)
+        return recovered
+
     def mark_healthy(self, egress: str, candidate_id: str) -> None:
         with self.lock:
             document = self._read()

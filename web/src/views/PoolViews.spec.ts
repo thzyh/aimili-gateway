@@ -213,6 +213,22 @@ it('keeps failed automatic repairs selectable in the unified replacement flow', 
 	})
 })
 
+it('treats an interrupted automatic repair as a finished one-shot attempt', async () => {
+	const interruptedMain = { ...rows[0], status: 'degraded', lastErrorCode: 'repair_interrupted' }
+	mocks.apiFetch.mockImplementation((path: string) => {
+		if (path === '/api/v1/proxy-groups') return Promise.resolve([interruptedMain])
+		if (path === '/api/v1/settings/aimilivpn/countries') return Promise.resolve([])
+		if (path === '/api/v1/settings/aimilivpn/refresh') return Promise.resolve({ state: 'idle', country: '', phase: '', testedCount: 0, validCount: 0 })
+		return Promise.resolve(undefined)
+	})
+
+	const wrapper = mount(VpnPoolView)
+	await flushPromises()
+
+	expect(wrapper.get('[data-repair="agw-main"]').text()).toContain('复核状态')
+	expect(wrapper.get('[data-repair="agw-main"]').attributes('title')).toContain('不会再次自动更换节点')
+})
+
 it('rotates SOCKS5H credentials with visible progress and a safe success message', async () => {
 	let finishRotation!: () => void
 	const pendingRotation = new Promise<void>(resolve => { finishRotation = resolve })
@@ -591,8 +607,10 @@ it('separates cached-country filtering from official-country supplementation', a
 	expect(wrapper.get('[data-country-supplement]').text()).toContain('补充国家')
 	expect(wrapper.get('[data-country-supplement]').text()).toContain('日本（8 个官方节点）')
 	expect(wrapper.get('[data-refresh-country]').attributes('disabled')).toBeDefined()
-	expect(wrapper.get('[data-refresh-country]').text()).toContain('优先检测该国家')
+	expect(wrapper.get('[data-refresh-country]').text()).toContain('请先选择补充国家')
 	await wrapper.get('[data-country-supplement]').setValue('JP')
+	expect(wrapper.get('[data-refresh-country]').attributes('title')).toContain('最多检测 20 个候选')
+	expect(wrapper.get('[data-refresh-country]').text()).toContain('优先检测该国家')
 	await wrapper.get('[data-refresh-country]').trigger('click')
 	await flushPromises()
 

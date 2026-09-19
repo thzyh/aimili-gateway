@@ -40,6 +40,21 @@ class RepairStoreTests(unittest.TestCase):
             self.assertFalse(restarted_process.claim("slot:1", "jp-different", "JP"))
             self.assertEqual(restarted_process.get("slot:1")["attempt_count"], 1)
 
+    def test_interrupted_repair_becomes_manual_required_after_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "repair.json"
+            first_process = RepairStore(path, now=lambda: 10.0)
+            self.assertTrue(first_process.claim("main", "jp-broken", "JP"))
+
+            restarted_process = RepairStore(path, now=lambda: 20.0)
+            self.assertEqual(restarted_process.recover_interrupted(), ["main"])
+            recovered = restarted_process.get("main")
+
+            self.assertEqual(recovered["status"], "manual_required")
+            self.assertEqual(recovered["attempt_count"], 1)
+            self.assertEqual(recovered["error_code"], "repair_interrupted")
+            self.assertFalse(restarted_process.claim("main", "jp-other", "JP"))
+
     def test_healthy_recovery_allows_a_later_new_failure(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "repair.json"

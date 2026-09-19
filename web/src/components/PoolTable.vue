@@ -11,7 +11,7 @@ const checkedAt = (value?: string) => value ? new Intl.DateTimeFormat('zh-CN',{m
 const allModes: ProtocolMode[] = ['vless_tcp_reality_vision', 'vless_xhttp_reality', 'hysteria2_quic_tls']
 const protocolLabel = (mode: ProtocolMode) => ({ vless_tcp_reality_vision: 'TCP/Vision', vless_xhttp_reality: 'XHTTP/REALITY', hysteria2_quic_tls: 'Hysteria2/QUIC' })[mode]
 const protocolRecoverable = (row: ProxyGroupPayload) => row.protocolState === 'repair_required' && row.subscriptionState === 'repair_required'
-const automaticRepairFinished = (row: ProxyGroupPayload) => ['no_same_country_candidate', 'replacement_failed', 'manual_repair_required', 'manual_replacement_required'].includes(row.lastErrorCode || '')
+const automaticRepairFinished = (row: ProxyGroupPayload) => ['no_same_country_candidate', 'replacement_failed', 'repair_interrupted', 'manual_repair_required', 'manual_replacement_required'].includes(row.lastErrorCode || '')
 const countryName = (row: ProxyGroupPayload) => countryDisplayName(row.countryCode, [{ code: row.countryCode, name: row.countryName || row.countryCode }])
 const protocolDisabled = (row: ProxyGroupPayload) => row.status !== 'ready' || (row.protocolState !== 'ready' && !protocolRecoverable(row)) || (row.subscriptionState !== 'ready' && !protocolRecoverable(row)) || props.busy !== ''
 const copyDisabled = (row: ProxyGroupPayload) => row.status !== 'ready' || props.busy !== '' || (props.protocol === 'vless' && (row.protocolState !== 'ready' || row.subscriptionState !== 'ready'))
