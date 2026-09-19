@@ -69,15 +69,15 @@ const rows = computed(() => groups.value.filter(row => {
   return (left || Number.MAX_SAFE_INTEGER) - (right || Number.MAX_SAFE_INTEGER)
 }))
 const replacementTargets = computed(() => groups.value.filter(row => row.status !== 'standby' && (row.egressSource === 'main' || (row.slotNumber ?? 0) > 0)).sort((a, b) => {
-  if (a.egressSource === 'main') return -1
-  if (b.egressSource === 'main') return 1
+  if (a.egressSource === 'main') return 1
+  if (b.egressSource === 'main') return -1
   return (a.slotNumber ?? 0) - (b.slotNumber ?? 0)
 }))
 const automaticRepairFailed = (row: ProxyGroupPayload) => ['no_same_country_candidate', 'replacement_failed', 'repair_interrupted', 'manual_repair_required', 'manual_replacement_required'].includes(row.lastErrorCode || '')
 const selectedReplacementTarget = computed(() => replacementTargets.value.find(row => row.id === replacementTarget.value) ?? null)
 const replacementTargetWarning = computed(() => selectedReplacementTarget.value && automaticRepairFailed(selectedReplacementTarget.value) ? selectedReplacementTarget.value : null)
 const replacementTargetName = (row: ProxyGroupPayload) => row.egressSource === 'main' ? '主连接' : `出口位 ${row.slotNumber}`
-const replacementTargetLabel = (row: ProxyGroupPayload) => `${automaticRepairFailed(row) ? '【故障·自动修复失败】' : ''}${replacementTargetName(row)} · ${countryDisplayName(row.countryCode, [{ code: row.countryCode, name: row.countryName || row.countryCode }])} · ${row.exitIp || '当前无可用出口 IP'}`
+const replacementTargetLabel = (row: ProxyGroupPayload) => `${automaticRepairFailed(row) ? '【故障·自动修复失败】' : ''}${row.egressSource === 'main' ? '【需明确选择】' : ''}${replacementTargetName(row)} · ${countryDisplayName(row.countryCode, [{ code: row.countryCode, name: row.countryName || row.countryCode }])} · ${row.exitIp || '当前无可用出口 IP'}`
 const subscriptionReady = computed(() => groups.value.some(row => row.status === 'ready' && row.protocolState === 'ready' && row.subscriptionState === 'ready'))
 
 function makeNotice(kind: NoticeKind, title: string, message = ''): UiNoticeData {
@@ -284,7 +284,7 @@ async function mutate(row: ProxyGroupPayload, action: 'activate' | 'check' | 'ro
 function openReplacement(row: ProxyGroupPayload): void {
   replacementCandidate.value = row
   replacementCandidateID.value = row.id
-  replacementTarget.value = replacementTargets.value[0]?.id ?? ''
+  replacementTarget.value = replacementTargets.value.find(target => target.egressSource !== 'main')?.id ?? ''
   replacementNotice.value = null
 }
 
@@ -491,7 +491,7 @@ function formatRefreshTime(value?: number): string {
       <section data-replace-dialog class="replace-dialog" role="dialog" aria-modal="true" aria-labelledby="replace-title">
         <button class="dialog-close" type="button" aria-label="关闭" @click="closeReplacement">×</button>
         <p class="eyebrow">REPLACE EGRESS SLOT</p><h2 id="replace-title">替换到出口位</h2>
-        <p>将 {{ countryDisplayName(replacementCandidate.countryCode, [{ code: replacementCandidate.countryCode, name: replacementCandidate.countryName || replacementCandidate.countryCode }]) }} {{ replacementCandidate.proxyType === 'residential' ? '住宅' : '机房' }}候选装载到现有出口位。原端口和 VLESS/SOCKS5H 入站保持不变，失败时自动回滚。</p>
+        <p>将 {{ countryDisplayName(replacementCandidate.countryCode, [{ code: replacementCandidate.countryCode, name: replacementCandidate.countryName || replacementCandidate.countryCode }]) }} {{ replacementCandidate.proxyType === 'residential' ? '住宅' : '机房' }}候选装载到现有出口位。默认只选择出口位；若要更换主连接，必须在下拉框中明确选择。原端口和 VLESS/SOCKS5H 入站保持不变，失败时自动回滚。</p>
         <label>目标逻辑出口<select v-model="replacementTarget" data-replace-target :class="{ 'fault-target': replacementTargetWarning }"><option v-for="target in replacementTargets" :key="target.id" :value="target.id" :class="{ 'fault-target-option': automaticRepairFailed(target) }">{{ replacementTargetLabel(target) }}</option></select></label>
         <p v-if="replacementTargetWarning" data-replace-target-warning class="fault-target-warning">{{ replacementTargetName(replacementTargetWarning) }}{{ replacementTargetWarning.egressSource === 'main' ? '' : ' ' }}自动修复已失败；你仍可将当前候选替换到这里，系统会重新验证完整链路。</p>
         <UiNotice v-if="replacementNotice" :key="replacementNotice.id" data-replace-notice class="replacement-notice" :notice="replacementNotice" @close="replacementNotice=null" />
