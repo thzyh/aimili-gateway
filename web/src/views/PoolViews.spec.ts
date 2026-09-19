@@ -609,7 +609,7 @@ it('separates cached-country filtering from official-country supplementation', a
 	expect(wrapper.get('[data-refresh-country]').attributes('disabled')).toBeDefined()
 	expect(wrapper.get('[data-refresh-country]').text()).toContain('请先选择补充国家')
 	await wrapper.get('[data-country-supplement]').setValue('JP')
-	expect(wrapper.get('[data-refresh-country]').attributes('title')).toContain('最多检测 20 个候选')
+	expect(wrapper.get('[data-refresh-country]').attributes('title')).toContain('全部官方候选')
 	expect(wrapper.get('[data-refresh-country]').text()).toContain('优先检测该国家')
 	await wrapper.get('[data-refresh-country]').trigger('click')
 	await flushPromises()

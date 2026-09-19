@@ -422,7 +422,7 @@ function refreshNoticeFor(current: CountryRefreshPayload): UiNoticeData | null {
   const name = refreshCountryName(current.country)
   if (current.state === 'running') {
     const total = current.countryCandidateCount ?? 0
-    const scope = current.country === 'ALL' ? '正在检查全部去重候选' : '本轮最多检测 20 个候选，目标保留 5 个该国节点'
+    const scope = current.country === 'ALL' ? '正在检查全部去重候选' : '正在检查该国全部官方候选'
     return makeNotice('progress', `${name}正在刷新`, `${scope} · 已检测 ${current.testedCount}${total ? `/${total}` : ''} · 通过 ${current.passedCount ?? 0} · 失败 ${current.failedCount ?? 0}，当前在线代理不会中断。`)
   }
   const official = current.officialCount ?? current.catalogCount ?? 0
@@ -476,7 +476,7 @@ function formatRefreshTime(value?: number): string {
   <AppShell>
     <section class="page-heading">
       <div><p class="eyebrow">ONLINE EGRESS POOL</p><h1>{{ title }}</h1><p>{{ description }}</p></div>
-      <div class="heading-actions"><button data-refresh-all class="secondary" :disabled="busy !== ''" @click="refreshAllCountries">{{ busy === 'all-country-refresh' ? '正在刷新…' : '刷新所有国家' }}</button><button data-check-all class="secondary" :disabled="busy !== ''" @click="checkAllRows">{{ busy === 'check-all' ? `检测中 ${checkProgress}` : '检测全部出口' }}</button><button data-refresh-country class="secondary" :disabled="busy !== '' || !supplementCountry" :title="supplementCountry ? '目标保留 5 个该国节点，本轮最多检测 20 个候选' : '请先在“补充国家”中选择国家'" @click="refreshCountry">{{ busy === 'country-refresh' ? '正在检测…' : supplementCountry ? '优先检测该国家' : '请先选择补充国家' }}</button><button v-if="protocol === 'vless'" data-copy-subscription :disabled="busy !== '' || !subscriptionReady" @click="copySubscription">复制节点订阅</button><button v-else data-rotate-socks-credentials class="secondary" :disabled="busy !== ''" @click="rotateSOCKS5HCredentials">{{ busy === 'rotate-socks-credentials' ? '正在更换…' : '随机更换用户名和密码' }}</button><button data-copy-all class="secondary" :disabled="busy !== ''" @click="copyAll">复制节点列表</button><button data-export class="secondary" :disabled="busy !== ''" @click="exportRows">导出</button></div>
+       <div class="heading-actions"><button data-refresh-all class="secondary" :disabled="busy !== ''" @click="refreshAllCountries">{{ busy === 'all-country-refresh' ? '正在刷新…' : '刷新所有国家' }}</button><button data-check-all class="secondary" :disabled="busy !== ''" @click="checkAllRows">{{ busy === 'check-all' ? `检测中 ${checkProgress}` : '检测全部出口' }}</button><button data-refresh-country class="secondary" :disabled="busy !== '' || !supplementCountry" :title="supplementCountry ? '检测该国全部官方候选；最终受全局保护上限限制' : '请先在“补充国家”中选择国家'" @click="refreshCountry">{{ busy === 'country-refresh' ? '正在检测…' : supplementCountry ? '优先检测该国家' : '请先选择补充国家' }}</button><button v-if="protocol === 'vless'" data-copy-subscription :disabled="busy !== '' || !subscriptionReady" @click="copySubscription">复制节点订阅</button><button v-else data-rotate-socks-credentials class="secondary" :disabled="busy !== ''" @click="rotateSOCKS5HCredentials">{{ busy === 'rotate-socks-credentials' ? '正在更换…' : '随机更换用户名和密码' }}</button><button data-copy-all class="secondary" :disabled="busy !== ''" @click="copyAll">复制节点列表</button><button data-export class="secondary" :disabled="busy !== ''" @click="exportRows">导出</button></div>
     </section>
     <UiNotice v-if="topNotice" :key="topNotice.id" data-top-notice :notice="topNotice" @close="topNotice=null" />
     <section class="pool-toolbar">

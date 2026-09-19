@@ -128,8 +128,6 @@ NODE_TEST_BATCH_SIZE = env_int("NODE_TEST_BATCH_SIZE", 10, 1)
 PROBE_FAILURE_COOLDOWN_SECONDS = env_int("PROBE_FAILURE_COOLDOWN_SECONDS", 1800, 1)
 REPAIR_CANDIDATE_PROBE_LIMIT = env_int("REPAIR_CANDIDATE_PROBE_LIMIT", 8, 1, 20)
 REPAIR_CANDIDATE_FRESH_SECONDS = env_int("REPAIR_CANDIDATE_FRESH_SECONDS", 120, 10, 600)
-COUNTRY_REFRESH_TARGET_SIZE = 5
-COUNTRY_REFRESH_MAX_PROBES = 20
 OPENVPN_TEST_TIMEOUT_SECONDS = env_int("OPENVPN_TEST_TIMEOUT_SECONDS", 35, 1)
 OPENVPN_CONNECT_RETRY_MAX = env_int("OPENVPN_CONNECT_RETRY_MAX", 3, 1, 10)
 OPENVPN_TEST_CONCURRENCY = env_int("OPENVPN_TEST_CONCURRENCY", 4, 1, 16)
@@ -3140,12 +3138,10 @@ def _country_refresh_worker(country: str, start_gate: threading.Event) -> None:
     start_gate.wait()
     main_assignment_thread.country_refresh_authorized = True
     try:
-        result = refresh_country_nodes(
-            country,
-            target_size=COUNTRY_REFRESH_TARGET_SIZE,
-            max_probes=COUNTRY_REFRESH_MAX_PROBES,
-            _lock_held=True,
-        )
+        # 单国补充沿用原有语义：扫描该国全部官方候选，并把所有通过
+        # 本机复检的节点合并进全局池。全局 MAX_VALID_POOL_SIZE 仍是最终
+        # 保护上限，但不能把单国结果错误截断为固定 5 个或 20 个。
+        result = refresh_country_nodes(country, _lock_held=True)
         with country_refresh_lock:
             started_at = float(country_refresh_state.get("startedAt") or 0)
         final = dict(result)

@@ -286,7 +286,7 @@ class PoolMaintenanceTests(unittest.TestCase):
         self.assertEqual(snapshot["testedCount"], 1)
         self.assertNotIn("exception", snapshot)
 
-    def test_country_refresh_worker_uses_bounded_country_contract(self):
+    def test_country_refresh_worker_scans_full_country_contract(self):
         original_state = manager.country_refresh_snapshot()
         gate = manager.threading.Event()
         gate.set()
@@ -304,12 +304,7 @@ class PoolMaintenanceTests(unittest.TestCase):
             ) as refresh:
                 manager._country_refresh_worker("JP", gate)
 
-            refresh.assert_called_once_with(
-                "JP",
-                target_size=5,
-                max_probes=20,
-                _lock_held=True,
-            )
+            refresh.assert_called_once_with("JP", _lock_held=True)
         finally:
             manager._replace_country_refresh(**original_state)
             if manager.maintenance_lock.locked():
