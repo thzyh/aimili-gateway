@@ -429,6 +429,9 @@ def install_gateway(args: argparse.Namespace, origin: str, domain: str, slots: i
         run(["useradd", "--system", "--home-dir", str(ROOT), "--shell", "/usr/sbin/nologin", "aimili-gateway"])
         uid = pwd.getpwnam("aimili-gateway").pw_uid
         gid = pwd.getpwnam("aimili-gateway").pw_gid
+    ETC.mkdir(parents=True, exist_ok=True)
+    os.chown(ETC, 0, gid)
+    os.chmod(ETC, 0o750)
     ROOT.mkdir(parents=True, exist_ok=True)
     os.chown(ROOT, uid, gid)
     os.chmod(ROOT, 0o711)
@@ -436,7 +439,6 @@ def install_gateway(args: argparse.Namespace, origin: str, domain: str, slots: i
         path.mkdir(parents=True, exist_ok=True)
         os.chown(path, *owner)
         os.chmod(path, mode)
-    ETC.mkdir(parents=True, exist_ok=True)
     copy_mode(args.asset_root / "bin/aimili-gateway", Path("/usr/local/bin/aimili-gateway"))
     copy_mode(args.asset_root / "bin/aimili-gateway-admin", Path("/usr/local/bin/aimili-gateway-admin"))
     copy_mode(args.asset_root / "deploy/bin/aimili-gateway-account", Path("/usr/local/sbin/aimili-gateway-account"))
