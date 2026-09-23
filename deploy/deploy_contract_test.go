@@ -29,8 +29,8 @@ func TestSystemdUnitIsUnprivilegedAndHardened(t *testing.T) {
 		"Environment=GATEWAY_AIMILI_CONTROL_TOKEN_FILE=%d/aimili-control-token",
 		"Environment=GATEWAY_XUI_CREDENTIALS_FILE=%d/xui-automation",
 		"Environment=GOMEMLIMIT=64MiB",
-		"MemoryHigh=64M",
-		"MemoryMax=96M",
+		"MemoryHigh=128M",
+		"MemoryMax=192M",
 		"TasksMax=64",
 		"MemoryDenyWriteExecute=false",
 	} {
@@ -653,5 +653,5 @@ func readAsset(t *testing.T, relativePath string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return string(contents)
+	return strings.ReplaceAll(string(contents), "\r\n", "\n")
 }

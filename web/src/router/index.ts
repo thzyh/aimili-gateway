@@ -6,14 +6,12 @@ import VpnPoolView from '../views/VpnPoolView.vue'
 import SocksPoolView from '../views/SocksPoolView.vue'
 import SettingsView from '../views/SettingsView.vue'
 import XUISettingsView from '../views/XUISettingsView.vue'
-import FreesubBackupView from '../views/FreesubBackupView.vue'
 
 const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/', name: 'vpn-pool', component: VpnPoolView },
     { path: '/socks5h', name: 'socks-pool', component: SocksPoolView },
-    { path: '/freesub', name: 'freesub-backup', component: FreesubBackupView },
     { path: '/settings', name: 'settings', component: SettingsView },
     { path: '/settings/3x-ui', name: 'settings-3x-ui', component: XUISettingsView },
     { path: '/login', name: 'login', component: LoginView },

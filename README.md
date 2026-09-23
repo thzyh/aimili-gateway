@@ -4,7 +4,21 @@ Aimili Gateway 是 Gateway 控制台与 Aimili 出口引擎的统一源码仓库
 
 ## 当前阶段
 
-自 2026-09-11 起，`services/aimili-egress` 是出口引擎的唯一源码来源。原 `aimili-vpngate` 仓库保留历史和兼容用途，不删除，也不再与本目录双向开发。Gateway 前端只保留 Gateway 页面、高级设置和 3x-ui 专家模式，不再注册 AimiliVPN 设置页或原后台登录入口。融合边界与验证结果见 `docs/verification/2026-09-11-egress-isolation-and-repository-integration.md`。
+## VPS 一条命令部署
+
+在 Ubuntu 24.04、x86_64 的空白 VPS 上以 root 执行：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/thzyh/aimili-gateway/main/deploy/vps/install.sh | sudo bash
+```
+
+安装器会用中文询问无域名或域名模式，并可重复执行。无域名模式使用本机公网 IP 与本地 CA；域名 A 记录生效后，再执行同一条命令并选择域名模式，保留 Gateway/3x-ui 数据库、账户、UUID、Reality 材料与出口位。非交互用法是在同一条命令末尾附加 `--no-domain --slots 4` 或 `--domain bj.zouyunhui.cc.cd --slots 4`。发布资产由固定的 Ed25519 公钥验证签名和 SHA-256；完整安装记录在 `/var/log/aimili-gateway/install.log`，只读状态命令为 `sudo aimili-gateway-install --status`。
+
+3x-ui 保持独立上游源码。`deploy/vps/3x-ui-v3.7.0-alias.patch` 固定在上游提交 `f727d04f6522bb94a8fb52e8352fdcafb51c11e1`，通过 `deploy/vps/build-xui-custom.ps1` 可复现构建，签名发布包包含二进制。Gateway 仓库只保存补丁、版本锁与发布构建，不把 3x-ui 的整个源码并入 Go module；上游许可证随官方 3x-ui 运行包保留。
+
+`freesub` 备用功能已从 Gateway 前端、API、运行时和订阅生成中移除；迁移 013 清理旧业务表，部署升级前请先执行数据库备份。旧版本的历史文档保留原时间点事实。
+
+自 2026-09-11 起，`services/aimili-egress` 是出口引擎的唯一源码来源。独立的 `aimili-vpngate` GitHub 仓库已删除，历史保留在本地 Git bundle；不再与本目录双向开发。Gateway 前端只保留 Gateway 页面、高级设置和 3x-ui 专家模式，不再注册 AimiliVPN 设置页或原后台登录入口。融合边界与验证结果见 `docs/verification/2026-09-11-egress-isolation-and-repository-integration.md`。
 
 当前权威入口是 `docs/handoffs/2026-09-05-current-state-handoff.md`。它记录实际功能工作树路径、最新本地提交、生产摘要、回滚资产和仍未实现的发布机制；历史设计、计划和验证文档保留各自时间点的事实，不再承担“当前状态”职责。
 

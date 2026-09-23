@@ -1,0 +1,292 @@
+diff --git a/internal/database/model/model.go b/internal/database/model/model.go
+index 5e2db9d..2ad425a 100644
+--- a/internal/database/model/model.go
++++ b/internal/database/model/model.go
+@@ -996,10 +996,11 @@ func (r *ClientRecord) UnmarshalJSON(data []byte) error {
+ }
+ 
+ type ClientInbound struct {
+-	ClientId     int    `json:"clientId" gorm:"primaryKey;column:client_id;index"`
+-	InboundId    int    `json:"inboundId" gorm:"primaryKey;column:inbound_id;index"`
+-	FlowOverride string `json:"flowOverride" gorm:"column:flow_override"`
+-	CreatedAt    int64  `json:"createdAt" gorm:"autoCreateTime:milli"`
++	ClientId      int    `json:"clientId" gorm:"primaryKey;column:client_id;index"`
++	InboundId     int    `json:"inboundId" gorm:"primaryKey;column:inbound_id;index"`
++	FlowOverride  string `json:"flowOverride" gorm:"column:flow_override"`
++	AliasOverride string `json:"aliasOverride" gorm:"column:alias_override;not null;default:''"`
++	CreatedAt     int64  `json:"createdAt" gorm:"autoCreateTime:milli"`
+ }
+ 
+ func (ClientInbound) TableName() string { return "client_inbounds" }
+diff --git a/internal/sub/service.go b/internal/sub/service.go
+index cc90e31..2c9c307 100644
+--- a/internal/sub/service.go
++++ b/internal/sub/service.go
+@@ -490,6 +490,26 @@ func (s *SubService) getInboundsBySubId(subId string) ([]*model.Inbound, error)
+ 	if err != nil {
+ 		return nil, err
+ 	}
++	var aliasRows []struct {
++		InboundId     int
++		AliasOverride string
++	}
++	if err := db.Table("client_inbounds").
++		Select("client_inbounds.inbound_id, client_inbounds.alias_override").
++		Joins("JOIN clients ON clients.id = client_inbounds.client_id").
++		Where("clients.sub_id = ? AND client_inbounds.alias_override <> ''", subId).
++		Find(&aliasRows).Error; err != nil {
++		return nil, err
++	}
++	aliases := make(map[int]string, len(aliasRows))
++	for _, row := range aliasRows {
++		aliases[row.InboundId] = row.AliasOverride
++	}
++	for _, inbound := range inbounds {
++		if alias := aliases[inbound.Id]; alias != "" {
++			inbound.Remark = alias
++		}
++	}
+ 	s.indexStatsBySubId(subId)
+ 	return inbounds, nil
+ }
+diff --git a/internal/sub/service_alias_test.go b/internal/sub/service_alias_test.go
+new file mode 100644
+index 0000000..22ecb93
+--- /dev/null
++++ b/internal/sub/service_alias_test.go
+@@ -0,0 +1,41 @@
++package sub
++
++import (
++	"path/filepath"
++	"testing"
++
++	"github.com/mhsanaei/3x-ui/v3/internal/database"
++	"github.com/mhsanaei/3x-ui/v3/internal/database/model"
++)
++
++func TestSubscriptionInboundRemarkUsesOnlyItsClientAlias(t *testing.T) {
++	if err := database.InitDB(filepath.Join(t.TempDir(), "x-ui.db")); err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { _ = database.CloseDB() })
++	db := database.GetDB()
++	inbound := model.Inbound{Tag: "agw-main", Remark: "original", Protocol: model.VLESS, Port: 8443, Enable: true}
++	if err := db.Create(&inbound).Error; err != nil {
++		t.Fatal(err)
++	}
++	first := model.ClientRecord{Email: "gateway@example.test", SubID: "gateway-sub"}
++	second := model.ClientRecord{Email: "other@example.test", SubID: "other-sub"}
++	if err := db.Create(&first).Error; err != nil {
++		t.Fatal(err)
++	}
++	if err := db.Create(&second).Error; err != nil {
++		t.Fatal(err)
++	}
++	for _, link := range []model.ClientInbound{{ClientId: first.Id, InboundId: inbound.Id, AliasOverride: "主连接_日本"}, {ClientId: second.Id, InboundId: inbound.Id}} {
++		if err := db.Create(&link).Error; err != nil {
++			t.Fatal(err)
++		}
++	}
++	svc := NewSubService("")
++	for _, test := range []struct{ subID, want string }{{"gateway-sub", "主连接_日本"}, {"other-sub", "original"}} {
++		rows, err := svc.getInboundsBySubId(test.subID)
++		if err != nil || len(rows) != 1 || rows[0].Remark != test.want {
++			t.Fatalf("sub=%s rows=%v err=%v", test.subID, rows, err)
++		}
++	}
++}
+diff --git a/internal/web/controller/client.go b/internal/web/controller/client.go
+index 9e9360a..402726c 100644
+--- a/internal/web/controller/client.go
++++ b/internal/web/controller/client.go
+@@ -2,6 +2,7 @@ package controller
+ 
+ import (
+ 	"encoding/json"
++	"errors"
+ 	"strconv"
+ 	"strings"
+ 
+@@ -58,6 +59,7 @@ func (a *ClientController) initRouter(g *gin.RouterGroup) {
+ 	g.POST("/del/:email", a.delete)
+ 	g.POST("/:email/attach", a.attach)
+ 	g.POST("/:email/detach", a.detach)
++	g.POST("/:email/inboundAliases", a.setInboundAliases)
+ 	g.POST("/:email/externalLinks", a.setExternalLinks)
+ 	g.GET("/export", a.export)
+ 	g.POST("/import", a.importClients)
+@@ -114,6 +116,10 @@ func (a *ClientController) buildClientPayload(rec *model.ClientRecord) (gin.H, e
+ 	if err != nil {
+ 		return nil, err
+ 	}
++	aliases, err := a.clientService.GetInboundAliases(rec.Email)
++	if err != nil {
++		return nil, err
++	}
+ 	externalLinks, err := a.clientService.GetExternalLinksForRecord(rec.Id)
+ 	if err != nil {
+ 		return nil, err
+@@ -134,12 +140,42 @@ func (a *ClientController) buildClientPayload(rec *model.ClientRecord) (gin.H, e
+ 	return gin.H{
+ 		"client":           rec,
+ 		"inboundIds":       inboundIds,
++		"inboundAliases":   aliases,
+ 		"externalLinks":    externalLinks,
+ 		"usedTraffic":      usedTraffic,
+ 		"tunnelAllowedIPs": tunnelAllowedIPs,
+ 	}, nil
+ }
+ 
++func (a *ClientController) setInboundAliases(c *gin.Context) {
++	var body struct {
++		Aliases []struct {
++			InboundId int    `json:"inboundId"`
++			Alias     string `json:"alias"`
++		} `json:"aliases"`
++	}
++	if err := c.ShouldBindJSON(&body); err != nil || len(body.Aliases) == 0 {
++		if err == nil {
++			err = errors.New("aliases are required")
++		}
++		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
++		return
++	}
++	aliases := make(map[int]string, len(body.Aliases))
++	for _, item := range body.Aliases {
++		if _, exists := aliases[item.InboundId]; exists {
++			jsonMsg(c, I18nWeb(c, "somethingWentWrong"), errors.New("duplicate inbound alias"))
++			return
++		}
++		aliases[item.InboundId] = item.Alias
++	}
++	if err := a.clientService.SetInboundAliases(c.Param("email"), aliases); err != nil {
++		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
++		return
++	}
++	jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.inboundClientUpdateSuccess"), nil)
++}
++
+ func (a *ClientController) get(c *gin.Context) {
+ 	email := c.Param("email")
+ 	rec, err := a.clientService.GetRecordByEmail(nil, email)
+diff --git a/internal/web/service/client_alias.go b/internal/web/service/client_alias.go
+new file mode 100644
+index 0000000..51e06c6
+--- /dev/null
++++ b/internal/web/service/client_alias.go
+@@ -0,0 +1,64 @@
++package service
++
++import (
++	"errors"
++	"strings"
++	"unicode"
++	"unicode/utf8"
++
++	"github.com/mhsanaei/3x-ui/v3/internal/database"
++	"github.com/mhsanaei/3x-ui/v3/internal/database/model"
++	"gorm.io/gorm"
++)
++
++// GetInboundAliases returns the overrides belonging to one client association.
++func (s *ClientService) GetInboundAliases(email string) (map[int]string, error) {
++	record, err := s.GetRecordByEmail(nil, email)
++	if err != nil {
++		return nil, err
++	}
++	var links []model.ClientInbound
++	if err := database.GetDB().Where("client_id = ?", record.Id).Find(&links).Error; err != nil {
++		return nil, err
++	}
++	aliases := make(map[int]string, len(links))
++	for _, link := range links {
++		aliases[link.InboundId] = link.AliasOverride
++	}
++	return aliases, nil
++}
++
++// SetInboundAliases updates only existing associations of the selected client.
++func (s *ClientService) SetInboundAliases(email string, aliases map[int]string) error {
++	if len(aliases) == 0 {
++		return errors.New("aliases are required")
++	}
++	for id, alias := range aliases {
++		if id <= 0 || utf8.RuneCountInString(alias) > 96 || strings.TrimSpace(alias) != alias || strings.IndexFunc(alias, unicode.IsControl) >= 0 {
++			return errors.New("invalid inbound alias")
++		}
++	}
++	record, err := s.GetRecordByEmail(nil, email)
++	if err != nil {
++		return err
++	}
++	return database.GetDB().Transaction(func(tx *gorm.DB) error {
++		var links []model.ClientInbound
++		if err := tx.Where("client_id = ?", record.Id).Find(&links).Error; err != nil {
++			return err
++		}
++		if len(links) != len(aliases) {
++			return errors.New("inbound associations changed")
++		}
++		for _, link := range links {
++			alias, ok := aliases[link.InboundId]
++			if !ok {
++				return errors.New("unknown inbound association")
++			}
++			if err := tx.Model(&model.ClientInbound{}).Where("client_id = ? AND inbound_id = ?", record.Id, link.InboundId).Update("alias_override", alias).Error; err != nil {
++				return err
++			}
++		}
++		return nil
++	})
++}
+diff --git a/internal/web/service/client_alias_test.go b/internal/web/service/client_alias_test.go
+new file mode 100644
+index 0000000..232d527
+--- /dev/null
++++ b/internal/web/service/client_alias_test.go
+@@ -0,0 +1,44 @@
++package service
++
++import (
++	"testing"
++
++	"github.com/mhsanaei/3x-ui/v3/internal/database"
++	"github.com/mhsanaei/3x-ui/v3/internal/database/model"
++)
++
++func TestInboundAliasesAreScopedToTheClientAndExistingLinks(t *testing.T) {
++	setupConflictDB(t)
++	db := database.GetDB()
++	first := model.ClientRecord{Email: "gateway@example.test", SubID: "gateway-sub"}
++	second := model.ClientRecord{Email: "other@example.test", SubID: "other-sub"}
++	if err := db.Create(&first).Error; err != nil {
++		t.Fatal(err)
++	}
++	if err := db.Create(&second).Error; err != nil {
++		t.Fatal(err)
++	}
++	for _, link := range []model.ClientInbound{{ClientId: first.Id, InboundId: 1}, {ClientId: second.Id, InboundId: 1}} {
++		if err := db.Create(&link).Error; err != nil {
++			t.Fatal(err)
++		}
++	}
++	svc := &ClientService{}
++	if err := svc.SetInboundAliases(first.Email, map[int]string{1: "主连接_日本"}); err != nil {
++		t.Fatal(err)
++	}
++	firstAliases, err := svc.GetInboundAliases(first.Email)
++	if err != nil || firstAliases[1] != "主连接_日本" {
++		t.Fatalf("first aliases=%v err=%v", firstAliases, err)
++	}
++	otherAliases, err := svc.GetInboundAliases(second.Email)
++	if err != nil || otherAliases[1] != "" {
++		t.Fatalf("other aliases=%v err=%v", otherAliases, err)
++	}
++	if err := svc.SetInboundAliases(first.Email, map[int]string{2: "unknown"}); err == nil {
++		t.Fatal("unattached inbound accepted")
++	}
++	if err := svc.SetInboundAliases(first.Email, map[int]string{1: "bad\nname"}); err == nil {
++		t.Fatal("control character accepted")
++	}
++}

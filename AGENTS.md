@@ -14,7 +14,7 @@
 
 ## 执行纪律
 
-- 在 Windows 开发任务中，禁止使用裸命令 `sh` 执行 Shell 脚本；`sh` 可能被 Snap Hutao Remastered 注册的应用执行别名接管。需要检查或执行脚本时，明确使用本机 Git Shell：`D:\SoftWare\Git\bin\sh.exe`，例如：`D:\SoftWare\Git\bin\sh.exe -n scripts/fetch-freesub-feed.sh`。
+- 在 Windows 开发任务中，禁止使用裸命令 `sh` 执行 Shell 脚本；`sh` 可能被 Snap Hutao Remastered 注册的应用执行别名接管。需要检查或执行脚本时，明确使用本机 Git Shell：`D:\SoftWare\Git\bin\sh.exe`，例如：`D:\SoftWare\Git\bin\sh.exe -n deploy/vps/install.sh`。
 - UI 变更不得默认 SSH、构建 3x-ui、运行 Docker 或进行五分钟生产观察。
 - Gateway 非协议变更不得默认修改 AimiliVPN、3x-ui/Xray 或其非 Gateway 受管资源。
 - 同一 SSH、上传、安装或探测失败两次后，停止重复操作，读取最新错误并固定第一处失败边界。

@@ -118,38 +118,6 @@ func TestSubscriptionPassesFourVerifiedAliasesToTheExclusiveClient(t *testing.T)
 	}
 }
 
-func TestSubscriptionAppendsReadyFreesubBackupAfterRegularConnections(t *testing.T) {
-	fixture := newFixture()
-	fixture.store.mainEgress = store.MainEgress{
-		ResourceName: "agw-main", Enabled: true, PublicInboundID: 1,
-		CountryName: "日本", CountryCode: "JP", UpdatedAt: fixture.now(),
-	}
-	group, _ := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeDatacenter, "regular-node")
-	group.Status, group.AimiliSlot, group.PublicInboundID = domain.ProxyGroupReady, 0, 2
-	group.CountryName = "日本"
-	fixture.store.groups[group.ID] = group
-	fixture.store.freesub = domain.FreesubBackupConnection{
-		ID: "agw-freesub", CandidateID: "fs-us-one", CountryCode: "US", Protocol: "vless",
-		Status: domain.FreesubBackupReady, XUIInboundID: 30, Version: 1,
-	}
-	fixture.xui.snapshot = xui.Snapshot{Inbounds: []xui.Inbound{{
-		ID: 1, Tag: "aimili-reality", Remark: "Aimili Reality", Protocol: "vless", Port: 8443,
-	}}}
-	fixture.xui.subscriptionProfiles = []xui.PublicProfile{{InboundID: 1}, {InboundID: 2}, {InboundID: 30}}
-
-	result, err := fixture.orchestratorWithMax(t, 1).Subscription(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := fixture.xui.subscriptionDesired.InboundIDs; !reflect.DeepEqual(got, []int64{1, 2, 30}) {
-		t.Fatalf("subscription inbound order = %#v", got)
-	}
-	wantAliases := map[int64]string{1: "主连接_日本", 2: "出口位 1_日本", 30: "freesub 备用_US"}
-	if !reflect.DeepEqual(fixture.xui.subscriptionDesired.Aliases, wantAliases) || result.InboundCount != 3 {
-		t.Fatalf("aliases=%#v result=%#v", fixture.xui.subscriptionDesired.Aliases, result)
-	}
-}
-
 func TestReplaceCandidateUpdatesOnlyTheTargetSubscriptionAlias(t *testing.T) {
 	fixture := newFixture()
 	fixture.store.mainEgress = store.MainEgress{ResourceName: "agw-main", Enabled: true, PublicInboundID: 1, CountryName: "日本", CountryCode: "JP", ProxyType: domain.ProxyTypeDatacenter, CandidateID: "main", ExitIP: "203.0.113.1", PublicPort: 8443, MixedInboundID: 98, MixedPort: 31000, UpdatedAt: fixture.now()}

@@ -41,6 +41,24 @@ func TestSchemaVersionReportsLatestAppliedMigration(t *testing.T) {
 	}
 }
 
+func TestFreesubTablesRemovedByLatestMigration(t *testing.T) {
+	ctx := context.Background()
+	database, err := Open(ctx, filepath.Join(t.TempDir(), "gateway.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	for _, name := range []string{"freesub_backup_connections", "freesub_backup_operations"} {
+		var count int
+		if err := database.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 0 {
+			t.Fatalf("obsolete table %s remains", name)
+		}
+	}
+}
+
 func TestOpenReadOnlyDoesNotCreateOrMigrateDatabase(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "gateway.db")

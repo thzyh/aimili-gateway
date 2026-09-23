@@ -20,7 +20,6 @@ import (
 	"github.com/thzyh/aimili-gateway/internal/adapters/xui"
 	"github.com/thzyh/aimili-gateway/internal/backendlogin"
 	"github.com/thzyh/aimili-gateway/internal/config"
-	"github.com/thzyh/aimili-gateway/internal/freesub"
 	"github.com/thzyh/aimili-gateway/internal/httpapi"
 	"github.com/thzyh/aimili-gateway/internal/maintenance"
 	"github.com/thzyh/aimili-gateway/internal/orchestrator"
@@ -119,7 +118,6 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 		}
 	}
 	dependencies.ProxyManager = runtime.proxy
-	dependencies.FreesubBackup = runtime.freesub
 	dependencies.Maintenance = runtime.maintenance
 	dependencies.BackendLogin = runtime.backendLogin
 	dependencies.Updates = newUpdateManager(cfg)
@@ -171,7 +169,6 @@ type runtimeServices struct {
 	accounts     *accountsync.Coordinator
 	maintenance  *maintenance.Service
 	backendLogin *backendlogin.Service
-	freesub      *freesub.Manager
 }
 
 func newRuntimeServices(ctx context.Context, cfg config.Config, database *store.Store, masterKey []byte) (runtimeServices, error) {
@@ -217,6 +214,9 @@ func newRuntimeServices(ctx context.Context, cfg config.Config, database *store.
 	if err != nil {
 		return runtimeServices{}, err
 	}
+	if cfg.RealityServerName != "" {
+		realityServerName = cfg.RealityServerName
+	}
 	var protocolClient *protocoltxn.Client
 	if regularDirectoryExists(cfg.ProtocolRequestDir) && regularDirectoryExists(cfg.ProtocolResultDir) {
 		protocolClient, err = protocoltxn.New(protocoltxn.Config{
@@ -245,16 +245,6 @@ func newRuntimeServices(ctx context.Context, cfg config.Config, database *store.
 		return runtimeServices{}, err
 	}
 	result := runtimeServices{proxy: proxy, accounts: accounts, maintenance: maintenanceService}
-	result.freesub, err = freesub.NewManager(freesub.ManagerConfig{FeedPath: cfg.FreesubFeedPath, SingBoxPath: cfg.FreesubSingBoxPath, StateDir: cfg.FreesubStateDir, SocksPort: cfg.FreesubSocksPort, VLESSPort: cfg.FreesubVLESSPort, MixedPort: cfg.FreesubMixedPort, RealityServerName: realityServerName, XUI: xuiClient, RefreshSubscription: func(refreshContext context.Context) error {
-		_, refreshErr := proxy.Subscription(refreshContext)
-		return refreshErr
-	}}, database, masterKey)
-	if err != nil {
-		return runtimeServices{}, err
-	}
-	// The independent backup must never prevent the main Gateway, AimiliVPN,
-	// or exits 1-4 from starting.
-	_ = result.freesub.Recover(ctx)
 	if cfg.AimiliBackendURL != "" && cfg.ExpertModeURL != "" {
 		result.backendLogin, err = backendlogin.New(backendlogin.Config{
 			AimiliPath: cfg.AimiliBackendURL, AimiliLocation: cfg.AimiliBackendURL,

@@ -632,7 +632,6 @@ type fakeStore struct {
 	policy               store.MixedSourcePolicy
 	enforceUniqueSlots   bool
 	mainEgress           store.MainEgress
-	freesub              domain.FreesubBackupConnection
 	subscription         store.GatewaySubscription
 	subscriptionWrites   int
 	aggregate            store.AggregateConfig
@@ -813,12 +812,6 @@ func (s *fakeStore) GetMainEgress(context.Context) (store.MainEgress, error) {
 		return store.MainEgress{}, store.ErrProxyGroupNotFound
 	}
 	return s.mainEgress, nil
-}
-func (s *fakeStore) GetFreesubBackup(context.Context) (domain.FreesubBackupConnection, error) {
-	if s.freesub.ID == "" {
-		return domain.FreesubBackupConnection{}, store.ErrFreesubBackupNotFound
-	}
-	return s.freesub, nil
 }
 func (s *fakeStore) SaveGatewaySubscription(_ context.Context, value store.GatewaySubscription) error {
 	s.subscriptionWrites++

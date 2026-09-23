@@ -24,8 +24,8 @@ Restart=on-failure
 RestartSec=5s
 
 NoNewPrivileges=true
-MemoryHigh=64M
-MemoryMax=96M
+MemoryHigh=128M
+MemoryMax=192M
 TasksMax=64
 PrivateTmp=true
 PrivateDevices=true

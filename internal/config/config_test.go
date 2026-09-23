@@ -73,6 +73,19 @@ func TestValidateAcceptsAbsoluteExternalUIRoot(t *testing.T) {
 	}
 }
 
+func TestValidateRealityServerNameIndependentFromPublicOrigin(t *testing.T) {
+	cfg := validProductionConfig()
+	cfg.PublicOrigin = "https://192.0.2.10"
+	cfg.RealityServerName = "reality.aimili.test"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("fixed Reality SNI rejected for IP origin: %v", err)
+	}
+	cfg.RealityServerName = "192.0.2.10"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("IP Reality SNI accepted")
+	}
+}
+
 func TestValidateRejectsRelativeExternalUIRoot(t *testing.T) {
 	cfg := validProductionConfig()
 	cfg.ExternalUIRoot = filepath.FromSlash("ui/releases")
