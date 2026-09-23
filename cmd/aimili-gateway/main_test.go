@@ -128,8 +128,8 @@ func TestNewHTTPServerUsesApplicationHandler(t *testing.T) {
 }
 
 func TestNewHTTPServerAllowsLongProxyProvisioning(t *testing.T) {
-	server := newHTTPServer(config.Config{ListenAddress: "127.0.0.1:9080"}, http.NotFoundHandler())
-	if server.WriteTimeout < 2*time.Minute {
+	server := newHTTPServer(config.Config{ListenAddress: "127.0.0.1:9080", ProtocolTimeoutSeconds: 180}, http.NotFoundHandler())
+	if server.WriteTimeout < 5*time.Minute {
 		t.Fatalf("write timeout %s cannot cover Aimili provisioning and protocol validation", server.WriteTimeout)
 	}
 }
