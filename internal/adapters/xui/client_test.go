@@ -470,6 +470,47 @@ func TestEnsureLegacyMainBootstrapsAnEmptyOwnedChain(t *testing.T) {
 	}
 }
 
+func TestEnsureLegacyMainBootstrapsAlongsideExistingManagedGroup(t *testing.T) {
+	existing := map[string]any{"id": float64(7), "tag": "agw-jp-res-vless", "remark": "Aimili Gateway agw-jp-res VLESS", "protocol": "vless", "port": float64(20000)}
+	fixture := &xuiFixture{
+		inbounds: []map[string]any{existing},
+		initialXray: map[string]any{
+			"outbounds": []any{map[string]any{"tag": "agw-jp-res-socks", "protocol": "socks"}},
+			"routing": map[string]any{"rules": []any{map[string]any{"type": "field", "inboundTag": []any{"agw-jp-res-vless"}, "outboundTag": "agw-jp-res-socks"}}},
+		},
+	}
+	client := newXUIFixtureClient(t, fixture)
+	_, err := client.EnsureLegacyMain(context.Background(), LegacyMainDesired{
+		VLESSPort: 8443, MixedPort: 31000, SOCKSPort: 7928, VLESSClientID: "11111111-2222-4333-8444-555555555555", MixedUsername: "user", MixedPassword: "password",
+		RealityTarget: "127.0.0.1:443", RealityServerName: "proxy.example.test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(fixture.inbounds[0], existing) || len(fixture.inbounds) != 3 {
+		t.Fatalf("existing inbound changed during main bootstrap: %#v", fixture.inbounds)
+	}
+	if fixture.updatedXray == nil {
+		t.Fatal("main bootstrap did not update Xray")
+	}
+	if outbounds := asObjectSlice(fixture.updatedXray["outbounds"]); len(outbounds) < 1 || outbounds[0]["tag"] != "agw-jp-res-socks" || outbounds[0]["protocol"] != "socks" {
+		t.Fatal("existing managed outbound was lost")
+	}
+}
+
+func TestEnsureLegacyMainRejectsOccupiedPublicPort(t *testing.T) {
+	fixture := &xuiFixture{inbounds: []map[string]any{{"id": float64(7), "tag": "other", "remark": "Other", "protocol": "vless", "port": float64(8443)}}}
+	client := newXUIFixtureClient(t, fixture)
+	_, err := client.EnsureLegacyMain(context.Background(), LegacyMainDesired{
+		VLESSPort: 8443, MixedPort: 31000, SOCKSPort: 7928, VLESSClientID: "11111111-2222-4333-8444-555555555555", MixedUsername: "user", MixedPassword: "password",
+		RealityTarget: "127.0.0.1:443", RealityServerName: "proxy.example.test",
+	})
+	var adapterErr *AdapterError
+	if !errors.As(err, &adapterErr) || adapterErr.Code != "ownership_conflict" || len(fixture.addedProtocols) != 0 {
+		t.Fatalf("occupied public port was modified: err=%v protocols=%v", err, fixture.addedProtocols)
+	}
+}
+
 func TestEnsureLegacyMainMigratesOnlyHistoricalRealityCoverTarget(t *testing.T) {
 	legacySettings := mustJSONString(map[string]any{"clients": []any{map[string]any{"id": "legacy-client", "flow": "xtls-rprx-vision", "enable": true}}, "decryption": "none"})
 	legacyStream := mustJSONString(map[string]any{

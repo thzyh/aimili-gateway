@@ -400,7 +400,14 @@ func (service *Service) RepairXUI(ctx context.Context) (XUISummary, error) {
 	if err := service.groups.RepairManaged(ctx); err != nil {
 		return XUISummary{}, &Error{Code: "repair_failed"}
 	}
-	return service.XUI(ctx)
+	summary, err := service.XUI(ctx)
+	if err != nil {
+		return XUISummary{}, err
+	}
+	if !summary.OwnershipMatches {
+		return XUISummary{}, &Error{Code: "repair_failed"}
+	}
+	return summary, nil
 }
 
 func (service *Service) availableCandidates(ctx context.Context) ([]aimili.Candidate, error) {

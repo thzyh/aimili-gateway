@@ -71,10 +71,14 @@ func TestServiceReturnsOnlyApprovedMaintenanceSummaries(t *testing.T) {
 }
 
 func TestServiceChecksManagedSlotsAndRepairsOnlyManagedResources(t *testing.T) {
-	groups := []domain.ProxyGroup{{ID: "agw-jp-dc", ResourceName: "agw-jp-dc", Status: domain.ProxyGroupReady, AimiliSlot: 7, PublicInboundID: 11, MixedInboundID: 12}}
+	groups := []domain.ProxyGroup{{ID: "agw-jp-dc", ResourceName: "agw-jp-dc", Status: domain.ProxyGroupReady, AimiliSlot: 7, PublicInboundID: 11, MixedInboundID: 12, ConfigFingerprint: "current"}}
 	aimiliSource := &fakeAimiliSource{slots: []aimili.Slot{{Number: 7, EgressOK: true}}}
 	groupSource := &fakeGroupSource{groups: groups}
-	service, err := New(Config{MaxOnline: 1}, aimiliSource, &fakeXUISource{}, groupSource, &fakeAccountStatus{})
+	xuiSource := &fakeXUISource{snapshot: xui.Snapshot{
+		Inbounds: []xui.Inbound{{ID: 1, Tag: "aimili-reality", Protocol: "vless"}, {ID: 2, Tag: "agw-main-mixed", Protocol: "mixed"}, {ID: 11, Tag: "agw-jp-dc-vless", Protocol: "vless"}, {ID: 12, Tag: "agw-jp-dc-mixed", Protocol: "mixed"}},
+		Outbounds: []xui.Outbound{{Tag: "aimili-socks", Protocol: "socks"}, {Tag: "agw-jp-dc-socks", Protocol: "socks"}},
+	}}
+	service, err := New(Config{MaxOnline: 1}, aimiliSource, xuiSource, groupSource, &fakeAccountStatus{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,6 +93,16 @@ func TestServiceChecksManagedSlotsAndRepairsOnlyManagedResources(t *testing.T) {
 	}
 	if groupSource.repairCalls != 1 {
 		t.Fatalf("repair calls = %d", groupSource.repairCalls)
+	}
+}
+
+func TestRepairXUIReportsRemainingDrift(t *testing.T) {
+	service, err := New(Config{MaxOnline: 1}, &fakeAimiliSource{}, &fakeXUISource{}, &fakeGroupSource{}, &fakeAccountStatus{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.RepairXUI(context.Background()); err == nil || err.Error() != "maintenance operation failed: repair_failed" {
+		t.Fatalf("unresolved drift was reported as repaired: %v", err)
 	}
 }
 

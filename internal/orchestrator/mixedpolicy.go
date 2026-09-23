@@ -228,6 +228,21 @@ func (o *Orchestrator) MixedPolicy(ctx context.Context) (store.MixedSourcePolicy
 }
 
 func (o *Orchestrator) RepairManaged(ctx context.Context) error {
+	if mainStore, ok := o.store.(mainEgressStore); ok {
+		main, err := mainStore.GetMainEgress(ctx)
+		if err != nil && !errors.Is(err, store.ErrProxyGroupNotFound) {
+			return &Error{Code: "storage_failed"}
+		}
+		status, statusErr := o.aimili.MainStatus(ctx)
+		if statusErr != nil {
+			return operationError(statusErr)
+		}
+		if status.Active && status.EgressOK && (errors.Is(err, store.ErrProxyGroupNotFound) || main.CandidateID != status.CandidateID || main.ExitIP != status.ExitIP) {
+			if _, checkErr := o.CheckMain(ctx); checkErr != nil {
+				return checkErr
+			}
+		}
+	}
 	policy, err := o.store.GetMixedSourcePolicy(ctx)
 	if err != nil {
 		return &Error{Code: "storage_failed"}

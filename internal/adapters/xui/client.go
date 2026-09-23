@@ -1277,8 +1277,10 @@ func (c *Client) bootstrapLegacyMain(ctx context.Context, snapshot Snapshot, des
 	if strings.TrimSpace(desired.VLESSClientID) == "" {
 		return &AdapterError{Code: "invalid_request"}
 	}
-	if len(snapshot.Inbounds) != 0 {
-		return &AdapterError{Code: "managed_resource_missing"}
+	for _, inbound := range snapshot.Inbounds {
+		if inbound.Tag == "aimili-reality" || inbound.Port == desired.VLESSPort {
+			return &AdapterError{Code: "ownership_conflict"}
+		}
 	}
 	for _, outbound := range asObjectSlice(snapshot.XraySetting["outbounds"]) {
 		if stringValue(outbound["tag"]) == "aimili-socks" {

@@ -225,6 +225,72 @@ func TestRepairManagedReappliesCurrentPolicyOnlyToStoredGroups(t *testing.T) {
 	}
 }
 
+func TestRepairManagedRecoversMissingActiveMainBeforeReportingSuccess(t *testing.T) {
+	fixture := newFixture()
+	fixture.aimili.mainStatus = aimili.MainStatus{
+		CandidateID: "main-candidate", Country: "JP", CountryName: "日本", ProxyType: "datacenter",
+		ExitIP: "203.0.113.8", Port: 7928, EgressOK: true, Active: true,
+	}
+	if err := fixture.orchestrator(t).RepairManaged(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !fixture.store.mainEgress.Enabled || fixture.store.mainEgress.PublicInboundID != 1 || fixture.store.mainEgress.MixedInboundID != 98 || fixture.xui.ensureLegacyMainCalls == 0 {
+		t.Fatalf("missing main was not recovered: main=%#v calls=%d", fixture.store.mainEgress, fixture.xui.ensureLegacyMainCalls)
+	}
+}
+
+func TestRepairManagedSyncsSwitchedMainBeforeApplyingPolicy(t *testing.T) {
+	fixture := newFixture()
+	fixture.xui.snapshot.Inbounds = []xui.Inbound{{ID: 1, Tag: "aimili-reality", Remark: "Aimili Reality", Protocol: "vless", Port: 8443}}
+	fixture.store.mainEgress = store.MainEgress{
+		ResourceName: "agw-main", CountryCode: "JP", CountryName: "日本", ProxyType: domain.ProxyTypeDatacenter,
+		CandidateID: "old-main", ExitIP: "203.0.113.7", PublicInboundID: 1, MixedInboundID: 98,
+		PublicPort: 8443, MixedPort: 31000, Enabled: true, UpdatedAt: fixture.now(),
+	}
+	fixture.store.protocolModes["agw-main"] = domain.EgressProtocolMode{
+		EgressID: "agw-main", ActiveMode: domain.ProtocolVLESSTCPRealityVision,
+		DesiredMode: domain.ProtocolVLESSTCPRealityVision, State: domain.ProtocolReady, Version: 1, UpdatedAt: fixture.now(),
+	}
+	fixture.aimili.mainStatus = aimili.MainStatus{
+		CandidateID: "new-main", Country: "JP", CountryName: "日本", ProxyType: "residential",
+		ExitIP: "203.0.113.8", Port: 7928, EgressOK: true, Active: true,
+	}
+	if err := fixture.orchestrator(t).RepairManaged(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if fixture.store.mainEgress.CandidateID != "new-main" || fixture.store.mainEgress.ExitIP != "203.0.113.8" || fixture.store.policy.ApplyStatus != store.MixedPolicyApplied {
+		t.Fatalf("main was not synchronized before policy apply: main=%#v policy=%#v", fixture.store.mainEgress, fixture.store.policy)
+	}
+	if len(fixture.validator.socksExpectedIPs) == 0 || fixture.validator.socksExpectedIPs[0] != "203.0.113.8" {
+		t.Fatalf("main validation used a stale exit: %#v", fixture.validator.socksExpectedIPs)
+	}
+}
+
+func TestRepairManagedLeavesPolicyUntouchedWhenSwitchedMainFailsValidation(t *testing.T) {
+	fixture := newFixture()
+	fixture.store.mainEgress = store.MainEgress{
+		ResourceName: "agw-main", CountryCode: "JP", CountryName: "日本", ProxyType: domain.ProxyTypeDatacenter,
+		CandidateID: "old-main", ExitIP: "203.0.113.7", PublicInboundID: 1, MixedInboundID: 98,
+		PublicPort: 8443, MixedPort: 31000, Enabled: true, UpdatedAt: fixture.now(),
+	}
+	fixture.store.protocolModes["agw-main"] = domain.EgressProtocolMode{
+		EgressID: "agw-main", ActiveMode: domain.ProtocolVLESSTCPRealityVision,
+		DesiredMode: domain.ProtocolVLESSTCPRealityVision, State: domain.ProtocolReady, Version: 1, UpdatedAt: fixture.now(),
+	}
+	fixture.xui.snapshot.Inbounds = []xui.Inbound{{ID: 1, Tag: "aimili-reality", Remark: "Aimili Reality", Protocol: "vless", Port: 8443}}
+	fixture.aimili.mainStatus = aimili.MainStatus{
+		CandidateID: "new-main", Country: "JP", CountryName: "日本", ProxyType: "residential",
+		ExitIP: "203.0.113.8", Port: 7928, EgressOK: true, Active: true,
+	}
+	fixture.validator.publicErrors = []error{&validator.Error{Code: "proxy_auth_failed"}}
+	if err := fixture.orchestrator(t).RepairManaged(context.Background()); err == nil {
+		t.Fatal("unverified main was accepted")
+	}
+	if fixture.store.policy.ApplyStatus != store.MixedPolicyApplied || fixture.store.mainEgress.CandidateID != "old-main" || len(fixture.xui.updateNames) != 0 {
+		t.Fatalf("failed main check changed policy or resources: policy=%#v main=%#v updates=%v", fixture.store.policy, fixture.store.mainEgress, fixture.xui.updateNames)
+	}
+}
+
 func TestRepairManagedPersistsRealityMaterialReturnedByXUI(t *testing.T) {
 	fixture := newFixture()
 	fixture.store.groups = map[string]domain.ProxyGroup{
