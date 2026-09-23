@@ -5,7 +5,7 @@ umask 077
 readonly release_tag='v0.2.0-vps'
 readonly release_base="https://github.com/thzyh/aimili-gateway/releases/download/${release_tag}"
 readonly public_key_url='https://raw.githubusercontent.com/thzyh/aimili-gateway/main/deploy/vps/release-public.pem'
-readonly public_key_sha='850deb6159cce5a6b35806b7269c5f0aea5bfdce9014dac4f7f04bdaf207b831'
+readonly public_key_sha='a67f4f24fb69d0112a3855ac40649d0f80064df98d264a04fd722f46d2cacfbd'
 readonly cache="/var/cache/aimili-gateway/${release_tag}"
 
 if (( EUID != 0 )); then
