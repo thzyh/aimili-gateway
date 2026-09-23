@@ -376,11 +376,6 @@ def write_caddy(origin: str, domain: str) -> None:
     }}
     handle {{ reverse_proxy 127.0.0.1:9080 }}
 }}
-https://{REALITY_SNI}:443 {{
-    bind 127.0.0.1
-    tls internal
-    respond 204
-}}
 """
     # Keep readable multi-line Caddyfile blocks; Caddy 2.6 rejects inline handle bodies.
     caddy = caddy.replace("handle @xui { reverse_proxy 127.0.0.1:2001 }", "handle @xui {\n        reverse_proxy 127.0.0.1:2001\n    }")
