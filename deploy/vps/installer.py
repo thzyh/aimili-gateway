@@ -311,7 +311,13 @@ def install_egress(args: argparse.Namespace, slots: int, credentials: dict) -> N
     target = Path("/opt/aimili-gateway/services/aimili-egress")
     source = args.asset_root / "services/aimili-egress"
     target.mkdir(parents=True, exist_ok=True)
-    for path in source.glob("*.py"):
+    files = list(source.glob("*.py"))
+    unit_source = args.asset_root / "deploy/systemd/aimilivpn.service"
+    unit_target = Path("/etc/systemd/system/aimilivpn.service")
+    changed = any(not (target / path.name).exists() or sha256(path) != sha256(target / path.name) for path in files)
+    changed = changed or not unit_target.exists() or sha256(unit_source) != sha256(unit_target)
+    was_running = subprocess.run(["systemctl", "is-active", "--quiet", "aimilivpn.service"]).returncode == 0
+    for path in files:
         shutil.copy2(path, target / path.name)
     EGRESS.mkdir(parents=True, exist_ok=True)
     os.chown(EGRESS, 0, 0)
@@ -327,9 +333,12 @@ def install_egress(args: argparse.Namespace, slots: int, credentials: dict) -> N
         if active != list(range(slots)) and load_json(STATE).get("status") == "complete":
             raise InstallError(f"现有 egress 槽位 {active} 与目标 0–{slots-1} 不一致，安装器不会自动删除已交付的运行出口")
     write(Path("/etc/default/aimilivpn"), f"MULTI_EXIT_SLOTS={slots}\nMAX_EXIT_SLOTS=16\nTARGET_VALID_POOL_SIZE=64\nMAX_VALID_POOL_SIZE=150\nOPENVPN_TEST_CONCURRENCY=4\nMAIN_EGRESS_FAIL_THRESHOLD=3\nSLOT_EGRESS_FAIL_THRESHOLD=3\nCOLLECTOR_BUSY_RETRY_SECONDS=600\nUI_HOST=127.0.0.1\n")
-    copy_mode(args.asset_root / "deploy/systemd/aimilivpn.service", Path("/etc/systemd/system/aimilivpn.service"), 0o644)
+    copy_mode(unit_source, unit_target, 0o644)
     run(["systemctl", "daemon-reload"])
     run(["systemctl", "enable", "--now", "aimilivpn.service"])
+    if was_running and changed:
+        say("aimili-egress 文件已变化，正在重启运行服务……")
+        run(["systemctl", "restart", "aimilivpn.service"])
     wait_for("egress 控制接口", lambda: socket_open("127.0.0.1", 8790), 60)
     checkpoint("egress")
 
