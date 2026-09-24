@@ -23,4 +23,21 @@
 - Python 6 项测试通过，包含真实 OpenSSL 签名篡改拒绝、路径攻击拒绝、成功安装与健康失败后的数据库恢复。
 - 前端生产构建通过。
 - 复杂度审查：复用现有事务与系统 timer，未新增第三方依赖；保留下载/安装权限隔离和独立请求队列。
-- 生产补丁部署、发布和用户验收结果待补充；上述测试不代表 jjs 已升级。
+
+## jjs 已部署的范围
+
+- 只在 `eea92cb31d88923c666c00eb969fb9302bda3fed` 基础上回移更新模块、API 与页面；运行版本标识为 `dev+update-bootstrap`，版本目录标识为 `legacy-eea92cb+update-bootstrap`。
+- 已安装独立 fetch/install timer、VPS 发布公钥与 root 离线安装器；配置只启用 `projectUpdateEnabled` 并切回包含补丁的内嵌前端。
+- 仅 Gateway 重启；AimiliVPN、x-ui、Caddy 的启动时间均未变。Gateway 与 3x-ui 数据库 quick_check 通过，连接身份摘要未变。
+- 唯一补丁备份：`/var/backups/aimili-gateway/update-bootstrap-20260925`。公网首页 HTTP 200，引用补丁 JS `index-nu9y_1cJ.js`。
+- Linux 上再次执行更新器 6 项测试通过。实际低权限请求客户端 → systemd 下载器 → root 离线验签 → 版本目录链路已检测到正式版本，check 事务为 success；不使用伪造目录。
+- 现有 x-ui 自动化账户用于 Gateway API 登录返回 401，未重置任何账户。生产端鉴权页面和确认按钮尚未由本轮浏览器操作验证；API 鉴权/CSRF、页面确认及恢复流程通过本地测试，最后的用户页面验收仍待完成。
+- 正式 apply 请求为 0；未将 jjs 升级为最新项目，未在 jjs 执行数据库迁移 013。用户点击确认后的下载、安装、重启与实际升级结果必须由该事务另行验收。
+
+## 最终发布与检测
+
+- 最终目标 `v0.2.13-vps`，代码提交 `befab0809a519efeb0b5c498e2f5d467206459ea`；GitHub Release 为非草稿，清单、签名和完整包均已上传。定制 3x-ui 资产复用签名清单锁定的 `v0.2.5-vps` 下载地址及摘要。
+- jjs 第二次真实 check 于北京时间 2026-09-25 04:53:35 成功，可信版本目录返回 `project / v0.2.13-vps / compatible=true`。
+- 另外在临时目录下载并验签、验摘要、解包完整目标版本，执行包内 `version --json`，版本和提交与签名清单一致；固定安装清单的 12 项文件均存在。没有执行安装函数。
+- 目标 3x-ui 二进制与 jjs 当前二进制摘要不同，因此用户正式升级会安装包中指定版本，不是仅更换 UI。现有 3x-ui 数据库将先备份，身份检查失败将回滚。
+- 目录、服务健康和所有启用入站监听预检通过；当前版本仍为 `legacy-eea92cb+update-bootstrap`，apply 请求数仍为 0。
