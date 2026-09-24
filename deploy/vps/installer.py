@@ -231,7 +231,7 @@ def preflight() -> None:
 def system_packages() -> None:
     say("正在安装 Ubuntu 官方软件包与 Swap……")
     run(["apt-get", "update", "-qq"], timeout=600)
-    run(["apt-get", "install", "-y", "-qq", "openvpn", "caddy", "ufw", "python3-requests", "python3-cryptography"], timeout=900)
+    run(["apt-get", "-o", "DPkg::Lock::Timeout=1800", "install", "-y", "-qq", "openvpn", "caddy", "ufw", "python3-requests", "python3-cryptography"], timeout=2400)
     if not shutil.which("openvpn") and not Path("/usr/sbin/openvpn").exists():
         raise InstallError("OpenVPN 安装后仍不可用")
     if Path("/proc/meminfo").read_text().split("SwapTotal:")[1].split()[0] == "0":

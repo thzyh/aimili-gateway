@@ -4,6 +4,8 @@ umask 077
 
 readonly release_tag='v0.2.5-vps'
 readonly release_base="https://github.com/thzyh/aimili-gateway/releases/download/${release_tag}"
+readonly xui_asset_tag='v0.2.5-vps'
+readonly xui_release_base="https://github.com/thzyh/aimili-gateway/releases/download/${xui_asset_tag}"
 readonly public_key_url='https://raw.githubusercontent.com/thzyh/aimili-gateway/main/deploy/vps/release-public.pem'
 readonly public_key_sha='a67f4f24fb69d0112a3855ac40649d0f80064df98d264a04fd722f46d2cacfbd'
 readonly cache="/var/cache/aimili-gateway/${release_tag}"
@@ -50,8 +52,18 @@ for asset in "${assets[@]}"; do
     target="$cache/$name"
     if [[ ! -s "$target" || "$(sha256sum "$target" | cut -d' ' -f1)" != "$digest" ]]; then
         rm -f -- "$target"
-        printf '正在下载 %s……\n' "$name"
-        download "$release_base/$name" "$target"
+        asset_url="$release_base/$name"
+        if [[ "$name" == 'x-ui-custom-linux-amd64' ]]; then
+            asset_url="$xui_release_base/$name"
+            previous="/var/cache/aimili-gateway/${xui_asset_tag}/$name"
+            if [[ "$previous" != "$target" && -s "$previous" && "$(sha256sum "$previous" | cut -d' ' -f1)" == "$digest" ]]; then
+                cp -- "$previous" "$target"
+            fi
+        fi
+        if [[ ! -s "$target" ]]; then
+            printf '正在下载 %s……\n' "$name"
+            download "$asset_url" "$target"
+        fi
     fi
     [[ "$(sha256sum "$target" | cut -d' ' -f1)" == "$digest" ]] || { printf '发布资产摘要不匹配：%s\n' "$name" >&2; exit 3; }
 done

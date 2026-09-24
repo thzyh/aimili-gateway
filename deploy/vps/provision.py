@@ -204,6 +204,13 @@ def stabilize_initial_slots(slots: int) -> None:
                 })
                 if result.get("egress_ok"):
                     break
+                for _ in range(10):
+                    time.sleep(2)
+                    checked = control_request("GET", f"slots/{number}")
+                    if checked.get("egress_ok"):
+                        break
+                if checked.get("egress_ok"):
+                    break
                 last_error = "candidate_not_ready"
             except (APIError, ValueError) as error:
                 last_error = str(error)
