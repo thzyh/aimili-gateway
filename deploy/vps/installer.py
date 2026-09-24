@@ -376,6 +376,11 @@ def write_caddy(origin: str, domain: str) -> None:
     }}
     handle {{ reverse_proxy 127.0.0.1:9080 }}
 }}
+
+{REALITY_SNI} {{
+    tls internal
+    respond "OK" 200
+}}
 """
     # Keep readable multi-line Caddyfile blocks; Caddy 2.6 rejects inline handle bodies.
     caddy = caddy.replace("handle @xui { reverse_proxy 127.0.0.1:2001 }", "handle @xui {\n        reverse_proxy 127.0.0.1:2001\n    }")
@@ -472,7 +477,7 @@ def install_gateway(args: argparse.Namespace, origin: str, domain: str, slots: i
             elif master.read_bytes() != result.stdout:
                 raise InstallError("明文与加密 master key 不一致，拒绝继续")
     cert, key = certificate(origin, domain)
-    cfg = {"listenAddress":"127.0.0.1:9080","publicOrigin":origin,"realityServerName":REALITY_SNI,"databasePath":str(ROOT/"aimili-gateway.db"),"masterKeyFile":"/run/credentials/aimili-gateway.service/gateway-master-key","aimiliAddress":"127.0.0.1:8787","aimiliControlUrl":"http://127.0.0.1:8790/","aimiliControlTokenFile":"/run/credentials/aimili-gateway.service/aimili-control-token","xuiBaseUrl":"http://127.0.0.1:2001/xui/","xuiCredentialsFile":"/run/credentials/aimili-gateway.service/xui-automation","aimiliBackendUrl":"/vpngate/","maxProxyGroups":slots,"vlessPortStart":20000,"vlessPortEnd":20999,"mixedPortStart":30000,"mixedPortEnd":30999,"aggregateVlessPort":21000,"mainMixedPort":31000,"xrayPath":"/usr/local/x-ui/bin/xray-linux-amd64","probeHost":"api.ipify.org","mixedSourceCidrs":[source+"/32"],"expertModeUrl":"/xui/","protocolRequestDir":str(ROOT/"protocol-spool/requests"),"protocolResultDir":str(ROOT/"protocol-spool/results"),"protocolTimeoutSeconds":180,"externalUiRoot":str(ROOT/"ui")}
+    cfg = {"listenAddress":"127.0.0.1:9080","publicOrigin":origin,"realityServerName":REALITY_SNI,"databasePath":str(ROOT/"aimili-gateway.db"),"masterKeyFile":"/run/credentials/aimili-gateway.service/gateway-master-key","aimiliAddress":"127.0.0.1:8787","aimiliControlUrl":"http://127.0.0.1:8790/","aimiliControlTokenFile":"/run/credentials/aimili-gateway.service/aimili-control-token","xuiBaseUrl":"http://127.0.0.1:2001/xui/","xuiCredentialsFile":"/run/credentials/aimili-gateway.service/xui-automation","aimiliBackendUrl":"/vpngate/","maxProxyGroups":slots,"maxAimiliSlots":slots,"vlessPortStart":20000,"vlessPortEnd":20999,"mixedPortStart":30000,"mixedPortEnd":30999,"aggregateVlessPort":21000,"mainMixedPort":31000,"xrayPath":"/usr/local/x-ui/bin/xray-linux-amd64","probeHost":"api.ipify.org","mixedSourceCidrs":[source+"/32"],"expertModeUrl":"/xui/","protocolRequestDir":str(ROOT/"protocol-spool/requests"),"protocolResultDir":str(ROOT/"protocol-spool/results"),"protocolTimeoutSeconds":180,"externalUiRoot":str(ROOT/"ui")}
     if not db.exists():
         init = dict(cfg)
         init["masterKeyFile"] = str(master)
@@ -551,11 +556,17 @@ def main() -> int:
             raise InstallError("provision 模块缺失")
         module = module_from_spec(spec)
         spec.loader.exec_module(module)
-        if current.get("status") != "complete":
-            if module.remove_unneeded_slots(origin, slots, credentials):
-                run(["systemctl", "restart", "aimilivpn.service"])
+        try:
+            if current.get("status") != "complete":
+                if module.remove_unneeded_slots(origin, slots, credentials):
+                    run(["systemctl", "restart", "aimilivpn.service"])
+                module.stabilize_initial_slots(slots)
                 wait_egress(slots)
-        module.provision(origin, slots, credentials, source)
+            module.provision(origin, slots, credentials, source)
+        except InstallError:
+            raise
+        except Exception as error:
+            raise InstallError(f"Gateway 业务验收失败：{type(error).__name__}: {error}") from error
         checkpoint("verified", origin=origin, domain=domain, slots=slots, allowedSource=source, status="complete")
         say(f"安装成功：{origin}；账户信息位于 {creds}（仅 root 可读）。")
         return 0

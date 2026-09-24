@@ -9,6 +9,31 @@ import (
 	"github.com/thzyh/aimili-gateway/internal/domain"
 )
 
+func TestReserveAimiliSlotDoesNotExpandBoundedDeployment(t *testing.T) {
+	fixture := newFixture()
+	fixture.aimili.createdSlots = map[int]aimili.Slot{0: {Number: 0}, 1: {Number: 1}}
+	orchestrator := fixture.orchestratorWithMax(t, 4)
+	orchestrator.config.MaxAimiliSlots = 2
+	if _, err := orchestrator.reserveAimiliSlot(context.Background(), nil); codeOf(err) != "slot_capacity_exceeded" {
+		t.Fatalf("expected slot capacity error, got %v", err)
+	}
+}
+
+func TestReconcileDoesNotAdoptSlotOutsideBound(t *testing.T) {
+	fixture := newFixture()
+	fixture.aimili.createdSlots = map[int]aimili.Slot{4: {
+		Number: 4, NodeID: "extra-node", Country: "JP", CountryName: "日本",
+		ProxyType: "datacenter", Status: "up", EgressOK: true, ExitIP: "203.0.113.44",
+	}}
+	orchestrator := fixture.orchestratorWithMax(t, 4)
+	orchestrator.config.MaxAimiliSlots = 4
+	orchestrator.Reconcile(context.Background())
+	groups, err := fixture.store.ListProxyGroups(context.Background())
+	if err != nil || len(groups) != 0 {
+		t.Fatalf("out of range slot adopted: groups=%#v err=%v", groups, err)
+	}
+}
+
 func TestReconcileCreatesEveryAvailableCandidateEvenWithinOneClassification(t *testing.T) {
 	fixture := newFixture()
 	fixture.aimili.candidates = []aimili.Candidate{

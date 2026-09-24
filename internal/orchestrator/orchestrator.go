@@ -27,6 +27,7 @@ const (
 
 type Config struct {
 	MaxGroups           int
+	MaxAimiliSlots      int
 	VLESSPortStart      int
 	VLESSPortEnd        int
 	MixedPortStart      int
@@ -488,6 +489,9 @@ func (o *Orchestrator) reserveAimiliSlot(ctx context.Context, groups []domain.Pr
 		used[slot.Number] = struct{}{}
 	}
 	for number := 0; ; number++ {
+		if o.config.MaxAimiliSlots > 0 && number >= o.config.MaxAimiliSlots {
+			return 0, &Error{Code: "slot_capacity_exceeded"}
+		}
 		if _, exists := used[number]; !exists {
 			return number, nil
 		}

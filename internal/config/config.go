@@ -36,6 +36,7 @@ type Config struct {
 	AimiliBackendURL       string   `json:"aimiliBackendUrl"`
 	ExpertModeURL          string   `json:"expertModeUrl"`
 	MaxProxyGroups         int      `json:"maxProxyGroups"`
+	MaxAimiliSlots         int      `json:"maxAimiliSlots"`
 	VLESSPortStart         int      `json:"vlessPortStart"`
 	VLESSPortEnd           int      `json:"vlessPortEnd"`
 	MixedPortStart         int      `json:"mixedPortStart"`
@@ -183,6 +184,9 @@ func (c Config) Validate() error {
 		c.VLESSPortEnd < c.VLESSPortStart || c.MixedPortStart < 1 || c.MixedPortEnd > 65535 || c.MixedPortEnd < c.MixedPortStart ||
 		!(c.VLESSPortEnd < c.MixedPortStart || c.MixedPortEnd < c.VLESSPortStart) {
 		return errors.New("invalid proxy group capacity or port ranges")
+	}
+	if c.MaxAimiliSlots < 0 || c.MaxAimiliSlots > 64 {
+		return errors.New("maxAimiliSlots must be between 0 and 64")
 	}
 	if c.AggregateVLESSPort < 1 || c.AggregateVLESSPort > 65535 || c.MainMixedPort < 1 || c.MainMixedPort > 65535 || c.AggregateVLESSPort == c.MainMixedPort ||
 		(c.AggregateVLESSPort >= c.VLESSPortStart && c.AggregateVLESSPort <= c.VLESSPortEnd) ||

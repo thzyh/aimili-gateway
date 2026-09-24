@@ -2,6 +2,7 @@
 """使用正式 Gateway API 验证新部署与域名切换。"""
 
 import http.cookiejar
+import ipaddress
 import json
 import sqlite3
 import ssl
@@ -45,10 +46,11 @@ class GatewayClient:
                     raise APIError(f"HTTP {response.status}")
         except urllib.error.HTTPError as error:
             try:
-                code = json.loads(error.read(4096)).get("error", {}).get("code", "request_failed")
+                detail = json.loads(error.read(4096)).get("error", "request_failed")
+                code = detail.get("code", "request_failed") if isinstance(detail, dict) else str(detail)
             except (ValueError, AttributeError):
                 code = "request_failed"
-            raise APIError(str(code)) from None
+            raise APIError(f"HTTP {error.code}: {code}") from None
         except (OSError, urllib.error.URLError) as error:
             raise APIError(type(error).__name__) from None
         if not raw:
@@ -151,3 +153,59 @@ def remove_unneeded_slots(origin: str, slots: int, credentials: dict) -> bool:
         temporary.chmod(0o600)
         temporary.replace(config_path)
     return changed
+
+
+def stabilize_initial_slots(slots: int) -> None:
+    """首次安装时给失效的预建出口位分配不同国家的健康候选。"""
+    token = Path("/etc/aimilivpn/control.token").read_text().strip()
+    base = "http://127.0.0.1:8790/control/v1/"
+
+    def control_request(method: str, path: str, body=None):
+        headers = {"Authorization": "Bearer " + token}
+        data = None if body is None else json.dumps(body).encode()
+        if data is not None:
+            headers["Content-Type"] = "application/json"
+        request = urllib.request.Request(base + path, data=data, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response:
+                return json.load(response).get("data")
+        except urllib.error.HTTPError as error:
+            try:
+                detail = json.loads(error.read(4096)).get("error", {})
+                code = detail.get("code", "operation_failed") if isinstance(detail, dict) else str(detail)
+            except ValueError:
+                code = "operation_failed"
+            raise APIError(f"egress HTTP {error.code}: {code}") from None
+
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        observed = {item.get("slot"): item for item in control_request("GET", "slots")}
+        if all(observed.get(number, {}).get("egress_ok") for number in range(slots)):
+            return
+        time.sleep(5)
+
+    for number in range(slots):
+        current = {item.get("slot"): item for item in control_request("GET", "slots")}
+        if current.get(number, {}).get("egress_ok"):
+            continue
+        candidates = control_request("GET", "candidates")
+        candidates.sort(key=lambda item: (-float(item.get("score") or 0), float(item.get("latency_ms") or 999999)))
+        last_error = "no_available_candidate"
+        for candidate in candidates[:20]:
+            country = str(candidate.get("country_short") or "").upper()
+            proxy_type = candidate.get("proxy_type")
+            if len(country) != 2 or proxy_type not in ("datacenter", "residential"):
+                continue
+            try:
+                if candidate.get("exit_ip"):
+                    ipaddress.ip_address(candidate["exit_ip"])
+                result = control_request("POST", f"slots/{number}/assign", {
+                    "candidateId": candidate["id"], "country": country, "proxyType": proxy_type,
+                })
+                if result.get("egress_ok"):
+                    break
+                last_error = "candidate_not_ready"
+            except (APIError, ValueError) as error:
+                last_error = str(error)
+        else:
+            raise RuntimeError(f"出口位 {number + 1} 初始化失败：{last_error}")

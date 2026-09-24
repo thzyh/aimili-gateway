@@ -255,7 +255,7 @@ func (o *Orchestrator) adoptUnmanagedSlots(ctx context.Context, groups []domain.
 	failures := 0
 	for _, slot := range slots {
 		candidateID := strings.TrimSpace(slot.NodeID)
-		if len(groups) >= o.config.MaxGroups || candidateID == "" || !slot.EgressOK || (slot.Status != "up" && slot.Status != "ready") {
+		if (o.config.MaxAimiliSlots > 0 && slot.Number >= o.config.MaxAimiliSlots) || len(groups) >= o.config.MaxGroups || candidateID == "" || !slot.EgressOK || (slot.Status != "up" && slot.Status != "ready") {
 			continue
 		}
 		if _, claimed := claimedSlots[slot.Number]; claimed {

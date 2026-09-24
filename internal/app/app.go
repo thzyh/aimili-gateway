@@ -228,7 +228,7 @@ func newRuntimeServices(ctx context.Context, cfg config.Config, database *store.
 		}
 	}
 	proxy, err := orchestrator.New(orchestrator.Config{
-		MaxGroups: cfg.MaxProxyGroups, VLESSPortStart: cfg.VLESSPortStart, VLESSPortEnd: cfg.VLESSPortEnd,
+		MaxGroups: cfg.MaxProxyGroups, MaxAimiliSlots: cfg.MaxAimiliSlots, VLESSPortStart: cfg.VLESSPortStart, VLESSPortEnd: cfg.VLESSPortEnd,
 		MixedPortStart: cfg.MixedPortStart, MixedPortEnd: cfg.MixedPortEnd, AggregateVLESSPort: cfg.AggregateVLESSPort, MainMixedPort: cfg.MainMixedPort,
 		PublicHost: publicHost, PublicOrigin: cfg.PublicOrigin, RealityServerName: realityServerName,
 		XrayPath: cfg.XrayPath, ProbeHost: cfg.ProbeHost, ProtocolTransaction: protocolClient,
