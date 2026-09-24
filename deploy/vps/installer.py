@@ -582,7 +582,9 @@ def main() -> int:
             if current.get("status") != "complete":
                 if module.remove_unneeded_slots(origin, slots, credentials):
                     run(["systemctl", "restart", "aimilivpn.service"])
-                module.stabilize_initial_slots(slots)
+            # 重跑时节点也可能已经失效；只重分配真实出口不通的出口位。
+            module.stabilize_initial_slots(slots)
+            if current.get("status") != "complete":
                 wait_egress(slots)
             module.provision(origin, slots, credentials, source)
             if credentials != stored_credentials:
