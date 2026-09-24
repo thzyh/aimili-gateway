@@ -1,0 +1,20 @@
+[Unit]
+Description=Verify and install signed Aimili Gateway project releases offline
+After=network.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/python3 /usr/local/lib/aimili-gateway/project_update.py install
+TimeoutStartSec=15min
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/aimili-gateway-project-update /var/lib/aimili-gateway/project-update
+ReadWritePaths=/usr/local/bin /usr/local/sbin /usr/local/lib/aimili-gateway /usr/lib/aimili-gateway /opt/aimili-gateway
+ReadWritePaths=/etc/aimili-gateway /var/lib/aimili-gateway /etc/x-ui /usr/local/x-ui
+IPAddressDeny=any
+IPAddressAllow=localhost
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

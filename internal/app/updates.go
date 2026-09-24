@@ -23,6 +23,9 @@ type updateManager struct {
 }
 
 func newUpdateManager(cfg config.Config) httpapi.UpdateManager {
+	if cfg.ProjectUpdateEnabled {
+		return newProjectUpdateManager()
+	}
 	if !cfg.UpdateEnabled || cfg.UpdateRequestDir == "" || cfg.UpdateResultDir == "" {
 		return nil
 	}

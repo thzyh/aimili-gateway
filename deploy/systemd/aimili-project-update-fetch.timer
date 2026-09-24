@@ -1,0 +1,8 @@
+[Unit]
+Description=Process confirmed project download requests
+[Timer]
+OnBootSec=10s
+OnUnitInactiveSec=5s
+AccuracySec=1s
+[Install]
+WantedBy=timers.target

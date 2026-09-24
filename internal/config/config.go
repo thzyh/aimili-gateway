@@ -53,6 +53,7 @@ type Config struct {
 	UpdateRequestDir       string   `json:"updateRequestDir"`
 	UpdateResultDir        string   `json:"updateResultDir"`
 	UpdateEnabled          bool     `json:"updateEnabled"`
+	ProjectUpdateEnabled   bool     `json:"projectUpdateEnabled"`
 	UpdateCatalogFile      string   `json:"updateCatalogFile"`
 
 	localTest bool

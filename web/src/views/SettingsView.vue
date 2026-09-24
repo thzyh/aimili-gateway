@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { APIError, apiFetch, type MixedSourcePolicyPayload, type SettingsSummaryPayload, type UpdateKind, type UpdateResultPayload, type UpdateSummaryPayload, type UpdateVersionPayload } from '../api/client'
 import AppShell from '../components/AppShell.vue'
+import ProjectUpdatePanel from '../components/ProjectUpdatePanel.vue'
 import UiNotice from '../components/UiNotice.vue'
 import type { NoticeKind, UiNoticeData } from '../components/errorMessages'
 
@@ -383,7 +384,8 @@ function messageFor(error: unknown, fallback: string): string {
         <p class="boundary-note">出口引擎继续作为独立服务运行，但不再向 Gateway 用户展示 AimiliVPN 原后台。</p>
       </section>
 
-      <section class="services-section update-section">
+      <ProjectUpdatePanel v-if="updates?.project" class="services-section" :initial="updates" />
+      <section v-else class="services-section update-section">
         <div class="section-title"><p class="section-kicker">GATEWAY UPDATE</p><h2>检测更新</h2><p>从公开 GitHub 正式版本检测更新；安装前仍会校验签名、文件摘要和兼容性。</p></div>
         <UiNotice v-if="updateNotice" :key="updateNotice.id" data-update-notice class="update-notice" :notice="updateNotice" @close="updateNotice=null" />
         <div class="update-grid single">

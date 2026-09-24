@@ -19,6 +19,21 @@ func TestUpdateGETRequiresAuthenticatedAdmin(t *testing.T) {
 	assertResponseStatus(t, response, http.StatusUnauthorized)
 }
 
+func TestProjectCheckRequiresCSRFAndNeverApplies(t *testing.T) {
+	manager := &fakeUpdateManager{summary: UpdateSummary{Enabled: true, Project: true}}
+	env := newAuthTestEnvironmentConfigured(t, true, func(d *Dependencies) { d.Updates = manager })
+	assertResponseStatus(t, env.login(t), http.StatusNoContent)
+	body := map[string]string{"runId": strings.Repeat("c", 64)}
+	path := "/api/v1/system/updates/check"
+	assertResponseStatus(t, env.request(t, http.MethodPost, path, body, env.origin, ""), http.StatusForbidden)
+	assertResponseStatus(t, env.request(t, http.MethodPost, path, body, env.origin, env.session(t).CSRFToken), http.StatusAccepted)
+	if manager.submitCalls != 1 || manager.lastRequest.Action != "check" || manager.lastRequest.Version != "" {
+		t.Fatalf("%+v", manager.lastRequest)
+	}
+	manager.summary.Project = false
+	assertResponseStatus(t, env.request(t, http.MethodPost, path, body, env.origin, env.session(t).CSRFToken), http.StatusServiceUnavailable)
+}
+
 func TestUpdatePOSTRequiresCSRFAndAuthenticatedSession(t *testing.T) {
 	manager := &fakeUpdateManager{summary: updateSummaryFixture()}
 	environment := newAuthTestEnvironmentConfigured(t, true, func(dependencies *Dependencies) { dependencies.Updates = manager })

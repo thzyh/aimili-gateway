@@ -1,0 +1,28 @@
+[Unit]
+Description=Download signed Aimili Gateway project releases
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=aimili-gateway-updater
+Group=aimili-gateway-updater
+SupplementaryGroups=aimili-gateway
+ExecStart=/usr/bin/python3 /usr/local/lib/aimili-gateway/project_update.py fetch
+TimeoutStartSec=35min
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=/var/lib/aimili-gateway-project-update/staging
+InaccessiblePaths=-/etc/aimili-gateway -/etc/aimilivpn -/etc/x-ui -/run/credentials
+InaccessiblePaths=-/var/lib/aimili-gateway/aimili-gateway.db -/var/lib/aimili-gateway/aimili-egress
+

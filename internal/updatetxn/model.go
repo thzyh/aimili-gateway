@@ -15,6 +15,7 @@ var (
 type Kind string
 
 const (
+	KindProject Kind = "project"
 	KindUI      Kind = "ui"
 	KindGateway Kind = "gateway"
 )
@@ -22,6 +23,7 @@ const (
 type Action string
 
 const (
+	ActionCheck    Action = "check"
 	ActionApply    Action = "apply"
 	ActionRollback Action = "rollback"
 )

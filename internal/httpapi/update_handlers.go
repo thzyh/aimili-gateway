@@ -22,6 +22,8 @@ type UpdateVersion struct {
 }
 
 type UpdateSummary struct {
+	Project        bool            `json:"project,omitempty"`
+	ActiveRunID    string          `json:"activeRunId,omitempty"`
 	Enabled        bool            `json:"enabled"`
 	CurrentGateway string          `json:"currentGateway"`
 	CurrentUI      string          `json:"currentUi,omitempty"`
@@ -36,6 +38,9 @@ type UpdateRequest struct {
 }
 
 type UpdateResult struct {
+	Phase     string `json:"phase,omitempty"`
+	Percent   int    `json:"percent,omitempty"`
+	Action    string `json:"action,omitempty"`
 	RunID     string `json:"runId"`
 	Kind      string `json:"kind"`
 	Version   string `json:"version,omitempty"`
@@ -130,7 +135,7 @@ func (s *server) handleUpdateMutation(response http.ResponseWriter, request *htt
 	}
 	update.RunID = input.RunID
 	summary, listErr := s.updates.List(request.Context())
-	if listErr != nil || !summary.Enabled {
+	if listErr != nil || !summary.Enabled || (update.Kind == "project" && !summary.Project) {
 		writeAPIError(response, http.StatusServiceUnavailable, "updates_disabled")
 		return
 	}
@@ -186,9 +191,16 @@ func (s *server) handleUpdateStatus(response http.ResponseWriter, request *http.
 	writeJSON(response, http.StatusOK, result)
 }
 
-func validUpdateKind(kind string) bool { return kind == "ui" || kind == "gateway" }
+func (s *server) handleCheckUpdates(response http.ResponseWriter, request *http.Request) {
+	s.handleUpdateMutation(response, request, UpdateRequest{Kind: "project", Action: "check"}, false)
+}
+
+func validUpdateKind(kind string) bool { return kind == "ui" || kind == "gateway" || kind == "project" }
 
 func safeUpdateVersion(kind, version string) bool {
+	if kind == "project" {
+		return strings.HasSuffix(version, "-vps") && safeUpdateVersion("gateway", strings.TrimSuffix(version, "-vps"))
+	}
 	if strings.ContainsAny(version, `/\\?#@% \t\r\n`) {
 		return false
 	}

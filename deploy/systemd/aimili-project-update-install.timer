@@ -1,0 +1,8 @@
+[Unit]
+Description=Process downloaded project update transactions and recovery
+[Timer]
+OnBootSec=12s
+OnUnitInactiveSec=5s
+AccuracySec=1s
+[Install]
+WantedBy=timers.target

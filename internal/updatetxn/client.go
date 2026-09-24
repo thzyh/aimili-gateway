@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -150,6 +151,18 @@ func (c *Client) resolveExistingLease(ctx context.Context, leasePath string, req
 }
 
 func ValidateRequest(request Request) error {
+	if request.Kind == KindProject {
+		if !hexIdentifier.MatchString(request.RunID) || request.DryRun {
+			return ErrInvalidRequest
+		}
+		if request.Action == ActionCheck && request.Version == "" {
+			return nil
+		}
+		if request.Action == ActionApply && strings.HasSuffix(request.Version, "-vps") && semVersion.MatchString(strings.TrimSuffix(request.Version, "-vps")) {
+			return nil
+		}
+		return ErrInvalidRequest
+	}
 	if !hexIdentifier.MatchString(request.RunID) || (request.Kind != KindUI && request.Kind != KindGateway) ||
 		(request.Action != ActionApply && request.Action != ActionRollback) {
 		return ErrInvalidRequest
@@ -170,7 +183,7 @@ func ValidateRequest(request Request) error {
 }
 
 func validateResult(result Result, runID string) error {
-	if result.RunID != runID || (result.Kind != KindUI && result.Kind != KindGateway) || !validState(result.State) {
+	if result.RunID != runID || (result.Kind != KindUI && result.Kind != KindGateway && result.Kind != KindProject) || !validState(result.State) {
 		return fmt.Errorf("%w: invalid result", ErrUntrustedResult)
 	}
 	return nil

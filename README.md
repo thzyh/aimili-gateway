@@ -4,6 +4,14 @@ Aimili Gateway 是 Gateway 控制台与 Aimili 出口引擎的统一源码仓库
 
 ## 当前阶段
 
+## 网页检测与确认更新
+
+安装了项目更新入口的服务器，在“高级设置 → 检测更新”中从服务端查询最新正式 `vX.Y.Z-vps` 发布并验签。发现新版本后弹出确认框；选择“暂不更新”不会安装。确认后依次显示下载、复验、备份、安装、重启和身份核对进度，刷新页面会继续读取同一事务。
+
+项目更新适用于统一目录布局，更新 Gateway/内嵌前端、内置出口引擎、已签名的定制 3x-ui 和随包辅助脚本；保留现有域名、Caddy 配置、账户、订阅及连接身份。它不运行首次部署初始化逻辑，也不改系统包、Xray 独立版本、端口布局或防火墙。更新会短暂中断服务及代理连接；安装失败时恢复升级前程序和数据库。需要至少 1 GiB 可用空间，备份与事务记录保存在 `/var/lib/aimili-gateway-project-update/transactions`。
+
+旧版本必须先部署更新入口补丁。该补丁和正式项目升级是两步：补丁只让旧版获得检测、确认及显示进度的能力，真正的目标版本升级由用户点击。旧的单组件/UI 更新器继续保留兼容，但不会处理整项目更新请求。发布必须包含 `updateContract: 1` 的签名清单；不接受缺少签名或不支持当前升级协议的包。验证与已部署范围见 [本次更新记录](docs/verification/2026-09-25-project-update.md)。
+
 ## VPS 一条命令部署
 
 在 Ubuntu 24.04、x86_64 的空白 VPS 上以 root 执行：
@@ -101,7 +109,7 @@ go build ./cmd/aimili-gateway-admin
 gh release create v1.2.3 C:\release\v1.2.3\manifest.json C:\release\v1.2.3\manifest.sig C:\release\v1.2.3\aimili-gateway --title "Aimili Gateway v1.2.3" --notes "本版本更新说明"
 ```
 
-更新页只识别非草稿、非预发布且同时具有 `manifest.json`、`manifest.sig`、`aimili-gateway` 三项资产的最新正式版本。
+上述单组件更新页只识别非草稿、非预发布且同时具有 `manifest.json`、`manifest.sig`、`aimili-gateway` 三项资产的正式版本。新版整项目入口使用 `deploy/vps/build-release.ps1` 生成完整包，不能将两种发布格式混用。
 
 本地管理员只能通过交互式命令初始化。密码和 TOTP 秘钥不能通过命令行参数传入：
 
