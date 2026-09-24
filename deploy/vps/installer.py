@@ -447,20 +447,33 @@ def install_gateway(args: argparse.Namespace, origin: str, domain: str, slots: i
     for name in ("aimili-xui-protocol-transaction.path", "aimili-xui-protocol-transaction.service", "aimili-xui-protocol-transaction.timer"):
         copy_mode(args.asset_root / "deploy/systemd" / name, Path("/etc/systemd/system") / name, 0o644)
     encrypted = Path("/etc/credstore.encrypted/aimili-gateway-master-key")
+    db = ROOT / "aimili-gateway.db"
     if not encrypted.exists():
+        if db.exists():
+            raise InstallError("Gateway 数据库已存在但 master key 凭据缺失，拒绝更换身份")
         master = ETC / "master.key"
-        write(master, os.urandom(32), 0o400, (uid,gid))
+        if master.exists():
+            if len(master.read_bytes()) != 32:
+                raise InstallError("已有 Gateway master key 长度异常，拒绝覆盖")
+        else:
+            write(master, os.urandom(32), 0o400, (uid,gid))
         encrypted.parent.mkdir(parents=True, exist_ok=True)
         run(["systemd-creds", "encrypt", "--name=gateway-master-key", str(master), str(encrypted)])
         os.chmod(encrypted, 0o600)
     else:
-        master = None
+        master = ETC / "master.key" if (ETC / "master.key").exists() else None
+        if not db.exists():
+            result = subprocess.run(["systemd-creds", "decrypt", "--name=gateway-master-key", str(encrypted), "-"], capture_output=True)
+            if result.returncode or len(result.stdout) != 32:
+                raise InstallError("无法恢复已有 Gateway master key，拒绝重建身份")
+            if master is None:
+                master = ETC / "master.key"
+                write(master, result.stdout, 0o400, (uid,gid))
+            elif master.read_bytes() != result.stdout:
+                raise InstallError("明文与加密 master key 不一致，拒绝继续")
     cert, key = certificate(origin, domain)
     cfg = {"listenAddress":"127.0.0.1:9080","publicOrigin":origin,"realityServerName":REALITY_SNI,"databasePath":str(ROOT/"aimili-gateway.db"),"masterKeyFile":"/run/credentials/aimili-gateway.service/gateway-master-key","aimiliAddress":"127.0.0.1:8787","aimiliControlUrl":"http://127.0.0.1:8790/","aimiliControlTokenFile":"/run/credentials/aimili-gateway.service/aimili-control-token","xuiBaseUrl":"http://127.0.0.1:2001/xui/","xuiCredentialsFile":"/run/credentials/aimili-gateway.service/xui-automation","aimiliBackendUrl":"/vpngate/","maxProxyGroups":slots,"vlessPortStart":20000,"vlessPortEnd":20999,"mixedPortStart":30000,"mixedPortEnd":30999,"aggregateVlessPort":21000,"mainMixedPort":31000,"xrayPath":"/usr/local/x-ui/bin/xray-linux-amd64","probeHost":"api.ipify.org","mixedSourceCidrs":[source+"/32"],"expertModeUrl":"/xui/","protocolRequestDir":str(ROOT/"protocol-spool/requests"),"protocolResultDir":str(ROOT/"protocol-spool/results"),"protocolTimeoutSeconds":180,"externalUiRoot":str(ROOT/"ui")}
-    db = ROOT / "aimili-gateway.db"
     if not db.exists():
-        if master is None:
-            raise InstallError("已有 master key 但 Gateway 数据库缺失，拒绝重建身份")
         init = dict(cfg)
         init["masterKeyFile"] = str(master)
         init["aimiliControlTokenFile"] = "/etc/aimilivpn/control.token"
