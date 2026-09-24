@@ -3562,9 +3562,9 @@ def reset_main_proxy_connections() -> None:
 
 
 def automatic_main_candidates(country: str) -> list[dict[str, Any]]:
-    """主连接只在原国家内选择一个替换候选，住宅 IP 排在前面。"""
+    """按国家筛选主连接替换候选；空国家允许自动路由跨国回退。"""
     country = str(country or "").strip().upper()
-    if not re.fullmatch(r"[A-Z]{2}", country):
+    if country and not re.fullmatch(r"[A-Z]{2}", country):
         return []
     reserved = reserved_slot_candidate_ids() | main_bad_node_ids()
     reserved_ips = candidate_ip_identities(reserved)
@@ -3574,7 +3574,8 @@ def automatic_main_candidates(country: str) -> list[dict[str, Any]]:
         if node.get("probe_status") == "available"
         and str(node.get("id") or "") not in reserved
         and candidate_ip_identity(node) not in reserved_ips
-        and str(node.get("country_short") or "").strip().upper() == country
+        and re.fullmatch(r"[A-Z]{2}", str(node.get("country_short") or "").strip().upper())
+        and (not country or str(node.get("country_short") or "").strip().upper() == country)
     ]
     candidates.sort(
         key=lambda node: (
@@ -3629,7 +3630,7 @@ def replenish_repair_country(country: str) -> dict[str, Any]:
 
 
 def repair_main_once(failed_snapshot: dict[str, Any]) -> dict[str, Any]:
-    """同一次主连接故障只替换一个同国候选，失败后等待人工处理。"""
+    """同次故障只替换一个候选；自动路由在同国耗尽时跨国回退。"""
     failed_id = str(failed_snapshot.get("candidate_id") or "").strip()
     country = str(failed_snapshot.get("country") or "").strip().upper()
     if not egress_repair_store.claim("main", failed_id, country):
@@ -3645,15 +3646,19 @@ def repair_main_once(failed_snapshot: dict[str, Any]) -> dict[str, Any]:
         replenish_repair_country(country)
         candidates = automatic_main_candidates(country)
         candidate = validated_repair_candidate(candidates)
+    automatic_routing = load_ui_config().get("routing_mode", "auto") == "auto"
+    if candidate is None and automatic_routing:
+        candidate = validated_repair_candidate(automatic_main_candidates(""))
     if candidate is None:
         stop_active_openvpn()
-        egress_repair_store.require_manual("main", "no_same_country_candidate")
+        error_code = "no_usable_repair_candidate" if automatic_routing else "no_same_country_candidate"
+        egress_repair_store.require_manual("main", error_code)
         set_state(
             proxy_ok=False,
             proxy_ip="-",
-            last_check_message=f"主连接未找到同国家 {country or '未知'} 的替换节点，等待人工处理",
+            last_check_message=f"主连接未找到可用替换节点（原国家 {country or '未知'}），等待人工处理",
         )
-        return {"ok": False, "error_code": "no_same_country_candidate"}
+        return {"ok": False, "error_code": error_code}
 
     candidate_id = str(candidate.get("id") or "").strip()
     try:

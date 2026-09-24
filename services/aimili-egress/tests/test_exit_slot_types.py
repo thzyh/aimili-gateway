@@ -70,6 +70,41 @@ class ExitSlotTypeTests(unittest.TestCase):
         replenish.assert_called_once_with("JP")
         repair_store.mark_healthy.assert_called_once_with("main", "jp-new")
 
+    def test_main_auto_repair_falls_back_to_other_country_when_original_country_is_empty(self):
+        repair_store = mock.Mock()
+        repair_store.claim.return_value = True
+        candidate = {"id": "jp-new", "country_short": "JP", "probe_status": "available"}
+        with (
+            mock.patch.object(manager, "egress_repair_store", repair_store),
+            mock.patch.object(manager, "promote_dedicated_standby_to_main", return_value=False),
+            mock.patch.object(manager, "automatic_main_candidates", side_effect=[[], [], [candidate]]) as candidates,
+            mock.patch.object(manager, "load_ui_config", return_value={"routing_mode": "auto"}),
+            mock.patch.object(manager, "connect_node") as connect,
+            mock.patch.object(manager, "_main_validation", return_value={"tunnel": True, "route": True, "proxy": True}),
+        ):
+            result = manager.repair_main_once({"candidate_id": "mv-old", "country": "MV"})
+
+        self.assertTrue(result["ok"])
+        self.assertEqual([call.args[0] for call in candidates.call_args_list], ["MV", "MV", ""])
+        connect.assert_called_once_with("jp-new")
+        repair_store.mark_healthy.assert_called_once_with("main", "jp-new")
+
+    def test_main_fixed_region_does_not_fall_back_to_other_country(self):
+        repair_store = mock.Mock()
+        repair_store.claim.return_value = True
+        with (
+            mock.patch.object(manager, "egress_repair_store", repair_store),
+            mock.patch.object(manager, "promote_dedicated_standby_to_main", return_value=False),
+            mock.patch.object(manager, "automatic_main_candidates", return_value=[]) as candidates,
+            mock.patch.object(manager, "load_ui_config", return_value={"routing_mode": "fixed_region"}),
+            mock.patch.object(manager, "stop_active_openvpn"),
+            mock.patch.object(manager, "set_state"),
+        ):
+            result = manager.repair_main_once({"candidate_id": "mv-old", "country": "MV"})
+
+        self.assertEqual(result["error_code"], "no_same_country_candidate")
+        self.assertEqual([call.args[0] for call in candidates.call_args_list], ["MV", "MV"])
+
     def test_repair_candidate_validation_rejects_stale_candidate_before_switch(self):
         self.validator_patch.stop()
         first = {"id": "jp-stale", "probe_status": "available"}
@@ -136,6 +171,21 @@ class ExitSlotTypeTests(unittest.TestCase):
             result = manager.automatic_main_candidates("JP")
 
         self.assertEqual([node["id"] for node in result], ["jp-home", "jp-dc"])
+
+    def test_main_automatic_candidates_accept_all_countries_for_auto_fallback(self):
+        nodes = [
+            {"id": "mv-dead", "country_short": "MV", "ip_type": "residential", "probe_status": "unavailable"},
+            {"id": "jp-home", "country_short": "JP", "ip_type": "residential", "probe_status": "available"},
+            {"id": "kr-dc", "country_short": "KR", "ip_type": "hosting", "probe_status": "available"},
+        ]
+        with (
+            mock.patch.object(manager, "read_nodes", return_value=nodes),
+            mock.patch.object(manager, "reserved_slot_candidate_ids", return_value=set()),
+            mock.patch.object(manager, "main_bad_node_ids", return_value=set()),
+        ):
+            result = manager.automatic_main_candidates("")
+
+        self.assertEqual([node["id"] for node in result], ["jp-home", "kr-dc"])
 
     def test_no_route_to_host_is_a_persistable_candidate_dial_failure(self):
         code, message = manager.vpn_utils.diagnose_openvpn_failure([
