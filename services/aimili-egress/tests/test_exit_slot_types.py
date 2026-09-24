@@ -961,6 +961,24 @@ class ManagedSlotFacadeTests(unittest.TestCase):
             "no_same_country_candidate",
         )
 
+    def test_slot_repair_uses_country_code_when_runtime_also_has_localized_name(self):
+        repair_store = mock.Mock()
+        repair_store.claim.return_value = True
+        with (
+            mock.patch.object(manager, "egress_repair_store", repair_store),
+            mock.patch.object(manager, "slot_operation_locks", {}),
+            mock.patch.object(manager, "automatic_slot_candidates", return_value=[]) as candidates,
+            mock.patch.object(manager, "tear_down_slot"),
+            mock.patch.object(manager, "mark_slot_disconnected"),
+            mock.patch.object(manager, "write_slots_state"),
+        ):
+            manager.repair_slot_once(
+                2, {"node_id": "jp-old", "country": "日本", "country_short": "JP"},
+            )
+
+        repair_store.claim.assert_called_once_with("slot:2", "jp-old", "JP")
+        self.assertTrue(all(call.args == (2, "JP") for call in candidates.call_args_list))
+
     def test_slot_check_is_not_blocked_by_main_repair_state(self):
         snapshot = {
             "ok": True,

@@ -6268,11 +6268,12 @@ def repair_slot_once(i: int, failed_snapshot: dict[str, Any]) -> dict[str, Any]:
     try:
         failed_id = str(failed_snapshot.get("node_id") or "").strip()
         country = str(
-            failed_snapshot.get("country")
-            or failed_snapshot.get("country_short")
-            or per_slot_country(i)
-            or ""
+            failed_snapshot.get("country_short") or failed_snapshot.get("country") or ""
         ).strip().upper()
+        if not re.fullmatch(r"[A-Z]{2}", country):
+            country = str(per_slot_country(i) or "").strip().upper()
+        if not re.fullmatch(r"[A-Z]{2}", country):
+            country = ""
         key = f"slot:{i}"
         if not egress_repair_store.claim(key, failed_id, country):
             return {
