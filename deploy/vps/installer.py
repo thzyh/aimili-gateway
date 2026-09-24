@@ -565,13 +565,29 @@ def main() -> int:
             raise InstallError("provision 模块缺失")
         module = module_from_spec(spec)
         spec.loader.exec_module(module)
+        stored_credentials = credentials
         try:
+            if current.get("status") == "complete":
+                try:
+                    module.GatewayClient(origin, credentials).login()
+                except module.APIError as error:
+                    if not str(error).startswith("HTTP 401:"):
+                        raise
+                    synced = load_json(EGRESS / "ui_auth.json")
+                    candidate = {"username": synced.get("username", ""), "password": synced.get("password", "")}
+                    if not candidate["username"] or not candidate["password"]:
+                        raise InstallError("安装凭据已失效，egress 未保存可验证的同步账户") from error
+                    module.GatewayClient(origin, candidate).login()
+                    credentials = candidate
             if current.get("status") != "complete":
                 if module.remove_unneeded_slots(origin, slots, credentials):
                     run(["systemctl", "restart", "aimilivpn.service"])
                 module.stabilize_initial_slots(slots)
                 wait_egress(slots)
             module.provision(origin, slots, credentials, source)
+            if credentials != stored_credentials:
+                write_json(creds, credentials)
+                say("已将安装凭据文件同步为当前统一账户。")
         except InstallError:
             raise
         except Exception as error:
