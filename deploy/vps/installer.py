@@ -559,7 +559,7 @@ def main() -> int:
         write_caddy(origin, domain)
         install_gateway(args, origin, domain, slots, source, credentials)
         from enable_project_updates import enable
-        installed = json.loads(run(["/usr/local/bin/aimili-gateway", "version"]))
+        installed = json.loads(run(["/usr/local/bin/aimili-gateway", "version", "--json"]))
         enable(args.asset_root, installed["version"])
         run(["systemctl", "restart", "aimili-gateway"])
         from importlib.util import module_from_spec, spec_from_file_location

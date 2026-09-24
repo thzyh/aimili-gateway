@@ -310,7 +310,7 @@ def apply(r,private,manifest):
     package=private/"package"; extract_package(private/"aimili-vps-package.tar.gz",package)
     pairs=install_plan(package)+[(private/"x-ui-custom-linux-amd64",XUI_BINARY)]
     for src,_ in pairs: os.chmod(src,0o755 if src.name in ("aimili-gateway","aimili-gateway-admin","aimili-gateway-account","x-ui-custom-linux-amd64") else 0o644)
-    info=json.loads(command([str(package/"bin/aimili-gateway"),"version"]))
+    info=json.loads(command([str(package/"bin/aimili-gateway"),"version","--json"]))
     if info.get("version")!=r["version"] or info.get("commit")!=manifest["gatewayCommit"]: raise UpdateError("version_invalid")
     snapshot=private/"backup"; snapshot.mkdir(mode=0o700)
     journal=dict(request=r,backup=str(snapshot),files=[],identities=identities(),phase="stopping")

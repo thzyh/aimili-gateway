@@ -49,7 +49,7 @@ if ($LASTEXITCODE -ne 0) { throw 'package archive failed' }
 $xui = Join-Path $source 'x-ui-custom'
 if (-not (Test-Path $xui)) { throw 'custom 3x-ui binary missing' }
 Copy-Item -LiteralPath $xui -Destination (Join-Path $Output 'x-ui-custom-linux-amd64')
-$manifest = [ordered]@{ schemaVersion=1; updateContract=1; release=$Tag; gatewayCommit=(git -C $root rev-parse HEAD).Trim(); xuiUpstreamCommit=$expected; assets=[ordered]@{package=[ordered]@{name='aimili-vps-package.tar.gz';sha256=(Get-FileHash (Join-Path $Output 'aimili-vps-package.tar.gz') -Algorithm SHA256).Hash.ToLower()};xui=[ordered]@{name='x-ui-custom-linux-amd64';sha256=(Get-FileHash (Join-Path $Output 'x-ui-custom-linux-amd64') -Algorithm SHA256).Hash.ToLower()}}}
+$manifest = [ordered]@{ schemaVersion=1; updateContract=1; release=$Tag; gatewayCommit=(git -C $root rev-parse HEAD).Trim(); xuiUpstreamCommit=$expected; assets=[ordered]@{package=[ordered]@{name='aimili-vps-package.tar.gz';sha256=(Get-FileHash (Join-Path $Output 'aimili-vps-package.tar.gz') -Algorithm SHA256).Hash.ToLower()};xui=[ordered]@{release='v0.2.5-vps';name='x-ui-custom-linux-amd64';sha256=(Get-FileHash (Join-Path $Output 'x-ui-custom-linux-amd64') -Algorithm SHA256).Hash.ToLower()}}}
 [System.IO.File]::WriteAllText((Join-Path $Output 'manifest.json'),(($manifest | ConvertTo-Json -Depth 8 -Compress)+"`n"),(New-Object System.Text.UTF8Encoding($false)))
 & 'D:\SoftWare\Git\mingw64\bin\openssl.exe' pkeyutl -sign -rawin -inkey $SigningKey -in (Join-Path $Output 'manifest.json') -out (Join-Path $Output 'manifest.sig')
 if ($LASTEXITCODE -ne 0) { throw 'manifest signing failed' }
