@@ -280,10 +280,13 @@ it('detects a newer signed Gateway release from GitHub before offering update', 
   })
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
     ok: true,
-    json: async () => ({
+    json: async () => [{
+      tag_name: 'v1.3.0-vps', draft: false, prerelease: false,
+      assets: [{ name: 'manifest.json' }, { name: 'manifest.sig' }, { name: 'aimili-vps-package.tar.gz' }],
+    }, {
       tag_name: 'v1.2.3', draft: false, prerelease: false, body: '修复出口状态显示',
       assets: [{ name: 'manifest.json' }, { name: 'manifest.sig' }, { name: 'aimili-gateway' }],
-    }),
+    }],
   }))
   try {
     const wrapper = mount(SettingsView)
@@ -293,8 +296,63 @@ it('detects a newer signed Gateway release from GitHub before offering update', 
     await flushPromises()
     expect(wrapper.get('[data-gateway-update]').text()).toContain('v1.2.3')
     const updateSection = wrapper.get('.update-section')
-    expect(updateSection.get('[data-update-notice]').text()).toContain('发现新版本 v1.2.3')
+    expect(updateSection.get('[data-update-notice]').text()).toContain('发现 Gateway 普通更新 v1.2.3')
+    expect(updateSection.get('[data-update-notice]').text()).toContain('完整部署版为 v1.3.0-vps')
     expect(wrapper.text()).toContain('修复出口状态显示')
+  } finally {
+    vi.unstubAllGlobals()
+  }
+})
+
+it('explains the VPS release on an unversioned xjp build without offering an older binary', async () => {
+  mocks.apiFetch.mockImplementation((path: string) => {
+    if (path === '/api/v1/settings/summary') return Promise.resolve({ accountSyncStatus: 'synced' })
+    if (path === '/api/v1/settings/mixed-source-policy') return Promise.resolve({ enabled: false, cidrs: [], applyStatus: 'applied' })
+    if (path === '/api/v1/system/updates') return Promise.resolve({ enabled: true, currentGateway: 'dev', available: [] })
+    return Promise.resolve(undefined)
+  })
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+    ok: true,
+    json: async () => [
+      { tag_name: 'v0.2.11-vps', draft: false, prerelease: false, assets: [{ name: 'manifest.json' }, { name: 'manifest.sig' }, { name: 'aimili-vps-package.tar.gz' }] },
+      { tag_name: 'v0.1.4', draft: false, prerelease: false, assets: [{ name: 'manifest.json' }, { name: 'manifest.sig' }, { name: 'aimili-gateway' }] },
+    ],
+  }))
+  try {
+    const wrapper = mount(SettingsView)
+    await flushPromises()
+    await wrapper.get('[data-check-update]').trigger('click')
+    await flushPromises()
+    const notice = wrapper.get('[data-update-notice]')
+    expect(notice.text()).toContain('检测完成')
+    expect(notice.text()).toContain('当前 Gateway 版本 dev 无法与发布版本安全比较')
+    expect(notice.text()).toContain('完整部署版为 v0.2.11-vps')
+    expect(notice.text()).not.toContain('缺少签名文件')
+    expect(wrapper.find('[data-gateway-update]').exists()).toBe(false)
+  } finally {
+    vi.unstubAllGlobals()
+  }
+})
+
+it('does not mistake a signed VPS package for a missing signature', async () => {
+  mocks.apiFetch.mockImplementation((path: string) => {
+    if (path === '/api/v1/settings/summary') return Promise.resolve({ accountSyncStatus: 'synced' })
+    if (path === '/api/v1/settings/mixed-source-policy') return Promise.resolve({ enabled: false, cidrs: [], applyStatus: 'applied' })
+    if (path === '/api/v1/system/updates') return Promise.resolve({ enabled: true, currentGateway: 'v0.1.4', available: [] })
+    return Promise.resolve(undefined)
+  })
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+    ok: true,
+    json: async () => [{ tag_name: 'v0.2.11-vps', draft: false, prerelease: false, assets: [{ name: 'manifest.json' }, { name: 'manifest.sig' }, { name: 'aimili-vps-package.tar.gz' }] }],
+  }))
+  try {
+    const wrapper = mount(SettingsView)
+    await flushPromises()
+    await wrapper.get('[data-check-update]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-update-notice]').attributes('data-notice-kind')).toBe('success')
+    expect(wrapper.get('[data-update-notice]').text()).toContain('完整部署版为 v0.2.11-vps')
+    expect(wrapper.find('[data-gateway-update]').exists()).toBe(false)
   } finally {
     vi.unstubAllGlobals()
   }

@@ -62,27 +62,34 @@ async function checkGatewayUpdate(): Promise<void> {
   releaseNotes.value = ''
   updateNotice.value = makeUpdateNotice('progress', '正在检测更新', '正在查询 Aimili Gateway 的 GitHub 正式发布版本。')
   try {
-    const response = await fetch('https://api.github.com/repos/thzyh/aimili-gateway/releases/latest', {
+    const response = await fetch('https://api.github.com/repos/thzyh/aimili-gateway/releases?per_page=30', {
       headers: { Accept: 'application/vnd.github+json' },
     })
     if (!response.ok) throw new Error(response.status === 404 ? 'release_missing' : 'github_unavailable')
-    const release: unknown = await response.json()
-    if (!isGatewayRelease(release)) throw new Error('release_invalid')
+    const payload: unknown = await response.json()
+    if (!Array.isArray(payload)) throw new Error('github_unavailable')
+    const fullRelease = payload.filter(isVPSRelease).sort((left, right) => compareGatewayVersions(right.tag_name.slice(0, -4), left.tag_name.slice(0, -4)))[0]
+    const fullReleaseHint = fullRelease ? `GitHub 最新完整部署版为 ${fullRelease.tag_name}，涉及 AimiliVPN、3x-ui/Xray、Caddy 等组件。升级请查看项目 README 的 VPS 部署章节；旧布局 VPS 须先备份并核对数据迁移。` : ''
+    const release = payload.filter(isGatewayRelease).sort((left, right) => compareGatewayVersions(right.tag_name, left.tag_name))[0]
+    if (!release) {
+      updateNotice.value = makeUpdateNotice('success', '检测完成', fullReleaseHint || 'GitHub 暂无可用于网页普通更新的 Gateway 发布。')
+      return
+    }
     const current = updates.value?.currentGateway ?? ''
+    if (!/^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(current)) {
+      updateNotice.value = makeUpdateNotice('success', '检测完成', `当前 Gateway 版本 ${current || '未知'} 无法与发布版本安全比较；网页普通更新不可用。${fullReleaseHint}`)
+      return
+    }
     const comparison = compareGatewayVersions(release.tag_name, current)
     if (comparison <= 0) {
-      updateNotice.value = makeUpdateNotice('success', '已是最新版本', `当前 Aimili Gateway ${current}，暂无可用更新。`)
+      updateNotice.value = makeUpdateNotice('success', '普通更新已是最新', `当前 Gateway ${current}，暂无更新的 Gateway 单组件发布。${fullReleaseHint}`)
       return
     }
     gatewayCandidate.value = { kind: 'gateway', version: release.tag_name, compatible: true }
     releaseNotes.value = typeof release.body === 'string' ? release.body.trim().slice(0, 500) : ''
-    updateNotice.value = makeUpdateNotice('success', `发现新版本 ${release.tag_name}`, '签名发布文件齐全，可以执行安全更新。')
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : ''
-    const message = reason === 'release_missing' ? 'GitHub 暂无正式发布版本。'
-      : reason === 'release_invalid' ? 'GitHub 最新发布缺少签名文件，已拒绝提供更新。'
-        : reason === 'version_invalid' ? '当前版本号或 GitHub 发布版本不规范，无法安全比较。'
-          : '暂时无法连接 GitHub，请稍后重试。'
+    updateNotice.value = makeUpdateNotice('success', `发现 Gateway 普通更新 ${release.tag_name}`, `所需发布资产齐全；安装器会再次校验签名和兼容性。${fullReleaseHint}`)
+  } catch {
+    const message = '暂时无法查询 GitHub 发布版本，请稍后重试。'
     updateNotice.value = makeUpdateNotice('error', '检测更新失败', message)
   } finally {
     checkingUpdates.value = false
@@ -96,6 +103,15 @@ function isGatewayRelease(value: unknown): value is { tag_name: string; body?: s
   if (!/^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(release.tag_name)) return false
   const names = new Set(release.assets.flatMap(asset => typeof asset === 'object' && asset !== null && typeof (asset as Record<string, unknown>).name === 'string' ? [(asset as Record<string, string>).name] : []))
   return ['manifest.json', 'manifest.sig', 'aimili-gateway'].every(name => names.has(name))
+}
+
+function isVPSRelease(value: unknown): value is { tag_name: string; draft: boolean; prerelease: boolean; assets: Array<{ name: string }> } {
+  if (typeof value !== 'object' || value === null) return false
+  const release = value as Record<string, unknown>
+  if (release.draft !== false || release.prerelease !== false || typeof release.tag_name !== 'string' || !Array.isArray(release.assets)) return false
+  if (!/^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-vps$/.test(release.tag_name)) return false
+  const names = new Set(release.assets.flatMap(asset => typeof asset === 'object' && asset !== null && typeof (asset as Record<string, unknown>).name === 'string' ? [(asset as Record<string, string>).name] : []))
+  return ['manifest.json', 'manifest.sig', 'aimili-vps-package.tar.gz'].every(name => names.has(name))
 }
 
 function compareGatewayVersions(left: string, right: string): number {
