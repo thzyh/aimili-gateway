@@ -21,7 +21,7 @@ def enable(asset_root, version):
         (public/"results",0,gateway.pw_gid,0o750),(public/"progress",0,gateway.pw_gid,0o750),
         (private,0,0,0o755),(private/"staging",updater.pw_uid,updater.pw_gid,0o700),(private/"transactions",0,0,0o700)]:
         path.mkdir(parents=True,exist_ok=True); os.chown(path,uid,gid); os.chmod(path,mode)
-    lib=Path("/usr/local/lib/aimili-gateway"); lib.mkdir(parents=True,exist_ok=True)
+    lib=Path("/usr/local/lib/aimili-gateway"); lib.mkdir(parents=True,exist_ok=True); os.chmod(lib,0o755)
     for name in ("project_update.py","release-public.pem"):
         shutil.copyfile(root/"deploy/vps"/name,lib/name); os.chmod(lib/name,0o644)
     (public/"current.json").write_text(json.dumps(dict(version=version)))
