@@ -52,13 +52,14 @@ type Request struct {
 }
 
 type Result struct {
-	RunID      string     `json:"runId"`
-	Kind       Kind       `json:"kind"`
-	Version    string     `json:"version,omitempty"`
-	State      State      `json:"state"`
-	ErrorCode  string     `json:"errorCode,omitempty"`
-	StartedAt  time.Time  `json:"startedAt,omitempty"`
-	FinishedAt *time.Time `json:"finishedAt,omitempty"`
+	RunID       string     `json:"runId"`
+	Kind        Kind       `json:"kind"`
+	Version     string     `json:"version,omitempty"`
+	State       State      `json:"state"`
+	ErrorCode   string     `json:"errorCode,omitempty"`
+	UpgradePath string     `json:"upgradePath,omitempty"`
+	StartedAt   time.Time  `json:"startedAt,omitempty"`
+	FinishedAt  *time.Time `json:"finishedAt,omitempty"`
 }
 
 func (s State) Terminal() bool {

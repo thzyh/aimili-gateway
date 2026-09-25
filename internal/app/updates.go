@@ -117,7 +117,11 @@ func publicUpdateResult(result updatetxn.Result) httpapi.UpdateResult {
 	if code != "" && !safePublicUpdateError(code) {
 		code = "operation_failed"
 	}
-	return httpapi.UpdateResult{RunID: result.RunID, Kind: string(result.Kind), Version: result.Version, State: string(result.State), ErrorCode: code}
+	path := result.UpgradePath
+	if !strings.HasPrefix(path, "https://github.com/thzyh/aimili-gateway/blob/main/docs/upgrade.md#") || len(path) > 180 {
+		path = ""
+	}
+	return httpapi.UpdateResult{RunID: result.RunID, Kind: string(result.Kind), Version: result.Version, State: string(result.State), ErrorCode: code, UpgradePath: path}
 }
 
 func safePublicUpdateError(code string) bool {

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """安装更新入口；不下载或安装待升级的项目版本。"""
 import json
+import hashlib
 import os
 from pathlib import Path
 import pwd
@@ -22,8 +23,26 @@ def enable(asset_root, version):
         (private,0,0,0o755),(private/"staging",updater.pw_uid,updater.pw_gid,0o700),(private/"transactions",0,0,0o700)]:
         path.mkdir(parents=True,exist_ok=True); os.chown(path,uid,gid); os.chmod(path,mode)
     lib=Path("/usr/local/lib/aimili-gateway"); lib.mkdir(parents=True,exist_ok=True); os.chmod(lib,0o755)
-    for name in ("project_update.py","release-public.pem"):
-        shutil.copyfile(root/"deploy/vps"/name,lib/name); os.chmod(lib/name,0o644)
+    slots=lib/"update-engines"; slots.mkdir(parents=True,exist_ok=True);os.chmod(slots,0o755)
+    engine=root/"deploy/vps/project_update.py"; digest=hashlib.sha256(engine.read_bytes()).hexdigest()
+    engine_name=f"engine-2-{digest[:12]}.py"
+    shutil.copyfile(engine,slots/engine_name);os.chmod(slots/engine_name,0o644)
+    pointer=slots/"current.json"
+    previous=None
+    if pointer.exists():
+        old=json.loads(pointer.read_text())
+        previous=old.get("current")
+        if previous and previous.get("sha256")==digest:
+            previous=old.get("previous")
+    next_pointer=dict(current=dict(file=engine_name,sha256=digest),previous=previous)
+    temp=pointer.with_suffix(".tmp")
+    with open(temp,"w",encoding="utf-8") as stream:
+        os.chmod(temp,0o644);json.dump(next_pointer,stream);stream.flush();os.fsync(stream.fileno())
+    os.replace(temp,pointer)
+    shutil.copyfile(root/"deploy/vps/project_update_boot.py",lib/"project_update.py")
+    os.chmod(lib/"project_update.py",0o644)
+    shutil.copyfile(root/"deploy/vps/release-public.pem",lib/"release-public.pem")
+    os.chmod(lib/"release-public.pem",0o644)
     (public/"current.json").write_text(json.dumps(dict(version=version)))
     os.chown(public/"current.json",0,gateway.pw_gid); os.chmod(public/"current.json",0o640)
     for name in ("fetch","install"):

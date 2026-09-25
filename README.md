@@ -10,7 +10,7 @@ Aimili Gateway 是 Gateway 控制台与 Aimili 出口引擎的统一源码仓库
 
 项目更新适用于统一目录布局，更新 Gateway/内嵌前端、内置出口引擎、已签名的定制 3x-ui 和随包辅助脚本；保留现有域名、Caddy 配置、账户、订阅及连接身份。它不运行首次部署初始化逻辑，也不改系统包、Xray 独立版本、端口布局或防火墙。更新会短暂中断服务及代理连接；安装失败时恢复升级前程序和数据库。需要至少 1 GiB 可用空间，备份与事务记录保存在 `/var/lib/aimili-gateway-project-update/transactions`。
 
-旧版本必须先部署更新入口补丁。该补丁和正式项目升级是两步：补丁只让旧版获得检测、确认及显示进度的能力，真正的目标版本升级由用户点击。旧的单组件/UI 更新器继续保留兼容，但不会处理整项目更新请求。发布必须包含 `updateContract: 1` 的签名清单；不接受缺少签名或不支持当前升级协议的包。验证与已部署范围见 [本次更新记录](docs/verification/2026-09-25-project-update.md)。
+首次安装会同时安装独立更新入口。已安装 `v0.2.13-vps` 的服务器可以通过网页安装一次兼容旧协议的签名过渡版；之后固定入口由引导器管理两个更新引擎槽。目标版本需要较新协议时，更新器先验签升级自身，再续办同一个更新事务。页面在预检失败时显示具体原因、受影响组件和[升级路径](docs/upgrade.md)，不会为了显示成功而忽略兼容性或验签。早于 `v0.2.13-vps`、尚无项目更新入口的服务器仍需按现有专用过渡流程安装入口；不能把首次部署脚本直接用于覆盖旧数据。设计与验证边界见[更新器 v2 设计](docs/superpowers/specs/2026-09-25-project-updater-v2.md)。
 
 ## VPS 一条命令部署
 
@@ -36,7 +36,7 @@ ny VPS 使用统一仓库布局：Gateway 仍作为独立低权限服务运行�
 
 外部 UI Stage A 使用 `scripts/build-ui-release.ps1` 生成 `manifest.json`、`manifest.sig` 和 `ui.tar.gz`，由离线 `aimili-gateway-update-install` 校验并原子切换 `current`/`previous`。首次启用需要随 Gateway 二进制部署并只重启 Gateway；启用后日常签名 UI 发布和回退不重启 Gateway，也不触碰 AimiliVPN、x-ui/Xray 或 Caddy。
 
-两层发布机制的正式设计已写入 `docs/superpowers/specs/2026-09-05-zero-downtime-ui-and-safe-self-update-design.md`。高级设置中的“检测更新”读取本仓库公开 GitHub Release；真正安装仍由低权限 fetcher 下载，并由无网络 root installer 离线复验 Ed25519 签名、SHA256、平台、数据库兼容性和 `control-plane-only` 影响范围。普通更新只替换并重启 Gateway；涉及 AimiliVPN、3x-ui/Xray、Caddy、端口或数据库迁移的发布必须走完整部署，不能伪装成普通更新。
+旧的单组件 UI 发布机制见 `docs/superpowers/specs/2026-09-05-zero-downtime-ui-and-safe-self-update-design.md`。现在的整项目发布由低权限 fetcher 下载，无网络 root installer 复验签名及 SHA256，并在停服前检查平台、布局、数据库和组件动作。当前受限执行器可更新 Gateway、aimili-egress、3x-ui 及辅助脚本；需改变 Caddy、Xray、OpenVPN 或 systemd 运行配置的版本须先发布签名引擎过渡版并增加该组件的预检、快照与恢复执行器。未满足条件时网页会给出阻止原因和升级路径。
 
 后端更新的逐文件实施计划是 `docs/superpowers/plans/2026-09-05-safe-gateway-self-update.md`，当前验证入口是 `docs/verification/2026-09-05-safe-gateway-self-update.md`。网页更新必须具有已验证的发布来源与可用版本，未配置时保持禁用。普通 UI 发布只切换静态资源；后端发布会短暂重启 Gateway 控制台，代理数据面需通过部署前后检查。
 

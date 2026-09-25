@@ -16,9 +16,13 @@ var updateRunIDPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 var ErrUpdatesDisabled = errors.New("updates_disabled")
 
 type UpdateVersion struct {
-	Kind       string `json:"kind"`
-	Version    string `json:"version"`
-	Compatible bool   `json:"compatible"`
+	Kind                   string `json:"kind"`
+	Version                string `json:"version"`
+	Compatible             bool   `json:"compatible"`
+	ReasonCode             string `json:"reasonCode,omitempty"`
+	Component              string `json:"component,omitempty"`
+	UpgradePath            string `json:"upgradePath,omitempty"`
+	RequiresUpdaterUpgrade bool   `json:"requiresUpdaterUpgrade,omitempty"`
 }
 
 type UpdateSummary struct {
@@ -38,14 +42,15 @@ type UpdateRequest struct {
 }
 
 type UpdateResult struct {
-	Phase     string `json:"phase,omitempty"`
-	Percent   int    `json:"percent,omitempty"`
-	Action    string `json:"action,omitempty"`
-	RunID     string `json:"runId"`
-	Kind      string `json:"kind"`
-	Version   string `json:"version,omitempty"`
-	State     string `json:"state"`
-	ErrorCode string `json:"errorCode,omitempty"`
+	Phase       string `json:"phase,omitempty"`
+	Percent     int    `json:"percent,omitempty"`
+	Action      string `json:"action,omitempty"`
+	RunID       string `json:"runId"`
+	Kind        string `json:"kind"`
+	Version     string `json:"version,omitempty"`
+	State       string `json:"state"`
+	ErrorCode   string `json:"errorCode,omitempty"`
+	UpgradePath string `json:"upgradePath,omitempty"`
 }
 
 type UpdateManager interface {

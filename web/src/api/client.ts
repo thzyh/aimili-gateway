@@ -76,9 +76,9 @@ export interface CountryRefreshPayload {
 export interface XUISettingsPayload { managedPublicCount: number; managedVlessCount: number; managedMixedCount: number; managedOutboundCount: number; ownershipMatches: boolean; lastCheckedAt?: string }
 export type UpdateKind = 'ui' | 'gateway' | 'project'
 export type UpdateState = 'pending' | 'downloading' | 'validating' | 'switching' | 'verifying' | 'rolled_back' | 'success' | 'failed' | 'repair_required'
-export interface UpdateVersionPayload { kind: UpdateKind; version: string; compatible: boolean }
+export interface UpdateVersionPayload { kind: UpdateKind; version: string; compatible: boolean; reasonCode?: string; component?: string; upgradePath?: string; requiresUpdaterUpgrade?: boolean }
 export interface UpdateSummaryPayload { enabled: boolean; project?: boolean; activeRunId?: string; currentGateway: string; currentUi?: string; available: UpdateVersionPayload[] }
-export interface UpdateResultPayload { runId: string; kind: UpdateKind; version?: string; state: UpdateState; errorCode?: string; phase?: string; percent?: number; action?: 'check' | 'apply' }
+export interface UpdateResultPayload { runId: string; kind: UpdateKind; version?: string; state: UpdateState; errorCode?: string; upgradePath?: string; phase?: string; percent?: number; action?: 'check' | 'apply' }
 
 export function idempotencyHeaders(): HeadersInit {
   const random = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`

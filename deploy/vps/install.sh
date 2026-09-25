@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 umask 077
 
-readonly release_tag='v0.2.13-vps'
+readonly release_tag='v0.2.14-vps'
 readonly release_base="https://github.com/thzyh/aimili-gateway/releases/download/${release_tag}"
 readonly xui_asset_tag='v0.2.5-vps'
 readonly xui_release_base="https://github.com/thzyh/aimili-gateway/releases/download/${xui_asset_tag}"
@@ -39,7 +39,7 @@ openssl pkeyutl -verify -rawin -pubin -inkey "$cache/release-public.pem" -sigfil
 mapfile -t assets < <(python3 - "$cache/manifest.json" "$release_tag" <<'PY'
 import json,re,sys
 d=json.load(open(sys.argv[1],encoding='utf-8'))
-if d.get('schemaVersion')!=1 or d.get('release')!=sys.argv[2]:raise SystemExit('invalid release manifest')
+if d.get('schemaVersion')!=1 or d.get('releaseTag',d.get('release'))!=sys.argv[2] or not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+-vps',d.get('release','')):raise SystemExit('invalid release manifest')
 for key in ('package','xui'):
  a=d['assets'][key];name=a['name'];digest=a['sha256']
  if not re.fullmatch(r'[A-Za-z0-9._-]{1,100}',name) or not re.fullmatch(r'[0-9a-f]{64}',digest):raise SystemExit('invalid release asset')

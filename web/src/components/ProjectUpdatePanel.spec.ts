@@ -26,6 +26,22 @@ it('discovers signed server catalog and cancel never posts an apply', async () =
   view.unmount()
 })
 
+it('shows the specific blocker and safe upgrade route without offering apply', async () => {
+  fetchAPI.mockImplementation(async (path: string, options?: RequestInit) => {
+    if (options?.method === 'POST') return {}
+    if (path === '/api/v1/system/updates') return { ...initial, available: [{ kind: 'project', version: 'v0.2.14-vps', compatible: false, reasonCode: 'unsupported_component', component: 'caddy', upgradePath: 'https://github.com/thzyh/aimili-gateway/blob/main/docs/upgrade.md#unsupported-component' }] }
+    return { runId: 'a'.repeat(64), kind: 'project', action: 'check', state: 'success' }
+  })
+  const view = mount(ProjectUpdatePanel, { props: { initial } })
+  await view.get('[data-check-project]').trigger('click'); await flushPromises()
+  expect(view.text()).toContain('Caddy')
+  expect(view.get('[data-update-guide]').attributes('href')).toContain('#unsupported-component')
+  expect(view.get('[data-update-remedy]').text()).toContain('过渡版本')
+  expect(view.find('[data-confirm-project]').exists()).toBe(false)
+  expect(fetchAPI.mock.calls.some(x => x[0].endsWith('/apply'))).toBe(false)
+  view.unmount()
+})
+
 it('only confirms one pinned apply and shows actual progress', async () => {
   const view = mount(ProjectUpdatePanel, { props: { initial } })
   await view.get('[data-check-project]').trigger('click'); await flushPromises()

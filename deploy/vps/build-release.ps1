@@ -2,7 +2,8 @@ param(
     [string]$Tag = 'v0.2.0-vps',
     [string]$XUISource = 'D:\CodexProject\Github\.tmp\3x-ui-v3.7.0',
     [string]$SigningKey = 'C:\Users\zyh\.codex\keys\aimili-vps-release-ed25519.pem',
-    [string]$Output = 'D:\CodexProject\Github\.tmp\aimili-vps-release'
+    [string]$Output = 'D:\CodexProject\Github\.tmp\aimili-vps-release',
+    [switch]$BridgeRelease
 )
 $ErrorActionPreference = 'Stop'
 if ($Tag -notmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-vps$') { throw 'Invalid project release tag' }
@@ -10,9 +11,15 @@ $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $source = (Resolve-Path $XUISource).Path
 $patch = Join-Path $PSScriptRoot '3x-ui-v3.7.0-alias.patch'
 $expected = 'f727d04f6522bb94a8fb52e8352fdcafb51c11e1'
+$workerSource = Get-Content (Join-Path $root 'deploy\vps\project_update.py') -Raw
+if ($workerSource -notmatch '(?m)^UPDATER_VERSION = ([1-9][0-9]*)\r?$') { throw 'Updater version constant missing' }
+$updaterVersion = [int]$Matches[1]
+$contract = if ($BridgeRelease) { 1 } else { 2 }
+$releaseTag = if ($BridgeRelease) { $Tag } else { "project-$Tag" }
 if ((git -C $source rev-parse HEAD).Trim() -ne $expected) { throw '3x-ui upstream commit mismatch' }
 if (-not (Test-Path (Join-Path $source 'internal/web/dist/index.html'))) { throw '3x-ui frontend dist missing' }
 if (-not (Test-Path $SigningKey)) { throw 'release signing key missing' }
+if ((Test-Path $Output) -and (Get-ChildItem -LiteralPath $Output -Force | Select-Object -First 1)) { throw 'Release output directory must be empty' }
 New-Item -ItemType Directory -Force $Output | Out-Null
 $env:GOOS = 'linux'; $env:GOARCH = 'amd64'; $env:CGO_ENABLED = '0'
 try {
@@ -37,7 +44,7 @@ foreach ($part in @('deploy\vps','deploy\systemd','deploy\bin','deploy\local-vm\
     New-Item -ItemType Directory -Force $destination | Out-Null
 }
 Copy-Item -LiteralPath (Join-Path $root 'deploy\vps\installer.py'),(Join-Path $root 'deploy\vps\provision.py') -Destination (Join-Path $Output 'package\deploy\vps')
-Copy-Item -LiteralPath (Join-Path $root 'deploy\vps\project_update.py'),(Join-Path $root 'deploy\vps\enable_project_updates.py'),(Join-Path $root 'deploy\vps\release-public.pem') -Destination (Join-Path $Output 'package\deploy\vps')
+Copy-Item -LiteralPath (Join-Path $root 'deploy\vps\project_update.py'),(Join-Path $root 'deploy\vps\project_update_boot.py'),(Join-Path $root 'deploy\vps\enable_project_updates.py'),(Join-Path $root 'deploy\vps\release-public.pem') -Destination (Join-Path $Output 'package\deploy\vps')
 Get-ChildItem (Join-Path $root 'deploy\systemd') -Filter 'aimili-project-update-*' -File | Copy-Item -Destination (Join-Path $Output 'package\deploy\systemd')
 Copy-Item -LiteralPath (Join-Path $root 'deploy\systemd\aimilivpn.service'),(Join-Path $root 'deploy\systemd\aimili-gateway.service'),(Join-Path $root 'deploy\systemd\aimili-xui-protocol-transaction.path'),(Join-Path $root 'deploy\systemd\aimili-xui-protocol-transaction.timer'),(Join-Path $root 'deploy\systemd\aimili-xui-protocol-transaction.service') -Destination (Join-Path $Output 'package\deploy\systemd')
 Copy-Item -LiteralPath (Join-Path $root 'deploy\bin\aimili-gateway-account'),(Join-Path $root 'deploy\bin\aimili-xui-protocol-transaction') -Destination (Join-Path $Output 'package\deploy\bin')
@@ -49,8 +56,14 @@ if ($LASTEXITCODE -ne 0) { throw 'package archive failed' }
 $xui = Join-Path $source 'x-ui-custom'
 if (-not (Test-Path $xui)) { throw 'custom 3x-ui binary missing' }
 Copy-Item -LiteralPath $xui -Destination (Join-Path $Output 'x-ui-custom-linux-amd64')
-$manifest = [ordered]@{ schemaVersion=1; updateContract=1; release=$Tag; gatewayCommit=(git -C $root rev-parse HEAD).Trim(); xuiUpstreamCommit=$expected; assets=[ordered]@{package=[ordered]@{name='aimili-vps-package.tar.gz';sha256=(Get-FileHash (Join-Path $Output 'aimili-vps-package.tar.gz') -Algorithm SHA256).Hash.ToLower()};xui=[ordered]@{release='v0.2.5-vps';name='x-ui-custom-linux-amd64';sha256=(Get-FileHash (Join-Path $Output 'x-ui-custom-linux-amd64') -Algorithm SHA256).Hash.ToLower()}}}
+Copy-Item -LiteralPath (Join-Path $root 'deploy\vps\project_update.py') -Destination (Join-Path $Output 'project-update-engine.py')
+$schema = (Get-ChildItem (Join-Path $root 'internal\store\migrations') -Filter '*.sql' | ForEach-Object { [int]$_.BaseName.Substring(0,3) } | Measure-Object -Maximum).Maximum
+$componentNames = @('gateway','aimili-egress','3x-ui','protocol-helper','account-helper')
+$components = @($componentNames | ForEach-Object { [ordered]@{name=$_;action='replace'} })
+$components += @('updater','xray','caddy','openvpn','systemd' | ForEach-Object { [ordered]@{name=$_;action='preserve'} })
+# Only the explicitly marked bridge keeps contract 1 for installed v0.2.13 workers.
+$manifest = [ordered]@{ schemaVersion=1; updateContract=$contract; release=$Tag; releaseTag=$releaseTag; gatewayCommit=(git -C $root rev-parse HEAD).Trim(); xuiUpstreamCommit=$expected; compatibility=[ordered]@{platform='linux-amd64';osRelease='ubuntu-24.04';layout='unified-v1';gatewaySchemaMin=1;gatewaySchemaMax=[int]$schema;requiredFreeBytes=1073741824}; updater=[ordered]@{minVersion=$updaterVersion;maxVersion=$updaterVersion;version=$updaterVersion}; components=$components; assets=[ordered]@{package=[ordered]@{name='aimili-vps-package.tar.gz';sha256=(Get-FileHash (Join-Path $Output 'aimili-vps-package.tar.gz') -Algorithm SHA256).Hash.ToLower()};xui=[ordered]@{release='v0.2.5-vps';name='x-ui-custom-linux-amd64';sha256=(Get-FileHash (Join-Path $Output 'x-ui-custom-linux-amd64') -Algorithm SHA256).Hash.ToLower()};updater=[ordered]@{name='project-update-engine.py';sha256=(Get-FileHash (Join-Path $Output 'project-update-engine.py') -Algorithm SHA256).Hash.ToLower()}}}
 [System.IO.File]::WriteAllText((Join-Path $Output 'manifest.json'),(($manifest | ConvertTo-Json -Depth 8 -Compress)+"`n"),(New-Object System.Text.UTF8Encoding($false)))
 & 'D:\SoftWare\Git\mingw64\bin\openssl.exe' pkeyutl -sign -rawin -inkey $SigningKey -in (Join-Path $Output 'manifest.json') -out (Join-Path $Output 'manifest.sig')
 if ($LASTEXITCODE -ne 0) { throw 'manifest signing failed' }
-Write-Host "发布资产已生成：$Output"
+Write-Host "发布资产已生成：$Output；GitHub Release tag：$releaseTag"
