@@ -162,6 +162,30 @@ def public_ip() -> str:
     return value
 
 
+def is_ipv4(value: str) -> bool:
+    try:
+        return ipaddress.ip_address(value).version == 4
+    except ValueError:
+        return False
+
+
+def suggested_source_ipv4() -> str:
+    # sudo bash 通常清除 SSH_CLIENT；交互 SSH 的 controlling TTY 仍可由 who -m 查询。
+    for name in ("SSH_CLIENT", "SSH_CONNECTION"):
+        candidate = os.environ.get(name, "").split(" ")[0]
+        if is_ipv4(candidate):
+            return candidate
+    try:
+        result = subprocess.run(["who", "-m"], capture_output=True, text=True, timeout=3, check=False)
+        match = re.search(r"\(([^()]+)\)\s*$", result.stdout)
+        if match and is_ipv4(match.group(1)):
+            return match.group(1)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    # 识别不到远程用户时，安全默认仅允许本机，不放开公网来源。
+    return "127.0.0.1"
+
+
 def desired(args: argparse.Namespace) -> tuple[str, str, int, str]:
     ip = public_ip()
     old = load_json(STATE)
@@ -181,14 +205,20 @@ def desired(args: argparse.Namespace) -> tuple[str, str, int, str]:
         raise InstallError("出口位数量须为 1–8")
     if old.get("slots") and old["slots"] != slots:
         raise InstallError("已有部署不能在域名切换时改变出口位数量")
-    source = args.allowed_source or old.get("allowedSource") or os.environ.get("SSH_CLIENT", "").split(" ")[0]
+    source = args.allowed_source or old.get("allowedSource")
     if not source:
-        source = prompt("请输入允许访问 SOCKS5H 的 IPv4 来源")
-    try:
-        if ipaddress.ip_address(source).version != 4:
-            raise ValueError()
-    except ValueError as exc:
-        raise InstallError("SOCKS5H 来源必须是有效 IPv4") from exc
+        suggested = suggested_source_ipv4()
+        if suggested == "127.0.0.1":
+            label = "未识别当前 SSH 来源；请输入允许连接 SOCKS5H 的客户端 IPv4（回车仅允许 VPS 本机）"
+        else:
+            label = "请输入允许连接 SOCKS5H 的客户端 IPv4（回车使用当前 SSH 来源，不是 VPS IP）"
+        while True:
+            source = prompt(label, suggested)
+            if is_ipv4(source):
+                break
+            print("请输入有效的客户端 IPv4；直接回车可使用方括号中的默认值。", flush=True)
+    if not is_ipv4(source):
+        raise InstallError("SOCKS5H 来源必须是有效 IPv4；请填写客户端来源地址，而不是域名")
     return origin, domain, slots, source
 
 
@@ -463,6 +493,7 @@ def install_gateway(args: argparse.Namespace, origin: str, domain: str, slots: i
     copy_mode(args.asset_root / "bin/aimili-gateway", Path("/usr/local/bin/aimili-gateway"))
     copy_mode(args.asset_root / "bin/aimili-gateway-admin", Path("/usr/local/bin/aimili-gateway-admin"))
     copy_mode(args.asset_root / "deploy/bin/aimili-gateway-account", Path("/usr/local/sbin/aimili-gateway-account"))
+    copy_mode(args.asset_root / "deploy/bin/aimili", Path("/usr/local/bin/aimili"))
     copy_mode(args.asset_root / "deploy/bin/aimili-xui-protocol-transaction", Path("/usr/local/bin/aimili-xui-protocol-transaction"))
     copy_mode(args.asset_root / "scripts/aimili_xui_protocol_transaction.py", Path("/usr/lib/aimili-gateway/aimili_xui_protocol_transaction.py"), 0o644)
     for name in ("aimili-xui-protocol-transaction.path", "aimili-xui-protocol-transaction.service", "aimili-xui-protocol-transaction.timer"):

@@ -1,0 +1,155 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+# 人工运维入口；机器调用只使用 status/version 的只读子命令。
+readonly installer_url='https://raw.githubusercontent.com/thzyh/aimili-gateway/main/deploy/vps/install.sh'
+readonly install_log='/var/log/aimili-gateway/install.log'
+
+as_root() {
+    if (( EUID == 0 )); then "$@"; else sudo "$@"; fi
+}
+
+status_json() {
+    as_root python3 -c '
+import json, pathlib, subprocess
+path = pathlib.Path("/var/lib/aimili-gateway/install-state.json")
+state = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+services = {name: subprocess.run(["systemctl", "is-active", "--quiet", name],
+                              check=False).returncode == 0
+            for name in ("aimili-gateway", "aimilivpn", "x-ui", "caddy")}
+print(json.dumps({"state": state.get("status", "absent"),
+                  "phase": state.get("phase", ""),
+                  "origin": state.get("origin", ""),
+                  "slots": state.get("slots", 0),
+                  "services": services}, ensure_ascii=False))'
+}
+
+show_status() {
+    status_json | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+print("部署状态：{} / {}".format(d["state"], d["phase"]))
+print("访问地址：{}".format(d["origin"] or "尚未部署"))
+print("普通出口位：{}".format(d["slots"]))
+for name, active in d["services"].items():
+    print("{}：{}".format(name, "运行中" if active else "未运行"))'
+}
+
+show_version() {
+    /usr/local/bin/aimili-gateway version --json | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+print("Gateway 版本：{}".format(d.get("version", "未知")))
+print("提交：{}".format(d.get("commit", "未知")))'
+}
+
+show_logs() {
+    local choice unit
+    printf '\n1 安装日志  2 Gateway  3 AimiliVPN  4 3x-ui  5 Caddy  6 项目更新  0 返回\n'
+    read -r -p '选择日志：' choice || return 0
+    case "$choice" in
+        1) as_root tail -n 100 -- "$install_log"; return ;;
+        2) unit=aimili-gateway ;;
+        3) unit=aimilivpn ;;
+        4) unit=x-ui ;;
+        5) unit=caddy ;;
+        6) unit=aimili-project-update-install ;;
+        0) return ;;
+        *) printf '无效选项。\n' >&2; return 2 ;;
+    esac
+    as_root journalctl -u "$unit" -n 100 --no-pager
+}
+
+change_domain() {
+    local domain confirm script_file installer_version current_version result
+    printf '\n当前地址：'
+    status_json | python3 -c 'import json,sys;print(json.load(sys.stdin).get("origin") or "尚未部署")'
+    printf '域名 A 记录须已指向本机公网 IPv4；操作会备份数据并短暂重启服务。\n'
+    read -r -p '请输入新域名：' domain || return 0
+    [[ -n "$domain" ]] || { printf '域名不能为空。\n' >&2; return 2; }
+    read -r -p '输入“确认”开始切换：' confirm || return 0
+    [[ "$confirm" == '确认' ]] || { printf '已取消。\n'; return 0; }
+
+    # 执行刚下载的同一份脚本，版本不一致时拒绝，以免网页升级后被旧安装包覆盖。
+    script_file=$(mktemp)
+    if ! curl -fsSL --retry 2 --connect-timeout 10 --max-time 60 -o "$script_file" "$installer_url"; then
+        rm -f -- "$script_file"
+        printf '下载安装入口失败，请检查网络。\n' >&2
+        return 1
+    fi
+    installer_version=$(sed -nE "s/^readonly release_tag='project-(v[0-9]+\.[0-9]+\.[0-9]+-vps)'$/\1/p" "$script_file")
+    current_version=$(/usr/local/bin/aimili-gateway version --json | python3 -c 'import json,sys;print(json.load(sys.stdin).get("version",""))')
+    if [[ -z "$installer_version" || "$installer_version" != "$current_version" ]]; then
+        rm -f -- "$script_file"
+        printf '已停止切换：本机版本 %s，安装入口版本 %s，不允许用不同版本的安装包覆盖现有程序。\n' "$current_version" "${installer_version:-无法识别}" >&2
+        printf '请先在网页“高级设置 → 检测更新”核对版本，或查看项目 docs/upgrade.md；待安装入口与本机版本一致后重试。\n' >&2
+        return 1
+    fi
+    printf '版本核对通过（%s），正在切换到 %s……\n' "$current_version" "$domain"
+    if as_root bash "$script_file" --domain "$domain"; then
+        result=0
+    else
+        result=$?
+        printf '域名切换失败（退出码 %s）。请查看 %s；安装器备份位于 /var/backups/aimili-gateway/vps-installer。\n' "$result" "$install_log" >&2
+    fi
+    rm -f -- "$script_file"
+    return "$result"
+}
+
+restart_service() {
+    local choice unit confirm
+    printf '\n1 Gateway  2 AimiliVPN  3 3x-ui  4 Caddy  0 返回\n'
+    read -r -p '选择要重启的服务：' choice || return 0
+    case "$choice" in
+        1) unit=aimili-gateway ;;
+        2) unit=aimilivpn ;;
+        3) unit=x-ui ;;
+        4) unit=caddy ;;
+        0) return ;;
+        *) printf '无效选项。\n' >&2; return 2 ;;
+    esac
+    read -r -p "重启 $unit 会短暂中断连接；输入“重启”继续：" confirm || return 0
+    [[ "$confirm" == '重启' ]] || { printf '已取消。\n'; return 0; }
+    as_root systemctl restart "$unit"
+    if systemctl is-active --quiet "$unit"; then
+        printf '%s 已恢复运行。业务连接请继续在网页验证。\n' "$unit"
+    else
+        printf '%s 未恢复运行，请在菜单查看服务日志。\n' "$unit" >&2
+        return 1
+    fi
+}
+
+menu() {
+    local choice
+    while true; do
+        printf '\n=== Aimili Gateway 管理 ===\n'
+        printf '1 部署状态与访问地址\n2 当前版本\n3 服务状态\n4 查看日志\n'
+        printf '5 管理账户与密码\n6 更换域名\n7 重启指定服务\n8 项目更新说明\n0 退出\n'
+        read -r -p '请选择：' choice || { printf '\n'; return 0; }
+        case "$choice" in
+            1) show_status || printf '状态读取失败。\n' >&2 ;;
+            2) show_version || printf '版本读取失败。\n' >&2 ;;
+            3) systemctl status aimili-gateway aimilivpn x-ui caddy --no-pager || true ;;
+            4) show_logs || printf '日志读取失败。\n' >&2 ;;
+            5) as_root /usr/local/sbin/aimili-gateway-account || printf '账户操作失败。\n' >&2 ;;
+            6) change_domain || printf '切换未完成，当前状态请用菜单 1 核对。\n' >&2 ;;
+            7) restart_service || printf '重启未完成，当前状态请用菜单 3 核对。\n' >&2 ;;
+            8) printf '登录 Gateway 网页 → 高级设置 → 检测更新；确认后网页显示升级进度。\n安装器用于首次部署及更换域名，不用于日常更新。\n' ;;
+            0) return 0 ;;
+            *) printf '无效选项。\n' >&2 ;;
+        esac
+    done
+}
+
+case "${1:-}" in
+    '') menu ;;
+    status)
+        if [[ "${2:-}" == '--json' && $# -eq 2 ]]; then status_json
+        elif (( $# == 1 )); then show_status
+        else printf '用法：aimili status [--json]\n' >&2; exit 2; fi ;;
+    version)
+        if [[ "${2:-}" == '--json' && $# -eq 2 ]]; then /usr/local/bin/aimili-gateway version --json
+        elif (( $# == 1 )); then show_version
+        else printf '用法：aimili version [--json]\n' >&2; exit 2; fi ;;
+    *) printf '用法：aimili [status [--json]|version [--json]]\n' >&2; exit 2 ;;
+esac

@@ -5,9 +5,18 @@ import hashlib
 import os
 from pathlib import Path
 import pwd
+import re
 import shutil
 import subprocess
 import sys
+
+
+def engine_slot_name(engine):
+    body = engine.read_bytes()
+    match = re.search(rb"(?m)^UPDATER_VERSION = ([1-9][0-9]*)\r?$", body)
+    if match is None:
+        raise ValueError("更新引擎缺少版本声明")
+    return f"engine-{int(match.group(1))}-{hashlib.sha256(body).hexdigest()[:12]}.py"
 
 
 def enable(asset_root, version):
@@ -25,7 +34,7 @@ def enable(asset_root, version):
     lib=Path("/usr/local/lib/aimili-gateway"); lib.mkdir(parents=True,exist_ok=True); os.chmod(lib,0o755)
     slots=lib/"update-engines"; slots.mkdir(parents=True,exist_ok=True);os.chmod(slots,0o755)
     engine=root/"deploy/vps/project_update.py"; digest=hashlib.sha256(engine.read_bytes()).hexdigest()
-    engine_name=f"engine-2-{digest[:12]}.py"
+    engine_name=engine_slot_name(engine)
     shutil.copyfile(engine,slots/engine_name);os.chmod(slots/engine_name,0o644)
     pointer=slots/"current.json"
     previous=None

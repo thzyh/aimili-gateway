@@ -14,6 +14,36 @@ import project_update_boot as boot
 
 
 class ProjectUpdateTests(unittest.TestCase):
+    def test_project_update_installs_management_menu_from_signed_package(self):
+        with tempfile.TemporaryDirectory() as folder:
+            package = Path(folder)
+            for name in ("bin/aimili-gateway", "bin/aimili-gateway-admin",
+                         "services/aimili-egress/vpngate_manager.py",
+                         "deploy/bin/aimili-gateway-account", "deploy/bin/aimili",
+                         "scripts/aimili_xui_protocol_transaction.py"):
+                source = package / name
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_text("fixture", encoding="utf-8")
+            pairs = u.install_plan(package)
+            self.assertIn((package / "deploy/bin/aimili", Path("/usr/local/bin/aimili")), pairs)
+            (package / "deploy/bin/aimili").unlink()
+            with self.assertRaisesRegex(u.UpdateError, "invalid_payload"):
+                u.install_plan(package)
+
+    def test_management_release_promotes_update_engine_before_install(self):
+        manifest = dict(
+            updateContract=2,
+            compatibility=dict(platform="linux-amd64", osRelease="ubuntu-24.04", layout="unified-v1",
+                               gatewaySchemaMin=1, gatewaySchemaMax=14, requiredFreeBytes=1024),
+            components=[dict(name=name, action=action) for name, action in u.REQUIRED_ACTIONS.items()],
+            updater=dict(minVersion=3, maxVersion=3, version=3),
+            assets=dict(updater=dict(name="project-update-engine.py", sha256="a" * 64)),
+        )
+        facts = dict(platform="linux-amd64", osRelease="ubuntu-24.04", layout="unified-v1",
+                     gatewaySchema=13, freeBytes=2048, updaterVersion=2)
+        self.assertEqual(u.assess_compatibility(manifest, facts),
+                         dict(kind="project", compatible=True, requiresUpdaterUpgrade=True))
+
     def test_bridge_and_project_tags_keep_old_worker_on_safe_channel(self):
         releases=[dict(tag_name="v0.2.14-vps"),dict(tag_name="project-v0.2.15-vps"),
                   dict(tag_name="project-v0.2.16-vps",draft=True)]

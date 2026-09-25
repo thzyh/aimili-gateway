@@ -36,7 +36,7 @@ VERSION = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-vps\Z"
 PROJECT_TAG = re.compile(r"project-(v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)-vps)\Z")
 HEX = re.compile(r"[a-f0-9]{64}\Z")
 MAX_PACKAGE = 256 * 1024 * 1024
-UPDATER_VERSION = 2
+UPDATER_VERSION = 3
 UPGRADE_GUIDE = "https://github.com/thzyh/aimili-gateway/blob/main/docs/upgrade.md#"
 SUPPORTED_COMPONENT_ACTIONS = {
     "gateway": {"replace", "preserve"},
@@ -337,6 +337,7 @@ def install_plan(package):
     pairs=[(package/"bin"/name,Path("/usr/local/bin")/name) for name in ("aimili-gateway","aimili-gateway-admin")]
     pairs += [(p,Path("/opt/aimili-gateway/services/aimili-egress")/p.name) for p in sorted((package/"services/aimili-egress").glob("*.py"))]
     pairs += [(package/"deploy/bin/aimili-gateway-account",Path("/usr/local/sbin/aimili-gateway-account")),
+              (package/"deploy/bin/aimili",Path("/usr/local/bin/aimili")),
               (package/"scripts/aimili_xui_protocol_transaction.py",Path("/usr/lib/aimili-gateway/aimili_xui_protocol_transaction.py"))]
     if not (package/"services/aimili-egress/vpngate_manager.py").is_file() or any(not src.is_file() for src,_ in pairs): raise UpdateError("invalid_payload")
     return pairs
@@ -540,7 +541,7 @@ def apply(r,private,manifest):
     if shutil.disk_usage(PRIVATE).free<1024*1024*1024: raise UpdateError("disk_full")
     package=private/"package"; extract_package(private/"aimili-vps-package.tar.gz",package)
     pairs=install_plan(package)+[(private/"x-ui-custom-linux-amd64",XUI_BINARY)]
-    for src,_ in pairs: os.chmod(src,0o755 if src.name in ("aimili-gateway","aimili-gateway-admin","aimili-gateway-account","x-ui-custom-linux-amd64") else 0o644)
+    for src,_ in pairs: os.chmod(src,0o755 if src.name in ("aimili-gateway","aimili-gateway-admin","aimili-gateway-account","aimili","x-ui-custom-linux-amd64") else 0o644)
     info=json.loads(command([str(package/"bin/aimili-gateway"),"version","--json"]))
     if info.get("version")!=r["version"] or info.get("commit")!=manifest["gatewayCommit"]: raise UpdateError("version_invalid")
     snapshot=private/"backup"; snapshot.mkdir(mode=0o700)
