@@ -117,10 +117,16 @@ def wait_for(label: str, probe, seconds: int, interval: int = 3) -> None:
 
 
 def prompt(text: str, default: str = "") -> str:
-    with open("/dev/tty", "r+", encoding="utf-8") as terminal:
-        terminal.write(text + (f" [{default}]" if default else "") + "：")
-        terminal.flush()
-        return terminal.readline().strip() or default
+    try:
+        with open("/dev/tty", "r", encoding="utf-8") as terminal_input, open("/dev/tty", "w", encoding="utf-8") as terminal_output:
+            terminal_output.write(text + (f" [{default}]" if default else "") + "：")
+            terminal_output.flush()
+            answer = terminal_input.readline()
+    except OSError as error:
+        raise InstallError("当前会话没有可用的交互终端；请在 SSH 终端运行，或使用 --no-domain/--domain、--slots 和 --allowed-source 参数进行非交互部署") from error
+    if not answer:
+        raise InstallError("交互输入已结束；请重新在 SSH 终端运行，或传入完整的非交互部署参数")
+    return answer.strip() or default
 
 
 def args_from_user() -> argparse.Namespace:
