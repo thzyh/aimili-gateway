@@ -170,17 +170,22 @@ def is_ipv4(value: str) -> bool:
 
 
 def suggested_source_ipv4() -> str:
-    # sudo bash 通常清除 SSH_CLIENT；交互 SSH 的 controlling TTY 仍可由 who -m 查询。
+    # sudo bash 通常清除 SSH_CLIENT；管道安装时 stdin 不是 TTY，需匹配 stderr 的终端。
     for name in ("SSH_CLIENT", "SSH_CONNECTION"):
         candidate = os.environ.get(name, "").split(" ")[0]
         if is_ipv4(candidate):
             return candidate
     try:
-        result = subprocess.run(["who", "-m"], capture_output=True, text=True, timeout=3, check=False)
-        match = re.search(r"\(([^()]+)\)\s*$", result.stdout)
-        if match and is_ipv4(match.group(1)):
-            return match.group(1)
-    except (OSError, subprocess.TimeoutExpired):
+        tty = os.ttyname(sys.stderr.fileno()).removeprefix("/dev/")
+        result = subprocess.run(["who"], capture_output=True, text=True, timeout=3, check=False)
+        for line in result.stdout.splitlines():
+            fields = line.split()
+            if len(fields) < 2 or fields[1] != tty:
+                continue
+            match = re.search(r"\(([^()]+)\)\s*$", line)
+            if match and is_ipv4(match.group(1)):
+                return match.group(1)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
         pass
     # 识别不到远程用户时，安全默认仅允许本机，不放开公网来源。
     return "127.0.0.1"

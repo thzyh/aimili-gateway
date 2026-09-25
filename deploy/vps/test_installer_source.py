@@ -12,16 +12,18 @@ import installer
 
 
 class InstallerSourceTests(unittest.TestCase):
-    def test_sudo_session_uses_controlling_ssh_terminal(self):
+    def test_sudo_pipe_uses_matching_stderr_tty_in_who_records(self):
         with patch.dict(os.environ, {"SSH_CLIENT": "", "SSH_CONNECTION": ""}), \
+             patch.object(installer.os, "ttyname", return_value="/dev/pts/2", create=True), \
              patch.object(installer.subprocess, "run", return_value=types.SimpleNamespace(
-                 returncode=0, stdout="root pts/2 2026-09-25 06:00 (198.51.100.23)\n")):
+                 returncode=0, stdout="root pts/2 2026-09-25 06:00 (198.51.100.23)\n"
+                                          "root pts/3 2026-09-25 06:01 (203.0.113.44)\n")) as who:
             self.assertEqual(installer.suggested_source_ipv4(), "198.51.100.23")
+            self.assertEqual(who.call_args.args[0], ["who"])
 
     def test_missing_ssh_source_defaults_to_loopback_not_public(self):
         with patch.dict(os.environ, {"SSH_CLIENT": "", "SSH_CONNECTION": ""}), \
-             patch.object(installer.subprocess, "run", return_value=types.SimpleNamespace(
-                 returncode=0, stdout="")):
+             patch.object(installer.os, "ttyname", side_effect=OSError("no tty"), create=True):
             self.assertEqual(installer.suggested_source_ipv4(), "127.0.0.1")
 
     def test_enter_accepts_detected_source_during_first_install(self):
