@@ -594,6 +594,7 @@ def main() -> int:
                 module.recover_interrupted_slot_adoptions(origin, slots, credentials)
                 if module.remove_unneeded_slots(origin, slots, credentials):
                     run(["systemctl", "restart", "aimilivpn.service"])
+                    wait_for("出口配置重载后控制接口", lambda: socket_open("127.0.0.1", 8790), 60)
             # 重跑时节点也可能已经失效；只重分配真实出口不通的出口位。
             module.stabilize_initial_slots(slots)
             if current.get("status") != "complete":
