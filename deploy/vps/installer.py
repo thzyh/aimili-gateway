@@ -366,6 +366,15 @@ def http_ok(url: str, cafile: str | None = None) -> bool:
         return False
 
 
+def domain_tls_ready(domain: str) -> bool:
+    try:
+        with socket.create_connection(("127.0.0.1", 443), timeout=5) as connection:
+            with ssl.create_default_context().wrap_socket(connection, server_hostname=domain):
+                return True
+    except OSError:
+        return False
+
+
 def install_egress(args: argparse.Namespace, slots: int, credentials: dict) -> None:
     say("正在初始化 aimili-egress 与 OpenVPN……")
     target = Path("/opt/aimili-gateway/services/aimili-egress")
@@ -467,7 +476,7 @@ def write_caddy(origin: str, domain: str) -> None:
         shutil.copy2(ca, "/usr/local/share/ca-certificates/aimili-gateway-local.crt")
         run(["update-ca-certificates"])
     else:
-        wait_for("域名证书", lambda: http_ok(origin), 180)
+        wait_for("域名证书", lambda: domain_tls_ready(domain), 180)
     checkpoint("caddy")
 
 
