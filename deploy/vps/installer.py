@@ -628,7 +628,9 @@ def main() -> int:
             credentials = load_json(creds)
         install_xui(args, credentials)
         install_egress(args, slots, credentials)
-        if not current.get("origin"):
+        # An interrupted first install has an origin but still needs the initial
+        # OpenVPN candidate pool to settle before Gateway resource adoption.
+        if current.get("status") != "complete":
             wait_egress(slots)
         firewall(slots, source)
         write_caddy(origin, domain)
