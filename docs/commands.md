@@ -10,17 +10,17 @@ curl -fsSL https://raw.githubusercontent.com/thzyh/aimili-gateway/main/deploy/vp
 
 1. **下载并验证发布包。** 引导脚本下载发布清单、签名、Gateway 完整包及定制 3x-ui 二进制，验证 Ed25519 签名和 SHA-256；这一阶段不会修改服务。
 2. **选择部署模式。** `1 无域名` 是默认值，回车即可使用 VPS 公网 IP 和 Caddy 本地 CA。`2 使用域名` 会继续询问域名；域名的 A 记录必须已经指向本机公网 IPv4，且 80、443 端口可从公网访问，Caddy 才能申请公网证书。域名无需填写 `https://`。
-3. **选择 SOCKS5H 允许来源。** 这里填写的是**连接 SOCKS5H 的客户端来源 IPv4**，不是 VPS IP、域名或出口节点 IP。安装器会先尝试读取当前 SSH 客户端地址，并在方括号中显示；直接回车即采用该地址。若无法识别，方括号显示 `127.0.0.1`，回车表示仅允许 VPS 本机连接；需要其他设备使用时，应输入该设备对 VPS 可见的公网 IPv4。已有部署重新运行时沿用已保存的允许来源，不重复询问。来源限制保持开启，安装器不会因回车而放开所有公网地址。
-4. **自动安装与验收。** 安装器检查平台与 DNS，备份已有状态；在 512 MiB VPS 上先创建并持久化 1 GiB Swap，再安装系统依赖、3x-ui/Xray、AimiliVPN/OpenVPN、Caddy 和 Gateway，设置受管防火墙、账户及更新入口；最后验收主连接、出口位、订阅、SOCKS5H 规则和数据库。普通出口位默认 `4`，交互部署不另设槽位选择；已有部署的槽位数量保持不变。完整日志在 `/var/log/aimili-gateway/install.log`。
-5. **完成后。** 屏幕显示访问地址；初始账户文件位于 `/root/aimili-gateway/credentials.json`，只在自己的 SSH 会话中查看，不要粘贴到聊天或公开日志。无域名模式的本地 CA 不会自动受浏览器信任，后续可用管理菜单切换域名。
+3. **选择 SOCKS5H 来源限制。** 直接回车表示关闭来源限制；输入**连接 SOCKS5H 的客户端公网 IPv4**则开启限制并仅允许该来源。这里不是 VPS IP、域名或出口节点 IP。关闭后 mixed/SOCKS5H 端口可从公网连接，仍需要正确的代理用户名和密码。已有部署在交互式重跑时也会重新询问，回车会关闭原有限制；`--domain` 等非交互命令不带来源参数时则沿用已有策略。
+4. **自动安装与验收。** 安装器检查平台与 DNS，备份已有状态；在 512 MiB VPS 上先创建并持久化 1 GiB Swap，再安装系统依赖、3x-ui/Xray、AimiliVPN/OpenVPN、Caddy 和 Gateway，设置受管防火墙、账户及更新入口；最后验收主连接、出口位、订阅、SOCKS5H 规则和数据库。普通出口位默认 `4`，交互部署不另设槽位选择；已有部署的槽位数量保持不变。出口探测最长等待 20 分钟，每 30 秒显示已等待时间、主连接、已就绪出口位和候选数量。完整日志在 `/var/log/aimili-gateway/install.log`。
+5. **完成后。** 首次部署验收成功会在当前 SSH 终端显示网页地址、用户名和密码，不写入安装日志；无交互终端时只提示凭据文件 `/root/aimili-gateway/credentials.json`。账户修改后应在 `aimili` 菜单读取加密数据库里的**当前**密码，旧安装凭据文件可能已过期。无域名模式的本地 CA 不会自动受浏览器信任，后续可用管理菜单切换域名。
 
-非交互部署需明确提供模式和 SOCKS5H 客户端来源，例如：
+非交互部署需明确提供模式。新部署不提供来源参数时默认关闭限制，例如：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/thzyh/aimili-gateway/main/deploy/vps/install.sh | sudo bash -s -- --domain fl.zouyunhui.cc.cd --slots 4 --allowed-source 你的客户端公网IPv4
+curl -fsSL https://raw.githubusercontent.com/thzyh/aimili-gateway/main/deploy/vps/install.sh | sudo bash -s -- --domain fl.zouyunhui.cc.cd --slots 4
 ```
 
-把最后一个占位符替换为真实 IPv4；不使用域名时把 `--domain ...` 换成 `--no-domain`。如安装中断，先查看安装日志和状态，再用同一目标参数续作。
+需要开启限制时追加 `--allowed-source 你的客户端公网IPv4`；已有部署要明确关闭限制时追加 `--disable-source-limit`。不使用域名时把 `--domain ...` 换成 `--no-domain`。如安装中断，先查看安装日志和状态，再用同一目标参数续作。
 
 ## 安装后的统一管理
 
@@ -38,7 +38,7 @@ aimili
 | 2 | 当前版本 | 读取 Gateway 二进制的版本与提交。 |
 | 3 | 服务状态 | 查看 Gateway、AimiliVPN、3x-ui、Caddy 的 systemd 状态。 |
 | 4 | 查看日志 | 选择安装、Gateway、AimiliVPN、3x-ui、Caddy 或项目更新日志，显示最近 100 行。 |
-| 5 | 管理账户与密码 | 打开原有 `aimili-gateway-account` 中文菜单；可修改统一账户、重置密码、管理 TOTP、撤销会话。 |
+| 5 | 查看用户名和密码 / 管理账户 | 打开 `aimili-gateway-account` 中文菜单。选 `1` 并输入“显示”后，从 Gateway 加密数据库读取、核对并显示当前统一密码；也可修改账户、管理 TOTP、撤销会话。请只在自己的 SSH 终端查看。 |
 | 6 | 更换域名 | 输入已解析到本机的域名，输入“确认”后运行签名安装器。会备份数据并短暂重启部分服务。 |
 | 7 | 重启指定服务 | 选择服务并输入“重启”后执行；只检查服务恢复为 active，业务连接仍需网页验证。 |
 | 8 | 项目更新说明 | 提示使用网页“高级设置 → 检测更新”确认新版本、观察升级进度。 |

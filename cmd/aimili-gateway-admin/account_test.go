@@ -16,29 +16,44 @@ import (
 	"github.com/thzyh/aimili-gateway/internal/store"
 )
 
-func TestAccountMenuShowsOnlyAllowedStatusFields(t *testing.T) {
+func TestAccountMenuShowsCurrentUnifiedPasswordOnlyAfterConfirmation(t *testing.T) {
 	environment := newAdminTestEnvironment(t)
 	database, _ := seedAccountAdmin(t, environment, false)
 	database.Close()
-	var output bytes.Buffer
-	code := runWithDependencies(
-		[]string{"account"},
-		strings.NewReader("1\n0\n"),
-		&output,
-		&bytes.Buffer{},
-		commandDependencies{Now: environment.now, Random: bytes.NewReader(bytes.Repeat([]byte{1}, 64)), Synchronizer: newTestAccountSynchronizer(environment)},
-	)
-	if code != 0 {
-		t.Fatalf("exit code = %d", code)
+	synchronizer := newTestAccountSynchronizer(environment)
+	if err := synchronizer.Change(context.Background(), accountsync.ChangeRequest{Username: "owner", Password: []byte("current-password-marker")}); err != nil {
+		t.Fatal(err)
 	}
-	for _, expected := range []string{"owner", "TOTP：已关闭", "三服务同步：等待统一重置", "7. 修复三账户同步", "8. 撤销 Gateway 登录会话"} {
-		if !strings.Contains(output.String(), expected) {
-			t.Fatalf("status output missing %q", expected)
+	for _, test := range []struct {
+		input   string
+		exposed bool
+	}{
+		{"1\n取消\n0\n", false},
+		{"1\n显示\n0\n", true},
+	} {
+		var output bytes.Buffer
+		code := runWithDependencies(
+			[]string{"account"},
+			strings.NewReader(test.input),
+			&output,
+			&bytes.Buffer{},
+			commandDependencies{Now: environment.now, Random: bytes.NewReader(bytes.Repeat([]byte{1}, 64)), Synchronizer: synchronizer},
+		)
+		if code != 0 {
+			t.Fatalf("exit code = %d", code)
 		}
-	}
-	for _, forbidden := range []string{"encoded-test-hash", "encrypted-test-secret", "otpauth://"} {
-		if strings.Contains(output.String(), forbidden) {
-			t.Fatalf("status output exposed %q", forbidden)
+		for _, expected := range []string{"owner", "TOTP：已关闭", "三服务同步：已同步", "7. 修复三账户同步", "8. 撤销 Gateway 登录会话"} {
+			if !strings.Contains(output.String(), expected) {
+				t.Fatalf("status output missing %q", expected)
+			}
+		}
+		if got := strings.Contains(output.String(), "current-password-marker"); got != test.exposed {
+			t.Fatalf("password exposure = %t, want %t", got, test.exposed)
+		}
+		for _, forbidden := range []string{"encoded-test-hash", "encrypted-test-secret", "otpauth://"} {
+			if strings.Contains(output.String(), forbidden) {
+				t.Fatalf("status output exposed %q", forbidden)
+			}
 		}
 	}
 }

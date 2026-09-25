@@ -22,7 +22,7 @@ curl -fsSL https://raw.githubusercontent.com/thzyh/aimili-gateway/main/deploy/vp
 
 安装器会用中文询问无域名或域名模式，并可重复执行。无域名模式使用本机公网 IP 与本地 CA；域名 A 记录生效后，再执行同一条命令并选择域名模式，保留 Gateway/3x-ui 数据库、账户、UUID、Reality 材料与出口位。非交互用法是在同一条命令末尾附加 `--no-domain --slots 4` 或 `--domain bj.zouyunhui.cc.cd --slots 4`。发布资产由固定的 Ed25519 公钥验证签名和 SHA-256；完整安装记录在 `/var/log/aimili-gateway/install.log`。只读状态检查使用同一入口：`curl -fsSL https://raw.githubusercontent.com/thzyh/aimili-gateway/main/deploy/vps/install.sh | sudo bash -s -- --status`。
 
-安装包含管理菜单的版本后，在 VPS 上只需运行 `aimili`：中文菜单可查看部署状态、版本、服务和日志，管理账户、切换域名及确认后重启指定服务；日常项目更新仍由网页“高级设置 → 检测更新”完成。首次交互部署时，SOCKS5H 来源提示会显示当前 SSH 客户端 IPv4，回车即采用；无法识别时安全默认仅允许本机，不会开放全部公网来源。脚本化只读入口为 `aimili status --json` 和 `aimili version --json`。菜单切换域名前会核对当前 Gateway 版本与安装入口固定版本，不一致时拒绝覆盖旧程序并提示升级路径。完整安装选项、管理操作及重复运行安装器的影响见[常用命令与管理菜单](docs/commands.md)。
+安装包含管理菜单的版本后，在 VPS 上只需运行 `aimili`：中文菜单可查看部署状态、版本、服务和日志，查看或管理统一账户、切换域名及确认后重启指定服务；日常项目更新仍由网页“高级设置 → 检测更新”完成。首次交互部署时，SOCKS5H 来源提示直接回车会关闭来源限制；输入客户端公网 IPv4 则开启限制。关闭来源限制后公网仍须使用正确的代理账号密码。脚本化只读入口为 `aimili status --json` 和 `aimili version --json`。菜单切换域名前会核对当前 Gateway 版本与安装入口固定版本，不一致时拒绝覆盖旧程序并提示升级路径。完整安装选项、管理操作及重复运行安装器的影响见[常用命令与管理菜单](docs/commands.md)。
 
 3x-ui 保持独立上游源码。`deploy/vps/3x-ui-v3.7.0-alias.patch` 固定在上游提交 `f727d04f6522bb94a8fb52e8352fdcafb51c11e1`，通过 `deploy/vps/build-xui-custom.ps1` 可复现构建。安装器从固定的 `v0.2.5-vps` Release 下载定制 3x-ui 二进制，或复用本机已校验的缓存，并按当前版本签名清单中的 SHA-256 验证；Gateway 安装包来自安装脚本固定的当前 Release。Gateway 仓库只保存补丁、版本锁与发布构建，不把 3x-ui 的整个源码并入 Go module；上游许可证随官方 3x-ui 运行包保留。
 
@@ -143,7 +143,7 @@ sudo aimili-gateway-account
 8. 撤销全部 Gateway 登录会话。
 0. 退出。
 
-V1-D 中该命令是三服务统一用户名和密码的唯一受支持修改入口。密码不能查询或恢复，只能生成随机新密码或设置自定义新密码；首次升级后必须执行一次统一密码重置，自动代登录才会从“等待统一重置”进入可用状态。修改统一用户名或密码、或修复三账户同步成功后，命令会自动退出并立即重载 Gateway，避免运行中的适配器继续使用旧凭据；无需再次选择“退出”。Gateway TOTP 仍是独立的可选第二因素，不同步到底层后台。
+V1-D 中该命令是三服务统一用户名和密码的唯一受支持修改入口。完成统一同步后，`aimili` 菜单中的账户选项可在本机交互终端经确认后从 Gateway 加密数据库显示当前统一密码；未完成同步或凭据不一致时不会显示。首次升级后必须执行一次统一密码重置，自动代登录才会从“等待统一重置”进入可用状态。修改统一用户名或密码、或修复三账户同步成功后，命令会自动退出并立即重载 Gateway，避免运行中的适配器继续使用旧凭据；无需再次选择“退出”。Gateway TOTP 仍是独立的可选第二因素，不同步到底层后台。
 
 ## 验证
 

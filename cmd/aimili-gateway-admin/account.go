@@ -37,7 +37,7 @@ type accountSynchronizer interface {
 func runAccountMenu(ctx context.Context, database *store.Store, masterKeyPath string, prompts *promptReader, out io.Writer, dependencies commandDependencies) error {
 	for {
 		_, _ = fmt.Fprintln(out, "\nAimili Gateway 账户管理")
-		_, _ = fmt.Fprintln(out, "1. 查看账户状态")
+		_, _ = fmt.Fprintln(out, "1. 查看当前用户名和密码")
 		_, _ = fmt.Fprintln(out, "2. 修改用户名")
 		_, _ = fmt.Fprintln(out, "3. 生成随机新密码")
 		_, _ = fmt.Fprintln(out, "4. 设置自定义新密码")
@@ -57,7 +57,7 @@ func runAccountMenu(ctx context.Context, database *store.Store, masterKeyPath st
 		case "0":
 			return nil
 		case "1":
-			operationErr = showAccountStatus(ctx, database, dependencies.Synchronizer, out)
+			operationErr = showAccountStatus(ctx, database, masterKeyPath, dependencies.Synchronizer, prompts, out)
 		case "2":
 			operationErr = changeUsername(ctx, database, dependencies.Synchronizer, prompts, out)
 		case "3":
@@ -99,7 +99,7 @@ func unifiedCredentialsChanged(choice string) bool {
 	}
 }
 
-func showAccountStatus(ctx context.Context, database *store.Store, synchronizer accountSynchronizer, out io.Writer) error {
+func showAccountStatus(ctx context.Context, database *store.Store, masterKeyPath string, synchronizer accountSynchronizer, prompts *promptReader, out io.Writer) error {
 	admin, err := database.GetAdmin(ctx)
 	if err != nil {
 		return err
@@ -118,6 +118,29 @@ func showAccountStatus(ctx context.Context, database *store.Store, synchronizer 
 	if state.ErrorCode != "" {
 		_, _ = fmt.Fprintf(out, "同步错误：%s\n", state.ErrorCode)
 	}
+	confirmation, err := prompts.prompt(out, "在当前终端显示统一密码？输入“显示”继续，回车或其他内容取消：", false)
+	if err != nil || strings.TrimSpace(confirmation) != "显示" {
+		_, _ = fmt.Fprintln(out, "已取消显示密码。")
+		return nil
+	}
+	if state.Status != store.AccountSyncSynced {
+		return errors.New("三服务账户尚未同步，无法确认密码仍然有效")
+	}
+	masterKey, err := loadMasterKey(masterKeyPath)
+	if err != nil {
+		return err
+	}
+	defer clear(masterKey)
+	credentials, err := database.LoadUnifiedCredentials(ctx, masterKey)
+	if err != nil {
+		return err
+	}
+	defer clear(credentials.Password)
+	matches, err := auth.VerifyPassword(string(admin.PasswordHash), credentials.Password)
+	if err != nil || !matches || credentials.Username != admin.Username {
+		return errors.New("加密凭据与当前 Gateway 管理员不一致，请先修复账户同步")
+	}
+	_, _ = fmt.Fprintf(out, "当前统一密码：%s\n", credentials.Password)
 	return nil
 }
 

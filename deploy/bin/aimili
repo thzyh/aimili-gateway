@@ -124,7 +124,7 @@ menu() {
     while true; do
         printf '\n=== Aimili Gateway 管理 ===\n'
         printf '1 部署状态与访问地址\n2 当前版本\n3 服务状态\n4 查看日志\n'
-        printf '5 管理账户与密码\n6 更换域名\n7 重启指定服务\n8 项目更新说明\n0 退出\n'
+        printf '5 查看用户名和密码 / 管理账户\n6 更换域名\n7 重启指定服务\n8 项目更新说明\n0 退出\n'
         read -r -p '请选择：' choice || { printf '\n'; return 0; }
         case "$choice" in
             1) show_status || printf '状态读取失败。\n' >&2 ;;

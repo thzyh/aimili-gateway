@@ -17,7 +17,6 @@ import socket
 import sqlite3
 import ssl
 import subprocess
-import sys
 import tarfile
 import tempfile
 import time
@@ -129,17 +128,33 @@ def prompt(text: str, default: str = "") -> str:
     return answer.strip() or default
 
 
+def show_initial_credentials(origin: str, credentials: dict) -> None:
+    # 只向当前交互终端显示，避免把密码写入安装日志或自动化输出。
+    try:
+        with open("/dev/tty", "w", encoding="utf-8") as terminal:
+            terminal.write(f"\n首次登录地址：{origin}\n")
+            terminal.write(f"管理员用户名：{credentials['username']}\n")
+            terminal.write(f"管理员密码：{credentials['password']}\n")
+            terminal.write("请妥善保存；以后可在 VPS 上运行 aimili 查看当前统一账户。\n")
+            terminal.flush()
+    except OSError:
+        pass
+
+
 def args_from_user() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Aimili Gateway VPS 一键安装")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--domain", help="使用已有 DNS A 记录的域名")
     mode.add_argument("--no-domain", action="store_true", help="先通过服务器 IP 和内部证书部署")
     parser.add_argument("--slots", type=int, help="普通出口位数量，默认 4")
-    parser.add_argument("--allowed-source", help="可连接 SOCKS5H mixed 端口的 IPv4 来源")
+    source_mode = parser.add_mutually_exclusive_group()
+    source_mode.add_argument("--allowed-source", help="启用 SOCKS5H 来源限制，仅允许此客户端 IPv4")
+    source_mode.add_argument("--disable-source-limit", action="store_true", help="关闭 SOCKS5H 来源限制")
     parser.add_argument("--status", action="store_true", help="只读检查部署状态")
     parser.add_argument("--asset-root", type=Path, required=True)
     parser.add_argument("--xui-binary", type=Path, required=True)
     args = parser.parse_args()
+    args.interactive = not args.domain and not args.no_domain
     if args.status:
         return args
     if not args.domain and not args.no_domain:
@@ -169,28 +184,6 @@ def is_ipv4(value: str) -> bool:
         return False
 
 
-def suggested_source_ipv4() -> str:
-    # sudo bash 通常清除 SSH_CLIENT；管道安装时 stdin 不是 TTY，需匹配 stderr 的终端。
-    for name in ("SSH_CLIENT", "SSH_CONNECTION"):
-        candidate = os.environ.get(name, "").split(" ")[0]
-        if is_ipv4(candidate):
-            return candidate
-    try:
-        tty = os.ttyname(sys.stderr.fileno()).removeprefix("/dev/")
-        result = subprocess.run(["who"], capture_output=True, text=True, timeout=3, check=False)
-        for line in result.stdout.splitlines():
-            fields = line.split()
-            if len(fields) < 2 or fields[1] != tty:
-                continue
-            match = re.search(r"\(([^()]+)\)\s*$", line)
-            if match and is_ipv4(match.group(1)):
-                return match.group(1)
-    except (OSError, ValueError, subprocess.TimeoutExpired):
-        pass
-    # 识别不到远程用户时，安全默认仅允许本机，不放开公网来源。
-    return "127.0.0.1"
-
-
 def desired(args: argparse.Namespace) -> tuple[str, str, int, str]:
     ip = public_ip()
     old = load_json(STATE)
@@ -210,20 +203,19 @@ def desired(args: argparse.Namespace) -> tuple[str, str, int, str]:
         raise InstallError("出口位数量须为 1–8")
     if old.get("slots") and old["slots"] != slots:
         raise InstallError("已有部署不能在域名切换时改变出口位数量")
-    source = args.allowed_source or old.get("allowedSource")
-    if not source:
-        suggested = suggested_source_ipv4()
-        if suggested == "127.0.0.1":
-            label = "未识别当前 SSH 来源；请输入允许连接 SOCKS5H 的客户端 IPv4（回车仅允许 VPS 本机）"
-        else:
-            label = "请输入允许连接 SOCKS5H 的客户端 IPv4（回车使用当前 SSH 来源，不是 VPS IP）"
+    source = args.allowed_source or ""
+    if args.interactive and not args.allowed_source and not args.disable_source_limit:
+        current = old.get("allowedSource") or "关闭"
+        label = f"SOCKS5H 来源限制：直接回车关闭；输入客户端公网 IPv4 开启（当前：{current}）"
         while True:
-            source = prompt(label, suggested)
-            if is_ipv4(source):
+            source = prompt(label)
+            if not source or is_ipv4(source):
                 break
-            print("请输入有效的客户端 IPv4；直接回车可使用方括号中的默认值。", flush=True)
-    if not is_ipv4(source):
-        raise InstallError("SOCKS5H 来源必须是有效 IPv4；请填写客户端来源地址，而不是域名")
+            print("请输入有效的客户端 IPv4，或直接回车关闭来源限制。", flush=True)
+    elif not args.allowed_source and not args.disable_source_limit:
+        source = old.get("allowedSource") or ""
+    if source and not is_ipv4(source):
+        raise InstallError("SOCKS5H 来源必须是有效 IPv4；可用 --disable-source-limit 关闭")
     return origin, domain, slots, source
 
 
@@ -428,13 +420,38 @@ def control(path: str) -> dict | list:
 
 
 def wait_egress(slots: int) -> None:
-    say("等待主出口和普通出口真实出网校验；官方候选探测可能需要几分钟……")
-    def ready() -> bool:
-        main = control("main")
-        active = control("slots")
-        return bool(main.get("active") and main.get("egress_ok") and all(any(s.get("slot") == number and s.get("egress_ok") for s in active) for number in range(slots)))
-    wait_for("主连接与全部出口位", ready, 1200, 10)
-    checkpoint("egress-ready")
+    say("正在验证主连接和普通出口真实出网；最长等待 20 分钟，每 30 秒报告进度。")
+    started = time.monotonic()
+    deadline = started + 1200
+    next_report = started
+    last_status = "尚未取得出口状态"
+    while time.monotonic() < deadline:
+        try:
+            main = control("main")
+            active = control("slots")
+            main_ready = bool(main.get("active") and main.get("egress_ok"))
+            ready_slots = sum(any(s.get("slot") == number and s.get("egress_ok") for s in active)
+                              for number in range(slots))
+            last_status = f"主连接{'就绪' if main_ready else '未就绪'}；普通出口 {ready_slots}/{slots}"
+            if main_ready and ready_slots == slots:
+                checkpoint("egress-ready")
+                return
+            if time.monotonic() >= next_report:
+                try:
+                    candidate_count = len(control("candidates"))
+                    last_status += f"；候选池 {candidate_count} 个"
+                except Exception:
+                    last_status += "；候选池暂不可读"
+                elapsed = int(time.monotonic() - started)
+                say(f"已等待 {elapsed} 秒/最多 1200 秒；{last_status}；10 秒后再检查。")
+                next_report = time.monotonic() + 30
+        except Exception as error:
+            last_status = f"出口控制接口暂不可读（{type(error).__name__}）"
+            if time.monotonic() >= next_report:
+                say(f"已等待 {int(time.monotonic() - started)} 秒/最多 1200 秒；{last_status}；10 秒后再检查。")
+                next_report = time.monotonic() + 30
+        time.sleep(min(10, max(0, deadline - time.monotonic())))
+    raise InstallError(f"主连接与全部出口位未在 1200 秒内就绪；{last_status}；详见 {LOG}")
 
 
 def write_caddy(origin: str, domain: str) -> None:
@@ -557,7 +574,7 @@ def install_gateway(args: argparse.Namespace, origin: str, domain: str, slots: i
             elif master.read_bytes() != result.stdout:
                 raise InstallError("明文与加密 master key 不一致，拒绝继续")
     cert, key = certificate(origin, domain)
-    cfg = {"listenAddress":"127.0.0.1:9080","publicOrigin":origin,"realityServerName":REALITY_SNI,"databasePath":str(ROOT/"aimili-gateway.db"),"masterKeyFile":"/run/credentials/aimili-gateway.service/gateway-master-key","aimiliAddress":"127.0.0.1:8787","aimiliControlUrl":"http://127.0.0.1:8790/","aimiliControlTokenFile":"/run/credentials/aimili-gateway.service/aimili-control-token","xuiBaseUrl":"http://127.0.0.1:2001/xui/","xuiCredentialsFile":"/run/credentials/aimili-gateway.service/xui-automation","aimiliBackendUrl":"/vpngate/","maxProxyGroups":slots,"maxAimiliSlots":slots,"vlessPortStart":20000,"vlessPortEnd":20999,"mixedPortStart":30000,"mixedPortEnd":30999,"aggregateVlessPort":21000,"mainMixedPort":31000,"xrayPath":"/usr/local/x-ui/bin/xray-linux-amd64","probeHost":"api.ipify.org","mixedSourceCidrs":[source+"/32"],"expertModeUrl":"/xui/","protocolRequestDir":str(ROOT/"protocol-spool/requests"),"protocolResultDir":str(ROOT/"protocol-spool/results"),"protocolTimeoutSeconds":180,"externalUiRoot":str(ROOT/"ui")}
+    cfg = {"listenAddress":"127.0.0.1:9080","publicOrigin":origin,"realityServerName":REALITY_SNI,"databasePath":str(ROOT/"aimili-gateway.db"),"masterKeyFile":"/run/credentials/aimili-gateway.service/gateway-master-key","aimiliAddress":"127.0.0.1:8787","aimiliControlUrl":"http://127.0.0.1:8790/","aimiliControlTokenFile":"/run/credentials/aimili-gateway.service/aimili-control-token","xuiBaseUrl":"http://127.0.0.1:2001/xui/","xuiCredentialsFile":"/run/credentials/aimili-gateway.service/xui-automation","aimiliBackendUrl":"/vpngate/","maxProxyGroups":slots,"maxAimiliSlots":slots,"vlessPortStart":20000,"vlessPortEnd":20999,"mixedPortStart":30000,"mixedPortEnd":30999,"aggregateVlessPort":21000,"mainMixedPort":31000,"xrayPath":"/usr/local/x-ui/bin/xray-linux-amd64","probeHost":"api.ipify.org","mixedSourceCidrs":[source+"/32"] if source else [],"expertModeUrl":"/xui/","protocolRequestDir":str(ROOT/"protocol-spool/requests"),"protocolResultDir":str(ROOT/"protocol-spool/results"),"protocolTimeoutSeconds":180,"externalUiRoot":str(ROOT/"ui")}
     if not db.exists():
         init = dict(cfg)
         init["masterKeyFile"] = str(master)
@@ -587,12 +604,18 @@ def install_gateway(args: argparse.Namespace, origin: str, domain: str, slots: i
     checkpoint("gateway")
 
 
-def firewall(slots: int, source: str) -> None:
+def firewall(slots: int, previous_source: str) -> None:
     say("正在设置受管防火墙规则……")
-    for port in (22, 80, 443, 8443, *range(20000, 20000+slots)):
+    mixed_ports = (31000, *range(30000, 30000+slots))
+    for port in (22, 80, 443, 8443, *range(20000, 20000+slots), *mixed_ports):
         run(["ufw", "allow", f"{port}/tcp"])
-    for port in (31000, *range(30000, 30000+slots)):
-        run(["ufw", "allow", "from", source, "to", "any", "port", str(port), "proto", "tcp"])
+    # 来源限制由 Xray 受管路由执行；UFW 限定来源会使网页开关失效。
+    if previous_source:
+        existing = run(["ufw", "status"]).splitlines()
+        for port in mixed_ports:
+            if any(line.strip().startswith((f"{port}/tcp ", f"{port} ")) and previous_source in line for line in existing):
+                run(["ufw", "--force", "delete", "allow", "from", previous_source,
+                     "to", "any", "port", str(port), "proto", "tcp"])
     run(["ufw", "--force", "enable"])
     checkpoint("firewall")
 
@@ -618,7 +641,7 @@ def main() -> int:
         origin, domain, slots, source = desired(args)
         current = load_json(STATE)
         backup_once(origin, slots)
-        say(f"目标：{'域名 '+domain if domain else '公网 IP'}；普通出口位 {slots}；已有数据将保留。")
+        say(f"目标：{'域名 '+domain if domain else '公网 IP'}；普通出口位 {slots}；SOCKS5H 来源限制{'开启' if source else '关闭'}；已有数据将保留。")
         system_packages()
         creds = Path("/root/aimili-gateway/credentials.json")
         if not creds.exists():
@@ -632,7 +655,7 @@ def main() -> int:
         # OpenVPN candidate pool to settle before Gateway resource adoption.
         if current.get("status") != "complete":
             wait_egress(slots)
-        firewall(slots, source)
+        firewall(slots, current.get("allowedSource") or "")
         write_caddy(origin, domain)
         install_gateway(args, origin, domain, slots, source, credentials)
         from importlib.util import module_from_spec, spec_from_file_location
@@ -675,6 +698,9 @@ def main() -> int:
             raise InstallError(f"Gateway 业务验收失败：{type(error).__name__}: {error}") from error
         checkpoint("verified", origin=origin, domain=domain, slots=slots, allowedSource=source, status="complete")
         say(f"安装成功：{origin}；账户信息位于 {creds}（仅 root 可读）。")
+        say("后续管理请运行 aimili；安装日志位于 /var/log/aimili-gateway/install.log。")
+        if current.get("status") != "complete":
+            show_initial_credentials(origin, credentials)
         return 0
 
 

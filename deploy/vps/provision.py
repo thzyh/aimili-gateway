@@ -85,9 +85,24 @@ def logical_groups(groups: list, slots: int) -> tuple[dict, dict[int, dict]]:
     return main, regular
 
 
+def ensure_source_policy(client: GatewayClient, source: str) -> None:
+    desired = {"enabled": bool(source), "cidrs": [source + "/32"] if source else []}
+    def matches(policy):
+        return (policy.get("enabled") == desired["enabled"] and
+                sorted(policy.get("cidrs") or []) == desired["cidrs"] and
+                policy.get("applyStatus") == "applied")
+    policy = client.request("GET", "/api/v1/settings/mixed-source-policy")
+    if not matches(policy):
+        client.request("PUT", "/api/v1/settings/mixed-source-policy", desired)
+        policy = client.request("GET", "/api/v1/settings/mixed-source-policy")
+    if not matches(policy):
+        raise APIError("socks5h_source_policy_not_applied")
+
+
 def provision(origin: str, slots: int, credentials: dict, source: str) -> None:
     client = GatewayClient(origin, credentials)
     client.login()
+    ensure_source_policy(client, source)
     deadline = time.monotonic() + 900
     last_error = ""
     complete = False
@@ -118,9 +133,7 @@ def provision(origin: str, slots: int, credentials: dict, source: str) -> None:
             time.sleep(5)
     if not complete:
         raise RuntimeError("Gateway 业务链路未收敛：" + last_error)
-    policy = client.request("GET", "/api/v1/settings/mixed-source-policy")
-    if policy.get("applyStatus") != "applied":
-        client.request("PUT", "/api/v1/settings/mixed-source-policy", {"enabled": True, "cidrs": [source + "/32"]})
+    ensure_source_policy(client, source)
     summary = client.request("GET", "/api/v1/settings/3x-ui")
     if not summary.get("ownershipMatches"):
         raise RuntimeError("3x-ui 受管资源核对失败")
