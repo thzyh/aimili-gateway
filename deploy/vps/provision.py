@@ -102,8 +102,11 @@ def ensure_source_policy(client: GatewayClient, source: str) -> None:
 def provision(origin: str, slots: int, credentials: dict, source: str) -> None:
     client = GatewayClient(origin, credentials)
     client.login()
+    print("正在应用 SOCKS5H 来源策略并核对 Xray；单次请求最多等待 90 秒……", flush=True)
     ensure_source_policy(client, source)
+    print("正在验收 Gateway 主连接、出口与订阅；最长 15 分钟，每约 30 秒报告进度……", flush=True)
     deadline = time.monotonic() + 900
+    started = time.monotonic()
     last_error = ""
     complete = False
     for attempt in range(1, 151):
@@ -130,6 +133,8 @@ def provision(origin: str, slots: int, credentials: dict, source: str) -> None:
             break
         except APIError as error:
             last_error = str(error)
+            if attempt == 1 or attempt % 6 == 0:
+                print(f"Gateway 业务验收已等待 {int(time.monotonic() - started)} 秒/最多 900 秒；当前状态：{last_error}", flush=True)
             time.sleep(5)
     if not complete:
         raise RuntimeError("Gateway 业务链路未收敛：" + last_error)

@@ -337,6 +337,11 @@ func (o *Orchestrator) setMixedPolicy(ctx context.Context, requested store.Mixed
 			update.oldDesired.ResourceName = updated.ResourceName
 			applied = append(applied, update)
 			_, updateErr = o.validateSOCKS(ctx, update.group, credentials)
+			if updateErr != nil {
+				log.Printf("mixed policy apply failed: stage=validate_managed id=%s code=%s", update.group.ID, errorCode(updateErr))
+			}
+		} else {
+			log.Printf("mixed policy apply failed: stage=update_managed id=%s code=%s", update.group.ID, errorCode(updateErr))
 		}
 		if updateErr != nil {
 			return o.failMixedPolicyUpdate(ctx, oldPolicy, desired, applied, nil, nil)
@@ -344,9 +349,11 @@ func (o *Orchestrator) setMixedPolicy(ctx context.Context, requested store.Mixed
 	}
 	if mainUpdate != nil {
 		if updateErr := o.xui.UpdateLegacyMainMixedPolicy(ctx, mainUpdate.desired); updateErr != nil {
+			log.Printf("mixed policy apply failed: stage=update_main code=%s", errorCode(updateErr))
 			return o.failMixedPolicyUpdate(ctx, oldPolicy, desired, applied, nil, mainUpdate)
 		}
 		if _, updateErr := o.validateSOCKS(ctx, mainUpdate.group, credentials); updateErr != nil {
+			log.Printf("mixed policy apply failed: stage=validate_main code=%s", errorCode(updateErr))
 			return o.failMixedPolicyUpdate(ctx, oldPolicy, desired, applied, nil, mainUpdate)
 		}
 	}
@@ -364,12 +371,14 @@ func (o *Orchestrator) setMixedPolicy(ctx context.Context, requested store.Mixed
 		changed.RealityMLDSA65Verify = update.updated.MLDSA65Verify
 		changed.UpdatedAt = now
 		if err := o.save(ctx, &changed); err != nil {
+			log.Printf("mixed policy apply failed: stage=save_managed id=%s code=%s", update.group.ID, errorCode(err))
 			return o.failMixedPolicyUpdate(ctx, oldPolicy, desired, applied, saved, mainUpdate)
 		}
 		saved = append(saved, update)
 	}
 	desired.ApplyStatus = store.MixedPolicyApplied
 	if err := o.store.ReplaceMixedSourcePolicy(ctx, desired); err != nil {
+		log.Printf("mixed policy apply failed: stage=save_policy code=%s", errorCode(err))
 		return o.failMixedPolicyUpdate(ctx, oldPolicy, desired, applied, saved, mainUpdate)
 	}
 	return nil
@@ -379,18 +388,22 @@ func (o *Orchestrator) failMixedPolicyUpdate(ctx context.Context, oldPolicy, des
 	rollbackFailed := false
 	if mainUpdate != nil {
 		if err := o.xui.UpdateLegacyMainMixedPolicy(ctx, mainUpdate.oldDesired); err != nil {
+			log.Printf("mixed policy rollback failed: stage=restore_main code=%s", errorCode(err))
 			rollbackFailed = true
 		} else if _, err := o.validateSOCKS(ctx, mainUpdate.group, runtimeCredentials{mixedUsername: []byte(mainUpdate.oldDesired.MixedUsername), mixedPassword: []byte(mainUpdate.oldDesired.MixedPassword)}); err != nil {
+			log.Printf("mixed policy rollback failed: stage=validate_main code=%s", errorCode(err))
 			rollbackFailed = true
 		}
 	}
 	for index := len(applied) - 1; index >= 0; index-- {
 		update := applied[index]
 		if _, err := o.xui.UpdateManagedMixedPolicy(ctx, update.oldDesired, update.updated); err != nil {
+			log.Printf("mixed policy rollback failed: stage=restore_managed id=%s code=%s", update.group.ID, errorCode(err))
 			rollbackFailed = true
 			continue
 		}
 		if _, err := o.validateSOCKS(ctx, update.group, mustRuntimeCredentials(update.oldDesired)); err != nil {
+			log.Printf("mixed policy rollback failed: stage=validate_managed id=%s code=%s", update.group.ID, errorCode(err))
 			rollbackFailed = true
 		}
 	}
@@ -400,6 +413,7 @@ func (o *Orchestrator) failMixedPolicyUpdate(ctx context.Context, oldPolicy, des
 		restored.Version++
 		restored.UpdatedAt = o.config.Now().UTC()
 		if err := o.save(ctx, &restored); err != nil {
+			log.Printf("mixed policy rollback failed: stage=restore_group id=%s code=%s", update.group.ID, errorCode(err))
 			rollbackFailed = true
 		}
 	}
