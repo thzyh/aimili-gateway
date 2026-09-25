@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 umask 077
 
-readonly release_tag='project-v0.2.18-vps'
+readonly release_tag='project-v0.2.19-vps'
 readonly release_base="https://github.com/thzyh/aimili-gateway/releases/download/${release_tag}"
 readonly xui_asset_tag='v0.2.5-vps'
 readonly xui_release_base="https://github.com/thzyh/aimili-gateway/releases/download/${xui_asset_tag}"
