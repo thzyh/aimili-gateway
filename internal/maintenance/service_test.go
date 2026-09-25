@@ -75,7 +75,7 @@ func TestServiceChecksManagedSlotsAndRepairsOnlyManagedResources(t *testing.T) {
 	aimiliSource := &fakeAimiliSource{slots: []aimili.Slot{{Number: 7, EgressOK: true}}}
 	groupSource := &fakeGroupSource{groups: groups}
 	xuiSource := &fakeXUISource{snapshot: xui.Snapshot{
-		Inbounds: []xui.Inbound{{ID: 1, Tag: "aimili-reality", Protocol: "vless"}, {ID: 2, Tag: "agw-main-mixed", Protocol: "mixed"}, {ID: 11, Tag: "agw-jp-dc-vless", Protocol: "vless"}, {ID: 12, Tag: "agw-jp-dc-mixed", Protocol: "mixed"}},
+		Inbounds:  []xui.Inbound{{ID: 1, Tag: "aimili-reality", Protocol: "vless"}, {ID: 2, Tag: "agw-main-mixed", Protocol: "mixed"}, {ID: 11, Tag: "agw-jp-dc-vless", Protocol: "vless"}, {ID: 12, Tag: "agw-jp-dc-mixed", Protocol: "mixed"}},
 		Outbounds: []xui.Outbound{{Tag: "aimili-socks", Protocol: "socks"}, {Tag: "agw-jp-dc-socks", Protocol: "socks"}},
 	}}
 	service, err := New(Config{MaxOnline: 1}, aimiliSource, xuiSource, groupSource, &fakeAccountStatus{})
@@ -255,19 +255,46 @@ func errorCode(err error) string {
 }
 
 type fakeAimiliSource struct {
-	candidates   []aimili.Candidate
-	slots        []aimili.Slot
-	checkedSlots []int
-	countries    []aimili.CandidateCountry
-	startRefresh aimili.CountryRefresh
-	startError   error
-	refreshes    []aimili.CountryRefresh
-	pollObserved chan struct{}
-	mu           sync.Mutex
+	capacitySlots int
+	candidates    []aimili.Candidate
+	slots         []aimili.Slot
+	checkedSlots  []int
+	countries     []aimili.CandidateCountry
+	startRefresh  aimili.CountryRefresh
+	startError    error
+	refreshes     []aimili.CountryRefresh
+	pollObserved  chan struct{}
+	mu            sync.Mutex
 }
 
 func (fake *fakeAimiliSource) Candidates(context.Context) ([]aimili.Candidate, error) {
 	return append([]aimili.Candidate(nil), fake.candidates...), nil
+}
+
+func TestServiceExposesRuntimeCapacityAndAppliesSafeUpdate(t *testing.T) {
+	service, err := New(Config{MaxOnline: 4}, &fakeAimiliSource{capacitySlots: 4}, &fakeXUISource{}, &fakeGroupSource{}, &fakeAccountStatus{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.Capacity(context.Background())
+	if err != nil || result.RegularExitSlots != 4 || result.MaxValidNodeCount != 150 || !result.AutoManaged {
+		t.Fatalf("capacity = %#v, err=%v", result, err)
+	}
+	updated, err := service.UpdateCapacity(context.Background(), aimili.CapacityUpdate{RegularExitSlots: ptr(3)})
+	if err != nil || updated.RegularExitSlots != 4 {
+		t.Fatalf("updated capacity = %#v, err=%v", updated, err)
+	}
+}
+
+func ptr(value int) *int { return &value }
+func (fake *fakeAimiliSource) Capacity(context.Context) (aimili.Capacity, error) {
+	return aimili.Capacity{
+		TargetValidNodeCount: 64, MaxValidNodeCount: 150, CurrentValidNodeCount: 40,
+		RegularExitSlots: fake.capacitySlots, RegularExitSlotsMax: 8, LogicalExits: fake.capacitySlots + 1, AutoManaged: true,
+	}, nil
+}
+func (fake *fakeAimiliSource) UpdateCapacity(context.Context, aimili.CapacityUpdate) (aimili.Capacity, error) {
+	return fake.Capacity(context.Background())
 }
 func (fake *fakeAimiliSource) ListSlots(context.Context) ([]aimili.Slot, error) {
 	return append([]aimili.Slot(nil), fake.slots...), nil
@@ -314,6 +341,8 @@ func (fake *fakeGroupSource) List(context.Context) ([]domain.ProxyGroup, error) 
 	return append([]domain.ProxyGroup(nil), fake.groups...), nil
 }
 func (fake *fakeGroupSource) RepairManaged(context.Context) error { fake.repairCalls++; return nil }
+func (fake *fakeGroupSource) CanSetCapacity(int) error            { return nil }
+func (fake *fakeGroupSource) SetCapacity(int) error               { return nil }
 
 type fakeAccountStatus struct{ state store.AccountSyncState }
 

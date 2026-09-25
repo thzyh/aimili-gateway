@@ -24,6 +24,9 @@ curl -fsSL https://raw.githubusercontent.com/thzyh/aimili-gateway/main/deploy/vp
 
 安装包含管理菜单的版本后，在 VPS 上只需运行 `aimili`：中文菜单可查看部署状态、版本、服务和日志，查看或管理统一账户、切换域名及确认后重启指定服务；日常项目更新仍由网页“高级设置 → 检测更新”完成。首次交互部署时，SOCKS5H 来源提示直接回车会关闭来源限制；输入客户端公网 IPv4 则开启限制。关闭来源限制后公网仍须使用正确的代理账号密码。脚本化只读入口为 `aimili status --json` 和 `aimili version --json`。菜单切换域名前会核对当前 Gateway 版本与安装入口固定版本，不一致时拒绝覆盖旧程序并提示升级路径。完整安装选项、管理操作及重复运行安装器的影响见[常用命令与管理菜单](docs/commands.md)。
 
+高级设置中的运行容量由 aimili-egress 按当前 VPS 资源动态计算。页面可调整有效节点常规目标、紧急保护上限和普通出口位数量；系统会结合总内存、当前可用内存、CPU、负载及同机其它项目的资源占用计算安全极限，超出极限的修改会被拒绝。容量配置在 egress 数据目录持久化，服务重启后仍会恢复；当前普通出口位始终另加一个主连接。
+容量计算和跨服务修改边界见[动态容量设计](docs/superpowers/specs/2026-09-25-dynamic-capacity.md)。
+
 3x-ui 保持独立上游源码。`deploy/vps/3x-ui-v3.7.0-alias.patch` 固定在上游提交 `f727d04f6522bb94a8fb52e8352fdcafb51c11e1`，通过 `deploy/vps/build-xui-custom.ps1` 可复现构建。安装器从固定的 `v0.2.5-vps` Release 下载定制 3x-ui 二进制，或复用本机已校验的缓存，并按当前版本签名清单中的 SHA-256 验证；Gateway 安装包来自安装脚本固定的当前 Release。Gateway 仓库只保存补丁、版本锁与发布构建，不把 3x-ui 的整个源码并入 Go module；上游许可证随官方 3x-ui 运行包保留。
 
 `freesub` 备用功能已从 Gateway 前端、API、运行时和订阅生成中移除；迁移 013 清理旧业务表，部署升级前请先执行数据库备份。旧版本的历史文档保留原时间点事实。

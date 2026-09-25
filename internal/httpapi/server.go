@@ -46,6 +46,11 @@ type MaintenanceService interface {
 	RepairXUI(context.Context) (maintenance.XUISummary, error)
 }
 
+type CapacityService interface {
+	Capacity(context.Context) (maintenance.CapacitySummary, error)
+	UpdateCapacity(context.Context, aimili.CapacityUpdate) (maintenance.CapacitySummary, error)
+}
+
 type DedicatedStandbyService interface {
 	DedicatedStandbys(context.Context) ([]aimili.DedicatedStandby, error)
 	ConfigureDedicatedStandbys(context.Context, []aimili.DedicatedStandbyConfig) ([]aimili.DedicatedStandby, error)
@@ -157,6 +162,8 @@ func NewServer(dependencies Dependencies) http.Handler {
 	mux.HandleFunc("POST /api/v1/settings/mixed-source-policy/authorize-current", server.handleAuthorizeCurrentMixedPolicy)
 	mux.HandleFunc("POST /api/v1/settings/socks5h-credentials/rotate", server.handleRotateMixedCredentials)
 	mux.HandleFunc("GET /api/v1/settings/summary", server.handleSettingsSummary)
+	mux.HandleFunc("GET /api/v1/settings/capacity", server.handleCapacity)
+	mux.HandleFunc("PUT /api/v1/settings/capacity", server.handleUpdateCapacity)
 	mux.HandleFunc("GET /api/v1/settings/aimilivpn", server.handleAimiliSettings)
 	mux.HandleFunc("GET /api/v1/settings/aimilivpn/countries", server.handleAimiliCountries)
 	mux.HandleFunc("GET /api/v1/settings/aimilivpn/refresh", server.handleAimiliRefreshStatus)

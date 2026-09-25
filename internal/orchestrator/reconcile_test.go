@@ -19,6 +19,18 @@ func TestReserveAimiliSlotDoesNotExpandBoundedDeployment(t *testing.T) {
 	}
 }
 
+func TestCapacityCannotRemoveAnOccupiedHighNumberedSlot(t *testing.T) {
+	fixture := newFixture()
+	fixture.store.groups["agw-high"] = domain.ProxyGroup{ID: "agw-high", AimiliSlot: 3}
+	orchestrator := fixture.orchestratorWithMax(t, 4)
+	if err := orchestrator.CanSetCapacity(3); codeOf(err) != "capacity_below_active" {
+		t.Fatalf("high slot was allowed to disappear: %v", err)
+	}
+	if err := orchestrator.SetCapacity(4); err != nil {
+		t.Fatalf("same capacity rejected: %v", err)
+	}
+}
+
 func TestReconcileDoesNotAdoptSlotOutsideBound(t *testing.T) {
 	fixture := newFixture()
 	fixture.aimili.createdSlots = map[int]aimili.Slot{4: {

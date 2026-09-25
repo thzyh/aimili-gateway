@@ -96,6 +96,19 @@ func TestSettingsRoutesExposeOnlyMaintenanceServiceResults(t *testing.T) {
 	}
 }
 
+func TestCapacityRoutesRequireSessionAndClosedMutation(t *testing.T) {
+	service := &fakeMaintenance{}
+	environment := newAuthTestEnvironmentConfigured(t, true, func(dependencies *Dependencies) { dependencies.Maintenance = service })
+	path := "/api/v1/settings/capacity"
+	assertResponseStatus(t, environment.request(t, http.MethodGet, path, nil, "", ""), http.StatusUnauthorized)
+	assertResponseStatus(t, environment.login(t), http.StatusNoContent)
+	assertResponseStatus(t, environment.request(t, http.MethodGet, path, nil, "", ""), http.StatusOK)
+	csrf := environment.session(t).CSRFToken
+	assertResponseStatus(t, environment.request(t, http.MethodPut, path, map[string]int{"targetValidNodeCount": 48}, "", csrf), http.StatusForbidden)
+	assertResponseStatus(t, environment.request(t, http.MethodPut, path, map[string]int{"targetValidNodeCount": 48}, environment.origin, csrf), http.StatusOK)
+	assertResponseStatus(t, environment.request(t, http.MethodPut, path, map[string]any{"targetValidNodeCount": 48, "command": "unsafe"}, environment.origin, csrf), http.StatusBadRequest)
+}
+
 func TestAimiliCountryRefreshRoutesEnforceSessionMutationAndIdempotency(t *testing.T) {
 	service := &fakeMaintenance{
 		countries:   []aimili.CandidateCountry{{Code: "JP", Name: "日本", CandidateCount: 8, ObservedAt: 1_700_000_000}},
@@ -170,6 +183,12 @@ type fakeMaintenance struct {
 
 func (*fakeMaintenance) Summary(context.Context) (maintenance.Summary, error) {
 	return maintenance.Summary{CandidateCount: 3, OnlineCount: 1, MaxOnline: 1}, nil
+}
+func (*fakeMaintenance) Capacity(context.Context) (maintenance.CapacitySummary, error) {
+	return maintenance.CapacitySummary{TargetValidNodeCount: 64, MaxValidNodeCount: 150, RegularExitSlots: 4, ReadyRegularExitSlots: 4, RegularExitSlotsMax: 4, LogicalExits: 5, AutoManaged: true}, nil
+}
+func (fake *fakeMaintenance) UpdateCapacity(_ context.Context, update aimili.CapacityUpdate) (maintenance.CapacitySummary, error) {
+	return fake.Capacity(context.Background())
 }
 func (*fakeMaintenance) AimiliVPN(context.Context) (maintenance.AimiliSummary, error) {
 	return maintenance.AimiliSummary{CandidateCount: 3}, nil

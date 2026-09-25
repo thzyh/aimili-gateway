@@ -33,6 +33,9 @@ def country_node(node_id, country, status="not_checked"):
 class PoolMaintenanceTests(unittest.TestCase):
     def test_country_catalog_reports_regular_target_and_temporary_limit(self):
         with (
+            mock.patch.object(manager, "refresh_capacity_limits"),
+            mock.patch.object(manager, "TARGET_VALID_POOL_SIZE", 64),
+            mock.patch.object(manager, "MAX_VALID_POOL_SIZE", 150),
             mock.patch.object(
                 manager,
                 "read_json",
@@ -323,6 +326,7 @@ class PoolMaintenanceTests(unittest.TestCase):
 
         with (
             mock.patch.object(manager, "TARGET_VALID_POOL_SIZE", 40),
+            mock.patch.object(manager, "refresh_capacity_limits"),
             mock.patch.object(manager, "ensure_dirs"),
             mock.patch.object(manager, "active_openvpn_running", return_value=True),
             mock.patch.object(manager, "read_nodes", return_value=existing),
@@ -427,6 +431,9 @@ class PoolMaintenanceTests(unittest.TestCase):
             stored_metadata.update(payload)
 
         with (
+            mock.patch.object(manager, "refresh_capacity_limits"),
+            mock.patch.object(manager, "TARGET_VALID_POOL_SIZE", 64),
+            mock.patch.object(manager, "MAX_VALID_POOL_SIZE", 150),
             mock.patch.object(manager, "read_nodes", return_value=existing),
             mock.patch.object(manager, "fetch_candidates", return_value=candidates),
             mock.patch.object(
@@ -471,6 +478,9 @@ class PoolMaintenanceTests(unittest.TestCase):
                 stored_nodes[:] = payload
 
         with (
+            mock.patch.object(manager, "refresh_capacity_limits"),
+            mock.patch.object(manager, "TARGET_VALID_POOL_SIZE", 64),
+            mock.patch.object(manager, "MAX_VALID_POOL_SIZE", 150),
             mock.patch.object(manager, "read_nodes", return_value=existing),
             mock.patch.object(manager, "fetch_candidates", return_value=candidates),
             mock.patch.object(

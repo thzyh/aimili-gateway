@@ -31,6 +31,35 @@ type Capabilities struct {
 	Capabilities   []string `json:"capabilities"`
 }
 
+type CapacityLimits struct {
+	RegularExitSlotsMax  int     `json:"regularExitSlotsMax"`
+	TargetValidNodesMax  int     `json:"targetValidNodesMax"`
+	EmergencyNodesMax    int     `json:"emergencyValidNodesMax"`
+	MemoryTotalBytes     int64   `json:"memoryTotalBytes"`
+	MemoryAvailableBytes int64   `json:"memoryAvailableBytes"`
+	CPUCount             int     `json:"cpuCount"`
+	Load1                float64 `json:"load1"`
+	SampledAt            float64 `json:"sampledAt"`
+}
+
+type Capacity struct {
+	TargetValidNodeCount  int            `json:"targetValidNodeCount"`
+	MaxValidNodeCount     int            `json:"maxValidNodeCount"`
+	CurrentValidNodeCount int            `json:"currentValidNodeCount"`
+	RegularExitSlots      int            `json:"regularExitSlots"`
+	ReadyRegularExitSlots int            `json:"readyRegularExitSlots"`
+	RegularExitSlotsMax   int            `json:"regularExitSlotsMax"`
+	LogicalExits          int            `json:"logicalExits"`
+	Limits                CapacityLimits `json:"limits"`
+	AutoManaged           bool           `json:"autoManaged"`
+}
+
+type CapacityUpdate struct {
+	TargetValidNodeCount *int `json:"targetValidNodeCount,omitempty"`
+	MaxValidNodeCount    *int `json:"maxValidNodeCount,omitempty"`
+	RegularExitSlots     *int `json:"regularExitSlots,omitempty"`
+}
+
 type Candidate struct {
 	ID              string  `json:"id"`
 	CountryCode     string  `json:"country_short"`
@@ -281,6 +310,36 @@ func (c *Client) Capabilities(ctx context.Context) (Capabilities, error) {
 	var result Capabilities
 	err := c.do(ctx, c.readTimeout, http.MethodGet, "control/v1/capabilities", nil, &result)
 	return result, err
+}
+
+func (c *Client) Capacity(ctx context.Context) (Capacity, error) {
+	var result Capacity
+	if err := c.doAllowUnknown(ctx, c.readTimeout, http.MethodGet, "control/v1/capacity", nil, &result); err != nil {
+		return Capacity{}, err
+	}
+	if !validCapacity(result) {
+		return Capacity{}, &AdapterError{Code: "invalid_response"}
+	}
+	return result, nil
+}
+
+func (c *Client) UpdateCapacity(ctx context.Context, update CapacityUpdate) (Capacity, error) {
+	var result Capacity
+	if err := c.doAllowUnknown(ctx, c.operationTimeout, http.MethodPut, "control/v1/capacity", update, &result); err != nil {
+		return Capacity{}, err
+	}
+	if !validCapacity(result) {
+		return Capacity{}, &AdapterError{Code: "invalid_response"}
+	}
+	return result, nil
+}
+
+func validCapacity(value Capacity) bool {
+	return value.RegularExitSlots >= 0 && value.ReadyRegularExitSlots >= 0 && value.ReadyRegularExitSlots <= value.RegularExitSlots &&
+		value.RegularExitSlotsMax >= value.RegularExitSlots && value.LogicalExits == value.RegularExitSlots+1 &&
+		value.TargetValidNodeCount >= 1 && value.MaxValidNodeCount >= value.TargetValidNodeCount && value.CurrentValidNodeCount >= 0 &&
+		value.Limits.RegularExitSlotsMax >= value.RegularExitSlots && value.Limits.TargetValidNodesMax >= value.TargetValidNodeCount &&
+		value.Limits.EmergencyNodesMax >= value.MaxValidNodeCount
 }
 
 func (c *Client) Candidates(ctx context.Context) ([]Candidate, error) {

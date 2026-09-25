@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/thzyh/aimili-gateway/internal/adapters/aimili"
@@ -182,6 +183,7 @@ type proxyValidator interface {
 }
 
 type Orchestrator struct {
+	capacityMu             sync.RWMutex
 	config                 Config
 	store                  groupStore
 	aimili                 aimiliClient
@@ -191,6 +193,45 @@ type Orchestrator struct {
 	locks                  operationLocks
 	protocolTransaction    protocolTransactionClient
 	mutationLeaseRenewWait func(context.Context, time.Duration) bool
+}
+
+// SetCapacity updates only the Gateway-side admission limits. The egress
+// control plane is updated by maintenance.Service first, so a failed egress
+// update never leaves the Gateway believing that a slot exists.
+func (o *Orchestrator) SetCapacity(regularSlots int) error {
+	if err := o.CanSetCapacity(regularSlots); err != nil {
+		return err
+	}
+	o.capacityMu.Lock()
+	o.config.MaxGroups = regularSlots
+	o.config.MaxAimiliSlots = regularSlots
+	o.capacityMu.Unlock()
+	return nil
+}
+
+func (o *Orchestrator) capacity() (groups, slots int) {
+	o.capacityMu.RLock()
+	defer o.capacityMu.RUnlock()
+	return o.config.MaxGroups, o.config.MaxAimiliSlots
+}
+
+func (o *Orchestrator) CanSetCapacity(regularSlots int) error {
+	if regularSlots < 1 || regularSlots > 64 {
+		return &Error{Code: "capacity_limit_exceeded"}
+	}
+	groups, err := o.store.ListProxyGroups(context.Background())
+	if err != nil {
+		return &Error{Code: "storage_failed"}
+	}
+	if len(groups) > regularSlots {
+		return &Error{Code: "capacity_below_active"}
+	}
+	for _, group := range groups {
+		if group.AimiliSlot >= regularSlots {
+			return &Error{Code: "capacity_below_active"}
+		}
+	}
+	return nil
 }
 
 func New(config Config, database groupStore, aimiliAdapter aimiliClient, xuiAdapter xuiClient, validation proxyValidator, masterKey []byte) (*Orchestrator, error) {
@@ -307,7 +348,8 @@ func (o *Orchestrator) Activate(ctx context.Context, id string) (domain.ProxyGro
 		}
 	}
 	var previous *domain.ProxyGroup
-	if len(groups) >= o.config.MaxGroups {
+	maxGroups, _ := o.capacity()
+	if len(groups) >= maxGroups {
 		sort.Slice(groups, func(i, j int) bool { return groups[i].UpdatedAt.Before(groups[j].UpdatedAt) })
 		copy := groups[0]
 		previous = &copy
@@ -345,7 +387,8 @@ func (o *Orchestrator) Enable(ctx context.Context, request EnableRequest) (domai
 	if err != nil {
 		return domain.ProxyGroup{}, &Error{Code: "storage_failed"}
 	}
-	if len(groups) >= o.config.MaxGroups {
+	maxGroups, _ := o.capacity()
+	if len(groups) >= maxGroups {
 		return domain.ProxyGroup{}, &Error{Code: "capacity_exceeded"}
 	}
 	policy, credentials, err := o.runtimeInputs(ctx)
@@ -489,7 +532,8 @@ func (o *Orchestrator) reserveAimiliSlot(ctx context.Context, groups []domain.Pr
 		used[slot.Number] = struct{}{}
 	}
 	for number := 0; ; number++ {
-		if o.config.MaxAimiliSlots > 0 && number >= o.config.MaxAimiliSlots {
+		_, maxSlots := o.capacity()
+		if maxSlots > 0 && number >= maxSlots {
 			return 0, &Error{Code: "slot_capacity_exceeded"}
 		}
 		if _, exists := used[number]; !exists {

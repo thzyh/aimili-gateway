@@ -85,6 +85,51 @@ func (s *server) handleSettingsSummary(response http.ResponseWriter, request *ht
 	writeMaintenanceResult(response, result, err)
 }
 
+func (s *server) capacityService(response http.ResponseWriter) (CapacityService, bool) {
+	service, ok := s.maintenance.(CapacityService)
+	if !ok {
+		writeAPIError(response, http.StatusServiceUnavailable, "not_configured")
+	}
+	return service, ok
+}
+
+func (s *server) handleCapacity(response http.ResponseWriter, request *http.Request) {
+	if _, ok := s.authenticateOrWrite(response, request); !ok {
+		return
+	}
+	service, ok := s.capacityService(response)
+	if !ok {
+		return
+	}
+	result, err := service.Capacity(request.Context())
+	writeMaintenanceResult(response, result, err)
+}
+
+func (s *server) handleUpdateCapacity(response http.ResponseWriter, request *http.Request) {
+	if _, ok := s.authorizeSessionMutation(response, request); !ok {
+		return
+	}
+	service, ok := s.capacityService(response)
+	if !ok {
+		return
+	}
+	var input struct {
+		TargetValidNodeCount *int `json:"targetValidNodeCount"`
+		MaxValidNodeCount    *int `json:"maxValidNodeCount"`
+		RegularExitSlots     *int `json:"regularExitSlots"`
+	}
+	if decodeJSON(request, &input) != nil || input.TargetValidNodeCount == nil && input.MaxValidNodeCount == nil && input.RegularExitSlots == nil {
+		writeAPIError(response, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	result, err := service.UpdateCapacity(request.Context(), aimili.CapacityUpdate{
+		TargetValidNodeCount: input.TargetValidNodeCount,
+		MaxValidNodeCount:    input.MaxValidNodeCount,
+		RegularExitSlots:     input.RegularExitSlots,
+	})
+	writeMaintenanceResult(response, result, err)
+}
+
 func (s *server) handleAimiliSettings(response http.ResponseWriter, request *http.Request) {
 	if _, ok := s.authenticateOrWrite(response, request); !ok {
 		return
@@ -214,9 +259,9 @@ func writeMaintenanceError(response http.ResponseWriter, err error) {
 		code = maintenanceError.Code
 	}
 	status := http.StatusServiceUnavailable
-	if code == "repair_failed" || code == "check_failed" || code == "maintenance_busy" || code == "operation_busy" || code == "candidate_unavailable" || code == "candidate_in_use" {
+	if code == "repair_failed" || code == "check_failed" || code == "maintenance_busy" || code == "operation_busy" || code == "candidate_unavailable" || code == "candidate_in_use" || code == "capacity_limit_exceeded" || code == "capacity_below_active" || code == "capacity_upgrade_required" || code == "capacity_update_failed" {
 		status = http.StatusConflict
-	} else if code == "invalid_request" || code == "country_required" || code == "slot_not_found" || code == "standby_disabled" {
+	} else if code == "invalid_request" || code == "country_required" || code == "slot_not_found" || code == "standby_disabled" || code == "invalid_capacity" {
 		status = http.StatusBadRequest
 	}
 	writeAPIError(response, status, code)

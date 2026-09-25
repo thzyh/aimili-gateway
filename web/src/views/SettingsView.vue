@@ -1,13 +1,18 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
-import { APIError, apiFetch, type MixedSourcePolicyPayload, type SettingsSummaryPayload, type UpdateKind, type UpdateResultPayload, type UpdateSummaryPayload, type UpdateVersionPayload } from '../api/client'
+import { APIError, apiFetch, type CapacityPayload, type MixedSourcePolicyPayload, type SettingsSummaryPayload, type UpdateKind, type UpdateResultPayload, type UpdateSummaryPayload, type UpdateVersionPayload } from '../api/client'
 import AppShell from '../components/AppShell.vue'
 import ProjectUpdatePanel from '../components/ProjectUpdatePanel.vue'
 import UiNotice from '../components/UiNotice.vue'
 import type { NoticeKind, UiNoticeData } from '../components/errorMessages'
 
 const summary = ref<SettingsSummaryPayload | null>(null)
+const capacity = ref<CapacityPayload | null>(null)
+const capacityTarget = ref(0)
+const capacityEmergency = ref(0)
+const capacitySlots = ref(0)
+const capacitySaving = ref(false)
 const policy = ref<MixedSourcePolicyPayload | null>(null)
 const enabled = ref(false)
 const cidrs = ref('')
@@ -35,12 +40,19 @@ const policyApplyLabel = computed(() => ({
 
 onMounted(async () => {
   try {
-    const [loadedSummary, loadedPolicy, loadedUpdates] = await Promise.all([
+    const [loadedSummary, loadedPolicy, loadedCapacity, loadedUpdates] = await Promise.all([
       apiFetch<SettingsSummaryPayload>('/api/v1/settings/summary'),
       apiFetch<MixedSourcePolicyPayload>('/api/v1/settings/mixed-source-policy'),
+      apiFetch<CapacityPayload>('/api/v1/settings/capacity').catch(() => null),
       apiFetch<UpdateSummaryPayload>('/api/v1/system/updates').catch(() => null),
     ])
     summary.value = loadedSummary
+    capacity.value = loadedCapacity
+    if (loadedCapacity) {
+      capacityTarget.value = loadedCapacity.targetValidNodeCount
+      capacityEmergency.value = loadedCapacity.maxValidNodeCount
+      capacitySlots.value = loadedCapacity.regularExitSlots
+    }
     policy.value = loadedPolicy
     enabled.value = loadedPolicy.enabled
     cidrs.value = loadedPolicy.cidrs.join('\n')
@@ -52,6 +64,44 @@ onMounted(async () => {
     loading.value = false
   }
 })
+
+async function refreshCapacity(): Promise<void> {
+  if (capacitySaving.value || !capacity.value) return
+  try {
+    const updated = await apiFetch<CapacityPayload>('/api/v1/settings/capacity')
+    const preserveTarget = capacityTarget.value !== capacity.value.targetValidNodeCount
+    const preserveEmergency = capacityEmergency.value !== capacity.value.maxValidNodeCount
+    const preserveSlots = capacitySlots.value !== capacity.value.regularExitSlots
+    capacity.value = updated
+    if (!preserveTarget) capacityTarget.value = updated.targetValidNodeCount
+    if (!preserveEmergency) capacityEmergency.value = updated.maxValidNodeCount
+    if (!preserveSlots) capacitySlots.value = updated.regularExitSlots
+  } catch { /* 下次轮询重试；保留当前编辑内容 */ }
+}
+
+async function saveCapacity(): Promise<void> {
+  if (!capacity.value || capacitySaving.value) return
+  capacitySaving.value = true
+  try {
+    const updated = await apiFetch<CapacityPayload>('/api/v1/settings/capacity', {
+      method: 'PUT',
+      body: JSON.stringify({
+        targetValidNodeCount: Number(capacityTarget.value),
+        maxValidNodeCount: Number(capacityEmergency.value),
+        regularExitSlots: Number(capacitySlots.value),
+      }),
+    })
+    capacity.value = updated
+    capacityTarget.value = updated.targetValidNodeCount
+    capacityEmergency.value = updated.maxValidNodeCount
+    capacitySlots.value = updated.regularExitSlots
+    notice.value = makeNotice('success', '运行容量已保存', `已配置 ${updated.regularExitSlots} 个普通出口位，其中 ${updated.readyRegularExitSlots} 个已就绪；其余出口需要通过真实出网检测后才能使用。`)
+  } catch (error) {
+    notice.value = makeNotice('error', '运行容量更新失败', messageFor(error, '请求未应用，当前运行状态保持不变'))
+  } finally {
+    capacitySaving.value = false
+  }
+}
 
 const updatesEnabled = computed(() => updates.value?.enabled === true)
 const availableGateway = computed(() => updatesEnabled.value ? gatewayCandidate.value : null)
@@ -334,6 +384,11 @@ function messageFor(error: unknown, fallback: string): string {
       client_forwarded_for_missing: '反向代理没有传递访问者地址',
       client_forwarded_for_invalid: '反向代理传递的访问者地址格式无效',
       client_forwarded_for_non_public: '反向代理只传递了私网或回环地址，不能加入公网白名单',
+      capacity_limit_exceeded: '超过当前 VPS 自动上限。请刷新页面查看最新资源预算',
+      capacity_below_active: '目标出口数低于仍在使用的出口组，请先处理这些出口',
+      capacity_upgrade_required: '当前安装还未准备新增出口所需的公网端口和协议配置。请使用最新签名安装器执行同域名续装，再重试',
+      capacity_storage_failed: '容量配置保存失败，原设置已恢复',
+      capacity_update_failed: '跨服务更新失败，请刷新容量状态并检查 Gateway 与 aimili-egress 日志',
     }
     if (details[error.message]) return `${fallback}：${details[error.message]}。`
   }
@@ -369,9 +424,18 @@ function messageFor(error: unknown, fallback: string): string {
 
       <aside class="panel capacity-panel">
         <p class="section-kicker">CAPACITY</p><h2>运行容量</h2>
-        <div class="capacity-value"><strong>{{ summary?.onlineCount ?? 0 }} / {{ summary?.maxOnline ?? 1 }}</strong><span>在线节点</span></div>
-        <dl><div><dt>可选节点</dt><dd>{{ summary?.candidateCount ?? 0 }}</dd></div><div><dt>生产上限</dt><dd>{{ summary?.maxOnline ?? 1 }}</dd></div></dl>
-        <p class="capacity-help">当前按生产上限运行；增加出口前应逐个验证内存、连接和探测负载，避免多个 OpenVPN、Xray 入站与检测任务相互争抢资源。</p>
+        <div class="capacity-legacy"><strong>{{ summary?.onlineCount ?? 0 }} / {{ summary?.maxOnline ?? 0 }}</strong><span>在线逻辑出口</span></div>
+        <div v-if="capacity" class="capacity-value"><strong>{{ capacity.currentValidNodeCount }} / {{ capacity.maxValidNodeCount }}</strong><span>当前有效节点 / 紧急保护</span></div>
+        <dl v-if="capacity"><div><dt>常规目标</dt><dd>{{ capacity.targetValidNodeCount }}</dd></div><div><dt>出口数量</dt><dd>{{ capacity.regularExitSlots }} + 主 1</dd></div><div><dt>普通出口已就绪</dt><dd>{{ capacity.readyRegularExitSlots }} / {{ capacity.regularExitSlots }}</dd></div><div><dt>自动最大出口</dt><dd>{{ capacity.regularExitSlotsMax }} + 主 1</dd></div><div><dt>VPS 内存可用</dt><dd>{{ Math.round(capacity.limits.memoryAvailableBytes / 1048576) }} MiB</dd></div></dl>
+        <button v-if="capacity" class="secondary" type="button" :disabled="capacitySaving" @click="refreshCapacity">刷新资源上限</button>
+        <p v-else class="capacity-help">当前版本尚未提供动态容量接口。升级整套服务后可在这里调整。</p>
+        <form v-if="capacity" data-capacity-form class="capacity-form" @submit.prevent="saveCapacity">
+          <label class="field">常规有效节点目标<input v-model.number="capacityTarget" data-capacity-target type="number" :min="16" :max="capacity.limits.targetValidNodesMax" step="1"><small>范围 16–{{ capacity.limits.targetValidNodesMax }}；只影响候选池维护目标。</small></label>
+          <label class="field">紧急保护上限<input v-model.number="capacityEmergency" data-capacity-emergency type="number" :min="capacityTarget" :max="capacity.limits.emergencyValidNodesMax" step="1"><small>不能低于常规目标，也不能超过当前 VPS 自动上限。</small></label>
+          <label class="field">普通出口位<input v-model.number="capacitySlots" data-capacity-slots type="number" min="1" :max="capacity.regularExitSlotsMax" step="1"><small>当前 {{ capacitySlots }} 个普通出口位，另加主连接；降低数量不会删除已存在的 Gateway 组。</small></label>
+          <button :disabled="capacitySaving" type="submit">{{ capacitySaving ? '正在应用' : '保存运行容量' }}</button>
+        </form>
+        <p v-if="capacity" class="capacity-help">自动上限会根据总内存、当前可用内存、CPU 和系统负载重新计算，并把其他项目占用纳入可用内存。保存超出上限的值会被拒绝，不会强行启动更多 OpenVPN 或检测任务。</p>
       </aside>
 
       <section class="services-section">
@@ -398,6 +462,6 @@ function messageFor(error: unknown, fallback: string): string {
 </template>
 
 <style scoped>
-.settings-header{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;margin-bottom:20px}.eyebrow,.section-kicker{margin:0 0 6px;color:var(--accent);font-size:10px;font-weight:850;letter-spacing:.16em}.settings-header h1{margin:0;font-size:30px;letter-spacing:-.03em}.settings-header>div>p:last-child,.section-title>p:last-child{margin:8px 0 0;color:var(--muted-text);font-size:14px}.account-chip{padding:7px 10px;border:1px solid var(--border);border-radius:999px;background:var(--panel);color:var(--muted-text);font-size:12px;font-weight:750}.account-chip.synced{border-color:color-mix(in srgb,var(--healthy) 28%,var(--border));color:var(--healthy);background:color-mix(in srgb,var(--healthy) 8%,var(--panel))}.policy-notice,.loading-panel{margin:0 0 16px}.loading-panel{padding:11px 13px;border:1px solid var(--border);border-radius:10px;background:var(--panel);color:var(--muted-text);font-size:13px}.settings-layout{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(260px,.75fr);gap:16px}.panel,.services-section{border:1px solid var(--border);border-radius:14px;background:var(--panel);box-shadow:var(--shadow-soft)}.policy-panel{padding:20px}.panel-heading{display:flex;justify-content:space-between;gap:20px}.panel h2,.section-title h2{margin:0;font-size:18px}.panel-heading p:last-child{margin:6px 0 0;color:var(--muted-text);font-size:13px}.switch{display:flex;align-items:center;gap:8px;align-self:flex-start;cursor:pointer}.switch input{position:absolute;opacity:0;pointer-events:none}.switch span{position:relative;width:38px;height:22px;border-radius:999px;background:var(--muted-bg);box-shadow:inset 0 0 0 1px var(--border);transition:.2s}.switch span::after{content:"";position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:var(--panel);box-shadow:0 1px 3px rgba(0,0,0,.18);transition:.2s}.switch input:checked+span{background:var(--accent);box-shadow:none}.switch input:checked+span::after{transform:translateX(16px);background:#fff}.switch b{min-width:42px;font-size:12px}.risk-note{display:grid;gap:4px;margin-top:18px;padding:12px;border:1px solid color-mix(in srgb,var(--warning) 35%,var(--border));border-radius:10px;background:color-mix(in srgb,var(--warning) 8%,var(--panel));font-size:12px}.risk-note strong{color:var(--warning)}.risk-note span{color:var(--muted-text);line-height:1.55}.policy-form{display:grid;gap:14px;margin-top:18px}.field{display:grid;gap:7px;font-size:12px;font-weight:750}.field textarea{width:100%;resize:vertical;padding:11px 12px;border:1px solid var(--border);border-radius:9px;background:var(--input);color:var(--text);font:13px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace}.field small{color:var(--muted-text);font-weight:500}.form-footer{display:flex;align-items:center;justify-content:space-between;gap:12px}.apply-state{color:var(--muted-text);font-size:12px}.apply-state[data-apply-status=applied]{color:var(--healthy);font-weight:750}.apply-state[data-apply-status=failed],.apply-state[data-apply-status=repair_required]{color:var(--danger);font-weight:750}.policy-actions{display:flex;gap:8px}.capacity-panel{padding:20px}.capacity-value{display:grid;gap:2px;margin:20px 0}.capacity-value strong{font-size:32px;letter-spacing:-.05em}.capacity-value span{color:var(--muted-text);font-size:12px}.capacity-panel dl{display:grid;gap:8px;margin:0}.capacity-panel dl div{display:flex;justify-content:space-between;padding:9px 0;border-top:1px solid var(--border-soft);font-size:13px}.capacity-panel dt{color:var(--muted-text)}.capacity-panel dd{margin:0;font-weight:800}.capacity-help{margin:14px 0 0;color:var(--muted-text);font-size:12px;line-height:1.6}.services-section{grid-column:1/-1;padding:20px}.section-title{margin-bottom:14px}.service-grid{display:grid;grid-template-columns:1fr;gap:12px}.service-card{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:12px;padding:14px;border:1px solid var(--border);border-radius:11px;color:var(--text);text-decoration:none;transition:.15s}.service-card:hover{border-color:color-mix(in srgb,var(--accent) 35%,var(--border));background:var(--hover);transform:translateY(-1px)}.service-icon{display:grid;place-items:center;width:36px;height:36px;border-radius:10px;background:var(--accent-soft);color:var(--accent);font-weight:850}.service-icon.xui{font-size:11px}.service-card span:nth-child(2){display:grid;gap:4px}.service-card strong{font-size:14px}.service-card small{color:var(--muted-text);font-size:12px}.service-card>b{color:var(--muted-text)}.boundary-note{margin:14px 0 0;color:var(--muted-text);font-size:11px;line-height:1.55}@media(max-width:820px){.settings-layout{grid-template-columns:1fr}.services-section{grid-column:auto}.service-grid{grid-template-columns:1fr}}@media(max-width:560px){.settings-header,.panel-heading{align-items:flex-start;flex-direction:column}.account-chip{align-self:flex-start}.service-card{padding:12px}.form-footer{align-items:stretch;flex-direction:column}.policy-actions{flex-direction:column}.form-footer button{width:100%}}
+.settings-header{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;margin-bottom:20px}.eyebrow,.section-kicker{margin:0 0 6px;color:var(--accent);font-size:10px;font-weight:850;letter-spacing:.16em}.settings-header h1{margin:0;font-size:30px;letter-spacing:-.03em}.settings-header>div>p:last-child,.section-title>p:last-child{margin:8px 0 0;color:var(--muted-text);font-size:14px}.account-chip{padding:7px 10px;border:1px solid var(--border);border-radius:999px;background:var(--panel);color:var(--muted-text);font-size:12px;font-weight:750}.account-chip.synced{border-color:color-mix(in srgb,var(--healthy) 28%,var(--border));color:var(--healthy);background:color-mix(in srgb,var(--healthy) 8%,var(--panel))}.policy-notice,.loading-panel{margin:0 0 16px}.loading-panel{padding:11px 13px;border:1px solid var(--border);border-radius:10px;background:var(--panel);color:var(--muted-text);font-size:13px}.settings-layout{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(260px,.75fr);gap:16px}.panel,.services-section{border:1px solid var(--border);border-radius:14px;background:var(--panel);box-shadow:var(--shadow-soft)}.policy-panel{padding:20px}.panel-heading{display:flex;justify-content:space-between;gap:20px}.panel h2,.section-title h2{margin:0;font-size:18px}.panel-heading p:last-child{margin:6px 0 0;color:var(--muted-text);font-size:13px}.switch{display:flex;align-items:center;gap:8px;align-self:flex-start;cursor:pointer}.switch input{position:absolute;opacity:0;pointer-events:none}.switch span{position:relative;width:38px;height:22px;border-radius:999px;background:var(--muted-bg);box-shadow:inset 0 0 0 1px var(--border);transition:.2s}.switch span::after{content:"";position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:var(--panel);box-shadow:0 1px 3px rgba(0,0,0,.18);transition:.2s}.switch input:checked+span{background:var(--accent);box-shadow:none}.switch input:checked+span::after{transform:translateX(16px);background:#fff}.switch b{min-width:42px;font-size:12px}.risk-note{display:grid;gap:4px;margin-top:18px;padding:12px;border:1px solid color-mix(in srgb,var(--warning) 35%,var(--border));border-radius:10px;background:color-mix(in srgb,var(--warning) 8%,var(--panel));font-size:12px}.risk-note strong{color:var(--warning)}.risk-note span{color:var(--muted-text);line-height:1.55}.policy-form{display:grid;gap:14px;margin-top:18px}.field{display:grid;gap:7px;font-size:12px;font-weight:750}.field textarea{width:100%;resize:vertical;padding:11px 12px;border:1px solid var(--border);border-radius:9px;background:var(--input);color:var(--text);font:13px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace}.field input{width:100%;padding:9px 10px;border:1px solid var(--border);border-radius:9px;background:var(--input);color:var(--text);font:13px ui-monospace,SFMono-Regular,Consolas,monospace}.field small{color:var(--muted-text);font-weight:500}.form-footer{display:flex;align-items:center;justify-content:space-between;gap:12px}.apply-state{color:var(--muted-text);font-size:12px}.apply-state[data-apply-status=applied]{color:var(--healthy);font-weight:750}.apply-state[data-apply-status=failed],.apply-state[data-apply-status=repair_required]{color:var(--danger);font-weight:750}.policy-actions{display:flex;gap:8px}.capacity-panel{padding:20px}.capacity-value{display:grid;gap:2px;margin:20px 0}.capacity-value strong{font-size:32px;letter-spacing:-.05em}.capacity-value span{color:var(--muted-text);font-size:12px}.capacity-panel dl{display:grid;gap:8px;margin:0}.capacity-panel dl div{display:flex;justify-content:space-between;padding:9px 0;border-top:1px solid var(--border-soft);font-size:13px}.capacity-panel dt{color:var(--muted-text)}.capacity-panel dd{margin:0;font-weight:800}.capacity-form{display:grid;gap:12px;margin-top:18px}.capacity-help{margin:14px 0 0;color:var(--muted-text);font-size:12px;line-height:1.6}.services-section{grid-column:1/-1;padding:20px}.section-title{margin-bottom:14px}.service-grid{display:grid;grid-template-columns:1fr;gap:12px}.service-card{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:12px;padding:14px;border:1px solid var(--border);border-radius:11px;color:var(--text);text-decoration:none;transition:.15s}.service-card:hover{border-color:color-mix(in srgb,var(--accent) 35%,var(--border));background:var(--hover);transform:translateY(-1px)}.service-icon{display:grid;place-items:center;width:36px;height:36px;border-radius:10px;background:var(--accent-soft);color:var(--accent);font-weight:850}.service-icon.xui{font-size:11px}.service-card span:nth-child(2){display:grid;gap:4px}.service-card strong{font-size:14px}.service-card small{color:var(--muted-text);font-size:12px}.service-card>b{color:var(--muted-text)}.boundary-note{margin:14px 0 0;color:var(--muted-text);font-size:11px;line-height:1.55}@media(max-width:820px){.settings-layout{grid-template-columns:1fr}.services-section{grid-column:auto}.service-grid{grid-template-columns:1fr}}@media(max-width:560px){.settings-header,.panel-heading{align-items:flex-start;flex-direction:column}.account-chip{align-self:flex-start}.service-card{padding:12px}.form-footer{align-items:stretch;flex-direction:column}.policy-actions{flex-direction:column}.form-footer button{width:100%}}
 .update-notice{margin:0 0 14px}.update-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.update-grid.single{grid-template-columns:minmax(0,1fr)}.update-card{display:grid;gap:8px;padding:14px;border:1px solid var(--border);border-radius:11px}.update-card>span,.update-card>p{color:var(--muted-text);font-size:12px}.update-card>p{margin:0;line-height:1.5}.release-notes{white-space:pre-line}.update-actions{display:flex;align-items:center;flex-wrap:wrap;gap:8px}.update-recovery{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:14px;padding:14px;border:1px solid var(--border);border-radius:11px;background:var(--subtle)}.update-recovery p{margin:0;color:var(--muted-text);font-size:11px}@media(max-width:650px){.update-grid{grid-template-columns:1fr}.update-recovery{align-items:stretch;flex-direction:column}}
 </style>

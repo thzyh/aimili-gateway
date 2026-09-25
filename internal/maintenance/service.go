@@ -39,6 +39,8 @@ type AimiliSummary struct {
 	LastRefreshedAt  time.Time `json:"lastRefreshedAt,omitempty"`
 }
 
+type CapacitySummary = aimili.Capacity
+
 type XUISummary struct {
 	ManagedPublicCount   int       `json:"managedPublicCount"`
 	ManagedVLESSCount    int       `json:"managedVlessCount"`
@@ -55,6 +57,11 @@ type aimiliSource interface {
 	CountryRefresh(context.Context) (aimili.CountryRefresh, error)
 	ListSlots(context.Context) ([]aimili.Slot, error)
 	CheckSlot(context.Context, int) (aimili.SlotCheck, error)
+}
+
+type capacitySource interface {
+	Capacity(context.Context) (aimili.Capacity, error)
+	UpdateCapacity(context.Context, aimili.CapacityUpdate) (aimili.Capacity, error)
 }
 
 type dedicatedStandbySource interface {
@@ -123,7 +130,13 @@ func (service *Service) Summary(ctx context.Context) (Summary, error) {
 	if err != nil {
 		return Summary{}, &Error{Code: "service_unavailable"}
 	}
-	return Summary{AccountSyncStatus: state.Status, CandidateCount: len(candidates), OnlineCount: len(groups), MaxOnline: service.config.MaxOnline}, nil
+	maxOnline := service.config.MaxOnline
+	if source, ok := service.aimili.(capacitySource); ok {
+		if live, liveErr := source.Capacity(ctx); liveErr == nil && live.RegularExitSlots > 0 {
+			maxOnline = live.RegularExitSlots
+		}
+	}
+	return Summary{AccountSyncStatus: state.Status, CandidateCount: len(candidates), OnlineCount: len(groups), MaxOnline: maxOnline}, nil
 }
 
 func (service *Service) AimiliVPN(ctx context.Context) (AimiliSummary, error) {
@@ -149,6 +162,110 @@ func (service *Service) AimiliVPN(ctx context.Context) (AimiliSummary, error) {
 		}
 	}
 	return result, nil
+}
+
+func (service *Service) Capacity(ctx context.Context) (CapacitySummary, error) {
+	source, ok := service.aimili.(capacitySource)
+	if !ok {
+		return CapacitySummary{}, &Error{Code: "not_configured"}
+	}
+	result, err := source.Capacity(ctx)
+	if err != nil {
+		return CapacitySummary{}, &Error{Code: "service_unavailable"}
+	}
+	return result, nil
+}
+
+func (service *Service) UpdateCapacity(ctx context.Context, update aimili.CapacityUpdate) (CapacitySummary, error) {
+	source, ok := service.aimili.(capacitySource)
+	if !ok {
+		return CapacitySummary{}, &Error{Code: "not_configured"}
+	}
+	var previous aimili.Capacity
+	var err error
+	var setter interface{ SetCapacity(int) error }
+	if update.RegularExitSlots != nil {
+		checker, ok := service.groups.(interface{ CanSetCapacity(int) error })
+		if !ok {
+			return CapacitySummary{}, &Error{Code: "not_configured"}
+		}
+		setter, ok = service.groups.(interface{ SetCapacity(int) error })
+		if !ok {
+			return CapacitySummary{}, &Error{Code: "not_configured"}
+		}
+		if err := checker.CanSetCapacity(*update.RegularExitSlots); err != nil {
+			return CapacitySummary{}, &Error{Code: "capacity_below_active"}
+		}
+		previous, err = source.Capacity(ctx)
+		if err != nil {
+			return CapacitySummary{}, &Error{Code: "service_unavailable"}
+		}
+	}
+	result, err := source.UpdateCapacity(ctx, update)
+	if err != nil {
+		var adapterError *aimili.AdapterError
+		if errors.As(err, &adapterError) {
+			switch adapterError.Code {
+			case "capacity_limit_exceeded", "capacity_upgrade_required", "capacity_storage_failed", "invalid_capacity", "operation_busy":
+				return CapacitySummary{}, &Error{Code: adapterError.Code}
+			}
+		}
+		return CapacitySummary{}, &Error{Code: "capacity_update_failed"}
+	}
+	if update.RegularExitSlots != nil {
+		if err := setter.SetCapacity(result.RegularExitSlots); err != nil {
+			if _, rollbackErr := source.UpdateCapacity(ctx, aimili.CapacityUpdate{
+				RegularExitSlots:     &previous.RegularExitSlots,
+				TargetValidNodeCount: &previous.TargetValidNodeCount,
+				MaxValidNodeCount:    &previous.MaxValidNodeCount,
+			}); rollbackErr != nil {
+				return CapacitySummary{}, &Error{Code: "repair_required"}
+			}
+			return CapacitySummary{}, &Error{Code: "capacity_update_failed"}
+		}
+		if result.RegularExitSlots > previous.RegularExitSlots && service.reconcile != nil {
+			go service.reconcileExpandedCapacity(result.RegularExitSlots)
+		}
+	}
+	return result, nil
+}
+
+func (service *Service) reconcileExpandedCapacity(slots int) {
+	source, ok := service.aimili.(capacitySource)
+	if !ok {
+		return
+	}
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	deadline := time.NewTimer(30 * time.Minute)
+	defer deadline.Stop()
+	lastReady := -1
+	for {
+		ctx, cancel := context.WithTimeout(service.lifetime, 8*time.Second)
+		current, err := source.Capacity(ctx)
+		cancel()
+		if err == nil {
+			if current.RegularExitSlots != slots {
+				return
+			}
+			if current.ReadyRegularExitSlots > lastReady {
+				lastReady = current.ReadyRegularExitSlots
+				ctx, cancel := context.WithTimeout(service.lifetime, service.pollTimeout)
+				service.reconcile(ctx)
+				cancel()
+			}
+			if current.ReadyRegularExitSlots >= slots {
+				return
+			}
+		}
+		select {
+		case <-service.lifetime.Done():
+			return
+		case <-deadline.C:
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 func (service *Service) RefreshAimiliVPN(ctx context.Context) (AimiliSummary, error) {

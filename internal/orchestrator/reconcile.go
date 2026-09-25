@@ -73,7 +73,8 @@ func (o *Orchestrator) Reconcile(ctx context.Context) ReconcileResult {
 			}
 			continue
 		}
-		if activeCount >= o.config.MaxGroups {
+		maxGroups, _ := o.capacity()
+		if activeCount >= maxGroups {
 			continue
 		}
 		group, enableErr := o.Enable(ctx, EnableRequest{
@@ -255,7 +256,8 @@ func (o *Orchestrator) adoptUnmanagedSlots(ctx context.Context, groups []domain.
 	failures := 0
 	for _, slot := range slots {
 		candidateID := strings.TrimSpace(slot.NodeID)
-		if (o.config.MaxAimiliSlots > 0 && slot.Number >= o.config.MaxAimiliSlots) || len(groups) >= o.config.MaxGroups || candidateID == "" || !slot.EgressOK || (slot.Status != "up" && slot.Status != "ready") {
+		maxGroups, maxSlots := o.capacity()
+		if (maxSlots > 0 && slot.Number >= maxSlots) || len(groups) >= maxGroups || candidateID == "" || !slot.EgressOK || (slot.Status != "up" && slot.Status != "ready") {
 			continue
 		}
 		if _, claimed := claimedSlots[slot.Number]; claimed {

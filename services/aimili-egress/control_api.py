@@ -20,6 +20,8 @@ CAPABILITIES = [
     "candidate-countries.read",
     "candidates.refresh.country",
     "candidates.refresh.status",
+    "capacity.read",
+    "capacity.update",
     "slots.create",
     "slots.read",
     "slots.rotate",
@@ -167,6 +169,19 @@ class ControlHandler(BaseHTTPRequestHandler):
             return
         if self.command == "GET" and path == f"{API_PREFIX}/candidates":
             self._manager_result(self.server.manager.safe_candidate_snapshot())
+            return
+        if self.command == "GET" and path == f"{API_PREFIX}/capacity":
+            self._manager_result(self.server.manager.capacity_snapshot())
+            return
+        if self.command == "PUT" and path == f"{API_PREFIX}/capacity":
+            payload = self._read_object({"targetValidNodeCount", "maxValidNodeCount", "regularExitSlots"})
+            self._manager_result(
+                self.server.manager.update_capacity(
+                    payload.get("targetValidNodeCount"),
+                    payload.get("maxValidNodeCount"),
+                    payload.get("regularExitSlots"),
+                )
+            )
             return
         if self.command == "GET" and path == f"{API_PREFIX}/standbys":
             self._manager_result(self.server.manager.dedicated_standby_snapshot())

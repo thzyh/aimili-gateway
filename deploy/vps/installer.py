@@ -393,7 +393,7 @@ def install_egress(args: argparse.Namespace, slots: int, credentials: dict) -> N
         active = load_json(ui).get("exit_slot_active")
         if active != list(range(slots)) and load_json(STATE).get("status") == "complete":
             raise InstallError(f"现有 egress 槽位 {active} 与目标 0–{slots-1} 不一致，安装器不会自动删除已交付的运行出口")
-    write(Path("/etc/default/aimilivpn"), f"MULTI_EXIT_SLOTS={slots}\nMAX_EXIT_SLOTS=16\nTARGET_VALID_POOL_SIZE=64\nMAX_VALID_POOL_SIZE=150\nOPENVPN_TEST_CONCURRENCY=4\nMAIN_EGRESS_FAIL_THRESHOLD=3\nSLOT_EGRESS_FAIL_THRESHOLD=3\nCOLLECTOR_BUSY_RETRY_SECONDS=600\nUI_HOST=127.0.0.1\n")
+    write(Path("/etc/default/aimilivpn"), f"MULTI_EXIT_SLOTS={slots}\n# 节点池与出口上限由 aimili-egress 按当前 VPS 资源自动计算\nOPENVPN_TEST_CONCURRENCY=4\nMAIN_EGRESS_FAIL_THRESHOLD=3\nSLOT_EGRESS_FAIL_THRESHOLD=3\nCOLLECTOR_BUSY_RETRY_SECONDS=600\nUI_HOST=127.0.0.1\n")
     copy_mode(unit_source, unit_target, 0o644)
     run(["systemctl", "daemon-reload"])
     run(["systemctl", "enable", "--now", "aimilivpn.service"])
@@ -589,7 +589,7 @@ def install_gateway(args: argparse.Namespace, origin: str, domain: str, slots: i
     if master is not None:
         master.unlink()
     write_json(ETC / "config.json", cfg, 0o400, (uid,gid))
-    proto = {"databasePath":str(XUI_DB),"snapshotDir":"/var/lib/aimili-xui-protocol-transaction/transactions","profileDir":"/var/lib/aimili-xui-protocol-transaction/profiles","runtimeConfigPath":"/usr/local/x-ui/bin/config.json","certificatePath":str(cert),"privateKeyPath":str(key),"tlsServerName":domain or REALITY_SNI,"spoolRequestDir":str(ROOT/"protocol-spool/requests"),"spoolResultDir":str(ROOT/"protocol-spool/results"),"xrayBinary":"/usr/local/x-ui/bin/xray-linux-amd64","apiServer":"127.0.0.1:62789","allowedPorts":[8443]+list(range(20000,20000+slots))}
+    proto = {"databasePath":str(XUI_DB),"snapshotDir":"/var/lib/aimili-xui-protocol-transaction/transactions","profileDir":"/var/lib/aimili-xui-protocol-transaction/profiles","runtimeConfigPath":"/usr/local/x-ui/bin/config.json","certificatePath":str(cert),"privateKeyPath":str(key),"tlsServerName":domain or REALITY_SNI,"spoolRequestDir":str(ROOT/"protocol-spool/requests"),"spoolResultDir":str(ROOT/"protocol-spool/results"),"xrayBinary":"/usr/local/x-ui/bin/xray-linux-amd64","apiServer":"127.0.0.1:62789","allowedPorts":[8443]+list(range(20000,20016))}
     write_json(ETC / "protocol-transaction.json", proto, 0o640, (0,gid))
     copy_mode(args.asset_root / "deploy/systemd/aimili-gateway.service", Path("/etc/systemd/system/aimili-gateway.service"), 0o644)
     from enable_project_updates import enable
@@ -607,7 +607,7 @@ def install_gateway(args: argparse.Namespace, origin: str, domain: str, slots: i
 def firewall(slots: int, previous_source: str) -> None:
     say("正在设置受管防火墙规则……")
     mixed_ports = (31000, *range(30000, 30000+slots))
-    for port in (22, 80, 443, 8443, *range(20000, 20000+slots), *mixed_ports):
+    for port in (22, 80, 443, 8443, *range(20000, 20016), *range(30000, 30016), 31000):
         run(["ufw", "allow", f"{port}/tcp"])
     # 来源限制由 Xray 受管路由执行；UFW 限定来源会使网页开关失效。
     if previous_source:

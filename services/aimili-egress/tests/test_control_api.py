@@ -52,6 +52,13 @@ class FakeManager:
             }
         ]
 
+    def capacity_snapshot(self):
+        return {"targetValidNodeCount": 64, "maxValidNodeCount": 150, "regularExitSlots": 4, "readyRegularExitSlots": 4, "regularExitSlotsMax": 4, "logicalExits": 5, "limits": {"regularExitSlotsMax": 4}}
+
+    def update_capacity(self, target=None, emergency=None, regular_slots=None):
+        self.capacity_update = (target, emergency, regular_slots)
+        return self.capacity_snapshot()
+
     def safe_main_status(self):
         return {"candidate_id": "old-main", "country": "JP", "country_name": "Japan", "proxy_type": "datacenter", "exit_ip": "203.0.113.20", "port": 7928, "egress_ok": True, "active": True}
 
@@ -227,6 +234,8 @@ class ControlAPITests(unittest.TestCase):
                 "candidate-countries.read",
                 "candidates.refresh.country",
                 "candidates.refresh.status",
+                "capacity.read",
+                "capacity.update",
                 "slots.create",
                 "slots.read",
                 "slots.rotate",
@@ -252,6 +261,19 @@ class ControlAPITests(unittest.TestCase):
                 "admin.sessions.issue",
             ],
         )
+
+    def test_capacity_routes_require_auth_and_accept_only_closed_fields(self):
+        status, _, payload = self.request("GET", "/control/v1/capacity", authorized=False)
+        self.assertEqual(status, 401)
+        status, _, payload = self.request("GET", "/control/v1/capacity")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["data"]["regularExitSlots"], 4)
+        status, _, _ = self.request("PUT", "/control/v1/capacity", {"targetValidNodeCount": 48, "maxValidNodeCount": 100, "regularExitSlots": 4})
+        self.assertEqual(status, 200)
+        self.assertEqual(self.manager.capacity_update, (48, 100, 4))
+        status, _, payload = self.request("PUT", "/control/v1/capacity", {"command": "unsafe"})
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"]["code"], "invalid_request")
 
     def test_main_egress_returns_only_safe_status(self):
         status, _, payload = self.request("GET", "/control/v1/main")

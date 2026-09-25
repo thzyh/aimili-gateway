@@ -194,6 +194,12 @@ func newRuntimeServices(ctx context.Context, cfg config.Config, database *store.
 	if err != nil {
 		return runtimeServices{}, err
 	}
+	// AimiliVPN 持久化的容量是运行时单一事实来源。读取失败时保留
+	// 安装配置，避免一个暂时不可读的控制面阻止 Gateway 启动。
+	if runtimeCapacity, capacityErr := aimiliClient.Capacity(ctx); capacityErr == nil && runtimeCapacity.RegularExitSlots > 0 {
+		cfg.MaxProxyGroups = runtimeCapacity.RegularExitSlots
+		cfg.MaxAimiliSlots = runtimeCapacity.RegularExitSlots
+	}
 	unified, err := database.LoadUnifiedCredentials(ctx, masterKey)
 	if err != nil {
 		return runtimeServices{}, errors.New("unified credentials are not initialized")

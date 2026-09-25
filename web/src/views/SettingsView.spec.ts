@@ -304,6 +304,36 @@ it('detects a newer signed Gateway release from GitHub before offering update', 
   }
 })
 
+it('shows live capacity limits and saves only the selected values', async () => {
+  const capacity = {
+    targetValidNodeCount: 64, maxValidNodeCount: 150, currentValidNodeCount: 42,
+    regularExitSlots: 4, readyRegularExitSlots: 4, regularExitSlotsMax: 6, logicalExits: 5,
+    limits: { regularExitSlotsMax: 6, targetValidNodesMax: 96, emergencyValidNodesMax: 214, memoryTotalBytes: 2_000_000_000, memoryAvailableBytes: 700_000_000, cpuCount: 2, load1: 0.3, sampledAt: 1 }, autoManaged: true,
+  }
+  mocks.apiFetch.mockImplementation((path: string, options?: { method?: string }) => {
+    if (path === '/api/v1/settings/summary') return Promise.resolve({ accountSyncStatus: 'synced', candidateCount: 42, onlineCount: 4, maxOnline: 4 })
+    if (path === '/api/v1/settings/mixed-source-policy') return Promise.resolve({ enabled: false, cidrs: [], applyStatus: 'applied' })
+    if (path === '/api/v1/settings/capacity' && options?.method === 'PUT') return Promise.resolve({ ...capacity, targetValidNodeCount: 48, maxValidNodeCount: 100, regularExitSlots: 5, readyRegularExitSlots: 4, logicalExits: 6 })
+    if (path === '/api/v1/settings/capacity') return Promise.resolve(capacity)
+    return Promise.resolve(undefined)
+  })
+  const wrapper = mount(SettingsView)
+  await flushPromises()
+  expect(wrapper.text()).toContain('42 / 150')
+  expect(wrapper.text()).toContain('4 + 主 1')
+  expect(wrapper.get('[data-capacity-target]').attributes('max')).toBe('96')
+  await wrapper.get('[data-capacity-target]').setValue('48')
+  await wrapper.get('[data-capacity-emergency]').setValue('100')
+  await wrapper.get('[data-capacity-slots]').setValue('5')
+  await wrapper.get('[data-capacity-form]').trigger('submit')
+  await flushPromises()
+  expect(mocks.apiFetch).toHaveBeenCalledWith('/api/v1/settings/capacity', {
+    method: 'PUT', body: JSON.stringify({ targetValidNodeCount: 48, maxValidNodeCount: 100, regularExitSlots: 5 }),
+  })
+  expect(wrapper.text()).toContain('其中 4 个已就绪')
+  wrapper.unmount()
+})
+
 it('explains the VPS release on an unversioned xjp build without offering an older binary', async () => {
   mocks.apiFetch.mockImplementation((path: string) => {
     if (path === '/api/v1/settings/summary') return Promise.resolve({ accountSyncStatus: 'synced' })

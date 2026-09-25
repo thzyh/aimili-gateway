@@ -55,6 +55,15 @@ export interface SubscriptionPayload { url: string; inboundCount: number; update
 export type AccountSyncStatus = 'reset_required' | 'synced' | 'checking' | 'repair_required' | 'incompatible'
 export type MixedPolicyApplyStatus = 'pending' | 'applying' | 'applied' | 'failed' | 'repair_required'
 export interface SettingsSummaryPayload { accountSyncStatus: AccountSyncStatus; candidateCount: number; onlineCount: number; maxOnline: number }
+export interface CapacityLimitsPayload {
+  regularExitSlotsMax: number; targetValidNodesMax: number; emergencyValidNodesMax: number
+  memoryTotalBytes: number; memoryAvailableBytes: number; cpuCount: number; load1: number; sampledAt: number
+}
+export interface CapacityPayload {
+  targetValidNodeCount: number; maxValidNodeCount: number; currentValidNodeCount: number
+  regularExitSlots: number; readyRegularExitSlots: number; regularExitSlotsMax: number; logicalExits: number
+  limits: CapacityLimitsPayload; autoManaged: boolean
+}
 export interface MixedSourcePolicyPayload { enabled: boolean; cidrs: string[]; applyStatus: MixedPolicyApplyStatus }
 export interface CandidateCountryPayload { code: string; name: string; candidateCount: number; observedAt: number; officialCandidateTotal?: number; validNodeCount?: number; validCountryCount?: number; targetValidNodeCount?: number; maxValidNodeCount?: number }
 export type DedicatedStandbyStatus = 'disabled' | 'preparing' | 'ready' | 'degraded' | 'waiting_manual'

@@ -85,6 +85,7 @@ import proxy_server
 import control_api
 import egress_repair
 import node_pool
+import capacity
 from main_assignment import MainAssignmentCoordinator
 
 def env_int(name: str, default: int, min_value: int | None = None, max_value: int | None = None) -> int:
@@ -120,10 +121,10 @@ FETCH_INTERVAL_SECONDS = env_int("FETCH_INTERVAL_SECONDS", 21600, 1)
 CHECK_INTERVAL_SECONDS = env_int("CHECK_INTERVAL_SECONDS", 21600, 1)
 _legacy_max_scan_rows = env_int("MAX_SCAN_ROWS", 300, 1)
 MAX_FETCH_ROWS = env_int("MAX_FETCH_ROWS", _legacy_max_scan_rows, 1)
-_legacy_target_valid_nodes = env_int("TARGET_VALID_NODES", 64, 1, 150)
-TARGET_VALID_POOL_SIZE = env_int("TARGET_VALID_POOL_SIZE", _legacy_target_valid_nodes, 1, 150)
+_legacy_target_valid_nodes = env_int("TARGET_VALID_NODES", 64, 1, 256)
+TARGET_VALID_POOL_SIZE = env_int("TARGET_VALID_POOL_SIZE", _legacy_target_valid_nodes, 1, 256)
 TARGET_VALID_NODES = TARGET_VALID_POOL_SIZE
-MAX_VALID_POOL_SIZE = env_int("MAX_VALID_POOL_SIZE", 150, TARGET_VALID_POOL_SIZE, 150)
+MAX_VALID_POOL_SIZE = env_int("MAX_VALID_POOL_SIZE", 150, TARGET_VALID_POOL_SIZE, 512)
 NODE_TEST_BATCH_SIZE = env_int("NODE_TEST_BATCH_SIZE", 10, 1)
 PROBE_FAILURE_COOLDOWN_SECONDS = env_int("PROBE_FAILURE_COOLDOWN_SECONDS", 1800, 1)
 REPAIR_CANDIDATE_PROBE_LIMIT = env_int("REPAIR_CANDIDATE_PROBE_LIMIT", 8, 1, 20)
@@ -131,7 +132,18 @@ REPAIR_CANDIDATE_FRESH_SECONDS = env_int("REPAIR_CANDIDATE_FRESH_SECONDS", 120, 
 OPENVPN_TEST_TIMEOUT_SECONDS = env_int("OPENVPN_TEST_TIMEOUT_SECONDS", 35, 1)
 OPENVPN_CONNECT_RETRY_MAX = env_int("OPENVPN_CONNECT_RETRY_MAX", 3, 1, 10)
 OPENVPN_TEST_CONCURRENCY = env_int("OPENVPN_TEST_CONCURRENCY", 4, 1, 16)
-MAX_OPENVPN_PROCESSES = env_int("MAX_OPENVPN_PROCESSES", 9, 1, 32)
+_initial_slot_count = env_int("MULTI_EXIT_SLOTS", 0, 0, 16)
+_initial_facts = capacity.read_host_facts()
+_initial_capacity_slots = capacity.limits_for(
+    capacity.HostFacts(
+        _initial_facts.memory_total_bytes,
+        _initial_facts.memory_total_bytes,
+        _initial_facts.cpu_count,
+        0.0,
+    ),
+    _initial_slot_count,
+).regular_exit_slots_max
+MAX_OPENVPN_PROCESSES = env_int("MAX_OPENVPN_PROCESSES", max(9, _initial_capacity_slots + 3), 4, 32)
 MAX_OPENVPN_PROBES = env_int("MAX_OPENVPN_PROBES", 2, 1, 8)
 OPENVPN_PROBE_SUCCESS_ROUNDS = env_int("OPENVPN_PROBE_SUCCESS_ROUNDS", 2, 1, 3)
 TCP_PRESCREEN_CONCURRENCY = env_int("TCP_PRESCREEN_CONCURRENCY", 100, 1, 512)
@@ -160,6 +172,8 @@ COLLECTOR_BUSY_RETRY_SECONDS = env_int("COLLECTOR_BUSY_RETRY_SECONDS", 600, 30)
 # ---- 多出口（住宅 IP 槽位）配置 ----
 # 每个槽位 = 一条独立 OpenVPN 隧道(tun{DEV_BASE+i}) + 独立策略路由表({TABLE_BASE+i}) + 独立本地代理端口({PORT_BASE+i})
 # 默认槽位数为 0 表示沿用传统单出口模式；可在 Web UI 运行时调整槽位数。
+# Technical address/route-table range.  The user-facing safe limit is
+# recalculated from live host facts by capacity.limits_for().
 MAX_EXIT_SLOTS = env_int("MAX_EXIT_SLOTS", 16, 1, 64)
 DEFAULT_EXIT_SLOTS = env_int("MULTI_EXIT_SLOTS", 0, 0, 64)
 # tun 设备基准号：测速使用 tun2..tun99，主连接用 tun0，槽位从 tun120 起，彻底避开冲突
@@ -245,6 +259,10 @@ POOL_METADATA_FILE = DATA_DIR / "pool_metadata.json"
 MAIN_ASSIGNMENT_FILE = DATA_DIR / "main_assignment.json"
 EGRESS_REPAIR_FILE = DATA_DIR / "egress_repair.json"
 STANDBYS_FILE = DATA_DIR / "standbys.json"
+CAPACITY_FILE = DATA_DIR / "capacity.json"
+
+_capacity_lock = threading.RLock()
+_capacity_settings: dict[str, int] = {}
 
 lock = threading.RLock()
 mutation_lock = threading.RLock()
@@ -362,6 +380,7 @@ server_start_time = time.time()
 def ensure_dirs() -> None:
     DATA_DIR.mkdir(exist_ok=True, parents=True)
     CONFIG_DIR.mkdir(exist_ok=True, parents=True)
+    refresh_capacity_limits()
     if not AUTH_FILE.exists():
         AUTH_FILE.write_text(f"{OPENVPN_AUTH_USER}\n{OPENVPN_AUTH_PASS}\n", encoding="utf-8")
         try:
@@ -397,6 +416,162 @@ def read_json(path: Path, default: Any) -> Any:
             return json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return default
+
+
+def _active_regular_slot_count() -> int:
+    try:
+        cfg = read_json(DATA_DIR / "ui_auth.json", {})
+        if not isinstance(cfg, dict):
+            return DEFAULT_EXIT_SLOTS
+        active = cfg.get("exit_slot_active")
+        if isinstance(active, list):
+            return len([item for item in active if isinstance(item, int) and item >= 0])
+        return max(0, min(MAX_EXIT_SLOTS, int(cfg.get("exit_slot_count", DEFAULT_EXIT_SLOTS))))
+    except (TypeError, ValueError):
+        return DEFAULT_EXIT_SLOTS
+
+
+def _capacity_limits() -> capacity.CapacityLimits:
+    return capacity.limits_for(
+        capacity.read_host_facts(), _active_regular_slot_count(), MAX_OPENVPN_PROCESSES
+    )
+
+
+def _load_capacity_settings() -> dict[str, int]:
+    saved = read_json(CAPACITY_FILE, {})
+    if not isinstance(saved, dict):
+        saved = {}
+    # 没有持久化覆盖时，直接采用当前主机的自动阶梯值；升级旧版本不会
+    # 把旧的 64/150 常量继续当成新 VPS 的永久配置。
+    default_target = TARGET_VALID_POOL_SIZE if "TARGET_VALID_POOL_SIZE" in os.environ else 0
+    default_emergency = MAX_VALID_POOL_SIZE if "MAX_VALID_POOL_SIZE" in os.environ else 0
+    try:
+        target = int(saved.get("targetValidNodeCount", default_target))
+    except (TypeError, ValueError):
+        target = default_target
+    try:
+        emergency = int(saved.get("maxValidNodeCount", default_emergency))
+    except (TypeError, ValueError):
+        emergency = default_emergency
+    return {"targetValidNodeCount": target, "maxValidNodeCount": emergency}
+
+
+def refresh_capacity_limits() -> capacity.CapacityLimits:
+    """按当前主机压力收敛自动上限，并保留用户在安全范围内的目标值。"""
+    global TARGET_VALID_POOL_SIZE, TARGET_VALID_NODES, MAX_VALID_POOL_SIZE
+    limits = _capacity_limits()
+    with _capacity_lock:
+        if not _capacity_settings:
+            _capacity_settings.update(_load_capacity_settings())
+        target, emergency = capacity.clamp_settings(
+            _capacity_settings.get("targetValidNodeCount") or limits.target_valid_nodes_max,
+            _capacity_settings.get("maxValidNodeCount") or limits.emergency_valid_nodes_max,
+            limits,
+        )
+        TARGET_VALID_POOL_SIZE = target
+        TARGET_VALID_NODES = target
+        MAX_VALID_POOL_SIZE = emergency
+        return limits
+
+
+def capacity_snapshot() -> dict[str, Any]:
+    limits = refresh_capacity_limits()
+    with _capacity_lock:
+        settings = {
+            "targetValidNodeCount": TARGET_VALID_POOL_SIZE,
+            "maxValidNodeCount": MAX_VALID_POOL_SIZE,
+        }
+    slots = get_exit_slot_config()
+    with exit_slots_lock:
+        ready_slots = sum(
+            bool(exit_slots.get(slot, {}).get("egress_ok"))
+            and exit_slots.get(slot, {}).get("status") in ("up", "ready")
+            for slot in slots.get("active", [])
+        )
+    nodes = read_json(NODES_FILE, [])
+    current_valid = len([item for item in nodes if isinstance(item, dict) and item.get("probe_status") == "available"])
+    return {
+        "targetValidNodeCount": settings["targetValidNodeCount"],
+        "maxValidNodeCount": settings["maxValidNodeCount"],
+        "currentValidNodeCount": current_valid,
+        "regularExitSlots": len(slots.get("active", [])),
+        "readyRegularExitSlots": ready_slots,
+        "regularExitSlotsMax": limits.regular_exit_slots_max,
+        "logicalExits": len(slots.get("active", [])) + 1,
+        "limits": limits.as_dict(),
+        "autoManaged": True,
+    }
+
+
+def _slot_expansion_ready(new_slots: int) -> bool:
+    """Do not advertise new public exits until the privileged install laid out ports."""
+    try:
+        transaction = json.loads(Path("/etc/aimili-gateway/protocol-transaction.json").read_text(encoding="utf-8"))
+        allowed = set(transaction["allowedPorts"])
+        status = subprocess.run(["ufw", "status"], capture_output=True, text=True, timeout=5, check=True).stdout
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+        return False
+    for slot in range(new_slots):
+        if 20000 + slot not in allowed:
+            return False
+        if f"{20000 + slot}/tcp" not in status or f"{30000 + slot}/tcp" not in status:
+            return False
+    return True
+
+
+def update_capacity(target: Any = None, emergency: Any = None, regular_slots: Any = None) -> dict[str, Any]:
+    """原子更新容量目标；上限由当前 VPS 资源自动计算，不能人为突破。"""
+    global TARGET_VALID_POOL_SIZE, TARGET_VALID_NODES, MAX_VALID_POOL_SIZE
+    limits = refresh_capacity_limits()
+    current_slots = _active_regular_slot_count()
+    try:
+        requested_slots = current_slots if regular_slots is None else int(regular_slots)
+        requested_target = TARGET_VALID_POOL_SIZE if target is None else int(target)
+        requested_emergency = MAX_VALID_POOL_SIZE if emergency is None else int(emergency)
+    except (TypeError, ValueError):
+        return {"ok": False, "error_code": "invalid_capacity"}
+    if requested_slots < capacity.MIN_REGULAR_SLOTS or requested_slots > limits.regular_exit_slots_max:
+        return {"ok": False, "error_code": "capacity_limit_exceeded", "limits": limits.as_dict()}
+    if requested_slots > MAX_EXIT_SLOTS:
+        return {"ok": False, "error_code": "capacity_limit_exceeded", "limits": limits.as_dict()}
+    requested_target, requested_emergency = capacity.clamp_settings(
+        requested_target, requested_emergency, limits
+    )
+    if target is not None and requested_target != int(target):
+        return {"ok": False, "error_code": "capacity_limit_exceeded", "limits": limits.as_dict()}
+    if emergency is not None and requested_emergency != int(emergency):
+        return {"ok": False, "error_code": "capacity_limit_exceeded", "limits": limits.as_dict()}
+    if requested_slots > current_slots and not _slot_expansion_ready(requested_slots):
+        return {"ok": False, "error_code": "capacity_upgrade_required"}
+    old_target = TARGET_VALID_POOL_SIZE
+    if requested_slots != current_slots:
+        result = set_exit_slot_config(count=requested_slots)
+        if isinstance(result, dict) and result.get("ok") is False:
+            return result
+        if not isinstance(result, dict) or result.get("count") != requested_slots:
+            return {"ok": False, "error_code": "capacity_storage_failed"}
+    with _capacity_lock:
+        previous = dict(_capacity_settings)
+        desired = {"targetValidNodeCount": requested_target, "maxValidNodeCount": requested_emergency}
+        try:
+            write_json(CAPACITY_FILE, desired)
+        except OSError:
+            if requested_slots != current_slots:
+                rolled_back = set_exit_slot_config(count=current_slots)
+                if not isinstance(rolled_back, dict) or rolled_back.get("count") != current_slots:
+                    return {"ok": False, "error_code": "repair_required"}
+            _capacity_settings.clear()
+            _capacity_settings.update(previous)
+            return {"ok": False, "error_code": "capacity_storage_failed"}
+        _capacity_settings.update(desired)
+        TARGET_VALID_POOL_SIZE = requested_target
+        TARGET_VALID_NODES = requested_target
+        MAX_VALID_POOL_SIZE = requested_emergency
+    if requested_slots != current_slots:
+        threading.Thread(target=supervise_exit_slots_once, daemon=True).start()
+    if requested_target > old_target:
+        schedule_valid_pool_replenishment("高级设置更新有效节点目标")
+    return capacity_snapshot()
 
 
 def default_pool_metadata() -> dict[str, Any]:
@@ -1615,6 +1790,7 @@ def store_country_catalog(rows: list[dict[str, str]]) -> None:
 
 
 def country_catalog_snapshot() -> list[dict[str, Any]]:
+    refresh_capacity_limits()
     raw = read_json(COUNTRY_CATALOG_FILE, [])
     if not isinstance(raw, list):
         return []
@@ -3102,6 +3278,7 @@ def replenish_valid_pool(
 
 
 def country_refresh_snapshot() -> dict[str, Any]:
+    refresh_capacity_limits()
     with country_refresh_lock:
         snapshot = dict(country_refresh_state)
     if snapshot.get("state") in {"completed", "failed"}:
@@ -3982,6 +4159,7 @@ def maintain_valid_nodes(
     if not main_mutation_allowed():
         return "operation_busy"
     ensure_dirs()
+    refresh_capacity_limits()
     if not maintenance_lock.acquire(blocking=False):
         msg = "节点维护任务正在运行，请稍后再试"
         set_state(last_check_message=msg)
@@ -4599,7 +4777,12 @@ def set_exit_slot_config(count: Any = None, country: Any = None, residential_onl
         cfg = load_ui_config()
         active = paused = None
         if count is not None:
-            n = bounded_int(count, DEFAULT_EXIT_SLOTS, 0, MAX_EXIT_SLOTS)
+            try:
+                n = int(count)
+            except (TypeError, ValueError):
+                return {"ok": False, "error_code": "invalid_capacity"}
+            if n < 0 or n > min(MAX_EXIT_SLOTS, _capacity_limits().regular_exit_slots_max):
+                return {"ok": False, "error_code": "capacity_limit_exceeded"}
             active = list(range(n))  # 数量滑块=连续区间，覆盖式设定
             paused = get_paused_slots() & set(active)
         if country is not None:
@@ -4619,11 +4802,12 @@ def add_one_slot() -> dict[str, Any]:
     """新增一个空槽位：取最小可用索引加入启用列表。"""
     with lock:
         active = get_active_slots()
-        if len(active) >= MAX_EXIT_SLOTS:
-            return {"ok": False, "error": f"已达到最大出口数量 {MAX_EXIT_SLOTS}"}
-        free = next((i for i in range(MAX_EXIT_SLOTS) if i not in active), None)
+        dynamic_max = min(MAX_EXIT_SLOTS, _capacity_limits().regular_exit_slots_max)
+        if len(active) >= dynamic_max:
+            return {"ok": False, "error": f"当前 VPS 自动上限为 {dynamic_max} 个普通出口位"}
+        free = next((i for i in range(dynamic_max) if i not in active), None)
         if free is None:
-            return {"ok": False, "error": f"已达到最大出口数量 {MAX_EXIT_SLOTS}"}
+            return {"ok": False, "error": f"当前 VPS 自动上限为 {dynamic_max} 个普通出口位"}
         active = sorted(active + [free])
         cfg = load_ui_config()
         _save_slot_lists(cfg, active=active)
@@ -5925,11 +6109,12 @@ def add_slot_with_node(node_id: str) -> dict[str, Any]:
                 return {"ok": False, "error": f"该节点已被槽位 #{idx} 使用"}
     with lock:
         active = get_active_slots()
-        if len(active) >= MAX_EXIT_SLOTS:
-            return {"ok": False, "error": f"已达到最大出口数量 {MAX_EXIT_SLOTS}"}
-        new_idx = next((i for i in range(MAX_EXIT_SLOTS) if i not in active), None)
+        dynamic_max = min(MAX_EXIT_SLOTS, _capacity_limits().regular_exit_slots_max)
+        if len(active) >= dynamic_max:
+            return {"ok": False, "error": f"当前 VPS 自动上限为 {dynamic_max} 个普通出口位"}
+        new_idx = next((i for i in range(dynamic_max) if i not in active), None)
         if new_idx is None:
-            return {"ok": False, "error": f"已达到最大出口数量 {MAX_EXIT_SLOTS}"}
+            return {"ok": False, "error": f"当前 VPS 自动上限为 {dynamic_max} 个普通出口位"}
         active = sorted(active + [new_idx])
         cfg = load_ui_config()
         _save_slot_lists(cfg, active=active)
@@ -10342,7 +10527,7 @@ class Handler(BaseHTTPRequestHandler):
             state = read_json(SLOTS_FILE, {"slots": []})
             self.send_json({
                 "config": cfg,
-                "max_slots": MAX_EXIT_SLOTS,
+                "max_slots": min(MAX_EXIT_SLOTS, _capacity_limits().regular_exit_slots_max),
                 "proxy_host": "127.0.0.1",
                 "port_base": SLOT_PORT_BASE,
                 "country_map": get_slot_country_map(),
@@ -10617,6 +10802,9 @@ class Handler(BaseHTTPRequestHandler):
                     residential_only=residential_only,
                     isp=isp,
                 )
+                if new_cfg.get("ok") is False:
+                    self.send_json(new_cfg, HTTPStatus.CONFLICT)
+                    return
                 # 立即触发一次供给，避免等待下个周期
                 threading.Thread(target=supervise_exit_slots_once, daemon=True).start()
                 self.send_json({"ok": True, "config": new_cfg, "message": "多出口配置已更新，正在后台调整槽位..."})
