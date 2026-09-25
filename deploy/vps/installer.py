@@ -269,23 +269,42 @@ def preflight() -> None:
         raise InstallError("可用磁盘空间不足 2 GiB")
 
 
+def add_swap_fstab_entry(fstab: Path, swap: Path) -> None:
+    body = fstab.read_text(encoding="utf-8")
+    if any(line.strip() and not line.lstrip().startswith("#") and line.split()[0] == str(swap)
+           for line in body.splitlines()):
+        return
+    info = fstab.stat()
+    write(fstab, body.rstrip("\n") + f"\n{swap} none swap sw 0 0\n",
+          info.st_mode & 0o777, (info.st_uid, info.st_gid))
+
+
+def ensure_swap() -> None:
+    say("正在检查并持久化 Swap……")
+    swap = Path("/swapfile")
+    if Path("/proc/meminfo").read_text().split("SwapTotal:")[1].split()[0] == "0":
+        if not swap.exists():
+            run(["fallocate", "-l", "1G", str(swap)])
+            os.chmod(swap, 0o600)
+            run(["mkswap", str(swap)])
+        elif not swap.is_file() or swap.stat().st_size < 1 << 30 or subprocess.run(
+                ["blkid", "-p", "-o", "value", "-s", "TYPE", str(swap)],
+                capture_output=True, text=True, check=False).stdout.strip() != "swap":
+            raise InstallError("已有 /swapfile 不是有效的 1 GiB Swap，拒绝覆盖；请先核对该文件")
+        os.chmod(swap, 0o600)
+        run(["swapon", str(swap)])
+    active = {line.split()[0] for line in Path("/proc/swaps").read_text().splitlines()[1:] if line.split()}
+    if str(swap) in active:
+        add_swap_fstab_entry(Path("/etc/fstab"), swap)
+
+
 def system_packages() -> None:
-    say("正在安装 Ubuntu 官方软件包与 Swap……")
-    run(["apt-get", "update", "-qq"], timeout=600)
+    ensure_swap()
+    say("正在安装 Ubuntu 官方软件包……")
+    run(["apt-get", "-o", "DPkg::Lock::Timeout=1800", "update", "-qq"], timeout=2400)
     run(["apt-get", "-o", "DPkg::Lock::Timeout=1800", "install", "-y", "-qq", "openvpn", "caddy", "ufw", "python3-requests", "python3-cryptography"], timeout=2400)
     if not shutil.which("openvpn") and not Path("/usr/sbin/openvpn").exists():
         raise InstallError("OpenVPN 安装后仍不可用")
-    if Path("/proc/meminfo").read_text().split("SwapTotal:")[1].split()[0] == "0":
-        swap = Path("/swapfile")
-        if not swap.exists():
-            run(["fallocate", "-l", "1G", str(swap)])
-        os.chmod(swap, 0o600)
-        run(["mkswap", str(swap)])
-        run(["swapon", str(swap)])
-        fstab = Path("/etc/fstab")
-        if "/swapfile " not in fstab.read_text():
-            with fstab.open("a") as stream:
-                stream.write("/swapfile none swap sw 0 0\n")
     checkpoint("packages")
 
 

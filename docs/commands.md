@@ -11,7 +11,7 @@ curl -fsSL https://raw.githubusercontent.com/thzyh/aimili-gateway/main/deploy/vp
 1. **下载并验证发布包。** 引导脚本下载发布清单、签名、Gateway 完整包及定制 3x-ui 二进制，验证 Ed25519 签名和 SHA-256；这一阶段不会修改服务。
 2. **选择部署模式。** `1 无域名` 是默认值，回车即可使用 VPS 公网 IP 和 Caddy 本地 CA。`2 使用域名` 会继续询问域名；域名的 A 记录必须已经指向本机公网 IPv4，且 80、443 端口可从公网访问，Caddy 才能申请公网证书。域名无需填写 `https://`。
 3. **选择 SOCKS5H 允许来源。** 这里填写的是**连接 SOCKS5H 的客户端来源 IPv4**，不是 VPS IP、域名或出口节点 IP。安装器会先尝试读取当前 SSH 客户端地址，并在方括号中显示；直接回车即采用该地址。若无法识别，方括号显示 `127.0.0.1`，回车表示仅允许 VPS 本机连接；需要其他设备使用时，应输入该设备对 VPS 可见的公网 IPv4。已有部署重新运行时沿用已保存的允许来源，不重复询问。来源限制保持开启，安装器不会因回车而放开所有公网地址。
-4. **自动安装与验收。** 安装器检查平台与 DNS，备份已有状态，安装系统依赖、3x-ui/Xray、AimiliVPN/OpenVPN、Caddy 和 Gateway，设置受管防火墙、账户及更新入口；最后验收主连接、出口位、订阅、SOCKS5H 规则和数据库。普通出口位默认 `4`，交互部署不另设槽位选择；已有部署的槽位数量保持不变。完整日志在 `/var/log/aimili-gateway/install.log`。
+4. **自动安装与验收。** 安装器检查平台与 DNS，备份已有状态；在 512 MiB VPS 上先创建并持久化 1 GiB Swap，再安装系统依赖、3x-ui/Xray、AimiliVPN/OpenVPN、Caddy 和 Gateway，设置受管防火墙、账户及更新入口；最后验收主连接、出口位、订阅、SOCKS5H 规则和数据库。普通出口位默认 `4`，交互部署不另设槽位选择；已有部署的槽位数量保持不变。完整日志在 `/var/log/aimili-gateway/install.log`。
 5. **完成后。** 屏幕显示访问地址；初始账户文件位于 `/root/aimili-gateway/credentials.json`，只在自己的 SSH 会话中查看，不要粘贴到聊天或公开日志。无域名模式的本地 CA 不会自动受浏览器信任，后续可用管理菜单切换域名。
 
 非交互部署需明确提供模式和 SOCKS5H 客户端来源，例如：
