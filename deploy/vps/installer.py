@@ -568,6 +568,7 @@ def main() -> int:
         installed = json.loads(run(["/usr/local/bin/aimili-gateway", "version", "--json"]))
         enable(args.asset_root, installed["version"])
         run(["systemctl", "restart", "aimili-gateway"])
+        wait_for("更新器启用后 Gateway 健康接口", lambda: http_ok("http://127.0.0.1:9080/healthz"), 90)
         from importlib.util import module_from_spec, spec_from_file_location
         provision_path = args.asset_root / "deploy/vps/provision.py"
         spec = spec_from_file_location("aimili_vps_provision", provision_path)
