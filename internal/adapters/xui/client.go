@@ -807,7 +807,8 @@ func (c *Client) rollbackEnsure(ctx context.Context, original map[string]any, pr
 func (c *Client) DeleteManagedGroup(ctx context.Context, managed ManagedGroup) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if !strings.HasPrefix(managed.ResourceName, "agw-") || managed.VLESSInboundID <= 0 || managed.MixedInboundID <= 0 {
+	if !strings.HasPrefix(managed.ResourceName, "agw-") ||
+		(managed.VLESSInboundID <= 0) != (managed.MixedInboundID <= 0) {
 		return &AdapterError{Code: "invalid_request"}
 	}
 	if err := c.authenticate(ctx); err != nil {
@@ -816,6 +817,30 @@ func (c *Client) DeleteManagedGroup(ctx context.Context, managed ManagedGroup) e
 	snapshot, err := c.snapshot(ctx)
 	if err != nil {
 		return err
+	}
+	if managed.VLESSInboundID <= 0 {
+		for _, inbound := range snapshot.Inbounds {
+			if inbound.Tag != managed.VLESSInboundTag && inbound.Tag != managed.MixedInboundTag {
+				continue
+			}
+			if !strings.HasPrefix(inbound.Remark, "Aimili Gateway ") {
+				return &AdapterError{Code: "ownership_conflict"}
+			}
+			if inbound.Tag == managed.VLESSInboundTag {
+				if managed.VLESSInboundID > 0 {
+					return &AdapterError{Code: "ownership_conflict"}
+				}
+				managed.VLESSInboundID = inbound.ID
+			} else {
+				if managed.MixedInboundID > 0 {
+					return &AdapterError{Code: "ownership_conflict"}
+				}
+				managed.MixedInboundID = inbound.ID
+			}
+		}
+		if managed.VLESSInboundID <= 0 || managed.MixedInboundID <= 0 {
+			return &AdapterError{Code: "managed_resource_missing"}
+		}
 	}
 	wanted := map[int64]string{
 		managed.VLESSInboundID: managed.VLESSInboundTag,

@@ -442,6 +442,7 @@ def certificate(origin: str, domain: str) -> tuple[Path, Path]:
 def install_gateway(args: argparse.Namespace, origin: str, domain: str, slots: int, source: str, credentials: dict) -> None:
     say("正在安装 Gateway、账户工具和协议事务服务……")
     import pwd
+    was_running = subprocess.run(["systemctl", "is-active", "--quiet", "aimili-gateway.service"]).returncode == 0
     try:
         uid = pwd.getpwnam("aimili-gateway").pw_uid
         gid = pwd.getpwnam("aimili-gateway").pw_gid
@@ -510,10 +511,14 @@ def install_gateway(args: argparse.Namespace, origin: str, domain: str, slots: i
     proto = {"databasePath":str(XUI_DB),"snapshotDir":"/var/lib/aimili-xui-protocol-transaction/transactions","profileDir":"/var/lib/aimili-xui-protocol-transaction/profiles","runtimeConfigPath":"/usr/local/x-ui/bin/config.json","certificatePath":str(cert),"privateKeyPath":str(key),"tlsServerName":domain or REALITY_SNI,"spoolRequestDir":str(ROOT/"protocol-spool/requests"),"spoolResultDir":str(ROOT/"protocol-spool/results"),"xrayBinary":"/usr/local/x-ui/bin/xray-linux-amd64","apiServer":"127.0.0.1:62789","allowedPorts":[8443]+list(range(20000,20000+slots))}
     write_json(ETC / "protocol-transaction.json", proto, 0o640, (0,gid))
     copy_mode(args.asset_root / "deploy/systemd/aimili-gateway.service", Path("/etc/systemd/system/aimili-gateway.service"), 0o644)
+    from enable_project_updates import enable
+    installed = json.loads(run(["/usr/local/bin/aimili-gateway", "version", "--json"]))
+    enable(args.asset_root, installed["version"])
     run(["systemctl", "daemon-reload"])
     for unit in ("aimili-xui-protocol-transaction.path", "aimili-xui-protocol-transaction.timer", "aimili-gateway.service"):
         run(["systemctl", "enable", "--now", unit])
-    run(["systemctl", "restart", "aimili-gateway.service"])
+    if was_running:
+        run(["systemctl", "restart", "aimili-gateway.service"])
     wait_for("Gateway 健康接口", lambda: http_ok("http://127.0.0.1:9080/healthz"), 90)
     checkpoint("gateway")
 
@@ -564,11 +569,6 @@ def main() -> int:
         firewall(slots, source)
         write_caddy(origin, domain)
         install_gateway(args, origin, domain, slots, source, credentials)
-        from enable_project_updates import enable
-        installed = json.loads(run(["/usr/local/bin/aimili-gateway", "version", "--json"]))
-        enable(args.asset_root, installed["version"])
-        run(["systemctl", "restart", "aimili-gateway"])
-        wait_for("更新器启用后 Gateway 健康接口", lambda: http_ok("http://127.0.0.1:9080/healthz"), 90)
         from importlib.util import module_from_spec, spec_from_file_location
         provision_path = args.asset_root / "deploy/vps/provision.py"
         spec = spec_from_file_location("aimili_vps_provision", provision_path)
@@ -591,6 +591,7 @@ def main() -> int:
                     module.GatewayClient(origin, candidate).login()
                     credentials = candidate
             if current.get("status") != "complete":
+                module.recover_interrupted_slot_adoptions(origin, slots, credentials)
                 if module.remove_unneeded_slots(origin, slots, credentials):
                     run(["systemctl", "restart", "aimilivpn.service"])
             # 重跑时节点也可能已经失效；只重分配真实出口不通的出口位。

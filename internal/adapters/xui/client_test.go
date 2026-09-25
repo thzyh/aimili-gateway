@@ -476,7 +476,7 @@ func TestEnsureLegacyMainBootstrapsAlongsideExistingManagedGroup(t *testing.T) {
 		inbounds: []map[string]any{existing},
 		initialXray: map[string]any{
 			"outbounds": []any{map[string]any{"tag": "agw-jp-res-socks", "protocol": "socks"}},
-			"routing": map[string]any{"rules": []any{map[string]any{"type": "field", "inboundTag": []any{"agw-jp-res-vless"}, "outboundTag": "agw-jp-res-socks"}}},
+			"routing":   map[string]any{"rules": []any{map[string]any{"type": "field", "inboundTag": []any{"agw-jp-res-vless"}, "outboundTag": "agw-jp-res-socks"}}},
 		},
 	}
 	client := newXUIFixtureClient(t, fixture)
@@ -1180,6 +1180,50 @@ func TestDeleteManagedGroupRemovesOnlyNamedResources(t *testing.T) {
 	outbounds := fixture.updatedXray["outbounds"].([]any)
 	if len(outbounds) != 1 || outbounds[0].(map[string]any)["tag"] != "direct" {
 		t.Fatalf("delete changed unmanaged outbounds: %#v", outbounds)
+	}
+}
+
+func TestDeleteManagedGroupRecoversUnrecordedInboundIDs(t *testing.T) {
+	fixture := &xuiFixture{}
+	client := newXUIFixtureClient(t, fixture)
+	managed, err := client.EnsureManagedGroup(context.Background(), DesiredGroup{
+		ResourceName: "agw-jp-dc", SOCKSPort: 17930, VLESSPort: 20000, MixedPort: 30000,
+		VLESSClientID: "test-client-id", MixedUsername: "proxy-user", MixedPassword: "proxy-password",
+		MixedSourceCIDRs: []string{"198.51.100.0/24"},
+		RealityTarget:    "127.0.0.1:443", RealityServerName: "proxy.example.test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	managed.VLESSInboundID, managed.MixedInboundID = 0, 0
+	if err := client.DeleteManagedGroup(context.Background(), managed); err != nil {
+		t.Fatal(err)
+	}
+	if len(fixture.inbounds) != 0 {
+		t.Fatalf("unrecorded managed inbounds remain: %#v", fixture.inbounds)
+	}
+}
+
+func TestDeleteManagedGroupDoesNotClaimUnownedTags(t *testing.T) {
+	fixture := &xuiFixture{}
+	client := newXUIFixtureClient(t, fixture)
+	managed, err := client.EnsureManagedGroup(context.Background(), DesiredGroup{
+		ResourceName: "agw-jp-dc", SOCKSPort: 17930, VLESSPort: 20000, MixedPort: 30000,
+		VLESSClientID: "test-client-id", MixedUsername: "proxy-user", MixedPassword: "proxy-password",
+		MixedSourceCIDRs: []string{"198.51.100.0/24"},
+		RealityTarget:    "127.0.0.1:443", RealityServerName: "proxy.example.test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	managed.VLESSInboundID, managed.MixedInboundID = 0, 0
+	fixture.inbounds[0]["remark"] = "Other owner"
+	var adapterError *AdapterError
+	if err := client.DeleteManagedGroup(context.Background(), managed); !errors.As(err, &adapterError) || adapterError.Code != "ownership_conflict" {
+		t.Fatalf("unowned tags were accepted: %v", err)
+	}
+	if len(fixture.inbounds) != 2 {
+		t.Fatal("unowned inbound was modified")
 	}
 }
 

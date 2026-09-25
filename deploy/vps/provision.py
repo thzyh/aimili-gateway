@@ -155,6 +155,29 @@ def remove_unneeded_slots(origin: str, slots: int, credentials: dict) -> bool:
     return changed
 
 
+def recover_interrupted_slot_adoptions(origin: str, slots: int, credentials: dict) -> None:
+    """仅清理首次安装中断时留下、尚未提交入站 ID 的占位记录。"""
+    db = sqlite3.connect("file:/var/lib/aimili-gateway/aimili-gateway.db?mode=ro", uri=True)
+    try:
+        rows = db.execute(
+            "SELECT id, aimili_slot, public_inbound_id, mixed_inbound_id FROM proxy_groups "
+            "WHERE status='provisioning' AND aimili_slot >= 0 AND aimili_slot < ?",
+            (slots,),
+        ).fetchall()
+    finally:
+        db.close()
+    if not rows:
+        return
+    for group_id, slot, public_id, mixed_id in rows:
+        if not group_id.startswith("agw-") or public_id or mixed_id:
+            raise RuntimeError(f"出口位 {slot + 1} 存在无法安全自动恢复的半完成资源，请检查 Gateway 与 3x-ui 受管资源")
+    client = GatewayClient(origin, credentials)
+    client.login()
+    for group_id, slot, _, _ in rows:
+        client.request("DELETE", "/api/v1/proxy-groups/" + urllib.parse.quote(group_id, safe=""))
+        print(f"已清理中断的出口位 {slot + 1} 占位记录；将重新分配并验证真实出口", flush=True)
+
+
 def stabilize_initial_slots(slots: int) -> None:
     """首次安装时给失效的预建出口位分配不同国家的健康候选。"""
     token = Path("/etc/aimilivpn/control.token").read_text().strip()
