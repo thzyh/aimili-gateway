@@ -168,6 +168,49 @@ func TestSetMixedPolicyUpdatesEnabledMainMixedSourceRules(t *testing.T) {
 	}
 }
 
+func TestSetMixedPolicyResyncsMainExitIPBeforeValidatingSourceChange(t *testing.T) {
+	fixture := newFixture()
+	fixture.store.mainEgress = store.MainEgress{
+		ResourceName: "agw-main", CountryCode: "JP", ProxyType: domain.ProxyTypeDatacenter,
+		CandidateID: "old-main", ExitIP: "203.0.113.6", PublicInboundID: 1, MixedInboundID: 98,
+		PublicPort: 8443, MixedPort: 31000, Enabled: true, UpdatedAt: fixture.now(),
+	}
+	fixture.aimili.mainStatus = aimili.MainStatus{CandidateID: "new-main", ExitIP: "203.0.113.20", Port: 7928, EgressOK: true, Active: true}
+	fixture.store.policy = store.MixedSourcePolicy{Enabled: true, CIDRs: []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24")}, ApplyStatus: store.MixedPolicyApplied}
+	fixture.validator.socksErrors = []error{&validator.Error{Code: "egress_mismatch"}}
+
+	if err := fixture.orchestrator(t).SetMixedPolicy(context.Background(), store.MixedSourcePolicy{Enabled: false}); err != nil {
+		t.Fatal(err)
+	}
+	if got := fixture.validator.socksExpectedIPs; !equalStrings(got, []string{"203.0.113.6", "203.0.113.20"}) {
+		t.Fatalf("validated main exit IPs = %#v", got)
+	}
+	if fixture.store.policy.Enabled || fixture.store.policy.ApplyStatus != store.MixedPolicyApplied {
+		t.Fatalf("stored policy = %#v", fixture.store.policy)
+	}
+}
+
+func TestMainPolicyMismatchStillFailsWithoutAHealthyChangedMainExit(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		status aimili.MainStatus
+	}{
+		{"unchanged", aimili.MainStatus{ExitIP: "203.0.113.6", Active: true, EgressOK: true}},
+		{"unhealthy", aimili.MainStatus{ExitIP: "203.0.113.20", Active: true, EgressOK: false}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newFixture()
+			fixture.aimili.mainStatus = test.status
+			fixture.validator.socksErrors = []error{&validator.Error{Code: "egress_mismatch"}}
+			group := domain.ProxyGroup{ExitIP: "203.0.113.6", MixedPort: 31000}
+			err := fixture.orchestrator(t).validateMainPolicySOCKS(context.Background(), group, runtimeCredentials{})
+			if errorCode(err) != "egress_mismatch" || fixture.validator.socksCalls != 1 {
+				t.Fatalf("err=%v validations=%d", err, fixture.validator.socksCalls)
+			}
+		})
+	}
+}
+
 func TestSetMixedPolicyRollsBackAppliedGroupsWhenSecondValidationFails(t *testing.T) {
 	fixture := newFixture()
 	fixture.store.groups = mixedPolicyGroups()

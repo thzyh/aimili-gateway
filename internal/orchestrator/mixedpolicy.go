@@ -352,7 +352,7 @@ func (o *Orchestrator) setMixedPolicy(ctx context.Context, requested store.Mixed
 			log.Printf("mixed policy apply failed: stage=update_main code=%s", errorCode(updateErr))
 			return o.failMixedPolicyUpdate(ctx, oldPolicy, desired, applied, nil, mainUpdate)
 		}
-		if _, updateErr := o.validateSOCKS(ctx, mainUpdate.group, credentials); updateErr != nil {
+		if updateErr := o.validateMainPolicySOCKS(ctx, mainUpdate.group, credentials); updateErr != nil {
 			log.Printf("mixed policy apply failed: stage=validate_main code=%s", errorCode(updateErr))
 			return o.failMixedPolicyUpdate(ctx, oldPolicy, desired, applied, nil, mainUpdate)
 		}
@@ -390,7 +390,7 @@ func (o *Orchestrator) failMixedPolicyUpdate(ctx context.Context, oldPolicy, des
 		if err := o.xui.UpdateLegacyMainMixedPolicy(ctx, mainUpdate.oldDesired); err != nil {
 			log.Printf("mixed policy rollback failed: stage=restore_main code=%s", errorCode(err))
 			rollbackFailed = true
-		} else if _, err := o.validateSOCKS(ctx, mainUpdate.group, runtimeCredentials{mixedUsername: []byte(mainUpdate.oldDesired.MixedUsername), mixedPassword: []byte(mainUpdate.oldDesired.MixedPassword)}); err != nil {
+		} else if err := o.validateMainPolicySOCKS(ctx, mainUpdate.group, runtimeCredentials{mixedUsername: []byte(mainUpdate.oldDesired.MixedUsername), mixedPassword: []byte(mainUpdate.oldDesired.MixedPassword)}); err != nil {
 			log.Printf("mixed policy rollback failed: stage=validate_main code=%s", errorCode(err))
 			rollbackFailed = true
 		}
@@ -429,6 +429,22 @@ func (o *Orchestrator) failMixedPolicyUpdate(ctx context.Context, oldPolicy, des
 		return &Error{Code: "repair_required"}
 	}
 	return &Error{Code: "mixed_policy_apply_failed"}
+}
+
+// A healthy main node may rotate after its last Gateway check. Retry only an
+// exit-IP mismatch against the current, healthy AimiliVPN main assignment.
+func (o *Orchestrator) validateMainPolicySOCKS(ctx context.Context, group domain.ProxyGroup, credentials runtimeCredentials) error {
+	_, err := o.validateSOCKS(ctx, group, credentials)
+	if errorCode(err) != "egress_mismatch" {
+		return err
+	}
+	current, statusErr := o.aimili.MainStatus(ctx)
+	if statusErr != nil || !current.Active || !current.EgressOK || net.ParseIP(current.ExitIP) == nil || current.ExitIP == group.ExitIP {
+		return err
+	}
+	group.ExitIP = current.ExitIP
+	_, err = o.validateSOCKS(ctx, group, credentials)
+	return err
 }
 
 func (o *Orchestrator) desiredGroup(group domain.ProxyGroup, socksPort int, credentials runtimeCredentials, policy store.MixedSourcePolicy) xui.DesiredGroup {
