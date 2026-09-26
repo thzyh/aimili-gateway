@@ -27,6 +27,7 @@ const replacementNotice = ref<UiNoticeData | null>(null)
 const replacementCandidate = ref<ProxyGroupPayload | null>(null)
 const replacementCandidateID = ref('')
 const replacementTarget = ref('')
+const replacementMenuOpen = ref(false)
 const refreshNoticeFingerprint = ref('')
 const dedicatedStandbys = ref<DedicatedStandbyPayload[]>([])
 const standbyBusy = ref(false)
@@ -69,15 +70,15 @@ const rows = computed(() => groups.value.filter(row => {
   return (left || Number.MAX_SAFE_INTEGER) - (right || Number.MAX_SAFE_INTEGER)
 }))
 const replacementTargets = computed(() => groups.value.filter(row => row.status !== 'standby' && (row.egressSource === 'main' || (row.slotNumber ?? 0) > 0)).sort((a, b) => {
-  if (a.egressSource === 'main') return 1
-  if (b.egressSource === 'main') return -1
+  if (a.egressSource === 'main') return -1
+  if (b.egressSource === 'main') return 1
   return (a.slotNumber ?? 0) - (b.slotNumber ?? 0)
 }))
 const automaticRepairFailed = (row: ProxyGroupPayload) => ['no_same_country_candidate', 'replacement_failed', 'repair_interrupted', 'manual_repair_required', 'manual_replacement_required'].includes(row.lastErrorCode || '')
 const selectedReplacementTarget = computed(() => replacementTargets.value.find(row => row.id === replacementTarget.value) ?? null)
 const replacementTargetWarning = computed(() => selectedReplacementTarget.value && automaticRepairFailed(selectedReplacementTarget.value) ? selectedReplacementTarget.value : null)
 const replacementTargetName = (row: ProxyGroupPayload) => row.egressSource === 'main' ? '主连接' : `出口位 ${row.slotNumber}`
-const replacementTargetLabel = (row: ProxyGroupPayload) => `${automaticRepairFailed(row) ? '【故障·自动修复失败】' : ''}${row.egressSource === 'main' ? '【需明确选择】' : ''}${replacementTargetName(row)} · ${countryDisplayName(row.countryCode, [{ code: row.countryCode, name: row.countryName || row.countryCode }])} · ${row.exitIp || '当前无可用出口 IP'}`
+const replacementTargetLabel = (row: ProxyGroupPayload) => `${automaticRepairFailed(row) ? '【故障·自动修复失败】' : ''}${replacementTargetName(row)} · ${countryDisplayName(row.countryCode, [{ code: row.countryCode, name: row.countryName || row.countryCode }])} · ${row.exitIp || '当前无可用出口 IP'}`
 const subscriptionReady = computed(() => groups.value.some(row => row.status === 'ready' && row.protocolState === 'ready' && row.subscriptionState === 'ready'))
 
 function makeNotice(kind: NoticeKind, title: string, message = ''): UiNoticeData {
@@ -285,6 +286,7 @@ function openReplacement(row: ProxyGroupPayload): void {
   replacementCandidate.value = row
   replacementCandidateID.value = row.id
   replacementTarget.value = replacementTargets.value.find(target => target.egressSource !== 'main')?.id ?? ''
+  replacementMenuOpen.value = false
   replacementNotice.value = null
 }
 
@@ -308,6 +310,7 @@ function closeReplacement(): void {
   replacementCandidate.value = null
   replacementCandidateID.value = ''
   replacementTarget.value = ''
+  replacementMenuOpen.value = false
   replacementNotice.value = null
 }
 
@@ -359,7 +362,7 @@ async function checkRow(row: ProxyGroupPayload): Promise<void> {
     const result = await apiFetch<ProxyGroupPayload>(path, { method: 'POST', ...(row.egressSource === 'main' ? { headers: idempotencyHeaders() } : {}) })
     topNotice.value = result.autoRepairPerformed
       ? makeNotice('success', `${subject} 自动修复成功`, '已切换到一个同国家可用节点，并重新验证真实出口和代理链路。')
-      : makeNotice('success', `${subject} 检测成功`, '真实出口、SOCKS5H 和当前公网协议链路正常；本次没有更换节点。')
+      : makeNotice('success', `${subject} 本机检测成功`, '真实出口、SOCKS5H 和 VPS 本机代理链路正常；公网防火墙、客户端网络及客户端测速目标需另外验证。本次没有更换节点。')
     await loadGroups(false)
   } catch (error) {
     await loadGroups(false)
@@ -491,8 +494,14 @@ function formatRefreshTime(value?: number): string {
       <section data-replace-dialog class="replace-dialog" role="dialog" aria-modal="true" aria-labelledby="replace-title">
         <button class="dialog-close" type="button" aria-label="关闭" @click="closeReplacement">×</button>
         <p class="eyebrow">REPLACE EGRESS SLOT</p><h2 id="replace-title">替换到出口位</h2>
-        <p>将 {{ countryDisplayName(replacementCandidate.countryCode, [{ code: replacementCandidate.countryCode, name: replacementCandidate.countryName || replacementCandidate.countryCode }]) }} {{ replacementCandidate.proxyType === 'residential' ? '住宅' : '机房' }}候选装载到现有出口位。默认只选择出口位；若要更换主连接，必须在下拉框中明确选择。原端口和 VLESS/SOCKS5H 入站保持不变，失败时自动回滚。</p>
-        <label>目标逻辑出口<select v-model="replacementTarget" data-replace-target :class="{ 'fault-target': replacementTargetWarning }"><option v-for="target in replacementTargets" :key="target.id" :value="target.id" :class="{ 'fault-target-option': automaticRepairFailed(target) }">{{ replacementTargetLabel(target) }}</option></select></label>
+        <p>将 {{ countryDisplayName(replacementCandidate.countryCode, [{ code: replacementCandidate.countryCode, name: replacementCandidate.countryName || replacementCandidate.countryCode }]) }} {{ replacementCandidate.proxyType === 'residential' ? '住宅' : '机房' }}候选装载到现有出口位。默认只选择出口位；若要更换主连接，请在列表中主动选择。原端口和 VLESS/SOCKS5H 入站保持不变，失败时自动回滚。</p>
+        <div class="target-field">
+          <span id="replace-target-label">目标逻辑出口</span>
+          <button data-replace-target class="target-trigger" :class="{ 'fault-target': replacementTargetWarning }" type="button" :aria-expanded="replacementMenuOpen" aria-controls="replace-target-options" aria-labelledby="replace-target-label" @click="replacementMenuOpen = !replacementMenuOpen">{{ selectedReplacementTarget ? replacementTargetLabel(selectedReplacementTarget) : '请选择出口位' }}<span aria-hidden="true">⌄</span></button>
+          <div v-if="replacementMenuOpen" id="replace-target-options" data-replace-options class="target-options" role="group" aria-label="可替换的逻辑出口" @keydown.esc="replacementMenuOpen = false">
+            <button v-for="target in replacementTargets" :key="target.id" data-replace-option :data-target-id="target.id" class="target-option" :class="{ selected: replacementTarget === target.id, 'fault-target-option': automaticRepairFailed(target) }" type="button" @click="replacementTarget = target.id; replacementMenuOpen = false">{{ replacementTargetLabel(target) }}</button>
+          </div>
+        </div>
         <p v-if="replacementTargetWarning" data-replace-target-warning class="fault-target-warning">{{ replacementTargetName(replacementTargetWarning) }}{{ replacementTargetWarning.egressSource === 'main' ? '' : ' ' }}自动修复已失败；你仍可将当前候选替换到这里，系统会重新验证完整链路。</p>
         <UiNotice v-if="replacementNotice" :key="replacementNotice.id" data-replace-notice class="replacement-notice" :notice="replacementNotice" @close="replacementNotice=null" />
         <div class="dialog-actions"><button class="secondary" type="button" @click="closeReplacement">取消</button><button data-confirm-replace type="button" :disabled="!replacementTarget || !replacementCandidateID || busy !== ''" @click="confirmReplacement">{{ busy.startsWith('replace-') ? '正在替换…' : '确认替换' }}</button></div>
@@ -503,4 +512,18 @@ function formatRefreshTime(value?: number): string {
 
 <style scoped>
 .page-heading{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin-bottom:20px}.eyebrow{margin:0 0 6px;color:var(--accent);font-size:11px;font-weight:800;letter-spacing:.14em}.page-heading h1{margin:0;font-size:28px;letter-spacing:-.035em}.page-heading p:not(.eyebrow){margin:8px 0 0;color:var(--muted-text);font-size:14px}.heading-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px}[data-top-notice],.refresh-notice,.loading{margin:0 0 14px}.loading{padding:10px 13px;border:1px solid var(--border);border-radius:9px;background:var(--panel);color:var(--muted-text);font-size:13px}.pool-toolbar{display:flex;align-items:center;gap:14px;margin-bottom:12px}.pool-stats{display:flex;align-items:center;gap:6px;margin-left:auto;flex:none;font-size:12px}.pool-stat{display:inline-flex;align-items:baseline;gap:3px;padding:5px 8px;border:1px solid var(--border);border-radius:999px;font-weight:700}.pool-stat strong{font-size:14px}.pool-stat.official{color:#788cff;background:rgba(94,112,255,.1)}.pool-stat.target{color:#287ca6;background:rgba(40,124,166,.1)}.pool-stat.valid{color:#18ae70;background:rgba(24,174,112,.1)}.pool-stat.maximum{color:#d58b20;background:rgba(213,139,32,.1)}.pool-stat.countries{color:#c27cfa;background:rgba(194,124,250,.1)}.fixed-toggle{display:flex;align-items:center;gap:6px;color:var(--muted-text);font-size:12px;white-space:nowrap}.dialog-backdrop{position:fixed;inset:0;z-index:20;display:grid;place-items:center;padding:20px;background:rgba(15,23,42,.52);backdrop-filter:blur(3px)}.replace-dialog{position:relative;width:min(460px,100%);padding:24px;border:1px solid var(--border);border-radius:14px;background:var(--panel);box-shadow:0 24px 70px rgba(15,23,42,.28)}.replace-dialog h2{margin:0 0 10px;font-size:22px}.replace-dialog>p:not(.eyebrow){color:var(--muted-text);font-size:13px;line-height:1.65}.replace-dialog label{display:grid;gap:7px;margin-top:18px;font-size:12px;font-weight:700}.replace-dialog select{height:40px;padding:0 10px;border:1px solid var(--border);border-radius:8px;background:var(--input);color:var(--text)}.replace-dialog select.fault-target{border-color:var(--danger);box-shadow:0 0 0 2px rgba(239,68,68,.12)}.fault-target-option,.fault-target-warning{color:var(--danger)}.replace-dialog .fault-target-warning{margin:8px 0 0;font-weight:700}.replacement-notice{margin-top:14px}.dialog-close{position:absolute;top:12px;right:12px;width:32px;height:32px;padding:0;border:0;background:transparent;color:var(--muted-text);font-size:22px}.dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}@media(max-width:1100px){.pool-stats{flex-wrap:wrap;justify-content:flex-end}}@media(max-width:760px){.page-heading{align-items:flex-start;flex-direction:column}.heading-actions{width:100%;justify-content:flex-start}.heading-actions button{flex:1}.pool-toolbar{align-items:stretch;flex-direction:column}.pool-stats{align-self:flex-end;margin-left:0}}
+</style>
+
+<style scoped>
+.dialog-backdrop{overflow-y:auto}
+.replace-dialog{max-height:calc(100dvh - 32px);overflow-y:auto}
+.target-field{display:grid;gap:7px;margin-top:18px;font-size:12px;font-weight:700;min-width:0}
+.target-trigger{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;min-height:40px;padding:9px 10px;border:1px solid var(--border);border-radius:8px;background:var(--input);color:var(--text);font:inherit;text-align:left;overflow-wrap:anywhere}
+.target-trigger.fault-target{border-color:var(--danger);box-shadow:0 0 0 2px rgba(239,68,68,.12)}
+.target-trigger span{flex:none;font-size:18px}
+.target-options{display:grid;max-height:min(220px,35dvh);overflow-y:auto;border:1px solid var(--border);border-radius:8px;background:var(--input)}
+.target-option{width:100%;min-height:40px;padding:8px 10px;border:0;border-bottom:1px solid var(--border-soft);background:transparent;color:var(--text);font:inherit;text-align:left;white-space:normal;overflow-wrap:anywhere;cursor:pointer}
+.target-option:last-child{border-bottom:0}
+.target-option:hover,.target-option:focus-visible,.target-option.selected{background:var(--hover)}
+.target-option.fault-target-option{color:var(--danger)}
 </style>
