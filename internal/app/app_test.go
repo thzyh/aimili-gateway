@@ -206,6 +206,31 @@ func (checker *recordingAccountChecker) Check(context.Context) error {
 	return nil
 }
 
+type failingAccountChecker struct{ called chan time.Time }
+
+func (checker *failingAccountChecker) Check(context.Context) error {
+	checker.called <- time.Now()
+	return errors.New("backend temporarily unavailable")
+}
+
+func TestAccountDriftChecksRetryFailuresBeforeNormalInterval(t *testing.T) {
+	checker := &failingAccountChecker{called: make(chan time.Time, 3)}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := startAccountDriftChecks(ctx, checker, time.Millisecond, 300*time.Millisecond)
+	first := <-checker.called
+	select {
+	case second := <-checker.called:
+		if second.Sub(first) >= 200*time.Millisecond {
+			t.Fatalf("failure retry took %s", second.Sub(first))
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("failed account check was not retried promptly")
+	}
+	cancel()
+	<-done
+}
+
 func TestRealityServerNameForPublicHostUsesReservedNameForIPAddress(t *testing.T) {
 	if got := realityServerNameForPublicHost("192.168.88.4"); got != "reality.aimili.test" {
 		t.Fatalf("IP public host produced Reality server name %q", got)

@@ -267,6 +267,8 @@ _capacity_settings: dict[str, int] = {}
 lock = threading.RLock()
 mutation_lock = threading.RLock()
 maintenance_lock = threading.Lock()
+maintenance_probe_active = threading.Event()
+main_assignment_requested = threading.Event()
 country_refresh_lock = threading.RLock()
 country_refresh_state: dict[str, Any] = {
     "state": "idle",
@@ -1237,8 +1239,23 @@ def stage_main_assignment(
     expected_current_candidate_id: str,
     idempotency_key: str,
 ) -> dict[str, Any]:
-    if not _acquire_assignment_boundary():
-        return {"ok": False, "error_code": "operation_busy"}
+    # A background pool scan can take minutes. Let a manual assignment stop it
+    # after the current probe batch, then acquire the normal exclusive boundary.
+    with country_refresh_lock:
+        if country_refresh_state.get("state") == "running":
+            return {"ok": False, "error_code": "operation_busy"}
+    waiting_for_probe = maintenance_probe_active.is_set()
+    if waiting_for_probe:
+        main_assignment_requested.set()
+    deadline = time.monotonic() + 60 if waiting_for_probe else 0
+    while not _acquire_assignment_boundary():
+        if not waiting_for_probe or time.monotonic() >= deadline:
+            if waiting_for_probe:
+                main_assignment_requested.clear()
+            return {"ok": False, "error_code": "operation_busy"}
+        time.sleep(0.1)
+    if waiting_for_probe:
+        main_assignment_requested.clear()
     try:
         return _stage_main_assignment_unlocked(
             candidate_id,
@@ -3150,6 +3167,7 @@ def replenish_valid_pool(
     probe_batch,
     now: float | None = None,
     revalidate_existing: bool = True,
+    stop_requested=None,
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]], dict[str, Any]]:
     """复验既有节点并分批补池，直到达到目标或候选耗尽。"""
     checked_at = time.time() if now is None else now
@@ -3214,6 +3232,12 @@ def replenish_valid_pool(
     batch_count = 0
 
     while len(pool) < TARGET_VALID_POOL_SIZE:
+        if stop_requested is not None and stop_requested():
+            return pool, failed_entries, {
+                "tested": tested_count,
+                "batches": batch_count,
+                "stop_reason": "assignment_priority",
+            }
         queue = node_pool.candidate_queue(
             candidates,
             pool,
@@ -4271,13 +4295,29 @@ def maintain_valid_nodes(
                 officialCount=official_count, countryCandidateCount=len(candidates),
             )
         set_state(is_connecting=True, last_check_message="正在分批复验并补充有效节点...")
+        def probe_pool_batch(batch: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            results: list[dict[str, Any]] = []
+            for start in range(0, len(batch), max(1, OPENVPN_TEST_CONCURRENCY)):
+                if main_assignment_requested.is_set():
+                    break
+                results.extend(probe_nodes(batch[start:start + max(1, OPENVPN_TEST_CONCURRENCY)]))
+            return results
+
+        maintenance_probe_active.set()
         merged, blacklist, pool_stats = replenish_valid_pool(
             existing_nodes,
             candidates,
             load_blacklist(),
-            probe_nodes,
+            probe_pool_batch,
             revalidate_existing=revalidate_existing,
+            stop_requested=main_assignment_requested.is_set,
         )
+        maintenance_probe_active.clear()
+        if pool_stats["stop_reason"] == "assignment_priority":
+            message = "节点池维护已在探测批次边界让位于人工主出口替换；现有节点池未改动"
+            set_state(is_connecting=False, last_check_message=message)
+            log_to_json("INFO", "Main", message)
+            return message
         metadata = load_pool_metadata()
         next_round = int(metadata.get("maintenanceRound") or 0) + 1
         manual_ids = set()
@@ -4426,6 +4466,7 @@ def maintain_valid_nodes(
     finally:
         is_connecting = False
         maintenance_lock.release()
+        maintenance_probe_active.clear()
 
 
 def schedule_valid_pool_replenishment(

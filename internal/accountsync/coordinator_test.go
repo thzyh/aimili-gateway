@@ -61,16 +61,36 @@ func (fake *fakeAccountStore) CommitUnifiedCredentialsAndRevokeSessions(_ contex
 }
 
 type fakeAimiliAdmin struct {
-	calls          *[]string
-	username       string
-	password       string
-	updateFailures map[string]error
-	verifyErr      error
+	calls           *[]string
+	username        string
+	password        string
+	capabilitiesErr error
+	updateFailures  map[string]error
+	verifyErr       error
 }
 
 func (fake *fakeAimiliAdmin) Capabilities(context.Context) (aimili.Capabilities, error) {
 	*fake.calls = append(*fake.calls, "aimili.capabilities")
+	if fake.capabilitiesErr != nil {
+		return aimili.Capabilities{}, fake.capabilitiesErr
+	}
 	return aimili.Capabilities{APIVersion: "v1", Capabilities: []string{"admin.read", "admin.verify", "admin.update", "admin.sessions.issue"}}, nil
+}
+
+func TestTemporaryEgressFailureIsNotVersionIncompatible(t *testing.T) {
+	fixture := newCoordinatorFixture(t)
+	fixture.aimili.capabilitiesErr = errors.New("connection refused")
+	assertCoordinatorCode(t, fixture.coordinator.Check(t.Context()), "service_unavailable")
+	if fixture.store.state.Status != store.AccountSyncRepairRequired || fixture.store.state.ErrorCode != "service_unavailable" {
+		t.Fatalf("transient failure state = %#v", fixture.store.state)
+	}
+	fixture.aimili.capabilitiesErr = nil
+	if err := fixture.coordinator.Check(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if fixture.store.state.Status != store.AccountSyncSynced {
+		t.Fatalf("recovered state = %#v", fixture.store.state)
+	}
 }
 
 func (fake *fakeAimiliAdmin) AdminStatus(context.Context) (aimili.AdminStatus, error) {

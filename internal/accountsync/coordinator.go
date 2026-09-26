@@ -204,7 +204,10 @@ func (c *Coordinator) change(ctx context.Context, request ChangeRequest, require
 
 func (c *Coordinator) preflight(ctx context.Context, requireAligned bool) (store.UnifiedCredentials, error) {
 	capabilities, err := c.aimili.Capabilities(ctx)
-	if err != nil || !containsAll(capabilities.Capabilities, "admin.read", "admin.verify", "admin.update", "admin.sessions.issue") {
+	if err != nil {
+		return store.UnifiedCredentials{}, &Error{Code: "service_unavailable"}
+	}
+	if !containsAll(capabilities.Capabilities, "admin.read", "admin.verify", "admin.update", "admin.sessions.issue") {
 		return store.UnifiedCredentials{}, &Error{Code: "version_incompatible"}
 	}
 	xuiCapabilities, err := c.xui.ProbeAdminCapabilities(ctx)

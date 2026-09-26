@@ -1716,6 +1716,40 @@ class ManagerMainAssignmentTests(unittest.TestCase):
                     busy_lock.release()
                 self.assertEqual(result, {"ok": False, "error_code": "operation_busy"})
 
+    def test_stage_waits_for_background_probe_then_uses_exclusive_boundary(self):
+        started = threading.Event()
+        released = threading.Event()
+        result = {}
+        manager.maintenance_lock.acquire()
+        manager.mutation_lock.acquire()
+        manager.maintenance_probe_active.set()
+        def stage():
+            started.set()
+            result.update(manager.stage_main_assignment(
+                "new-main", "JP", "datacenter", "old-main", "gateway-op"
+            ))
+        with mock.patch.object(manager, "_stage_main_assignment_unlocked", return_value={"ok": True}) as staged:
+            thread = threading.Thread(target=stage)
+            thread.start()
+            try:
+                self.assertTrue(started.wait(1))
+                self.assertTrue(manager.main_assignment_requested.wait(1))
+                self.assertFalse(staged.called)
+                manager.maintenance_lock.release()
+                manager.mutation_lock.release()
+                manager.maintenance_probe_active.clear()
+                released.set()
+                thread.join(2)
+                self.assertFalse(thread.is_alive())
+                self.assertEqual(result, {"ok": True})
+                staged.assert_called_once()
+            finally:
+                if not released.is_set():
+                    manager.maintenance_lock.release()
+                    manager.mutation_lock.release()
+                    manager.maintenance_probe_active.clear()
+                manager.main_assignment_requested.clear()
+
     def test_recovery_loop_checks_persisted_transaction_before_sleeping(self):
         class StopLoop(Exception):
             pass

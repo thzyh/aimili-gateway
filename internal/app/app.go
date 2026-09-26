@@ -57,15 +57,20 @@ func startAccountDriftChecks(ctx context.Context, checker accountChecker, initia
 			return
 		case <-timer.C:
 		}
-		_ = checker.Check(ctx)
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
+		check := func() {
+			next := interval
+			if checker.Check(ctx) != nil {
+				next = min(interval/6, time.Minute)
+			}
+			timer.Reset(next)
+		}
+		check()
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-ticker.C:
-				_ = checker.Check(ctx)
+			case <-timer.C:
+				check()
 			}
 		}
 	}()

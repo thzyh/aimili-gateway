@@ -1000,6 +1000,25 @@ class PoolMaintenanceTests(unittest.TestCase):
         self.assertEqual(stats["tested"], 1)
         self.assertEqual(stats["stop_reason"], "target_reached")
 
+    def test_manual_assignment_stops_pool_scan_after_batch_and_retains_unchecked_nodes(self):
+        existing = [node(index, "available") for index in range(4)]
+        candidates = [*existing, *[node(index) for index in range(4, 12)]]
+        batches = []
+        def probe(batch):
+            batches.append([item["id"] for item in batch])
+            return [dict(item, probe_status="available") for item in batch]
+        with (
+            mock.patch.object(manager, "TARGET_VALID_POOL_SIZE", 8),
+            mock.patch.object(manager, "NODE_TEST_BATCH_SIZE", 2),
+        ):
+            pool, _, stats = manager.replenish_valid_pool(
+                existing, candidates, {}, probe, now=100.0,
+                stop_requested=lambda: bool(batches),
+            )
+        self.assertEqual(batches, [["n0", "n1"]])
+        self.assertEqual(stats["stop_reason"], "assignment_priority")
+        self.assertEqual({item["id"] for item in pool}, {"n0", "n1"})
+
     def test_replenishment_preserves_runtime_slot_nodes_without_redialing_them(self):
         existing = [
             {**node(0, "available"), "id": "main-live"},
@@ -1116,6 +1135,35 @@ class PoolMaintenanceTests(unittest.TestCase):
             message = manager.maintain_valid_nodes()
         self.assertIn("保留现有有效节点", message)
         write.assert_not_called()
+
+    def test_manual_assignment_interrupts_maintenance_without_writing_stale_pool(self):
+        existing = [node(0, "available")]
+        candidates = [node(index) for index in range(1, 5)]
+        def probe(batch):
+            manager.main_assignment_requested.set()
+            return [dict(item, probe_status="available") for item in batch]
+        try:
+            with (
+                mock.patch.object(manager, "TARGET_VALID_POOL_SIZE", 4),
+                mock.patch.object(manager, "OPENVPN_TEST_CONCURRENCY", 1),
+                mock.patch.object(manager, "NODE_TEST_BATCH_SIZE", 2),
+                mock.patch.object(manager, "refresh_capacity_limits"),
+                mock.patch.object(manager, "active_openvpn_running", return_value=True),
+                mock.patch.object(manager, "read_nodes", return_value=existing),
+                mock.patch.object(manager, "fetch_candidates", return_value=candidates),
+                mock.patch.object(manager, "load_blacklist", return_value={}),
+                mock.patch.object(manager, "probe_nodes", side_effect=probe) as tested,
+                mock.patch.object(manager, "set_state"),
+                mock.patch.object(manager, "log_to_json"),
+                mock.patch.object(manager, "write_json") as write,
+            ):
+                message = manager.maintain_valid_nodes()
+            self.assertIn("现有节点池未改动", message)
+            tested.assert_called_once()
+            write.assert_not_called()
+        finally:
+            manager.main_assignment_requested.clear()
+            manager.maintenance_probe_active.clear()
 
     def test_api_failure_recovers_main_connection_from_cached_pool(self):
         existing = [node(1, "available")]
