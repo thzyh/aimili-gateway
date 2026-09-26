@@ -109,6 +109,27 @@ func TestCapacityRoutesRequireSessionAndClosedMutation(t *testing.T) {
 	assertResponseStatus(t, environment.request(t, http.MethodPut, path, map[string]any{"targetValidNodeCount": 48, "command": "unsafe"}, environment.origin, csrf), http.StatusBadRequest)
 }
 
+func TestRecoveryRoutesRequireSessionAndClosedMutation(t *testing.T) {
+	environment := newAuthTestEnvironmentConfigured(t, true, func(d *Dependencies) { d.Maintenance = &fakeMaintenance{} })
+	path := "/api/v1/settings/recovery"
+	assertResponseStatus(t, environment.request(t, http.MethodGet, path, nil, "", ""), http.StatusUnauthorized)
+	assertResponseStatus(t, environment.login(t), http.StatusNoContent)
+	assertResponseStatus(t, environment.request(t, http.MethodGet, path, nil, "", ""), http.StatusOK)
+	csrf := environment.session(t).CSRFToken
+	assertResponseStatus(t, environment.request(t, http.MethodPut, path, map[string]any{"settings": map[string]any{}}, "", csrf), http.StatusForbidden)
+	assertResponseStatus(t, environment.request(t, http.MethodPut, path, map[string]any{"settings": map[string]any{}, "command": "unsafe"}, environment.origin, csrf), http.StatusBadRequest)
+	assertResponseStatus(t, environment.request(t, http.MethodPost, "/api/v1/settings/aimilivpn/standbys/3/retry", map[string]any{}, environment.origin, csrf), http.StatusOK)
+	assertResponseStatus(t, environment.request(t, http.MethodPost, "/api/v1/settings/aimilivpn/standbys/65/retry", map[string]any{}, environment.origin, csrf), http.StatusBadRequest)
+}
+
+func (*fakeMaintenance) Recovery(context.Context) (aimili.Recovery, error) {
+	return aimili.Recovery{StandbyTargetCount: 4}, nil
+}
+func (*fakeMaintenance) UpdateRecovery(context.Context, aimili.RecoverySettings) (aimili.Recovery, error) {
+	return aimili.Recovery{StandbyTargetCount: 4}, nil
+}
+func (*fakeMaintenance) RetryDedicatedStandby(context.Context, int) error { return nil }
+
 func TestAimiliCountryRefreshRoutesEnforceSessionMutationAndIdempotency(t *testing.T) {
 	service := &fakeMaintenance{
 		countries:   []aimili.CandidateCountry{{Code: "JP", Name: "日本", CandidateCount: 8, ObservedAt: 1_700_000_000}},

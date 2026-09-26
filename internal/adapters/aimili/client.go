@@ -87,6 +87,13 @@ type CandidateCountry struct {
 	ValidCountryCount      int     `json:"validCountryCount"`
 	TargetValidNodeCount   int     `json:"targetValidNodeCount"`
 	MaxValidNodeCount      int     `json:"maxValidNodeCount"`
+	DialableCount          int     `json:"dialableCount"`
+	FreshEgressCount       int     `json:"freshEgressCount"`
+	ResidentialCount       int     `json:"residentialCount"`
+	DatacenterCount        int     `json:"datacenterCount"`
+	CheckedAt              float64 `json:"checkedAt"`
+	IPQualityPassCount     *int    `json:"ipQualityPassCount"`
+	IPQualityStatus        string  `json:"ipQualityStatus"`
 }
 
 type CountryRefresh struct {
@@ -151,18 +158,22 @@ type Slot struct {
 type SlotCheck = Slot
 
 type DedicatedStandby struct {
-	Index         int      `json:"index"`
-	Target        string   `json:"target"`
-	Countries     []string `json:"countries"`
-	Status        string   `json:"status"`
-	NodeID        string   `json:"node_id"`
-	Country       string   `json:"country"`
-	ProxyType     string   `json:"proxy_type"`
-	CandidateIP   string   `json:"candidate_ip"`
-	ExitIP        string   `json:"exit_ip"`
-	EgressOK      bool     `json:"egress_ok"`
-	CheckedAt     float64  `json:"checked_at"`
-	LastErrorCode string   `json:"last_error_code"`
+	Index           int      `json:"index"`
+	Target          string   `json:"target"`
+	Countries       []string `json:"countries"`
+	Status          string   `json:"status"`
+	NodeID          string   `json:"node_id"`
+	Country         string   `json:"country"`
+	ProxyType       string   `json:"proxy_type"`
+	CandidateIP     string   `json:"candidate_ip"`
+	ExitIP          string   `json:"exit_ip"`
+	EgressOK        bool     `json:"egress_ok"`
+	CheckedAt       float64  `json:"checked_at"`
+	LastErrorCode   string   `json:"last_error_code"`
+	AttemptCount    int      `json:"attempt_count"`
+	NextAttemptAt   float64  `json:"next_attempt_at"`
+	StartedAt       float64  `json:"started_at"`
+	IPQualityStatus string   `json:"ip_quality_status"`
 }
 
 type DedicatedStandbyConfig struct {
@@ -491,12 +502,12 @@ func (c *Client) AssignDedicatedStandby(ctx context.Context, index int, candidat
 }
 
 func validDedicatedStandbys(rows []DedicatedStandby) bool {
-	if len(rows) != 2 {
+	if len(rows) < 1 || len(rows) > 65 {
 		return false
 	}
 	seen := map[int]bool{}
 	for _, row := range rows {
-		if row.Index < 0 || row.Index > 1 || seen[row.Index] || row.CheckedAt < 0 {
+		if row.Index < 0 || row.Index > 64 || seen[row.Index] || row.CheckedAt < 0 {
 			return false
 		}
 		seen[row.Index] = true
@@ -504,7 +515,7 @@ func validDedicatedStandbys(rows []DedicatedStandby) bool {
 			return false
 		}
 		switch row.Status {
-		case "disabled", "preparing", "ready", "degraded", "waiting_manual":
+		case "disabled", "preparing", "ready", "degraded", "waiting_manual", "retry_wait":
 		default:
 			return false
 		}

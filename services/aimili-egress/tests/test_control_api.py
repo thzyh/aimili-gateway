@@ -9,6 +9,17 @@ import control_api
 
 
 class FakeManager:
+    def recovery_settings_snapshot(self):
+        return {'settings': {'failureThreshold': 3}, 'standbyTargetCount': 4, 'ipQualityStatus': 'not_implemented'}
+
+    def update_recovery_settings(self, values):
+        if values != {'failureThreshold': 3}:
+            return {'ok': False, 'error_code': 'invalid_recovery_settings'}
+        return self.recovery_settings_snapshot()
+
+    def retry_dedicated_standby(self, index):
+        return {'ok': index == 3, 'error_code': 'invalid_request'} if index != 3 else {'ok': True}
+
     def __init__(self):
         self.created = []
         self.deleted = []
@@ -245,6 +256,9 @@ class ControlAPITests(unittest.TestCase):
                 "standbys.read",
                 "standbys.configure",
                 "standbys.assign",
+                "standbys.retry",
+                "recovery.read",
+                "recovery.update",
                 "main.read",
                 "main.assignment.read",
                 "main.assign",
@@ -550,6 +564,23 @@ class ControlAPITests(unittest.TestCase):
         )
         self.assertEqual(status, 400)
         self.assertEqual(payload, {"error": {"code": "invalid_request"}})
+
+    def test_recovery_settings_and_manual_retry_are_authenticated_and_closed(self):
+        status, _, _ = self.request('GET', '/control/v1/recovery', authorized=False)
+        self.assertEqual(status, 401)
+        status, _, payload = self.request('GET', '/control/v1/recovery')
+        self.assertEqual(status, 200)
+        self.assertEqual(payload['data']['standbyTargetCount'], 4)
+        status, _, _ = self.request('PUT', '/control/v1/recovery', {'settings': {'failureThreshold': 3}})
+        self.assertEqual(status, 200)
+        status, _, _ = self.request('PUT', '/control/v1/recovery', {'settings': {}, 'command': 'not allowed'})
+        self.assertEqual(status, 400)
+        status, _, _ = self.request('PUT', '/control/v1/recovery', {'settings': {}})
+        self.assertEqual(status, 400)
+        status, _, _ = self.request('POST', '/control/v1/standbys/3/retry', {})
+        self.assertEqual(status, 200)
+        status, _, _ = self.request('POST', '/control/v1/standbys/3/retry', {'command': 'not allowed'})
+        self.assertEqual(status, 400)
 
     def test_create_slot_rejects_unknown_fields_before_calling_manager(self):
         status, _, payload = self.request(

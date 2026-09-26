@@ -4,6 +4,7 @@ import { RouterLink } from 'vue-router'
 import { APIError, apiFetch, type CapacityPayload, type MixedSourcePolicyPayload, type SettingsSummaryPayload, type UpdateKind, type UpdateResultPayload, type UpdateSummaryPayload, type UpdateVersionPayload } from '../api/client'
 import AppShell from '../components/AppShell.vue'
 import ProjectUpdatePanel from '../components/ProjectUpdatePanel.vue'
+import RecoverySettings from '../components/RecoverySettings.vue'
 import UiNotice from '../components/UiNotice.vue'
 import type { NoticeKind, UiNoticeData } from '../components/errorMessages'
 
@@ -452,6 +453,8 @@ function messageFor(error: unknown, fallback: string): string {
         <p v-if="capacity" class="capacity-help">自动上限会根据总内存、当前可用内存、CPU 和系统负载重新计算，并把其他项目占用纳入可用内存。保存超出上限的值会被拒绝，不会强行启动更多 OpenVPN 或检测任务。</p>
         </div></div>
       </aside>
+
+      <RecoverySettings />
 
       <ProjectUpdatePanel v-if="updates?.project" class="services-section" :initial="updates" />
       <section v-else class="services-section update-section">

@@ -41,7 +41,7 @@ func (s *server) handleConfigureDedicatedStandbys(response http.ResponseWriter, 
 	var input struct {
 		Standbys []aimili.DedicatedStandbyConfig `json:"standbys"`
 	}
-	if decodeJSON(request, &input) != nil || len(input.Standbys) != 2 {
+	if decodeJSON(request, &input) != nil || len(input.Standbys) < 1 || len(input.Standbys) > 65 {
 		writeAPIError(response, http.StatusBadRequest, "invalid_request")
 		return
 	}
@@ -58,7 +58,7 @@ func (s *server) handleAssignDedicatedStandby(response http.ResponseWriter, requ
 		return
 	}
 	index, err := strconv.Atoi(request.PathValue("index"))
-	if err != nil || index < 0 || index > 1 {
+	if err != nil || index < 0 || index > 64 {
 		writeAPIError(response, http.StatusBadRequest, "invalid_request")
 		return
 	}
@@ -261,7 +261,7 @@ func writeMaintenanceError(response http.ResponseWriter, err error) {
 	status := http.StatusServiceUnavailable
 	if code == "repair_failed" || code == "check_failed" || code == "maintenance_busy" || code == "operation_busy" || code == "candidate_unavailable" || code == "candidate_in_use" || code == "capacity_limit_exceeded" || code == "capacity_below_active" || code == "capacity_upgrade_required" || code == "capacity_update_failed" {
 		status = http.StatusConflict
-	} else if code == "invalid_request" || code == "country_required" || code == "slot_not_found" || code == "standby_disabled" || code == "invalid_capacity" {
+	} else if code == "invalid_request" || code == "country_required" || code == "slot_not_found" || code == "standby_disabled" || code == "invalid_capacity" || code == "invalid_recovery_settings" {
 		status = http.StatusBadRequest
 	}
 	writeAPIError(response, status, code)

@@ -8,6 +8,7 @@ import UiNotice from '../components/UiNotice.vue'
 import { codeFromError, countryDisplayName, messageForCode, type NoticeKind, type UiNoticeData } from '../components/errorMessages'
 import { poolStatusGroup, type PoolStatusGroup } from '../components/poolStatus'
 import DedicatedStandbys from '../components/DedicatedStandbys.vue'
+import CountryAvailability from '../components/CountryAvailability.vue'
 
 const props = defineProps<{ protocol: 'vless' | 'socks5h' }>()
 const groups = ref<ProxyGroupPayload[]>([])
@@ -148,6 +149,15 @@ async function assignDedicatedStandby(index: number, candidateId: string): Promi
     await apiFetch(`/api/v1/settings/aimilivpn/standbys/${index}/assign`, { method: 'POST', body: JSON.stringify({ candidateId }) })
     topNotice.value = makeNotice('success', `备用 ${index + 1} 已重新验证`, '备用节点已通过真实出口检测。')
   } catch (error) { topNotice.value = makeNotice('error', '备用节点设置失败', localizedError(error, '该候选没有通过真实出口检测。')) }
+  finally { standbyBusy.value = false; await loadDedicatedStandbys() }
+}
+
+async function retryDedicatedStandby(index: number): Promise<void> {
+  standbyBusy.value = true
+  try {
+    await apiFetch(`/api/v1/settings/aimilivpn/standbys/${index}/retry`, { method: 'POST', body: '{}' })
+    topNotice.value = makeNotice('success', '已重新开始恢复', '后台按恢复策略验证候选，页面将持续更新备用状态。')
+  } catch (error) { topNotice.value = makeNotice('error', '重试未开始', localizedError(error, '请稍后重试并查看恢复日志。')) }
   finally { standbyBusy.value = false; await loadDedicatedStandbys() }
 }
 
@@ -487,7 +497,8 @@ function formatRefreshTime(value?: number): string {
       <div data-pool-stats class="pool-stats"><span data-pool-stats-official class="pool-stat official">官方 <strong>{{ poolStats?.officialCandidateTotal ?? candidateCountries.reduce((sum,item) => sum + item.candidateCount, 0) }}</strong></span><span data-pool-stats-target class="pool-stat target">常规目标 <strong>{{ poolStats?.targetValidNodeCount ?? '—' }}</strong></span><span data-pool-stats-valid class="pool-stat valid">当前有效 <strong>{{ poolStats?.validNodeCount ?? '—' }}</strong></span><span data-pool-stats-maximum class="pool-stat maximum">紧急保护 <strong>{{ poolStats?.maxValidNodeCount ?? '—' }}</strong></span><span data-pool-stats-countries class="pool-stat countries"><strong>{{ poolStats?.validCountryCount ?? countries.length }}</strong> 国</span></div>
     </section>
     <UiNotice v-if="refreshNotice" :key="refreshNotice.id" data-refresh-notice class="refresh-notice" :notice="refreshNotice" @close="dismissRefreshNotice" />
-    <DedicatedStandbys v-if="protocol === 'vless' && dedicatedStandbys.length === 2" :rows="dedicatedStandbys" :countries="candidateCountries" :groups="groups" :busy="standbyBusy || busy !== ''" @save="saveDedicatedStandbys" @assign="assignDedicatedStandby" />
+    <CountryAvailability :rows="candidateCountries" />
+    <DedicatedStandbys v-if="protocol === 'vless' && dedicatedStandbys.length > 0" :rows="dedicatedStandbys" :countries="candidateCountries" :groups="groups" :busy="standbyBusy || busy !== ''" @retry="retryDedicatedStandby" @assign="assignDedicatedStandby" />
     <div v-if="loading" class="loading">正在读取代理池…</div>
     <PoolTable v-else :rows="rows" :protocol="protocol" :busy="busy" @copy="copyAddress" @replace="openReplacement" @check="checkRow" @protocol="switchProtocol" />
     <div v-if="replacementCandidate" class="dialog-backdrop" @click.self="closeReplacement">

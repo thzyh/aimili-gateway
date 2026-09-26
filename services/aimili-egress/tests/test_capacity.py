@@ -110,7 +110,8 @@ class CapacityTests(unittest.TestCase):
     def test_process_semaphore_override_restricts_new_exits(self):
         facts = capacity.HostFacts(4096 * 1024 * 1024, 3000 * 1024 * 1024, 4, 0.4)
         limits = capacity.limits_for(facts, 4, process_limit=9)
-        self.assertEqual(limits.regular_exit_slots_max, 6)
+        # 四条既有出口保留，但不再允许扩容：9 个进程不能容纳第五对。
+        self.assertEqual(limits.regular_exit_slots_max, 4)
 
     def test_clamp_never_allows_emergency_below_target(self):
         facts = capacity.HostFacts(1024 * 1024 * 1024, 500 * 1024 * 1024, 2, 0.1)

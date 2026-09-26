@@ -54,7 +54,7 @@ print(json.dumps({
         self.assertEqual(result["state"]["target_valid_nodes"], 64)
         self.assertEqual(result["maximum"], 150)
         self.assertEqual(result["probeConcurrency"], 4)
-        self.assertEqual(result["openvpnLimit"], 9)
+        self.assertEqual(result["openvpnLimit"], 11)
         self.assertEqual(result["probeLimit"], 2)
         self.assertEqual(result["mainFailureThreshold"], 3)
         self.assertEqual(result["slotFailureThreshold"], 3)

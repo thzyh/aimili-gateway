@@ -65,12 +65,22 @@ export interface CapacityPayload {
   limits: CapacityLimitsPayload; autoManaged: boolean
 }
 export interface MixedSourcePolicyPayload { enabled: boolean; cidrs: string[]; applyStatus: MixedPolicyApplyStatus }
-export interface CandidateCountryPayload { code: string; name: string; candidateCount: number; observedAt: number; officialCandidateTotal?: number; validNodeCount?: number; validCountryCount?: number; targetValidNodeCount?: number; maxValidNodeCount?: number }
-export type DedicatedStandbyStatus = 'disabled' | 'preparing' | 'ready' | 'degraded' | 'waiting_manual'
+export interface CandidateCountryPayload { code: string; name: string; candidateCount: number; observedAt: number; officialCandidateTotal?: number; validNodeCount?: number; validCountryCount?: number; targetValidNodeCount?: number; maxValidNodeCount?: number; dialableCount?: number; freshEgressCount?: number; residentialCount?: number; datacenterCount?: number; checkedAt?: number; ipQualityPassCount?: number | null; ipQualityStatus?: string }
+export type DedicatedStandbyStatus = 'disabled' | 'preparing' | 'ready' | 'degraded' | 'waiting_manual' | 'retry_wait'
 export interface DedicatedStandbyPayload {
   index: number; target: string; countries: string[]; status: DedicatedStandbyStatus
   node_id?: string; country?: string; proxy_type?: ProxyType; candidate_ip?: string; exit_ip?: string
   egress_ok: boolean; checked_at?: number; last_error_code?: string
+  attempt_count?: number; next_attempt_at?: number; started_at?: number; ip_quality_status?: string
+}
+export interface RecoverySettingsPayload {
+ failureThreshold: number; healthIntervalSeconds: number; standbyIntervalSeconds: number; standbyFailureThreshold: number
+ dialTimeoutSeconds: number; candidatesPerRound: number; maxConcurrentDials: number; retryInitialSeconds: number; retryMaxSeconds: number
+ candidateCooldownSeconds: number; recoveryBudgetSeconds: number; freshnessSeconds: number; allowCrossCountry: boolean; allowDatacenter: boolean
+}
+export interface RecoveryPayload {
+ settings: RecoverySettingsPayload; bounds: Record<string, number[]>; activeTargetCount: number; standbyTargetCount: number
+ regularExitSlotsMax: number; ipQualityStatus: string
 }
 export interface DedicatedStandbyConfigPayload { index: number; target: string; countries: string[] }
 export type CountryRefreshState = 'idle' | 'running' | 'completed' | 'failed'

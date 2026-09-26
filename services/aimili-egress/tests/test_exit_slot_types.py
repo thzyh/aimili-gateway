@@ -28,82 +28,48 @@ class ExitSlotTypeTests(unittest.TestCase):
         self.addCleanup(replenisher.stop)
         self.validator_patch = validator
 
-    def test_main_automatic_repair_uses_only_one_candidate_and_then_requires_manual_action(self):
+    def test_main_failure_waits_for_hot_standby_without_cold_dial(self):
         repair_store = mock.Mock()
-        repair_store.claim.return_value = True
-        candidate = {"id": "jp-home", "country_short": "JP", "ip_type": "residential"}
-        with (
-            mock.patch.object(manager, "egress_repair_store", repair_store),
-            mock.patch.object(manager, "automatic_main_candidates", return_value=[candidate]),
-            mock.patch.object(manager, "connect_node", side_effect=RuntimeError("dial failed")) as connect,
-            mock.patch.object(manager, "stop_active_openvpn"),
-            mock.patch.object(manager, "set_state"),
-            mock.patch.object(manager, "log_to_json"),
-        ):
-            result = manager.repair_main_once(
-                {"candidate_id": "jp-old", "country": "JP"},
-            )
-
-        self.assertEqual(result["error_code"], "replacement_failed")
-        connect.assert_called_once_with("jp-home")
-        repair_store.require_manual.assert_called_once_with(
-            "main",
-            "replacement_failed",
-            "jp-home",
-        )
-
-    def test_main_repair_checks_same_country_feed_when_hot_spare_is_empty(self):
-        repair_store = mock.Mock()
-        repair_store.claim.return_value = True
-        candidate = {"id": "jp-new", "country_short": "JP", "probe_status": "available"}
-        with (
-            mock.patch.object(manager, "egress_repair_store", repair_store),
-            mock.patch.object(manager, "automatic_main_candidates", side_effect=[[], [candidate]]),
-            mock.patch.object(manager, "validated_repair_candidate", side_effect=[None, candidate]),
-            mock.patch.object(manager, "replenish_repair_country", return_value={"state": "completed"}) as replenish,
-            mock.patch.object(manager, "connect_node"),
-            mock.patch.object(manager, "_main_validation", return_value={"tunnel": True, "route": True, "proxy": True}),
-        ):
+        repair_store.get.return_value = {}
+        with mock.patch.object(manager, "egress_repair_store", repair_store), mock.patch.object(
+            manager, "promote_dedicated_standby_to_main", return_value=False
+        ), mock.patch.object(manager, "connect_node") as connect, mock.patch.object(manager, "set_state"), mock.patch.object(manager, "mark_main_bad_node"):
             result = manager.repair_main_once({"candidate_id": "jp-old", "country": "JP"})
+        self.assertEqual(result["error_code"], "recovery_pending")
+        connect.assert_not_called()
+        repair_store.require_manual.assert_not_called()
+        repair_store.wait_for_standby.assert_called_once_with("main", "jp-old", "JP")
 
-        self.assertTrue(result["ok"])
-        replenish.assert_called_once_with("JP")
-        repair_store.mark_healthy.assert_called_once_with("main", "jp-new")
-
-    def test_main_auto_repair_falls_back_to_other_country_when_original_country_is_empty(self):
+    def test_main_fault_does_not_block_on_country_collection(self):
         repair_store = mock.Mock()
-        repair_store.claim.return_value = True
-        candidate = {"id": "jp-new", "country_short": "JP", "probe_status": "available"}
-        with (
-            mock.patch.object(manager, "egress_repair_store", repair_store),
-            mock.patch.object(manager, "promote_dedicated_standby_to_main", return_value=False),
-            mock.patch.object(manager, "automatic_main_candidates", side_effect=[[], [], [candidate]]) as candidates,
-            mock.patch.object(manager, "load_ui_config", return_value={"routing_mode": "auto"}),
-            mock.patch.object(manager, "connect_node") as connect,
-            mock.patch.object(manager, "_main_validation", return_value={"tunnel": True, "route": True, "proxy": True}),
-        ):
-            result = manager.repair_main_once({"candidate_id": "mv-old", "country": "MV"})
+        repair_store.get.return_value = {}
+        with mock.patch.object(manager, "egress_repair_store", repair_store), mock.patch.object(
+            manager, "promote_dedicated_standby_to_main", return_value=False
+        ), mock.patch.object(manager, "replenish_repair_country") as replenish, mock.patch.object(manager, "set_state"), mock.patch.object(manager, "mark_main_bad_node"):
+            result = manager.repair_main_once({"candidate_id": "jp-old", "country": "JP"})
+        self.assertEqual(result["error_code"], "recovery_pending")
+        replenish.assert_not_called()
 
-        self.assertTrue(result["ok"])
-        self.assertEqual([call.args[0] for call in candidates.call_args_list], ["MV", "MV", ""])
-        connect.assert_called_once_with("jp-new")
-        repair_store.mark_healthy.assert_called_once_with("main", "jp-new")
-
-    def test_main_fixed_region_does_not_fall_back_to_other_country(self):
+    def test_main_promotes_validated_standby_without_cold_dial(self):
         repair_store = mock.Mock()
-        repair_store.claim.return_value = True
-        with (
-            mock.patch.object(manager, "egress_repair_store", repair_store),
-            mock.patch.object(manager, "promote_dedicated_standby_to_main", return_value=False),
-            mock.patch.object(manager, "automatic_main_candidates", return_value=[]) as candidates,
-            mock.patch.object(manager, "load_ui_config", return_value={"routing_mode": "fixed_region"}),
-            mock.patch.object(manager, "stop_active_openvpn"),
-            mock.patch.object(manager, "set_state"),
-        ):
+        repair_store.get.return_value = {}
+        with mock.patch.object(manager, "egress_repair_store", repair_store), mock.patch.object(
+            manager, "promote_dedicated_standby_to_main", return_value=True
+        ), mock.patch.object(manager, "connect_node") as connect, mock.patch.object(manager, "mark_main_bad_node"):
             result = manager.repair_main_once({"candidate_id": "mv-old", "country": "MV"})
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["standby_promoted"])
+        connect.assert_not_called()
 
-        self.assertEqual(result["error_code"], "no_same_country_candidate")
-        self.assertEqual([call.args[0] for call in candidates.call_args_list], ["MV", "MV"])
+    def test_main_legacy_region_mode_uses_shared_recovery_queue(self):
+        repair_store = mock.Mock()
+        repair_store.get.return_value = {}
+        with mock.patch.object(manager, "egress_repair_store", repair_store), mock.patch.object(
+            manager, "promote_dedicated_standby_to_main", return_value=False
+        ), mock.patch.object(manager, "load_ui_config", return_value={"routing_mode": "fixed_region"}), mock.patch.object(manager, "set_state"), mock.patch.object(manager, "mark_main_bad_node"):
+            result = manager.repair_main_once({"candidate_id": "mv-old", "country": "MV"})
+        self.assertEqual(result["error_code"], "recovery_pending")
+        repair_store.wait_for_standby.assert_called_once_with("main", "mv-old", "MV")
 
     def test_repair_candidate_validation_rejects_stale_candidate_before_switch(self):
         self.validator_patch.stop()
@@ -124,7 +90,7 @@ class ExitSlotTypeTests(unittest.TestCase):
 
     def test_main_automatic_repair_does_not_repeat_after_restart_record(self):
         repair_store = mock.Mock()
-        repair_store.claim.return_value = False
+        repair_store.get.return_value = {"status": "manual_required"}
         with (
             mock.patch.object(manager, "egress_repair_store", repair_store),
             mock.patch.object(manager, "connect_node") as connect,
@@ -823,66 +789,32 @@ class ManagedSlotFacadeTests(unittest.TestCase):
         self.addCleanup(replenisher.stop)
         self.addCleanup(marker.stop)
 
-    def test_automatic_slot_repair_prefers_one_same_country_residential_candidate(self):
+    def test_automatic_slot_repair_promotes_only_its_standby(self):
         repair_store = mock.Mock()
-        repair_store.claim.return_value = True
-        residential = {"id": "jp-home", "country_short": "JP", "ip_type": "residential"}
-        datacenter = {"id": "jp-dc", "country_short": "JP", "ip_type": "hosting"}
-        runtime = {0: {"node_id": "jp-old", "country_short": "JP", "status": "up"}}
-        with (
-            mock.patch.object(manager, "egress_repair_store", repair_store),
-            mock.patch.object(manager, "slot_operation_locks", {}),
-            mock.patch.object(manager, "exit_slots", runtime),
-            mock.patch.object(manager, "automatic_slot_candidates", return_value=[residential, datacenter]),
-            mock.patch.object(manager, "tear_down_slot"),
-            mock.patch.object(manager, "bring_up_slot", return_value=True) as bring_up,
-            mock.patch.object(manager, "ensure_policy_routing", return_value=True),
-            mock.patch.object(manager, "check_slot_egress", return_value=(True, "198.51.100.31")),
-            mock.patch.object(manager, "set_slot_pin"),
-            mock.patch.object(manager, "set_slot_country"),
-            mock.patch.object(manager, "set_slot_type"),
-            mock.patch.object(manager, "write_slots_state"),
-            mock.patch.object(manager, "managed_slot_snapshot", return_value={"ok": True}),
-        ):
-            result = manager.repair_slot_once(
-                0,
-                {"node_id": "jp-old", "country": "JP"},
-            )
-
-        self.assertTrue(result["ok"])
-        bring_up.assert_called_once_with(0, residential)
-        repair_store.claim.assert_called_once_with("slot:0", "jp-old", "JP")
-        repair_store.mark_healthy.assert_called_once_with("slot:0", "jp-home")
-
-    def test_slot_repair_checks_same_country_feed_when_hot_spare_is_empty(self):
-        repair_store = mock.Mock()
-        repair_store.claim.return_value = True
-        candidate = {"id": "jp-new", "country_short": "JP", "probe_status": "available"}
-        with (
-            mock.patch.object(manager, "egress_repair_store", repair_store),
-            mock.patch.object(manager, "slot_operation_locks", {}),
-            mock.patch.object(manager, "automatic_slot_candidates", side_effect=[[], [candidate]]),
-            mock.patch.object(manager, "validated_repair_candidate", side_effect=[None, candidate]),
-            mock.patch.object(manager, "replenish_repair_country", return_value={"state": "completed"}) as replenish,
-            mock.patch.object(manager, "tear_down_slot"),
-            mock.patch.object(manager, "bring_up_slot", return_value=True),
-            mock.patch.object(manager, "ensure_policy_routing", return_value=True),
-            mock.patch.object(manager, "check_slot_egress", return_value=(True, "198.51.100.51")),
-            mock.patch.object(manager, "set_slot_pin"),
-            mock.patch.object(manager, "set_slot_country"),
-            mock.patch.object(manager, "set_slot_type"),
-            mock.patch.object(manager, "write_slots_state"),
-            mock.patch.object(manager, "managed_slot_snapshot", return_value={"ok": True}),
-        ):
+        repair_store.get.return_value = {}
+        with mock.patch.object(manager, "egress_repair_store", repair_store), mock.patch.object(
+            manager, "promote_dedicated_standby_to_slot", return_value=True
+        ) as promote, mock.patch.object(manager, "bring_up_slot") as bring_up, mock.patch.object(manager, "managed_slot_snapshot", return_value={"ok": True}):
             result = manager.repair_slot_once(0, {"node_id": "jp-old", "country": "JP"})
-
         self.assertTrue(result["ok"])
-        replenish.assert_called_once_with("JP")
-        repair_store.mark_healthy.assert_called_once_with("slot:0", "jp-new")
+        self.assertTrue(result["standby_promoted"])
+        promote.assert_called_once_with(0)
+        bring_up.assert_not_called()
+
+    def test_slot_failure_waits_for_background_replenishment(self):
+        repair_store = mock.Mock()
+        repair_store.get.return_value = {}
+        with mock.patch.object(manager, "egress_repair_store", repair_store), mock.patch.object(
+            manager, "promote_dedicated_standby_to_slot", return_value=False
+        ), mock.patch.object(manager, "replenish_repair_country") as replenish, mock.patch.object(manager, "bring_up_slot") as bring_up:
+            result = manager.repair_slot_once(0, {"node_id": "jp-old", "country": "JP"})
+        self.assertEqual(result["error_code"], "recovery_pending")
+        replenish.assert_not_called()
+        bring_up.assert_not_called()
 
     def test_automatic_slot_repair_does_not_retry_claimed_failure(self):
         repair_store = mock.Mock()
-        repair_store.claim.return_value = False
+        repair_store.get.return_value = {"status": "manual_required"}
         with (
             mock.patch.object(manager, "egress_repair_store", repair_store),
             mock.patch.object(manager, "slot_operation_locks", {}),
@@ -922,7 +854,7 @@ class ManagedSlotFacadeTests(unittest.TestCase):
 
             disconnected.assert_called_once_with(
                 0,
-                "自动修复已尝试一次，等待人工更换出口",
+                "恢复预算已耗尽，等待人工重试或更换出口",
                 candidate_id="jp-old",
                 country="JP",
             )
@@ -988,28 +920,17 @@ class ManagedSlotFacadeTests(unittest.TestCase):
             self.assertEqual(after_restart.get("slot:2")["status"], "healthy")
             self.assertTrue(after_restart.claim("slot:2", "jp-manual", "JP"))
 
-    def test_automatic_slot_repair_stops_for_manual_action_when_no_same_country_candidate(self):
+    def test_slot_missing_standby_does_not_exhaust_budget_immediately(self):
         repair_store = mock.Mock()
-        repair_store.claim.return_value = True
-        with (
-            mock.patch.object(manager, "egress_repair_store", repair_store),
-            mock.patch.object(manager, "slot_operation_locks", {}),
-            mock.patch.object(manager, "automatic_slot_candidates", return_value=[]),
-            mock.patch.object(manager, "tear_down_slot"),
-            mock.patch.object(manager, "mark_slot_disconnected") as disconnected,
-            mock.patch.object(manager, "write_slots_state"),
-        ):
-            result = manager.repair_slot_once(
-                2,
-                {"node_id": "kr-old", "country": "KR"},
-            )
-
-        self.assertEqual(result["error_code"], "no_same_country_candidate")
-        disconnected.assert_called_once()
-        repair_store.require_manual.assert_called_once_with(
-            "slot:2",
-            "no_same_country_candidate",
-        )
+        repair_store.get.return_value = {}
+        with mock.patch.object(manager, "egress_repair_store", repair_store), mock.patch.object(
+            manager, "promote_dedicated_standby_to_slot", return_value=False
+        ), mock.patch.object(manager, "tear_down_slot") as stop:
+            result = manager.repair_slot_once(2, {"node_id": "kr-old", "country": "KR"})
+        self.assertEqual(result["error_code"], "recovery_pending")
+        repair_store.require_manual.assert_not_called()
+        repair_store.wait_for_standby.assert_called_once_with("slot:2", "kr-old", "KR")
+        stop.assert_not_called()
 
     def test_slot_repair_uses_country_code_when_runtime_also_has_localized_name(self):
         repair_store = mock.Mock()
@@ -1026,7 +947,7 @@ class ManagedSlotFacadeTests(unittest.TestCase):
                 2, {"node_id": "jp-old", "country": "日本", "country_short": "JP"},
             )
 
-        repair_store.claim.assert_called_once_with("slot:2", "jp-old", "JP")
+        repair_store.wait_for_standby.assert_called_once_with("slot:2", "jp-old", "JP")
         self.assertTrue(all(call.args == (2, "JP") for call in candidates.call_args_list))
 
     def test_slot_check_is_not_blocked_by_main_repair_state(self):

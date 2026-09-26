@@ -87,7 +87,7 @@ def read_host_facts() -> HostFacts:
 
 
 def _memory_slot_limit(facts: HostFacts) -> int:
-    # 每个长期 OpenVPN 槽位预留约 64 MiB，并为 Gateway、3x-ui、Caddy
+    # 每个活动/备用对预留约 64 MiB，并为主连接、Gateway、3x-ui、Caddy
     # 和其它项目保留 256 MiB。这个值是安全预算，不是性能承诺。
     total_mb = facts.memory_total_bytes // (1024 * 1024)
     return max(MIN_REGULAR_SLOTS, min(MAX_REGULAR_SLOTS, (total_mb - 256) // 64))
@@ -102,7 +102,8 @@ def limits_for(facts: HostFacts, current_slots: int, process_limit: int | None =
     expansion_limit = max(current_slots, current_slots + max(0, (free_mb - 256) // 64))
     regular_max = max(current_slots, MIN_REGULAR_SLOTS, min(MAX_REGULAR_SLOTS, memory_limit, cpu_limit, expansion_limit))
     if process_limit is not None:
-        regular_max = max(current_slots, MIN_REGULAR_SLOTS, min(regular_max, process_limit - 3))
+        # 主连接+备用占两个位置，另保留一个短时探测位置。
+        regular_max = max(current_slots, MIN_REGULAR_SLOTS, min(regular_max, (process_limit - 3) // 2))
     if facts.load1 > facts.cpu_count * 1.75:
         regular_max = max(current_slots, MIN_REGULAR_SLOTS)
     pool_budget = max(1, min(regular_max, free_mb // 40))

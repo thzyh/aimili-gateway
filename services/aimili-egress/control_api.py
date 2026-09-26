@@ -31,6 +31,9 @@ CAPABILITIES = [
     "standbys.read",
     "standbys.configure",
     "standbys.assign",
+    "standbys.retry",
+    "recovery.read",
+    "recovery.update",
     "main.read",
     "main.assignment.read",
     "main.assign",
@@ -139,7 +142,7 @@ class ControlHandler(BaseHTTPRequestHandler):
             code = str(result.get("error_code") or "operation_failed")
             if code in ("slot_not_found", "candidate_not_found", "operation_not_found", "lease_not_found"):
                 status = HTTPStatus.NOT_FOUND
-            elif code in ("invalid_request", "candidate_mismatch"):
+            elif code in ("invalid_request", "candidate_mismatch", "invalid_recovery_settings"):
                 status = HTTPStatus.BAD_REQUEST
             elif code in ("rollback_failed", "repair_commit_failed", "repair_replace_failed"):
                 status = HTTPStatus.SERVICE_UNAVAILABLE
@@ -185,6 +188,18 @@ class ControlHandler(BaseHTTPRequestHandler):
             return
         if self.command == "GET" and path == f"{API_PREFIX}/standbys":
             self._manager_result(self.server.manager.dedicated_standby_snapshot())
+            return
+        if self.command == "GET" and path == f"{API_PREFIX}/recovery":
+            self._manager_result(self.server.manager.recovery_settings_snapshot())
+            return
+        if self.command == "PUT" and path == f"{API_PREFIX}/recovery":
+            payload = self._read_object({"settings"})
+            self._manager_result(self.server.manager.update_recovery_settings(payload.get("settings")))
+            return
+        standby_retry = re.fullmatch(r"/control/v1/standbys/(\d+)/retry", path)
+        if self.command == "POST" and standby_retry:
+            self._read_object(set())
+            self._manager_result(self.server.manager.retry_dedicated_standby(int(standby_retry.group(1))))
             return
         if self.command == "PUT" and path == f"{API_PREFIX}/standbys":
             payload = self._read_object({"standbys"})

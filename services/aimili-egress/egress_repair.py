@@ -7,6 +7,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
+import recovery_policy
 
 
 class RepairStore:
@@ -84,6 +85,67 @@ class RepairStore:
             })
             self._write(document)
 
+    def wait_for_standby(self, egress: str, candidate_id: str, country: str) -> None:
+        """幂等记录等待热备；周期检查不能重置故障时间预算。"""
+        with self.lock:
+            document = self._read()
+            row = document['egresses'].get(egress, {})
+            if row.get('status') in ('waiting_standby', 'manual_required'):
+                return
+            document['egresses'][egress] = dict(
+                status='waiting_standby', failed_candidate_id=candidate_id,
+                country=country, started_at=self.now(), attempt_count=0,
+                error_code='recovery_pending', recovery_version=2,
+            )
+            self._write(document)
+
+    def begin_round(self, egress: str, country: str, settings: dict) -> bool:
+        with self.lock:
+            document = self._read()
+            row = document['egresses'].get(egress, {})
+            now = self.now()
+            if row.get('status') in ('manual_required', 'repairing'):
+                return False
+            if row.get('status') == 'healthy':
+                row = {}
+            started = row.get('started_at', now)
+            if now - started >= settings['recoveryBudgetSeconds']:
+                row.update(status='manual_required', error_code='recovery_budget_exhausted', next_attempt_at=0)
+                document['egresses'][egress] = row
+                self._write(document)
+                return False
+            if row.get('next_attempt_at', 0) > now:
+                return False
+            row.update(status='repairing', country=country, started_at=started,
+                       attempted_at=now, recovery_version=2)
+            document['egresses'][egress] = row
+            self._write(document)
+            return True
+
+    def finish_round(self, egress: str, settings: dict, error_code: str) -> dict:
+        with self.lock:
+            document = self._read()
+            row = document['egresses'].setdefault(egress, {})
+            result = recovery_policy.failed_round(dict(
+                startedAt=row.get('started_at', self.now()),
+                attempt=row.get('attempt_count', 0),
+            ), self.now(), settings, error_code)
+            row.update(status=result['status'], started_at=result['startedAt'],
+                       attempt_count=result['attempt'], next_attempt_at=result['nextAttemptAt'],
+                       error_code=result['lastErrorCode'], recovery_version=2)
+            self._write(document)
+            return dict(row)
+
+    def cool_candidate(self, egress: str, candidate_id: str, seconds: int) -> None:
+        with self.lock:
+            document = self._read()
+            row = document['egresses'].setdefault(egress, {})
+            now = self.now()
+            cooldowns = {key: until for key, until in row.get('cooldowns', {}).items() if until > now}
+            cooldowns[candidate_id] = now + seconds
+            row['cooldowns'] = cooldowns
+            self._write(document)
+
     def recover_interrupted(self) -> list[str]:
         """把上次进程中断时未结束的自动修复转为人工处理。"""
         recovered: list[str] = []
@@ -91,6 +153,10 @@ class RepairStore:
             document = self._read()
             for key, current in document["egresses"].items():
                 if not isinstance(current, dict) or current.get("status") != "repairing":
+                    continue
+                if current.get('recovery_version') == 2:
+                    current.update(status='retry_wait', next_attempt_at=self.now(), error_code='recovery_resumed')
+                    recovered.append(str(key))
                     continue
                 current.update({
                     "status": "manual_required",

@@ -86,6 +86,7 @@ import control_api
 import egress_repair
 import node_pool
 import capacity
+import recovery_policy
 from main_assignment import MainAssignmentCoordinator
 
 def env_int(name: str, default: int, min_value: int | None = None, max_value: int | None = None) -> int:
@@ -143,7 +144,7 @@ _initial_capacity_slots = capacity.limits_for(
     ),
     _initial_slot_count,
 ).regular_exit_slots_max
-MAX_OPENVPN_PROCESSES = env_int("MAX_OPENVPN_PROCESSES", max(9, _initial_capacity_slots + 3), 4, 32)
+MAX_OPENVPN_PROCESSES = env_int("MAX_OPENVPN_PROCESSES", max(9, _initial_capacity_slots * 2 + 3), 4, 64)
 MAX_OPENVPN_PROBES = env_int("MAX_OPENVPN_PROBES", 2, 1, 8)
 OPENVPN_PROBE_SUCCESS_ROUNDS = env_int("OPENVPN_PROBE_SUCCESS_ROUNDS", 2, 1, 3)
 TCP_PRESCREEN_CONCURRENCY = env_int("TCP_PRESCREEN_CONCURRENCY", 100, 1, 512)
@@ -192,6 +193,10 @@ SLOT_EGRESS_FAIL_THRESHOLD = env_int("SLOT_EGRESS_FAIL_THRESHOLD", 3, 1)
 SLOT_BAD_NODE_COOLDOWN = env_int("SLOT_BAD_NODE_COOLDOWN", 600, 60)
 MANAGED_SLOT_CANDIDATE_ATTEMPTS = 4
 DEDICATED_STANDBY_COUNT = 2
+# The old release reserved two standby records.  Runtime allocation is now
+# derived from the active targets (main + every active slot); this remains a
+# hard address-space limit for compatibility with existing device/table IDs.
+DEDICATED_STANDBY_MAX = MAX_EXIT_SLOTS + 1
 DEDICATED_STANDBY_CHECK_INTERVAL = env_int("DEDICATED_STANDBY_CHECK_INTERVAL", 30, 10)
 DEDICATED_STANDBY_FAIL_THRESHOLD = env_int("DEDICATED_STANDBY_FAIL_THRESHOLD", 2, 1)
 DEDICATED_STANDBY_CANDIDATE_ATTEMPTS = 4
@@ -259,6 +264,7 @@ POOL_METADATA_FILE = DATA_DIR / "pool_metadata.json"
 MAIN_ASSIGNMENT_FILE = DATA_DIR / "main_assignment.json"
 EGRESS_REPAIR_FILE = DATA_DIR / "egress_repair.json"
 STANDBYS_FILE = DATA_DIR / "standbys.json"
+RECOVERY_SETTINGS_FILE = DATA_DIR / "recovery_settings.json"
 CAPACITY_FILE = DATA_DIR / "capacity.json"
 
 _capacity_lock = threading.RLock()
@@ -266,6 +272,10 @@ _capacity_settings: dict[str, int] = {}
 
 lock = threading.RLock()
 mutation_lock = threading.RLock()
+# All main-connection mutations, including background standby promotion, share
+# this lease.  It is an RLock because promotion may call the decorated
+# stop/reset helpers from the same worker thread.
+main_recovery_lock = threading.RLock()
 maintenance_lock = threading.Lock()
 maintenance_probe_active = threading.Event()
 main_assignment_requested = threading.Event()
@@ -503,6 +513,49 @@ def capacity_snapshot() -> dict[str, Any]:
         "limits": limits.as_dict(),
         "autoManaged": True,
     }
+
+
+def _recovery_settings() -> dict[str, Any]:
+    """Read persisted recovery knobs, falling back safely after a bad edit."""
+    raw = read_json(RECOVERY_SETTINGS_FILE, {})
+    values = dict(recovery_policy.DEFAULTS)
+    if isinstance(raw, dict):
+        values.update({key: raw[key] for key in recovery_policy.DEFAULTS if key in raw})
+    try:
+        return recovery_policy.validate(values)
+    except ValueError:
+        return dict(recovery_policy.DEFAULTS)
+
+
+def recovery_settings_snapshot() -> dict[str, Any]:
+    values = _recovery_settings()
+    active = standby_slot_indices()
+    limits = _capacity_limits()
+    return {
+        "settings": values,
+        "bounds": {key: list(value) for key, value in recovery_policy.BOUNDS.items()},
+        "activeTargets": recovery_policy.targets(active),
+        "activeTargetCount": len(active) + 1,
+        "standbyTargetCount": len(active) + 1,
+        "regularExitSlotsMax": limits.regular_exit_slots_max,
+        "autoManaged": True,
+        "ipQualityStatus": "not_implemented",
+    }
+
+
+def update_recovery_settings(values: Any) -> dict[str, Any]:
+    if not isinstance(values, dict):
+        return {"ok": False, "error_code": "invalid_recovery_settings"}
+    try:
+        normalized = recovery_policy.validate(values)
+    except (TypeError, ValueError):
+        return {"ok": False, "error_code": "invalid_recovery_settings"}
+    try:
+        write_json(RECOVERY_SETTINGS_FILE, normalized)
+    except OSError:
+        return {"ok": False, "error_code": "recovery_settings_storage_failed"}
+    log_to_json("INFO", "Recovery", "故障恢复参数已更新（IP 质量检测仍未启用）")
+    return {"ok": True, **recovery_settings_snapshot()}
 
 
 def _slot_expansion_ready(new_slots: int) -> bool:
@@ -907,7 +960,7 @@ def manual_required_candidate_ids() -> set[str]:
     for key in [
         "main",
         *(f"slot:{index}" for index in range(MAX_EXIT_SLOTS)),
-        *(f"standby:{index}" for index in range(DEDICATED_STANDBY_COUNT)),
+        *(f"standby:{index}" for index in standby_target_indices()),
     ]:
         row = egress_repair_store.get(key)
         if row.get("status") != "manual_required":
@@ -983,7 +1036,12 @@ def main_mutation_allowed() -> bool:
 
 
 def _acquire_runtime_mutation(*, assignment_action: bool = False, allow_main_repair: bool = False) -> bool:
+    # Serialize manual main changes with automatic standby promotion.  The
+    # re-entrant lock keeps nested decorated helpers safe in one thread.
+    if not main_recovery_lock.acquire(blocking=False):
+        return False
     if not mutation_lock.acquire(blocking=False):
+        main_recovery_lock.release()
         return False
     refresh_authorized = bool(
         getattr(main_assignment_thread, "country_refresh_authorized", False)
@@ -999,12 +1057,14 @@ def _acquire_runtime_mutation(*, assignment_action: bool = False, allow_main_rep
     allowed = allowed and (not refresh_running or refresh_authorized)
     if not allowed:
         mutation_lock.release()
+        main_recovery_lock.release()
         return False
     return True
 
 
 def _release_runtime_mutation() -> None:
     mutation_lock.release()
+    main_recovery_lock.release()
 
 
 def _mutation_guard(
@@ -1813,6 +1873,10 @@ def country_catalog_snapshot() -> list[dict[str, Any]]:
         return []
     nodes = read_nodes()
     valid_nodes = [item for item in nodes if item.get("probe_status") == "available"]
+    stats = recovery_policy.country_statistics(
+        nodes, time.time(), _recovery_settings()["freshnessSeconds"]
+    )
+    stats_by_code = {row["code"]: row for row in stats}
     valid_country_count = len({str(item.get("country_short") or "").upper() for item in valid_nodes if item.get("country_short")})
     official_total = sum(max(0, parse_int(item.get("candidateCount"))) for item in raw if isinstance(item, dict))
     result: list[dict[str, Any]] = []
@@ -1822,6 +1886,7 @@ def country_catalog_snapshot() -> list[dict[str, Any]]:
         code = str(item.get("code") or "").strip().upper()
         if not re.fullmatch(r"[A-Z]{2}", code):
             continue
+        available = stats_by_code.get(code, {})
         result.append(
             {
                 "code": code,
@@ -1833,9 +1898,21 @@ def country_catalog_snapshot() -> list[dict[str, Any]]:
                 "validCountryCount": valid_country_count,
                 "targetValidNodeCount": TARGET_VALID_POOL_SIZE,
                 "maxValidNodeCount": MAX_VALID_POOL_SIZE,
+                "dialableCount": int(available.get("dialableCount") or 0),
+                "freshEgressCount": int(available.get("freshEgressCount") or 0),
+                "residentialCount": int(available.get("residentialCount") or 0),
+                "datacenterCount": int(available.get("datacenterCount") or 0),
+                "checkedAt": float(available.get("checkedAt") or 0),
+                "ipQualityPassCount": None,
+                "ipQualityStatus": "not_implemented",
             }
         )
-    return result
+    return sorted(result, key=lambda row: (
+        -int(row.get("freshEgressCount") or 0),
+        -int(row.get("dialableCount") or 0),
+        -int(row.get("residentialCount") or 0),
+        row["code"],
+    ))
 
 def decode_config(encoded: str) -> str:
     return base64.b64decode(encoded.encode("ascii"), validate=False).decode("utf-8", errors="replace")
@@ -3739,7 +3816,7 @@ def mark_main_bad_node(node_id: str) -> None:
     """把主连接出口不通的节点加入冷却名单，冷却期内 auto_switch_node 不会再选回它。"""
     nid = str(node_id or "").strip()
     if nid:
-        main_bad_nodes[nid] = time.time() + MAIN_BAD_NODE_COOLDOWN
+        main_bad_nodes[nid] = time.time() + _recovery_settings()["candidateCooldownSeconds"]
 
 def main_bad_node_ids() -> set[str]:
     """当前仍在冷却期内的主连接坏节点 id 集合。"""
@@ -3830,65 +3907,55 @@ def replenish_repair_country(country: str) -> dict[str, Any]:
     )
 
 
-def repair_main_once(failed_snapshot: dict[str, Any]) -> dict[str, Any]:
-    """同次故障只替换一个候选；自动路由在同国耗尽时跨国回退。"""
-    failed_id = str(failed_snapshot.get("candidate_id") or "").strip()
-    country = str(failed_snapshot.get("country") or "").strip().upper()
-    if not egress_repair_store.claim("main", failed_id, country):
+def _repair_main_once_unlocked(failed_snapshot: dict[str, Any]) -> dict[str, Any]:
+    """只提升热备；没有热备时等待后台恢复。"""
+    if not main_mutation_allowed():
+        return {"ok": False, "error_code": "operation_busy"}
+    failed_id = str(failed_snapshot.get("candidate_id") or "")
+    country = str(failed_snapshot.get("country") or "").upper()
+    if egress_repair_store.get("main").get("status") == "manual_required":
         return {"ok": False, "error_code": "manual_repair_required"}
     if failed_id:
         mark_main_bad_node(failed_id)
+    egress_repair_store.wait_for_standby("main", failed_id, country)
     if promote_dedicated_standby_to_main():
         return {"ok": True, "candidate_id": str(active_openvpn_node_id or ""), "standby_promoted": True}
-    release_unhealthy_target_standbys("main")
-    candidates = automatic_main_candidates(country)
-    candidate = validated_repair_candidate(candidates)
-    if candidate is None:
-        replenish_repair_country(country)
-        candidates = automatic_main_candidates(country)
-        candidate = validated_repair_candidate(candidates)
-    automatic_routing = load_ui_config().get("routing_mode", "auto") == "auto"
-    if candidate is None and automatic_routing:
-        candidate = validated_repair_candidate(automatic_main_candidates(""))
-    if candidate is None:
-        stop_active_openvpn()
-        error_code = "no_usable_repair_candidate" if automatic_routing else "no_same_country_candidate"
-        egress_repair_store.require_manual("main", error_code)
-        set_state(
-            proxy_ok=False,
-            proxy_ip="-",
-            last_check_message=f"主连接未找到可用替换节点（原国家 {country or '未知'}），等待人工处理",
-        )
-        return {"ok": False, "error_code": error_code}
+    set_state(proxy_ok=False, proxy_ip="-", last_check_message="主连接等待专属备用；后台按策略重试")
+    recovery_event("main", "waiting_standby")
+    return {"ok": False, "error_code": "recovery_pending"}
 
-    candidate_id = str(candidate.get("id") or "").strip()
+
+def repair_main_once(failed_snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Serialize background promotion with manual main assignment mutations."""
+    if not main_recovery_lock.acquire(blocking=False):
+        return {"ok": False, "error_code": "operation_busy"}
     try:
-        main_assignment_thread.automatic_repair = True
+        if not _acquire_runtime_mutation(allow_main_repair=True):
+            return {"ok": False, "error_code": "operation_busy"}
         try:
-            connect_node(candidate_id)
+            return _repair_main_once_unlocked(failed_snapshot)
         finally:
-            main_assignment_thread.automatic_repair = False
-        validation = _main_validation()
-        if all(validation.values()):
-            egress_repair_store.mark_healthy("main", candidate_id)
-            return {"ok": True, "candidate_id": candidate_id}
-    except Exception as exc:
-        log_to_json("WARNING", "VPN", f"主连接单次自动替换失败: {exc}")
-    stop_active_openvpn()
-    egress_repair_store.require_manual("main", "replacement_failed", candidate_id)
-    set_state(
-        proxy_ok=False,
-        proxy_ip="-",
-        last_check_message=f"主连接自动替换节点 {candidate_id or '未知'} 失败，等待人工处理",
-    )
-    return {"ok": False, "error_code": "replacement_failed"}
+            _release_runtime_mutation()
+    finally:
+        main_recovery_lock.release()
 
 
 def _recover_main_after_pool_exhaustion() -> None:
     """Wait for the current switch mutation to finish, then refill and reconnect."""
     try:
-        with mutation_lock:
+        # ``maintain_valid_nodes`` owns the runtime mutation lease itself.
+        # Taking mutation_lock here first can deadlock with a concurrent manual
+        # operation that already owns the main-recovery lease.  The worker is
+        # started while ``auto_switch_node`` still holds that lease, so a single
+        # non-blocking call would always lose the refill.  Retry briefly after
+        # the owner releases it, then defer if an unrelated long-running
+        # mutation is still active.
+        result = "operation_busy"
+        for _ in range(40):
             result = maintain_valid_nodes(force=False)
+            if result != "operation_busy":
+                break
+            time.sleep(0.05)
         if result == "operation_busy":
             print("[自动切换后台补齐] 主连接事务仍在进行，本轮恢复已安全延后", flush=True)
     except Exception as e:
@@ -3898,6 +3965,8 @@ def _recover_main_after_pool_exhaustion() -> None:
 @_mutation_guard(None)
 def auto_switch_node(attempt: int = 0) -> None:
     if not main_mutation_allowed():
+        return
+    if egress_repair_store.get("main").get("status") in ("waiting_standby", "manual_required"):
         return
     if attempt >= 1:
         print("[自动切换] 本次故障已经尝试过一次，停止自动切换并等待人工处理。", flush=True)
@@ -4524,6 +4593,20 @@ last_slot_egress_heartbeat = 0.0
 last_dedicated_standby_heartbeat = 0.0
 
 
+def standby_target_indices() -> list[int]:
+    """Stable standby IDs: 0 is main, slot N is N+1."""
+    return [0] + [slot + 1 for slot in get_active_slots() if slot < MAX_EXIT_SLOTS]
+
+
+def standby_operation_lock(index: int) -> threading.RLock:
+    # Preserve the old list for callers that import it, while allowing the
+    # active target set to grow beyond the historical two entries.
+    with dedicated_standby_lock:
+        while len(dedicated_standby_operation_locks) <= index:
+            dedicated_standby_operation_locks.append(threading.RLock())
+        return dedicated_standby_operation_locks[index]
+
+
 def slot_operation_lock(i: int) -> threading.RLock:
     with slot_operation_locks_lock:
         return slot_operation_locks.setdefault(int(i), threading.RLock())
@@ -4590,7 +4673,7 @@ def kill_slot_openvpn_processes() -> None:
         # 同步清理可能残留的槽位策略路由表
         for i in range(MAX_EXIT_SLOTS):
             cleanup_policy_routing(SLOT_TABLE_BASE + i)
-        for index in range(DEDICATED_STANDBY_COUNT):
+        for index in range(DEDICATED_STANDBY_MAX):
             cleanup_policy_routing(standby_table(index))
     except Exception as e:
         print(f"[多出口] 清理遗留槽位进程失败: {e}", flush=True)
@@ -4714,42 +4797,43 @@ def _normalize_standby_countries(value: Any) -> list[str]:
     })[:32]
 
 
+def standby_slot_indices() -> list[int]:
+    """Return slots that currently need a live dedicated standby.
+
+    A paused slot remains configured for later resume but has no running
+    tunnel, so counting it as an active standby target would advertise a
+    resource that is intentionally not provisioned.
+    """
+    active = set(get_active_slots())
+    return sorted(active - get_paused_slots())
+
+
 def dedicated_standby_config_snapshot() -> list[dict[str, Any]]:
-    raw = load_ui_config().get("dedicated_standbys") or []
-    by_index = {
-        parse_int(item.get("index")): item
-        for item in raw
-        if isinstance(item, dict) and 0 <= parse_int(item.get("index")) < DEDICATED_STANDBY_COUNT
-    } if isinstance(raw, list) else {}
-    return [
-        {
-            "index": index,
-            "target": _normalize_standby_target(by_index.get(index, {}).get("target")),
-            "countries": _normalize_standby_countries(by_index.get(index, {}).get("countries")),
-        }
-        for index in range(DEDICATED_STANDBY_COUNT)
-    ]
+    return recovery_policy.targets(standby_slot_indices())
 
 
 def set_dedicated_standby_config(rows: Any) -> dict[str, Any]:
-    if not isinstance(rows, list) or len(rows) != DEDICATED_STANDBY_COUNT:
+    target_indices = standby_target_indices()
+    if not isinstance(rows, list) or len(rows) != len(target_indices):
         return {"ok": False, "error_code": "invalid_request"}
     normalized: list[dict[str, Any]] = []
     seen: set[int] = set()
-    active_slots = set(get_active_slots())
+    active_slots = set(standby_slot_indices())
     for item in rows:
         if not isinstance(item, dict):
             return {"ok": False, "error_code": "invalid_request"}
         index = parse_int(item.get("index"))
         target = _normalize_standby_target(item.get("target"))
-        countries = _normalize_standby_countries(item.get("countries"))
-        if index in seen or not 0 <= index < DEDICATED_STANDBY_COUNT:
+        if index in seen or index not in target_indices:
             return {"ok": False, "error_code": "invalid_request"}
         if target.startswith("slot:") and parse_int(target.split(":", 1)[1]) not in active_slots:
             return {"ok": False, "error_code": "slot_not_found"}
         seen.add(index)
-        normalized.append({"index": index, "target": target, "countries": countries})
-    if seen != set(range(DEDICATED_STANDBY_COUNT)):
+        expected = "main" if index == 0 else f"slot:{index - 1}"
+        if target != expected:
+            return {"ok": False, "error_code": "invalid_request"}
+        normalized.append({"index": index, "target": target, "countries": []})
+    if seen != set(target_indices):
         return {"ok": False, "error_code": "invalid_request"}
     normalized.sort(key=lambda item: item["index"])
     previous = dedicated_standby_config_snapshot()
@@ -4759,7 +4843,8 @@ def set_dedicated_standby_config(rows: Any) -> dict[str, Any]:
         _write_ui_config_atomic(cfg)
     for item in normalized:
         index = item["index"]
-        if item != previous[index]:
+        previous_row = next((row for row in previous if row["index"] == index), {})
+        if item != previous_row:
             egress_repair_store.clear(f"standby:{index}")
             dedicated_standby_fail_counts[index] = 0
             tear_down_dedicated_standby(index)
@@ -5222,57 +5307,25 @@ def _standby_target_profile(target: str) -> dict[str, str]:
     }
 
 
-def select_dedicated_standby_candidates(
-    index: int, *, include_bad: bool = False
-) -> list[dict[str, Any]]:
-    configs = dedicated_standby_config_snapshot()
-    if not 0 <= index < len(configs):
+def select_dedicated_standby_candidates(index: int, *, include_bad: bool = False) -> list[dict[str, Any]]:
+    config = next((row for row in dedicated_standby_config_snapshot() if row["index"] == index), None)
+    if not config:
         return []
-    config = configs[index]
-    target = str(config.get("target") or "")
-    if not target:
-        return []
+    target = config["target"]
     profile = _standby_target_profile(target)
-    countries = list(config.get("countries") or [])
-    if not countries and profile["country"]:
-        countries = [profile["country"]]
-    current_id = ""
-    with dedicated_standby_lock:
-        current_id = str(dedicated_standbys.get(index, {}).get("node_id") or "")
-    used = (
-        reserved_slot_candidate_ids()
-        | main_reserved_candidate_ids()
-        | dedicated_standby_candidate_ids(exclude_index=index)
-    )
-    used.discard(current_id)
+    country = profile.get("country") or egress_repair_store.get(target).get("country") or ""
+    used = reserved_slot_candidate_ids() | main_reserved_candidate_ids() | dedicated_standby_candidate_ids()
     used_ips = candidate_ip_identities(used)
     now = time.time()
-    bad = (
-        set()
-        if include_bad
-        else {node_id for node_id, until in slot_bad_nodes.items() if until > now}
-    )
-    candidates = []
-    for node in read_nodes():
-        node_id = str(node.get("id") or "").strip()
-        if not node_id or node_id in used or node_id in bad:
-            continue
-        if candidate_ip_identity(node) in used_ips:
-            continue
-        if node.get("probe_status") != "available":
-            continue
-        if countries and str(node.get("country_short") or "").strip().upper() not in countries:
-            continue
-        node_type = normalize_proxy_type(node.get("ip_type"))
-        if profile["proxy_type"] and node_type != profile["proxy_type"]:
-            continue
-        candidates.append(node)
-    candidates.sort(key=lambda node: (
-        0 if normalize_proxy_type(node.get("ip_type")) == "residential" else 1,
-        parse_int(node.get("latency_ms")) or 999999,
-        -parse_int(node.get("score")),
-    ))
-    return candidates
+    cooldowns = egress_repair_store.get(f"standby:{index}").get("cooldowns", {})
+    candidates = [
+        node for node in read_nodes()
+        if str(node.get("id") or "") not in used
+        and candidate_ip_identity(node) not in used_ips
+        and (include_bad or (slot_bad_nodes.get(str(node.get("id") or ""), 0) <= now
+                             and cooldowns.get(str(node.get("id") or ""), 0) <= now))
+    ]
+    return recovery_policy.rank_candidates(candidates, country, _recovery_settings(), now)
 
 
 def ensure_dedicated_standby_proxy(index: int) -> None:
@@ -5319,7 +5372,7 @@ def tear_down_dedicated_standby(
 
 
 def bring_up_dedicated_standby(index: int, node: dict[str, Any]) -> bool:
-    if not 0 <= index < DEDICATED_STANDBY_COUNT:
+    if index not in standby_target_indices():
         return False
     node_id = str(node.get("id") or "").strip()
     if not node_id:
@@ -5349,11 +5402,18 @@ def _bring_up_reserved_dedicated_standby(
         config_path.write_text(str(node.get("config_text") or ""), encoding="utf-8")
     except OSError:
         return False
+    settings = _recovery_settings()
+    repair_started = egress_repair_store.get(f"standby:{index}").get("started_at")
+    remaining = settings["dialTimeoutSeconds"]
+    if repair_started:
+        remaining = min(remaining, max(1, int(settings["recoveryBudgetSeconds"] - (time.time() - float(repair_started)))))
+        if remaining <= 0:
+            return False
     ok, message, process = run_openvpn_until_ready(
         str(config_path),
         keep_alive=True,
         route_nopull=True,
-        timeout=OPENVPN_TEST_TIMEOUT_SECONDS,
+        timeout=remaining,
         dev=standby_device(index),
         extra_args=["--setenv", STANDBY_PROCESS_MARKER, str(index)],
         report_status=False,
@@ -5437,6 +5497,8 @@ def dedicated_standby_snapshot() -> list[dict[str, Any]]:
             status = "ready"
         elif alive:
             status = "degraded"
+        elif repair.get("status") == "retry_wait":
+            status = "retry_wait"
         else:
             status = "preparing"
         result.append({
@@ -5452,23 +5514,27 @@ def dedicated_standby_snapshot() -> list[dict[str, Any]]:
             "egress_ok": bool(runtime.get("egress_ok") and alive),
             "checked_at": float(runtime.get("checked_at") or 0),
             "last_error_code": str(repair.get("error_code") or ""),
+            "attempt_count": int(repair.get("attempt_count") or 0),
+            "next_attempt_at": float(repair.get("next_attempt_at") or 0),
+            "started_at": float(repair.get("started_at") or 0),
+            "ip_quality_status": "not_implemented",
         })
     return result
 
 
 def _replenish_standby_scope(index: int) -> None:
-    config = dedicated_standby_config_snapshot()[index]
-    countries = list(config.get("countries") or [])
-    if not countries:
-        profile = _standby_target_profile(str(config.get("target") or ""))
-        if profile["country"]:
-            countries = [profile["country"]]
-    for country in countries:
+    config = next(
+        (row for row in dedicated_standby_config_snapshot() if row["index"] == index),
+        {"target": ""},
+    )
+    profile = _standby_target_profile(str(config.get("target") or ""))
+    country = str(profile.get("country") or "").strip().upper()
+    if country:
         result = replenish_repair_country(country)
         if result.get("resultCode") == "operation_busy":
             return
-        if select_dedicated_standby_candidates(index):
-            return
+    # If the current country is exhausted, the next maintenance round will use
+    # the complete pool and recovery_policy's country ranking.
 
 
 def provision_dedicated_standby(index: int, candidate_id: str = "") -> bool:
@@ -5485,22 +5551,32 @@ def provision_dedicated_standby(index: int, candidate_id: str = "") -> bool:
     if not candidates and not candidate_id:
         _replenish_standby_scope(index)
         candidates = select_dedicated_standby_candidates(index)
-    for node in candidates[:DEDICATED_STANDBY_CANDIDATE_ATTEMPTS]:
+    settings = _recovery_settings()
+    for node in candidates[:settings["candidatesPerRound"]]:
+        repair = egress_repair_store.get(f"standby:{index}")
+        if time.time() - repair.get("started_at", time.time()) >= settings["recoveryBudgetSeconds"]:
+            return False
+        if index not in standby_target_indices():
+            return False
+        recovery_event(f"standby:{index}", "candidate_dial", country=node.get("country_short"),
+                       proxy_type=normalize_proxy_type(node.get("ip_type")))
         if bring_up_dedicated_standby(index, node):
             return True
         node_id = str(node.get("id") or "").strip()
         if node_id:
-            slot_bad_nodes[node_id] = time.time() + SLOT_BAD_NODE_COOLDOWN
+            slot_bad_nodes[node_id] = time.time() + settings["candidateCooldownSeconds"]
+            egress_repair_store.cool_candidate(f"standby:{index}", node_id, settings["candidateCooldownSeconds"])
+            recovery_event(f"standby:{index}", "candidate_failed", country=node.get("country_short"), reason="candidate_validation_failed")
     return False
 
 
 def assign_dedicated_standby(index: int, candidate_id: str) -> dict[str, Any]:
-    if not 0 <= index < DEDICATED_STANDBY_COUNT or not str(candidate_id or "").strip():
+    if index not in standby_target_indices() or not str(candidate_id or "").strip():
         return {"ok": False, "error_code": "invalid_request"}
-    config = dedicated_standby_config_snapshot()[index]
+    config = next(row for row in dedicated_standby_config_snapshot() if row["index"] == index)
     if not config["target"]:
         return {"ok": False, "error_code": "standby_disabled"}
-    operation_lock = dedicated_standby_operation_locks[index]
+    operation_lock = standby_operation_lock(index)
     if not operation_lock.acquire(blocking=False):
         return {"ok": False, "error_code": "operation_busy"}
     try:
@@ -5509,62 +5585,186 @@ def assign_dedicated_standby(index: int, candidate_id: str) -> dict[str, Any]:
             egress_repair_store.require_manual(f"standby:{index}", "manual_candidate_failed", str(candidate_id).strip())
             write_dedicated_standby_state()
             return {"ok": False, "error_code": "candidate_unavailable"}
-        return {"ok": True, "standby": dedicated_standby_snapshot()[index]}
+        standby = next((row for row in dedicated_standby_snapshot() if row["index"] == index), {})
+        return {"ok": True, "standby": standby}
     finally:
         operation_lock.release()
 
 
+recovery_workers_lock = threading.Lock()
+recovery_workers: set[int] = set()
+standby_last_health_check: dict[int, float] = {}
+
+
+def recovery_event(target: str, phase: str, **fields: Any) -> None:
+    # 只允许结构化的非敏感字段，绝不串入 OpenVPN 配置或异常原文。
+    allowed = {key: value for key, value in fields.items()
+               if key in {"country", "proxy_type", "attempt", "reason", "next_attempt_at", "elapsed_seconds"}}
+    log_to_json("INFO", "Recovery", json.dumps(
+        dict(target=target, phase=phase, ip_quality_status="not_implemented", **allowed),
+        ensure_ascii=False,
+    ))
+
+
+def _standby_enabled(config: dict) -> bool:
+    target = config["target"]
+    if target == "main":
+        return bool(load_ui_config().get("connection_enabled", True))
+    slot = int(target.split(":")[1])
+    return slot in get_active_slots() and slot not in get_paused_slots()
+
+
+def _resume_waiting_target(config: dict) -> None:
+    target = config["target"]
+    pending = egress_repair_store.get(target)
+    if pending.get("status") != "waiting_standby" or not _standby_enabled(config):
+        return
+    standby = egress_repair_store.get(f"standby:{config['index']}")
+    if standby.get("status") == "manual_required":
+        egress_repair_store.require_manual(target, standby.get("error_code") or "recovery_budget_exhausted")
+        recovery_event(target, "manual_required", reason=standby.get("error_code"))
+        return
+    # 释放备用锁后才能领取目标锁，避免和故障线程交叉持锁。
+    if target == "main":
+        repair_main_once({"candidate_id": pending.get("failed_candidate_id"), "country": pending.get("country")})
+    else:
+        repair_slot_once(int(target.split(":")[1]), {
+            "node_id": pending.get("failed_candidate_id"), "country": pending.get("country"),
+        })
+
+
+def _maintain_standby(config: dict) -> None:
+    index = config["index"]
+    key = f"standby:{index}"
+    operation_lock = standby_operation_lock(index)
+    if not operation_lock.acquire(blocking=False):
+        return
+    try:
+        if not _standby_enabled(config):
+            tear_down_dedicated_standby(index)
+            return
+        settings = _recovery_settings()
+        repair = egress_repair_store.get(key)
+        if repair.get("status") == "manual_required":
+            return
+        with dedicated_standby_lock:
+            runtime = dict(dedicated_standbys.get(index) or {})
+        process = runtime.get("process")
+        if process is not None and process.poll() is None:
+            if time.time() - standby_last_health_check.get(index, 0) < settings["standbyIntervalSeconds"]:
+                return
+            standby_last_health_check[index] = time.time()
+            route_ok = ensure_policy_routing(standby_device(index), standby_table(index))
+            ok, exit_ip = check_slot_egress(standby_port(index)) if route_ok else (False, "")
+            with dedicated_standby_lock:
+                current = dedicated_standbys.get(index)
+                if current is not None:
+                    current.update(egress_ok=ok, exit_ip=exit_ip if ok else "",
+                                   checked_at=time.time(), status="ready" if ok else "degraded")
+            if ok:
+                dedicated_standby_fail_counts[index] = 0
+                egress_repair_store.mark_healthy(key, str(runtime.get("node_id") or ""))
+                return
+            dedicated_standby_fail_counts[index] = dedicated_standby_fail_counts.get(index, 0) + 1
+            if dedicated_standby_fail_counts[index] < settings["standbyFailureThreshold"]:
+                return
+        profile = _standby_target_profile(config["target"])
+        if not egress_repair_store.begin_round(key, profile.get("country", ""), settings):
+            return
+        recovery_event(config["target"], "round_started",
+                       attempt=int(egress_repair_store.get(key).get("attempt_count") or 0) + 1)
+        failed_id = str(runtime.get("node_id") or "")
+        if failed_id:
+            egress_repair_store.cool_candidate(key, failed_id, settings["candidateCooldownSeconds"])
+        dedicated_standby_fail_counts[index] = 0
+        tear_down_dedicated_standby(index)
+        facts = capacity.read_host_facts()
+        if facts.memory_available_bytes < 96 * 1024 * 1024 or facts.load1 > facts.cpu_count * 2:
+            reason = "resource_pressure"
+        elif provision_dedicated_standby(index):
+            recovery_event(config["target"], "standby_ready")
+            return
+        else:
+            reason = "no_usable_candidate"
+        row = egress_repair_store.finish_round(key, settings, reason)
+        recovery_event(config["target"], row["status"], reason=reason,
+                       attempt=row["attempt_count"], next_attempt_at=row["next_attempt_at"])
+    except Exception:
+        egress_repair_store.finish_round(key, _recovery_settings(), "recovery_internal_error")
+        recovery_event(config["target"], "round_failed", reason="recovery_internal_error")
+    finally:
+        operation_lock.release()
+        _resume_waiting_target(config)
+        write_dedicated_standby_state()
+
+
 def maintain_dedicated_standbys_once() -> None:
     configs = dedicated_standby_config_snapshot()
-    for config in configs:
-        index = config["index"]
-        operation_lock = dedicated_standby_operation_locks[index]
-        if not operation_lock.acquire(blocking=False):
-            continue
-        try:
-            if not config["target"]:
+    valid = {row["index"] for row in configs}
+    with dedicated_standby_lock:
+        removed = set(dedicated_standbys) - valid
+    for index in removed:
+        operation_lock = standby_operation_lock(index)
+        if operation_lock.acquire(blocking=False):
+            try:
                 tear_down_dedicated_standby(index)
                 egress_repair_store.clear(f"standby:{index}")
+            finally:
+                operation_lock.release()
+    # 正在故障的出口优先补齐，空闲热备之后处理。
+    configs.sort(key=lambda row: (egress_repair_store.get(row["target"]).get("status") != "waiting_standby",
+                                  standby_last_health_check.get(row["index"], 0), row["index"]))
+    def worker(config: dict) -> None:
+        try:
+            _maintain_standby(config)
+        finally:
+            with recovery_workers_lock:
+                recovery_workers.discard(config["index"])
+    for config in configs:
+        index = config["index"]
+        with recovery_workers_lock:
+            if index in recovery_workers or len(recovery_workers) >= _recovery_settings()["maxConcurrentDials"]:
                 continue
             repair = egress_repair_store.get(f"standby:{index}")
             if repair.get("status") == "manual_required":
-                tear_down_dedicated_standby(index)
+                _resume_waiting_target(config)
+                continue
+            if repair.get("next_attempt_at", 0) > time.time():
                 continue
             with dedicated_standby_lock:
-                runtime = dict(dedicated_standbys.get(index) or {})
-            process = runtime.get("process")
-            if process is not None and process.poll() is None:
-                route_ok = ensure_policy_routing(standby_device(index), standby_table(index))
-                ok, exit_ip = check_slot_egress(standby_port(index)) if route_ok else (False, "")
-                with dedicated_standby_lock:
-                    current = dedicated_standbys.get(index)
-                    if current is not None:
-                        current["egress_ok"] = ok
-                        current["exit_ip"] = exit_ip if ok else ""
-                        current["checked_at"] = time.time()
-                        current["status"] = "ready" if ok else "degraded"
-                if ok:
-                    dedicated_standby_fail_counts[index] = 0
-                    egress_repair_store.mark_healthy(f"standby:{index}", str(runtime.get("node_id") or ""))
-                    continue
-                dedicated_standby_fail_counts[index] = dedicated_standby_fail_counts.get(index, 0) + 1
-                if dedicated_standby_fail_counts[index] < DEDICATED_STANDBY_FAIL_THRESHOLD:
-                    continue
-            dedicated_standby_fail_counts[index] = 0
-            failed_id = str(runtime.get("node_id") or "")
-            countries = ",".join(config["countries"])
-            if not egress_repair_store.claim(f"standby:{index}", failed_id, countries):
-                tear_down_dedicated_standby(index)
+                runtime = dedicated_standbys.get(index, {})
+                process = runtime.get("process")
+                alive = process is not None and process.poll() is None
+            if alive and time.time() - standby_last_health_check.get(index, 0) < _recovery_settings()["standbyIntervalSeconds"]:
+                _resume_waiting_target(config)
                 continue
-            if failed_id:
-                mark_candidate_unavailable(failed_id, "candidate_egress_failed")
-                slot_bad_nodes[failed_id] = time.time() + SLOT_BAD_NODE_COOLDOWN
-            tear_down_dedicated_standby(index)
-            if not provision_dedicated_standby(index):
-                egress_repair_store.require_manual(f"standby:{index}", "no_standby_candidate")
-        finally:
-            operation_lock.release()
-    write_dedicated_standby_state()
+            recovery_workers.add(index)
+            try:
+                threading.Thread(target=worker, args=(config,), daemon=True).start()
+            except Exception:
+                recovery_workers.discard(index)
+                raise
+
+
+def retry_dedicated_standby(index: int) -> dict[str, Any]:
+    config = next((row for row in dedicated_standby_config_snapshot() if row["index"] == index), None)
+    if not config:
+        return {"ok": False, "error_code": "invalid_request"}
+    operation_lock = standby_operation_lock(index)
+    if not operation_lock.acquire(blocking=False):
+        return {"ok": False, "error_code": "operation_busy"}
+    try:
+        egress_repair_store.clear(f"standby:{index}")
+        target = config["target"]
+        pending = egress_repair_store.get(target)
+        if pending.get("status") == "manual_required":
+            egress_repair_store.clear(target)
+            egress_repair_store.wait_for_standby(target, str(pending.get("failed_candidate_id") or ""), str(pending.get("country") or ""))
+        recovery_event(target, "manual_retry")
+    finally:
+        operation_lock.release()
+    maintain_dedicated_standbys_once()
+    return {"ok": True}
 
 
 def dedicated_standby_loop() -> None:
@@ -5574,10 +5774,9 @@ def dedicated_standby_loop() -> None:
         last_dedicated_standby_heartbeat = time.time()
         try:
             maintain_dedicated_standbys_once()
-        except Exception as exc:
-            print(f"[专属备用] 维护异常: {exc}", flush=True)
-            log_to_json("ERROR", "Standby", f"专属备用维护异常: {exc}")
-        time.sleep(DEDICATED_STANDBY_CHECK_INTERVAL)
+        except Exception:
+            recovery_event("scheduler", "failed", reason="recovery_internal_error")
+        time.sleep(1)
 
 
 def _healthy_dedicated_standby_index(target: str) -> int | None:
@@ -5611,7 +5810,7 @@ def release_unhealthy_target_standbys(target: str) -> None:
         index = config["index"]
         if config["target"] != target:
             continue
-        operation_lock = dedicated_standby_operation_locks[index]
+        operation_lock = standby_operation_lock(index)
         if not operation_lock.acquire(blocking=False):
             continue
         try:
@@ -5627,7 +5826,7 @@ def promote_dedicated_standby_to_slot(slot: int) -> bool:
     index = _healthy_dedicated_standby_index(f"slot:{slot}")
     if index is None:
         return False
-    operation_lock = dedicated_standby_operation_locks[index]
+    operation_lock = standby_operation_lock(index)
     if not operation_lock.acquire(blocking=False):
         return False
     try:
@@ -5693,7 +5892,7 @@ def promote_dedicated_standby_to_main() -> bool:
     index = _healthy_dedicated_standby_index("main")
     if index is None:
         return False
-    operation_lock = dedicated_standby_operation_locks[index]
+    operation_lock = standby_operation_lock(index)
     if not operation_lock.acquire(blocking=False):
         return False
     try:
@@ -6004,9 +6203,10 @@ def supervise_exit_slots_once() -> None:
                     with exit_slots_lock:
                         current_status = str(exit_slots.get(i, {}).get("status") or "")
                     if current_status != "disconnected":
+                        tear_down_slot(i, stop_proxy=False)
                         mark_slot_disconnected(
                             i,
-                            "自动修复已尝试一次，等待人工更换出口",
+                            "恢复预算已耗尽，等待人工重试或更换出口",
                             candidate_id=str(repair.get("failed_candidate_id") or ""),
                             country=str(repair.get("country") or ""),
                         )
@@ -6016,7 +6216,7 @@ def supervise_exit_slots_once() -> None:
                 with exit_slots_lock:
                     failed_runtime = dict(exit_slots.get(i) or {})
                 if failed_runtime.get("node_id"):
-                    repair_slot_once(i, failed_runtime)
+                    repair_slot_once(i, failed_runtime, _lock_held=True)
                     continue
                 tear_down_slot(i, stop_proxy=False)  # 清理死进程/路由，保留已分配的代理端口
                 used = reserved_slot_candidate_ids(exclude_slot=i)
@@ -6029,6 +6229,7 @@ def supervise_exit_slots_once() -> None:
                                 "node_id": node.get("id"),
                                 "country": node.get("country_short"),
                             },
+                            _lock_held=True,
                         )
                 else:
                     scope = per_slot_country(i) or "不限地区"
@@ -6491,89 +6692,32 @@ def automatic_slot_candidates(i: int, country: str) -> list[dict[str, Any]]:
     return residential + fallback
 
 
-def repair_slot_once(i: int, failed_snapshot: dict[str, Any]) -> dict[str, Any]:
-    """同一次槽位故障只选一个同国候选；失败后固定为待人工处理。"""
+def repair_slot_once(i: int, failed_snapshot: dict[str, Any], *, _lock_held: bool = False) -> dict[str, Any]:
     operation_lock = slot_operation_lock(i)
-    if not operation_lock.acquire(blocking=False):
-        return {"ok": False, "error_code": "slot_busy", "auto_repair_performed": False}
+    acquired_here = False
+    if not _lock_held:
+        if not operation_lock.acquire(blocking=False):
+            return {"ok": False, "error_code": "slot_busy", "auto_repair_performed": False}
+        acquired_here = True
     try:
-        failed_id = str(failed_snapshot.get("node_id") or "").strip()
-        country = str(
-            failed_snapshot.get("country_short") or failed_snapshot.get("country") or ""
-        ).strip().upper()
-        if not re.fullmatch(r"[A-Z]{2}", country):
-            country = str(per_slot_country(i) or "").strip().upper()
-        if not re.fullmatch(r"[A-Z]{2}", country):
-            country = ""
         key = f"slot:{i}"
-        if not egress_repair_store.claim(key, failed_id, country):
-            return {
-                "ok": False,
-                "error_code": "manual_repair_required",
-                "auto_repair_performed": False,
-            }
+        if egress_repair_store.get(key).get("status") == "manual_required":
+            return {"ok": False, "error_code": "manual_repair_required", "auto_repair_performed": False}
+        failed_id = str(failed_snapshot.get("node_id") or "")
+        country = str(failed_snapshot.get("country_short") or failed_snapshot.get("country") or per_slot_country(i) or "").upper()
         if failed_id:
-            slot_bad_nodes[failed_id] = time.time() + SLOT_BAD_NODE_COOLDOWN
-            failure_code = str(failed_snapshot.get("failure_code") or "candidate_egress_failed")
-            if failure_code not in CANDIDATE_FAILURE_CODES:
-                failure_code = "candidate_egress_failed"
-            mark_candidate_unavailable(failed_id, failure_code)
+            slot_bad_nodes[failed_id] = time.time() + _recovery_settings()["candidateCooldownSeconds"]
+            mark_candidate_unavailable(failed_id, "candidate_egress_failed")
+        egress_repair_store.wait_for_standby(key, failed_id, country)
         if promote_dedicated_standby_to_slot(i):
             result = managed_slot_snapshot(i)
-            result["auto_repair_performed"] = True
-            result["standby_promoted"] = True
+            result.update(auto_repair_performed=True, standby_promoted=True)
             return result
-        release_unhealthy_target_standbys(f"slot:{i}")
-        candidates = automatic_slot_candidates(i, country)
-        candidate = validated_repair_candidate(candidates)
-        if candidate is None:
-            replenish_repair_country(country)
-            candidates = automatic_slot_candidates(i, country)
-            candidate = validated_repair_candidate(candidates)
-        if candidate is None:
-            reason = f"未找到同国家 {country or '未知'} 的可用替换节点，等待人工处理"
-            tear_down_slot(i, stop_proxy=False)
-            mark_slot_disconnected(i, reason, candidate_id=failed_id, country=country)
-            egress_repair_store.require_manual(key, "no_same_country_candidate")
-            write_slots_state()
-            return {
-                "ok": False,
-                "error_code": "no_same_country_candidate",
-                "auto_repair_performed": True,
-            }
-
-        candidate_id = str(candidate.get("id") or "").strip()
-        set_slot_pin(i, "")
-        tear_down_slot(i, stop_proxy=False)
-        if bring_up_slot(i, candidate):
-            route_ok = ensure_policy_routing(slot_device(i), slot_table(i))
-            egress_ok, exit_ip = check_slot_egress(slot_port(i)) if route_ok else (False, "")
-            if egress_ok:
-                set_slot_country(i, country)
-                set_slot_type(i, normalize_proxy_type(candidate.get("ip_type")))
-                with exit_slots_lock:
-                    if i in exit_slots:
-                        exit_slots[i]["egress_ok"] = True
-                        exit_slots[i]["exit_ip"] = exit_ip
-                        exit_slots[i]["egress_checked_at"] = time.time()
-                egress_repair_store.mark_healthy(key, candidate_id)
-                write_slots_state()
-                result = managed_slot_snapshot(i)
-                result["auto_repair_performed"] = True
-                return result
-
-        tear_down_slot(i, stop_proxy=False)
-        reason = f"自动替换节点 {candidate_id or '未知'} 失败，等待人工处理"
-        mark_slot_disconnected(i, reason, candidate_id=failed_id, country=country)
-        egress_repair_store.require_manual(key, "replacement_failed", candidate_id)
-        write_slots_state()
-        return {
-            "ok": False,
-            "error_code": "replacement_failed",
-            "auto_repair_performed": True,
-        }
+        recovery_event(key, "waiting_standby")
+        return {"ok": False, "error_code": "recovery_pending", "auto_repair_performed": False}
     finally:
-        operation_lock.release()
+        if acquired_here:
+            operation_lock.release()
 
 def slot_egress_checker_loop() -> None:
     """周期对每个运行中的槽位做真实出口检测；节点'假活不转发'时标记并自动漂移到其他节点。"""
@@ -6601,12 +6745,11 @@ def slot_egress_checker_loop() -> None:
                         egress_repair_store.mark_healthy(f"slot:{i}", str(nid))
                     continue
                 slot_egress_fail_counts[i] = slot_egress_fail_counts.get(i, 0) + 1
-                if slot_egress_fail_counts[i] < SLOT_EGRESS_FAIL_THRESHOLD:
+                if slot_egress_fail_counts[i] < _recovery_settings()["failureThreshold"]:
                     continue
                 slot_egress_fail_counts[i] = 0
                 snapshot = managed_slot_snapshot(i)
-                print(f"[多出口] 槽位 {i} 节点 {nid} 出口不通，执行本次故障唯一一次自动修复", flush=True)
-                log_to_json("WARNING", "MultiExit", f"槽位 {i} 节点 {nid} 出口不通，尝试一次同国家替换")
+                recovery_event(f"slot:{i}", "failure_confirmed")
                 result = repair_slot_once(i, snapshot)
                 if not result.get("ok"):
                     log_to_json(
@@ -6616,7 +6759,7 @@ def slot_egress_checker_loop() -> None:
                     )
         except Exception as e:
             print(f"[多出口] 出口健康检测异常: {e}", flush=True)
-        time.sleep(SLOT_EGRESS_CHECK_INTERVAL)
+        time.sleep(_recovery_settings()["healthIntervalSeconds"])
 
 def exit_slots_loop() -> None:
     global last_exit_slots_heartbeat
@@ -10248,8 +10391,8 @@ def background_proxy_checker() -> None:
                     routing_mode = ui_cfg.get("routing_mode", "auto")
                     # 连续失败阈值：单次出口抖动不立即切换/重连，避免无谓漂移与下游频繁断连。
                     main_egress_fail_count += 1
-                    if main_egress_fail_count < MAIN_EGRESS_FAIL_THRESHOLD:
-                        print(f"[代理守护线程] 出口检测失败 {main_egress_fail_count}/{MAIN_EGRESS_FAIL_THRESHOLD} 次，暂不处理，继续观察。原因: {error_msg}", flush=True)
+                    if main_egress_fail_count < _recovery_settings()["failureThreshold"]:
+                        recovery_event("main", "failure_observed", attempt=main_egress_fail_count)
                     else:
                         main_egress_fail_count = 0
                         with lock:
