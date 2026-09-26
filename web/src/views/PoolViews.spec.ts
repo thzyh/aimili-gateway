@@ -888,6 +888,30 @@ it('merges dedicated standby state into each exit row and reuses manual assignme
 	expect(mocks.apiFetch).toHaveBeenCalledWith('/api/v1/settings/aimilivpn/standbys/2/assign', { method: 'POST', body: JSON.stringify({ candidateId: 'us-standby' }) })
 })
 
+it('preserves manual selection on failed assignment/readback and shows retry failures inside the dialog', async () => {
+	let readsFail = false
+	mocks.apiFetch.mockImplementation((path: string, init?: RequestInit) => {
+		if (path === '/api/v1/proxy-groups') return Promise.resolve(rows)
+		if (path === '/api/v1/settings/aimilivpn/standbys') return readsFail ? Promise.reject(new Error('unavailable')) : Promise.resolve([
+			{ index: 0, target: 'main', status: 'ready', egress_ok: true, countries: [], exit_ip: '203.0.113.20' },
+		])
+		if (init?.method === 'POST') { readsFail = true; return Promise.reject(new Error('operation_busy')) }
+		return Promise.resolve([])
+	})
+	const wrapper = mount(SocksPoolView)
+	await flushPromises()
+	await wrapper.get('[data-standby-manual="agw-main"]').trigger('click')
+	await wrapper.get('[data-standby-manual-dialog] select').setValue('us-standby')
+	await wrapper.get('[data-standby-manual-confirm]').trigger('click')
+	await flushPromises()
+	expect(wrapper.get('[data-standby-manual-notice]').text()).toContain('失败')
+	expect((wrapper.get('[data-standby-manual-dialog] select').element as HTMLSelectElement).value).toBe('us-standby')
+	await wrapper.get('[data-retry-standby]').trigger('click')
+	await flushPromises()
+	expect(wrapper.get('[data-standby-manual-notice]').text()).toContain('重试未开始')
+	wrapper.unmount()
+})
+
 it('copies all filtered addresses without a trailing newline and leaves the clipboard unchanged for an empty export', async () => {
 	const wrapper = mount(VpnPoolView)
 	await flushPromises()

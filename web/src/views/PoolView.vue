@@ -88,7 +88,7 @@ const standbyReadyCount = computed(() => dedicatedStandbys.value.filter(row => r
 const standbyManualCount = computed(() => dedicatedStandbys.value.filter(row => row.status === 'waiting_manual').length)
 const standbyManualRow = computed(() => standbyManualIndex.value === null ? null : dedicatedStandbys.value.find(row => row.index === standbyManualIndex.value) ?? null)
 const standbyManualCandidates = computed(() => groups.value.filter(row => row.status === 'standby'))
-const standbyTargetLabel = (row: DedicatedStandbyPayload) => row.target === 'main' ? '主连接' : `出口位 ${Number(row.target.split(':')[1]) + 1}`
+const standbyTargetLabel = (row: DedicatedStandbyPayload) => row.target === 'main' ? '主连接' : /^slot:\d+$/.test(row.target) ? `出口位 ${Number(row.target.split(':')[1]) + 1}` : '未启用'
 const standbyCandidateLabel = (row: ProxyGroupPayload) => `${countryDisplayName(row.countryCode, [{ code: row.countryCode, name: row.countryName || row.countryCode }])} · ${row.proxyType === 'residential' ? '住宅' : '机房'} · ${row.exitIp || row.candidateIp || '尚无出口 IP'}`
 const standbySummaryState = (row: DedicatedStandbyPayload) => ({ disabled: '未启用', preparing: '正在准备', ready: '已就绪', degraded: '检查异常', waiting_manual: '等待人工处理', retry_wait: '等待重试' } as Record<string, string>)[row.status] || '尚无状态'
 const standbySummaryMeta = (row: DedicatedStandbyPayload) => `${standbyTargetLabel(row)} · ${standbySummaryState(row)} · ${row.egress_ok ? '真实出口有效' : '真实出口未就绪'}${row.exit_ip || row.candidate_ip ? ` · ${row.exit_ip || row.candidate_ip}` : ''}`
@@ -144,31 +144,37 @@ async function pollDedicatedStandbys(): Promise<void> {
 }
 
 async function assignDedicatedStandby(index: number, candidateId: string): Promise<boolean> {
+  if (standbyBusy.value || busy.value) return false
   standbyBusy.value = true
+  standbyManualNotice.value = makeNotice('progress', '正在验证备用候选', '正在拨号并检测真实出口，请等待验证结果。')
   try {
     await apiFetch(`/api/v1/settings/aimilivpn/standbys/${index}/assign`, { method: 'POST', body: JSON.stringify({ candidateId }) })
     topNotice.value = makeNotice('success', `备用 ${index + 1} 已重新验证`, '备用节点已通过真实出口检测。')
     return true
   } catch (error) { standbyManualNotice.value = makeNotice('error', '备用节点设置失败', localizedError(error, '该候选没有通过真实出口检测。')); return false }
-  finally { standbyBusy.value = false; await loadDedicatedStandbys() }
+  finally { await Promise.all([loadDedicatedStandbys(true), loadGroups(false)]); standbyBusy.value = false }
 }
 
 async function retryDedicatedStandby(index: number): Promise<void> {
+  if (standbyBusy.value || busy.value) return
   standbyBusy.value = true
   try {
     await apiFetch(`/api/v1/settings/aimilivpn/standbys/${index}/retry`, { method: 'POST', body: '{}' })
     topNotice.value = makeNotice('success', '已重新开始恢复', '后台按恢复策略验证候选，页面将持续更新备用状态。')
-  } catch (error) { topNotice.value = makeNotice('error', '重试未开始', localizedError(error, '请稍后重试并查看恢复日志。')) }
-  finally { standbyBusy.value = false; await loadDedicatedStandbys() }
+    standbyManualNotice.value = topNotice.value
+  } catch (error) { standbyManualNotice.value = makeNotice('error', '重试未开始', localizedError(error, '请稍后重试并查看恢复日志。')) }
+  finally { await loadDedicatedStandbys(true); standbyBusy.value = false }
 }
 
 function openStandbyManual(index: number): void {
+  if (standbyBusy.value || busy.value) return
   standbyManualIndex.value = index
   standbyManualCandidateID.value = ''
   standbyManualNotice.value = null
 }
 
 function closeStandbyManual(): void {
+  if (standbyBusy.value) return
   standbyManualIndex.value = null
   standbyManualCandidateID.value = ''
   standbyManualNotice.value = null
@@ -527,7 +533,7 @@ function formatRefreshTime(value?: number): string {
       </div>
     </section>
     <div v-if="loading" class="loading">正在读取代理池…</div>
-    <PoolTable v-else :rows="rows" :protocol="protocol" :busy="busy" :standbys="dedicatedStandbys" @copy="copyAddress" @replace="openReplacement" @check="checkRow" @protocol="switchProtocol" @standby-manual="openStandbyManual" />
+    <PoolTable v-else :rows="rows" :protocol="protocol" :busy="standbyBusy ? 'standby' : busy" :standbys="dedicatedStandbys" @copy="copyAddress" @replace="openReplacement" @check="checkRow" @protocol="switchProtocol" @standby-manual="openStandbyManual" />
     <div v-if="replacementCandidate" class="dialog-backdrop" @click.self="closeReplacement">
       <section data-replace-dialog class="replace-dialog" role="dialog" aria-modal="true" aria-labelledby="replace-title">
         <button class="dialog-close" type="button" aria-label="关闭" @click="closeReplacement">×</button>
@@ -547,18 +553,27 @@ function formatRefreshTime(value?: number): string {
     </div>
     <div v-if="standbyManualIndex !== null && standbyManualRow" class="dialog-backdrop" @click.self="closeStandbyManual">
       <section data-standby-manual-dialog class="replace-dialog standby-manual-dialog" role="dialog" aria-modal="true" aria-labelledby="standby-manual-title">
-        <button class="dialog-close" type="button" aria-label="关闭" @click="closeStandbyManual">×</button>
+        <button class="dialog-close" type="button" aria-label="关闭" :disabled="standbyBusy" @click="closeStandbyManual">×</button>
         <p class="eyebrow">MANUAL HOT STANDBY</p><h2 id="standby-manual-title">手动替换专属热备用</h2>
         <p>当前目标已锁定为 <strong>{{ standbyTargetLabel(standbyManualRow) }}</strong>。候选必须先通过真实出口验证，验证成功后才会写入备用绑定。</p>
+        <p>本操作会重新拨号准备该出口的备用，期间该目标可能暂时没有热备保护；不会主动切换当前活动出口。</p>
+        <dl class="standby-details">
+          <div><dt>当前状态</dt><dd>{{ standbySummaryState(standbyManualRow) }}</dd></div>
+          <div><dt>恢复轮次</dt><dd>{{ standbyManualRow.attempt_count ?? 0 }}</dd></div>
+          <div><dt>最近检测</dt><dd>{{ formatRefreshTime(standbyManualRow.checked_at) || '尚无记录' }}</dd></div>
+          <div v-if="standbyManualRow.next_attempt_at"><dt>下次重试</dt><dd>{{ formatRefreshTime(standbyManualRow.next_attempt_at) }}</dd></div>
+        </dl>
+        <p v-if="standbyManualRow.last_error_code" class="fault-target-warning">{{ standbyManualRow.last_error_code === 'recovery_budget_exhausted' ? '自动恢复预算已耗尽，请指定候选或重新开始自动恢复。' : '备用恢复未完成，可选择候选重试；具体原因见恢复日志。' }}</p>
         <label class="standby-candidate-field">备用候选
           <select v-model="standbyManualCandidateID" :disabled="standbyBusy || busy !== ''">
             <option value="">请选择可用候选</option>
             <option v-for="candidate in standbyManualCandidates" :key="candidate.id" :value="candidate.id">{{ standbyCandidateLabel(candidate) }}</option>
           </select>
         </label>
+        <p v-if="standbyManualCandidates.length === 0">暂无可用候选，请先刷新节点池或重新开始自动恢复。</p>
         <UiNotice v-if="standbyManualNotice" :key="standbyManualNotice.id" data-standby-manual-notice :notice="standbyManualNotice" @close="standbyManualNotice=null" />
         <div class="dialog-actions standby-manual-actions">
-          <button class="secondary" type="button" :disabled="standbyBusy || busy !== ''" @click="retryDedicatedStandby(standbyManualIndex)">{{ standbyBusy ? '正在恢复…' : '重新开始自动恢复' }}</button>
+          <button data-retry-standby class="secondary" type="button" :disabled="standbyBusy || busy !== ''" @click="retryDedicatedStandby(standbyManualIndex)">重新开始自动恢复</button>
           <button data-standby-manual-confirm type="button" :disabled="standbyBusy || busy !== '' || !standbyManualCandidateID" @click="confirmStandbyManual">{{ standbyBusy ? '正在验证…' : '验证并设为备用' }}</button>
         </div>
       </section>

@@ -19,8 +19,8 @@ const ipSource = (row: ProxyGroupPayload) => row.exitIp ? 'exit' : row.candidate
 const ipText = (row: ProxyGroupPayload) => row.exitIp || (row.candidateIp ? `节点 IP ${row.candidateIp}` : '暂无可验证 IP')
 const portText = (row: ProxyGroupPayload) => props.protocol === 'vless' ? `VPN 节点 ${row.publicPort ?? row.vlessPort}` : `SOCKS5H ${row.mixedPort}`
 const standbyFor = (row: ProxyGroupPayload) => {
-  const index = row.egressSource === 'main' ? 0 : typeof row.slotNumber === 'number' && row.slotNumber > 0 ? row.slotNumber : null
-  return index === null ? undefined : props.standbys?.find(item => item.index === index)
+  const target = row.egressSource === 'main' || row.id === 'agw-main' ? 'main' : row.slotNumber ? `slot:${row.slotNumber - 1}` : ''
+  return target ? props.standbys?.find(item => item.target === target) : undefined
 }
 const standbyStatusLabel = (row?: DedicatedStandbyPayload) => ({ disabled: '未启用', preparing: '准备中', ready: '已就绪', degraded: '检查异常', waiting_manual: '等待人工处理', retry_wait: '等待重试' } as Record<string, string>)[row?.status || ''] || '尚无状态'
 const standbyIpText = (row?: DedicatedStandbyPayload) => row?.exit_ip || row?.candidate_ip || '备用出口未就绪'
@@ -45,7 +45,11 @@ function changeProtocol(row: ProxyGroupPayload, event: Event): void {
           <td class="status-cell"><span class="status" :data-status="poolStatusGroup(row.status)" :data-row-status="row.id"><i />{{ poolStatusLabel(row.status) }}</span><small v-if="poolStatusDetail(row)" :data-row-detail="row.id">{{ poolStatusDetail(row) }}</small></td>
           <td class="standby-cell" :data-standby-cell="row.id">
             <template v-if="standbyFor(row)">
-              <div class="standby-inline"><span class="standby-state" :data-standby-status="row.id" :data-state="standbyFor(row)?.status">{{ standbyStatusLabel(standbyFor(row)) }}</span><span class="standby-meta">{{ standbyCountryText(standbyFor(row)) }} · {{ standbyIpText(standbyFor(row)) }}</span><button v-if="standbyFor(row)?.status === 'waiting_manual'" :data-standby-manual="row.id" class="standby-manual" :disabled="busy !== ''" @click="emit('standby-manual', standbyFor(row)!.index)">手动替换备用</button></div>
+              <div class="standby-inline">
+                <div class="standby-title"><span class="standby-state" :data-standby-status="row.id" :data-state="standbyFor(row)?.status">{{ standbyStatusLabel(standbyFor(row)) }}</span><button v-if="standbyFor(row)?.status !== 'disabled'" :data-standby-manual="row.id" class="standby-manual" :disabled="busy !== ''" @click="emit('standby-manual', standbyFor(row)!.index)">替换备用</button></div>
+                <span class="standby-meta">{{ standbyCountryText(standbyFor(row)) }} · {{ standbyIpText(standbyFor(row)) }}</span>
+                <small class="muted-cell">{{ standbyFor(row)?.egress_ok ? '真实出口有效' : '真实出口未就绪' }}</small>
+              </div>
             </template>
             <span v-else class="muted-cell">—</span>
           </td>

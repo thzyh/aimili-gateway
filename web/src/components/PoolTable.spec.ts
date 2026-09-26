@@ -27,3 +27,11 @@ it('keeps the same standby presentation for the SOCKS5H pool', () => {
   expect(wrapper.get('[data-standby-cell="agw-main"]').text()).toContain('203.0.113.20')
   expect(wrapper.get('[data-standby-cell="slot-one"]').text()).toContain('备用出口未就绪')
 })
+
+it('allows proactive replacement of a ready standby using its actual target binding', async () => {
+  const wrapper = mount(PoolTable, { props: { rows, protocol: 'vless', busy: '', standbys: [{ ...standbys[0], index: 7 }] } })
+  await wrapper.get('[data-standby-manual="agw-main"]').trigger('click')
+  expect(wrapper.emitted('standby-manual')?.[0]).toEqual([7])
+  await wrapper.setProps({ busy: 'standby' })
+  expect(wrapper.get('[data-standby-manual="agw-main"]').attributes('disabled')).toBeDefined()
+})
