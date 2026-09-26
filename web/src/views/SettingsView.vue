@@ -406,6 +406,7 @@ function messageFor(error: unknown, fallback: string): string {
     <UiNotice v-if="notice" :key="notice.id" data-policy-notice class="policy-notice" :notice="notice" @close="notice=null" />
     <div v-if="loading" class="loading-panel">正在读取设置…</div>
     <div v-else class="settings-layout">
+      <div class="settings-primary">
       <section class="panel policy-panel">
         <div class="panel-heading">
           <div><p class="section-kicker">ACCESS POLICY</p><h2>SOCKS5H 来源限制</h2><p>控制哪些公网来源可以尝试使用反向代理池。</p></div>
@@ -421,6 +422,17 @@ function messageFor(error: unknown, fallback: string): string {
           <div class="form-footer"><span class="apply-state" :data-apply-status="policy?.applyStatus">当前状态：{{ policyApplyLabel }}</span><div class="policy-actions"><button data-authorize-current-network class="secondary" :disabled="saving" type="button" @click="authorizeCurrentNetwork">仅授权当前网络</button><button :disabled="saving" type="submit">{{ saving ? '正在应用' : '保存策略' }}</button></div></div>
         </form>
       </section>
+
+      <section class="services-section">
+        <div class="section-title"><p class="section-kicker">SERVICE MAINTENANCE</p><h2>3x-ui 专家模式</h2><p>日常出口管理在 Gateway 页面完成；需要检查底层入站时再进入 3x-ui。</p></div>
+        <div class="service-grid">
+          <RouterLink class="service-card" to="/settings/3x-ui">
+            <span class="service-icon xui">3X</span><span><strong>3x-ui 设置</strong><small>受管资源核对、修复与专家模式</small></span><b aria-hidden="true">→</b>
+          </RouterLink>
+        </div>
+        <p class="boundary-note">出口引擎继续作为独立服务运行，但不再向 Gateway 用户展示 AimiliVPN 原后台。</p>
+      </section>
+      </div>
 
       <aside class="panel capacity-panel">
         <p class="section-kicker">CAPACITY</p><h2>运行容量</h2>
@@ -441,16 +453,6 @@ function messageFor(error: unknown, fallback: string): string {
         </div></div>
       </aside>
 
-      <section class="services-section">
-        <div class="section-title"><p class="section-kicker">SERVICE MAINTENANCE</p><h2>3x-ui 专家模式</h2><p>日常出口管理在 Gateway 页面完成；需要检查底层入站时再进入 3x-ui。</p></div>
-        <div class="service-grid">
-          <RouterLink class="service-card" to="/settings/3x-ui">
-            <span class="service-icon xui">3X</span><span><strong>3x-ui 设置</strong><small>受管资源核对、修复与专家模式</small></span><b aria-hidden="true">→</b>
-          </RouterLink>
-        </div>
-        <p class="boundary-note">出口引擎继续作为独立服务运行，但不再向 Gateway 用户展示 AimiliVPN 原后台。</p>
-      </section>
-
       <ProjectUpdatePanel v-if="updates?.project" class="services-section" :initial="updates" />
       <section v-else class="services-section update-section">
         <div class="section-title"><p class="section-kicker">GATEWAY UPDATE</p><h2>检测更新</h2><p>从公开 GitHub 正式版本检测更新；安装前仍会校验签名、文件摘要和兼容性。</p></div>
@@ -467,10 +469,12 @@ function messageFor(error: unknown, fallback: string): string {
 <style scoped>
 .settings-header{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;margin-bottom:20px}.eyebrow,.section-kicker{margin:0 0 6px;color:var(--accent);font-size:10px;font-weight:850;letter-spacing:.16em}.settings-header h1{margin:0;font-size:30px;letter-spacing:-.03em}.settings-header>div>p:last-child,.section-title>p:last-child{margin:8px 0 0;color:var(--muted-text);font-size:14px}.account-chip{padding:7px 10px;border:1px solid var(--border);border-radius:999px;background:var(--panel);color:var(--muted-text);font-size:12px;font-weight:750}.account-chip.synced{border-color:color-mix(in srgb,var(--healthy) 28%,var(--border));color:var(--healthy);background:color-mix(in srgb,var(--healthy) 8%,var(--panel))}.policy-notice,.loading-panel{margin:0 0 16px}.loading-panel{padding:11px 13px;border:1px solid var(--border);border-radius:10px;background:var(--panel);color:var(--muted-text);font-size:13px}.settings-layout{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(260px,.75fr);gap:16px}.panel,.services-section{border:1px solid var(--border);border-radius:14px;background:var(--panel);box-shadow:var(--shadow-soft)}.policy-panel{padding:20px}.panel-heading{display:flex;justify-content:space-between;gap:20px}.panel h2,.section-title h2{margin:0;font-size:18px}.panel-heading p:last-child{margin:6px 0 0;color:var(--muted-text);font-size:13px}.switch{display:flex;align-items:center;gap:8px;align-self:flex-start;cursor:pointer}.switch input{position:absolute;opacity:0;pointer-events:none}.switch span{position:relative;width:38px;height:22px;border-radius:999px;background:var(--muted-bg);box-shadow:inset 0 0 0 1px var(--border);transition:.2s}.switch span::after{content:"";position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:var(--panel);box-shadow:0 1px 3px rgba(0,0,0,.18);transition:.2s}.switch input:checked+span{background:var(--accent);box-shadow:none}.switch input:checked+span::after{transform:translateX(16px);background:#fff}.switch b{min-width:42px;font-size:12px}.risk-note{display:grid;gap:4px;margin-top:18px;padding:12px;border:1px solid color-mix(in srgb,var(--warning) 35%,var(--border));border-radius:10px;background:color-mix(in srgb,var(--warning) 8%,var(--panel));font-size:12px}.risk-note strong{color:var(--warning)}.risk-note span{color:var(--muted-text);line-height:1.55}.policy-form{display:grid;gap:14px;margin-top:18px}.field{display:grid;gap:7px;font-size:12px;font-weight:750}.field textarea{width:100%;resize:vertical;padding:11px 12px;border:1px solid var(--border);border-radius:9px;background:var(--input);color:var(--text);font:13px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace}.field input{width:100%;padding:9px 10px;border:1px solid var(--border);border-radius:9px;background:var(--input);color:var(--text);font:13px ui-monospace,SFMono-Regular,Consolas,monospace}.field small{color:var(--muted-text);font-weight:500}.form-footer{display:flex;align-items:center;justify-content:space-between;gap:12px}.apply-state{color:var(--muted-text);font-size:12px}.apply-state[data-apply-status=applied]{color:var(--healthy);font-weight:750}.apply-state[data-apply-status=failed],.apply-state[data-apply-status=repair_required]{color:var(--danger);font-weight:750}.policy-actions{display:flex;gap:8px}.capacity-panel{padding:20px}.capacity-value{display:grid;gap:2px;margin:20px 0}.capacity-value strong{font-size:32px;letter-spacing:-.05em}.capacity-value span{color:var(--muted-text);font-size:12px}.capacity-panel dl{display:grid;gap:8px;margin:0}.capacity-panel dl div{display:flex;justify-content:space-between;padding:9px 0;border-top:1px solid var(--border-soft);font-size:13px}.capacity-panel dt{color:var(--muted-text)}.capacity-panel dd{margin:0;font-weight:800}.capacity-form{display:grid;gap:12px;margin-top:18px}.capacity-help{margin:14px 0 0;color:var(--muted-text);font-size:12px;line-height:1.6}.services-section{grid-column:1/-1;padding:20px}.section-title{margin-bottom:14px}.service-grid{display:grid;grid-template-columns:1fr;gap:12px}.service-card{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:12px;padding:14px;border:1px solid var(--border);border-radius:11px;color:var(--text);text-decoration:none;transition:.15s}.service-card:hover{border-color:color-mix(in srgb,var(--accent) 35%,var(--border));background:var(--hover);transform:translateY(-1px)}.service-icon{display:grid;place-items:center;width:36px;height:36px;border-radius:10px;background:var(--accent-soft);color:var(--accent);font-weight:850}.service-icon.xui{font-size:11px}.service-card span:nth-child(2){display:grid;gap:4px}.service-card strong{font-size:14px}.service-card small{color:var(--muted-text);font-size:12px}.service-card>b{color:var(--muted-text)}.boundary-note{margin:14px 0 0;color:var(--muted-text);font-size:11px;line-height:1.55}@media(max-width:820px){.settings-layout{grid-template-columns:1fr}.services-section{grid-column:auto}.service-grid{grid-template-columns:1fr}}@media(max-width:560px){.settings-header,.panel-heading{align-items:flex-start;flex-direction:column}.account-chip{align-self:flex-start}.service-card{padding:12px}.form-footer{align-items:stretch;flex-direction:column}.policy-actions{flex-direction:column}.form-footer button{width:100%}}
 .update-notice{margin:0 0 14px}.update-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.update-grid.single{grid-template-columns:minmax(0,1fr)}.update-card{display:grid;gap:8px;padding:14px;border:1px solid var(--border);border-radius:11px}.update-card>span,.update-card>p{color:var(--muted-text);font-size:12px}.update-card>p{margin:0;line-height:1.5}.release-notes{white-space:pre-line}.update-actions{display:flex;align-items:center;flex-wrap:wrap;gap:8px}.update-recovery{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:14px;padding:14px;border:1px solid var(--border);border-radius:11px;background:var(--subtle)}.update-recovery p{margin:0;color:var(--muted-text);font-size:11px}@media(max-width:650px){.update-grid{grid-template-columns:1fr}.update-recovery{align-items:stretch;flex-direction:column}}
-.settings-layout{grid-template-columns:minmax(0,1fr);align-items:start}
-.policy-panel,.capacity-panel,.services-section{grid-column:1;min-width:0}
-.policy-panel{padding:24px}
-.policy-form{max-width:900px}
+.settings-layout{grid-template-columns:minmax(0,.9fr) minmax(0,1.1fr);align-items:start}
+.settings-primary{display:grid;align-content:start;gap:16px;min-width:0}
+.policy-panel,.capacity-panel{min-width:0;padding:24px}
+.settings-primary .services-section{grid-column:auto}
+.services-section{grid-column:1/-1;min-width:0}
+.policy-form{width:100%}
 .capacity-panel{padding:24px}
 .capacity-content{display:grid;grid-template-columns:minmax(230px,.8fr) minmax(0,1.2fr);gap:32px;margin-top:16px}
 .capacity-overview{padding-right:28px;border-right:1px solid var(--border-soft)}
@@ -479,4 +483,6 @@ function messageFor(error: unknown, fallback: string): string {
 .capacity-form{margin-top:0}
 .capacity-controls{min-width:0}
 @media(max-width:820px){.capacity-content{grid-template-columns:1fr;gap:20px}.capacity-overview{padding:0 0 20px;border-right:0;border-bottom:1px solid var(--border-soft)}}
+@media(max-width:1250px){.capacity-content{grid-template-columns:1fr;gap:20px}.capacity-overview{padding:0 0 20px;border-right:0;border-bottom:1px solid var(--border-soft)}}
+@media(max-width:1050px){.settings-layout{grid-template-columns:minmax(0,1fr)}.policy-panel,.capacity-panel,.services-section{grid-column:1}}
 </style>

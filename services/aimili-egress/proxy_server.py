@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 import base64
+import errno
 import os
 import secrets
 import select
@@ -197,8 +198,22 @@ def dns_query_over_tun0(host: str, qtype: int, dns_server: str, timeout: float, 
             elif "no such device" in str(e).lower() or e.errno == 19:
                 print(f"[DNS 绑定失败] [错误代码 3004] DNS 解析绑定 {device} 失败，网卡设备不存在，请检查 VPN 连接！", flush=True)
             return None
-        sock.sendto(packet, (dns_server, 53))
-        resp, _ = sock.recvfrom(4096)
+        try:
+            sock.sendto(packet, (dns_server, 53))
+            resp, _ = sock.recvfrom(4096)
+        except OSError:
+            resp = b""
+        # UDP DNS can be dropped or truncated inside a working VPN. Retry over
+        # TCP on the same tunnel; never send this fallback through the VPS uplink.
+        if len(resp) < 12 or resp[:2] != tx_id or resp[2] & 0x02:
+            sock.close()
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(timeout)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, device.encode("utf-8"))
+            sock.connect((dns_server, 53))
+            sock.sendall(len(packet).to_bytes(2, "big") + packet)
+            response_size = int.from_bytes(recv_exact(sock, 2), "big")
+            resp = recv_exact(sock, response_size)
     except Exception:
         return None
     finally:
@@ -269,7 +284,7 @@ def get_tun_dns_servers() -> list[str]:
     servers = [s.strip() for s in raw.split(",") if s.strip()]
     return servers or ["8.8.8.8"]
 
-def resolve_dns_over_tun0(host: str, dns_server: str | None = None, timeout: float = 3.0, device: str = "tun0") -> str | None:
+def resolve_dns_over_tun0(host: str, dns_server: str | None = None, timeout: float = 3.0, device: str = "tun0", ipv4_only: bool = False) -> str | None:
     try:
         socket.inet_aton(host)
         return host
@@ -285,14 +300,18 @@ def resolve_dns_over_tun0(host: str, dns_server: str | None = None, timeout: flo
     cache_key = f"{device}|{host}"
     with _dns_cache_lock:
         cached = _dns_cache.get(cache_key)
-        if cached and now - cached[1] < DNS_CACHE_TTL:
+        if cached and now - cached[1] < DNS_CACHE_TTL and not (ipv4_only and ":" in cached[0]):
             return cached[0]
 
-    # 依次向多个上游 DNS 竞速查询，任一返回即用，避免单一 DNS 在隧道内不可达时干等超时
+    # Try every IPv4 resolver before considering IPv6. One failed resolver must
+    # not hide a reachable IPv4 address behind an unroutable AAAA response.
     servers = [dns_server] if dns_server else get_tun_dns_servers()
     resolved = None
-    for server in servers:
-        resolved = dns_query_over_tun0(host, 1, server, timeout, device) or dns_query_over_tun0(host, 28, server, timeout, device)
+    for qtype in ([1] if ipv4_only else [1, 28]):
+        for server in servers:
+            resolved = dns_query_over_tun0(host, qtype, server, timeout, device)
+            if resolved:
+                break
         if resolved:
             break
 
@@ -320,13 +339,36 @@ def purge_dns_cache(device: str | None = None) -> int:
         return len(keys)
 
 def create_connection(address: tuple[str, int], timeout: float = 20, device: str = "tun0") -> socket.socket:
+    try:
+        return _create_connection(address, timeout, device)
+    except OSError as exc:
+        host, _ = address
+        try:
+            socket.inet_pton(socket.AF_INET6, host)
+            literal = True
+        except OSError:
+            try:
+                socket.inet_pton(socket.AF_INET, host)
+                literal = True
+            except OSError:
+                literal = False
+        if literal or exc.errno not in (errno.ENETUNREACH, errno.EHOSTUNREACH):
+            raise
+        # Drop only the failed hostname on this tunnel. Existing connections and
+        # DNS entries for the other exits are untouched.
+        with _dns_cache_lock:
+            _dns_cache.pop(f"{device}|{host}", None)
+        return _create_connection(address, timeout, device, ipv4_only=True)
+
+
+def _create_connection(address: tuple[str, int], timeout: float, device: str, ipv4_only: bool = False) -> socket.socket:
     host, port = address
-    resolved_ip = resolve_dns_over_tun0(host, device=device)
+    resolved_ip = resolve_dns_over_tun0(host, device=device, ipv4_only=ipv4_only)
     if resolved_ip:
         host = resolved_ip
 
     err = None
-    for res in socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM):
+    for res in socket.getaddrinfo(host, port, socket.AF_INET if ipv4_only else 0, socket.SOCK_STREAM):
         af, socktype, proto, canonname, sa = res
         sock = None
         try:
