@@ -1,13 +1,12 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { apiDownloadText, apiFetch, idempotencyHeaders, type CandidateCountryPayload, type ConnectionsPayload, type CountryRefreshPayload, type DedicatedStandbyConfigPayload, type DedicatedStandbyPayload, type ProtocolMode, type ProtocolModePayload, type ProxyGroupPayload, type ProxyType, type SubscriptionPayload } from '../api/client'
+import { apiDownloadText, apiFetch, idempotencyHeaders, type CandidateCountryPayload, type ConnectionsPayload, type CountryRefreshPayload, type DedicatedStandbyPayload, type ProtocolMode, type ProtocolModePayload, type ProxyGroupPayload, type ProxyType, type SubscriptionPayload } from '../api/client'
 import AppShell from '../components/AppShell.vue'
 import PoolFilters from '../components/PoolFilters.vue'
 import PoolTable from '../components/PoolTable.vue'
 import UiNotice from '../components/UiNotice.vue'
 import { codeFromError, countryDisplayName, messageForCode, type NoticeKind, type UiNoticeData } from '../components/errorMessages'
 import { poolStatusGroup, type PoolStatusGroup } from '../components/poolStatus'
-import DedicatedStandbys from '../components/DedicatedStandbys.vue'
 import CountryAvailability from '../components/CountryAvailability.vue'
 
 const props = defineProps<{ protocol: 'vless' | 'socks5h' }>()
@@ -32,6 +31,9 @@ const replacementMenuOpen = ref(false)
 const refreshNoticeFingerprint = ref('')
 const dedicatedStandbys = ref<DedicatedStandbyPayload[]>([])
 const standbyBusy = ref(false)
+const standbyManualIndex = ref<number | null>(null)
+const standbyManualCandidateID = ref('')
+const standbyManualNotice = ref<UiNoticeData | null>(null)
 let refreshTimer: ReturnType<typeof setTimeout> | undefined
 let standbyTimer: ReturnType<typeof setTimeout> | undefined
 let noticeSequence = 0
@@ -81,6 +83,15 @@ const replacementTargetWarning = computed(() => selectedReplacementTarget.value 
 const replacementTargetName = (row: ProxyGroupPayload) => row.egressSource === 'main' ? '主连接' : `出口位 ${row.slotNumber}`
 const replacementTargetLabel = (row: ProxyGroupPayload) => `${automaticRepairFailed(row) ? '【故障·自动修复失败】' : ''}${replacementTargetName(row)} · ${countryDisplayName(row.countryCode, [{ code: row.countryCode, name: row.countryName || row.countryCode }])} · ${row.exitIp || '当前无可用出口 IP'}`
 const subscriptionReady = computed(() => groups.value.some(row => row.status === 'ready' && row.protocolState === 'ready' && row.subscriptionState === 'ready'))
+const standbyTargetCount = computed(() => dedicatedStandbys.value.filter(row => row.status !== 'disabled').length)
+const standbyReadyCount = computed(() => dedicatedStandbys.value.filter(row => row.status === 'ready').length)
+const standbyManualCount = computed(() => dedicatedStandbys.value.filter(row => row.status === 'waiting_manual').length)
+const standbyManualRow = computed(() => standbyManualIndex.value === null ? null : dedicatedStandbys.value.find(row => row.index === standbyManualIndex.value) ?? null)
+const standbyManualCandidates = computed(() => groups.value.filter(row => row.status === 'standby'))
+const standbyTargetLabel = (row: DedicatedStandbyPayload) => row.target === 'main' ? '主连接' : `出口位 ${Number(row.target.split(':')[1]) + 1}`
+const standbyCandidateLabel = (row: ProxyGroupPayload) => `${countryDisplayName(row.countryCode, [{ code: row.countryCode, name: row.countryName || row.countryCode }])} · ${row.proxyType === 'residential' ? '住宅' : '机房'} · ${row.exitIp || row.candidateIp || '尚无出口 IP'}`
+const standbySummaryState = (row: DedicatedStandbyPayload) => ({ disabled: '未启用', preparing: '正在准备', ready: '已就绪', degraded: '检查异常', waiting_manual: '等待人工处理', retry_wait: '等待重试' } as Record<string, string>)[row.status] || '尚无状态'
+const standbySummaryMeta = (row: DedicatedStandbyPayload) => `${standbyTargetLabel(row)} · ${standbySummaryState(row)} · ${row.egress_ok ? '真实出口有效' : '真实出口未就绪'}${row.exit_ip || row.candidate_ip ? ` · ${row.exit_ip || row.candidate_ip}` : ''}`
 
 function makeNotice(kind: NoticeKind, title: string, message = ''): UiNoticeData {
   noticeSequence += 1
@@ -110,7 +121,7 @@ onBeforeUnmount(() => {
 
 async function loadInitial(): Promise<void> {
   await Promise.all([loadGroups(), loadCatalog(), readRefreshStatus(), loadDedicatedStandbys()])
-  if (props.protocol === 'vless') scheduleStandbyPoll()
+  scheduleStandbyPoll()
 }
 
 async function loadDedicatedStandbys(preserveCurrent = false): Promise<void> {
@@ -128,27 +139,17 @@ function scheduleStandbyPoll(): void {
 
 async function pollDedicatedStandbys(): Promise<void> {
   standbyTimer = undefined
-  if (props.protocol !== 'vless') return
   if (!standbyBusy.value && busy.value === '') await loadDedicatedStandbys(true)
   scheduleStandbyPoll()
 }
 
-async function saveDedicatedStandbys(configs: DedicatedStandbyConfigPayload[]): Promise<void> {
-  standbyBusy.value = true
-  try {
-    const result = await apiFetch<DedicatedStandbyPayload[]>('/api/v1/settings/aimilivpn/standbys', { method: 'PUT', body: JSON.stringify({ standbys: configs }) })
-    dedicatedStandbys.value = Array.isArray(result) ? result : []
-    topNotice.value = makeNotice('success', '专属备用设置已保存', '系统会先验证备用节点，验证成功后才显示已就绪。')
-  } catch (error) { topNotice.value = makeNotice('error', '专属备用设置失败', localizedError(error, '备用设置未应用，请稍后重试。')) }
-  finally { standbyBusy.value = false; await loadDedicatedStandbys() }
-}
-
-async function assignDedicatedStandby(index: number, candidateId: string): Promise<void> {
+async function assignDedicatedStandby(index: number, candidateId: string): Promise<boolean> {
   standbyBusy.value = true
   try {
     await apiFetch(`/api/v1/settings/aimilivpn/standbys/${index}/assign`, { method: 'POST', body: JSON.stringify({ candidateId }) })
     topNotice.value = makeNotice('success', `备用 ${index + 1} 已重新验证`, '备用节点已通过真实出口检测。')
-  } catch (error) { topNotice.value = makeNotice('error', '备用节点设置失败', localizedError(error, '该候选没有通过真实出口检测。')) }
+    return true
+  } catch (error) { standbyManualNotice.value = makeNotice('error', '备用节点设置失败', localizedError(error, '该候选没有通过真实出口检测。')); return false }
   finally { standbyBusy.value = false; await loadDedicatedStandbys() }
 }
 
@@ -159,6 +160,24 @@ async function retryDedicatedStandby(index: number): Promise<void> {
     topNotice.value = makeNotice('success', '已重新开始恢复', '后台按恢复策略验证候选，页面将持续更新备用状态。')
   } catch (error) { topNotice.value = makeNotice('error', '重试未开始', localizedError(error, '请稍后重试并查看恢复日志。')) }
   finally { standbyBusy.value = false; await loadDedicatedStandbys() }
+}
+
+function openStandbyManual(index: number): void {
+  standbyManualIndex.value = index
+  standbyManualCandidateID.value = ''
+  standbyManualNotice.value = null
+}
+
+function closeStandbyManual(): void {
+  standbyManualIndex.value = null
+  standbyManualCandidateID.value = ''
+  standbyManualNotice.value = null
+}
+
+async function confirmStandbyManual(): Promise<void> {
+  if (standbyManualIndex.value === null || !standbyManualCandidateID.value) return
+  const ok = await assignDedicatedStandby(standbyManualIndex.value, standbyManualCandidateID.value)
+  if (ok) closeStandbyManual()
 }
 
 async function loadGroups(showLoading = true): Promise<void> {
@@ -498,9 +517,17 @@ function formatRefreshTime(value?: number): string {
     </section>
     <UiNotice v-if="refreshNotice" :key="refreshNotice.id" data-refresh-notice class="refresh-notice" :notice="refreshNotice" @close="dismissRefreshNotice" />
     <CountryAvailability :rows="candidateCountries" />
-    <DedicatedStandbys v-if="protocol === 'vless' && dedicatedStandbys.length > 0" :rows="dedicatedStandbys" :countries="candidateCountries" :groups="groups" :busy="standbyBusy || busy !== ''" @retry="retryDedicatedStandby" @assign="assignDedicatedStandby" />
+    <section v-if="dedicatedStandbys.length > 0" data-dedicated-standbys class="standby-summary-bar">
+      <div class="standby-summary-heading">
+        <div><p class="eyebrow">DEDICATED HOT STANDBY</p><strong>专属热备用</strong><span>{{ standbyReadyCount }}/{{ standbyTargetCount }} 已就绪</span></div>
+        <span v-if="standbyManualCount" class="standby-summary-warning">{{ standbyManualCount }} 个等待人工处理</span>
+      </div>
+      <div class="standby-summary-items">
+        <span v-for="row in dedicatedStandbys" :key="row.index" :data-standby-summary="row.index" :class="['standby-summary-item', { ready: row.status === 'ready', fault: row.status === 'waiting_manual' }]">{{ standbySummaryMeta(row) }}</span>
+      </div>
+    </section>
     <div v-if="loading" class="loading">正在读取代理池…</div>
-    <PoolTable v-else :rows="rows" :protocol="protocol" :busy="busy" @copy="copyAddress" @replace="openReplacement" @check="checkRow" @protocol="switchProtocol" />
+    <PoolTable v-else :rows="rows" :protocol="protocol" :busy="busy" :standbys="dedicatedStandbys" @copy="copyAddress" @replace="openReplacement" @check="checkRow" @protocol="switchProtocol" @standby-manual="openStandbyManual" />
     <div v-if="replacementCandidate" class="dialog-backdrop" @click.self="closeReplacement">
       <section data-replace-dialog class="replace-dialog" role="dialog" aria-modal="true" aria-labelledby="replace-title">
         <button class="dialog-close" type="button" aria-label="关闭" @click="closeReplacement">×</button>
@@ -518,11 +545,29 @@ function formatRefreshTime(value?: number): string {
         <div class="dialog-actions"><button class="secondary" type="button" @click="closeReplacement">取消</button><button data-confirm-replace type="button" :disabled="!replacementTarget || !replacementCandidateID || busy !== ''" @click="confirmReplacement">{{ busy.startsWith('replace-') ? '正在替换…' : '确认替换' }}</button></div>
       </section>
     </div>
+    <div v-if="standbyManualIndex !== null && standbyManualRow" class="dialog-backdrop" @click.self="closeStandbyManual">
+      <section data-standby-manual-dialog class="replace-dialog standby-manual-dialog" role="dialog" aria-modal="true" aria-labelledby="standby-manual-title">
+        <button class="dialog-close" type="button" aria-label="关闭" @click="closeStandbyManual">×</button>
+        <p class="eyebrow">MANUAL HOT STANDBY</p><h2 id="standby-manual-title">手动替换专属热备用</h2>
+        <p>当前目标已锁定为 <strong>{{ standbyTargetLabel(standbyManualRow) }}</strong>。候选必须先通过真实出口验证，验证成功后才会写入备用绑定。</p>
+        <label class="standby-candidate-field">备用候选
+          <select v-model="standbyManualCandidateID" :disabled="standbyBusy || busy !== ''">
+            <option value="">请选择可用候选</option>
+            <option v-for="candidate in standbyManualCandidates" :key="candidate.id" :value="candidate.id">{{ standbyCandidateLabel(candidate) }}</option>
+          </select>
+        </label>
+        <UiNotice v-if="standbyManualNotice" :key="standbyManualNotice.id" data-standby-manual-notice :notice="standbyManualNotice" @close="standbyManualNotice=null" />
+        <div class="dialog-actions standby-manual-actions">
+          <button class="secondary" type="button" :disabled="standbyBusy || busy !== ''" @click="retryDedicatedStandby(standbyManualIndex)">{{ standbyBusy ? '正在恢复…' : '重新开始自动恢复' }}</button>
+          <button data-standby-manual-confirm type="button" :disabled="standbyBusy || busy !== '' || !standbyManualCandidateID" @click="confirmStandbyManual">{{ standbyBusy ? '正在验证…' : '验证并设为备用' }}</button>
+        </div>
+      </section>
+    </div>
   </AppShell>
 </template>
 
 <style scoped>
-.page-heading{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin-bottom:20px}.eyebrow{margin:0 0 6px;color:var(--accent);font-size:11px;font-weight:800;letter-spacing:.14em}.page-heading h1{margin:0;font-size:28px;letter-spacing:-.035em}.page-heading p:not(.eyebrow){margin:8px 0 0;color:var(--muted-text);font-size:14px}.heading-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px}[data-top-notice],.refresh-notice,.loading{margin:0 0 14px}.loading{padding:10px 13px;border:1px solid var(--border);border-radius:9px;background:var(--panel);color:var(--muted-text);font-size:13px}.pool-toolbar{display:flex;align-items:center;gap:14px;margin-bottom:12px}.pool-stats{display:flex;align-items:center;gap:6px;margin-left:auto;flex:none;font-size:12px}.pool-stat{display:inline-flex;align-items:baseline;gap:3px;padding:5px 8px;border:1px solid var(--border);border-radius:999px;font-weight:700}.pool-stat strong{font-size:14px}.pool-stat.official{color:#788cff;background:rgba(94,112,255,.1)}.pool-stat.target{color:#287ca6;background:rgba(40,124,166,.1)}.pool-stat.valid{color:#18ae70;background:rgba(24,174,112,.1)}.pool-stat.maximum{color:#d58b20;background:rgba(213,139,32,.1)}.pool-stat.countries{color:#c27cfa;background:rgba(194,124,250,.1)}.fixed-toggle{display:flex;align-items:center;gap:6px;color:var(--muted-text);font-size:12px;white-space:nowrap}.dialog-backdrop{position:fixed;inset:0;z-index:20;display:grid;place-items:center;padding:20px;background:rgba(15,23,42,.52);backdrop-filter:blur(3px)}.replace-dialog{position:relative;width:min(460px,100%);padding:24px;border:1px solid var(--border);border-radius:14px;background:var(--panel);box-shadow:0 24px 70px rgba(15,23,42,.28)}.replace-dialog h2{margin:0 0 10px;font-size:22px}.replace-dialog>p:not(.eyebrow){color:var(--muted-text);font-size:13px;line-height:1.65}.replace-dialog label{display:grid;gap:7px;margin-top:18px;font-size:12px;font-weight:700}.replace-dialog select{height:40px;padding:0 10px;border:1px solid var(--border);border-radius:8px;background:var(--input);color:var(--text)}.replace-dialog select.fault-target{border-color:var(--danger);box-shadow:0 0 0 2px rgba(239,68,68,.12)}.fault-target-option,.fault-target-warning{color:var(--danger)}.replace-dialog .fault-target-warning{margin:8px 0 0;font-weight:700}.replacement-notice{margin-top:14px}.dialog-close{position:absolute;top:12px;right:12px;width:32px;height:32px;padding:0;border:0;background:transparent;color:var(--muted-text);font-size:22px}.dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}@media(max-width:1100px){.pool-stats{flex-wrap:wrap;justify-content:flex-end}}@media(max-width:760px){.page-heading{align-items:flex-start;flex-direction:column}.heading-actions{width:100%;justify-content:flex-start}.heading-actions button{flex:1}.pool-toolbar{align-items:stretch;flex-direction:column}.pool-stats{align-self:flex-end;margin-left:0}}
+.page-heading{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin-bottom:20px}.eyebrow{margin:0 0 6px;color:var(--accent);font-size:11px;font-weight:800;letter-spacing:.14em}.page-heading h1{margin:0;font-size:28px;letter-spacing:-.035em}.page-heading p:not(.eyebrow){margin:8px 0 0;color:var(--muted-text);font-size:14px}.heading-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px}[data-top-notice],.refresh-notice,.loading{margin:0 0 14px}.loading{padding:10px 13px;border:1px solid var(--border);border-radius:9px;background:var(--panel);color:var(--muted-text);font-size:13px}.pool-toolbar{display:flex;align-items:center;gap:14px;margin-bottom:12px}.pool-stats{display:flex;align-items:center;gap:6px;margin-left:auto;flex:none;font-size:12px}.pool-stat{display:inline-flex;align-items:baseline;gap:3px;padding:5px 8px;border:1px solid var(--border);border-radius:999px;font-weight:700}.pool-stat strong{font-size:14px}.pool-stat.official{color:#788cff;background:rgba(94,112,255,.1)}.pool-stat.target{color:#287ca6;background:rgba(40,124,166,.1)}.pool-stat.valid{color:#18ae70;background:rgba(24,174,112,.1)}.pool-stat.maximum{color:#d58b20;background:rgba(213,139,32,.1)}.pool-stat.countries{color:#c27cfa;background:rgba(194,124,250,.1)}.fixed-toggle{display:flex;align-items:center;gap:6px;color:var(--muted-text);font-size:12px;white-space:nowrap}.standby-summary-bar{display:grid;gap:9px;margin:0 0 14px;padding:10px 13px;border:1px solid var(--border);border-radius:10px;background:linear-gradient(110deg,var(--panel),var(--subtle));box-shadow:var(--shadow-soft)}.standby-summary-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}.standby-summary-heading>div{display:flex;align-items:baseline;gap:8px;min-width:0}.standby-summary-heading .eyebrow{margin:0;font-size:9px}.standby-summary-heading strong{font-size:13px}.standby-summary-heading span:not(.standby-summary-warning){color:var(--muted-text);font-size:12px}.standby-summary-warning{padding:3px 7px;border-radius:999px;background:rgba(239,68,68,.1);color:var(--danger);font-size:11px;font-weight:700;white-space:nowrap}.standby-summary-items{display:flex;flex-wrap:wrap;gap:6px}.standby-summary-item{max-width:100%;padding:4px 8px;border:1px solid var(--border);border-radius:999px;color:var(--muted-text);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.standby-summary-item.ready{border-color:color-mix(in srgb,var(--healthy) 40%,var(--border));color:var(--healthy);background:rgba(24,174,112,.08)}.standby-summary-item.fault{border-color:color-mix(in srgb,var(--danger) 45%,var(--border));color:var(--danger);background:rgba(239,68,68,.08)}.dialog-backdrop{position:fixed;inset:0;z-index:20;display:grid;place-items:center;padding:20px;background:rgba(15,23,42,.52);backdrop-filter:blur(3px)}.replace-dialog{position:relative;width:min(460px,100%);padding:24px;border:1px solid var(--border);border-radius:14px;background:var(--panel);box-shadow:0 24px 70px rgba(15,23,42,.28)}.replace-dialog h2{margin:0 0 10px;font-size:22px}.replace-dialog>p:not(.eyebrow){color:var(--muted-text);font-size:13px;line-height:1.65}.replace-dialog label{display:grid;gap:7px;margin-top:18px;font-size:12px;font-weight:700}.replace-dialog select{height:40px;padding:0 10px;border:1px solid var(--border);border-radius:8px;background:var(--input);color:var(--text)}.replace-dialog select.fault-target{border-color:var(--danger);box-shadow:0 0 0 2px rgba(239,68,68,.12)}.fault-target-option,.fault-target-warning{color:var(--danger)}.replace-dialog .fault-target-warning{margin:8px 0 0;font-weight:700}.replacement-notice{margin-top:14px}.dialog-close{position:absolute;top:12px;right:12px;width:32px;height:32px;padding:0;border:0;background:transparent;color:var(--muted-text);font-size:22px}.dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}.standby-candidate-field{margin-top:18px}.standby-manual-actions{flex-wrap:wrap}.standby-manual-actions button:first-child{margin-right:auto}@media(max-width:1100px){.pool-stats{flex-wrap:wrap;justify-content:flex-end}}@media(max-width:760px){.page-heading{align-items:flex-start;flex-direction:column}.heading-actions{width:100%;justify-content:flex-start}.heading-actions button{flex:1}.pool-toolbar{align-items:stretch;flex-direction:column}.pool-stats{align-self:flex-end;margin-left:0}.standby-summary-heading{align-items:flex-start;flex-direction:column}.standby-summary-heading>div{flex-wrap:wrap}}
 </style>
 
 <style scoped>

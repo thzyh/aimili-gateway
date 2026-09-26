@@ -861,6 +861,33 @@ it('refreshes dedicated standby health in place without reloading the whole page
 	wrapper.unmount()
 })
 
+it('merges dedicated standby state into each exit row and reuses manual assignment from the row', async () => {
+	const standbys = [
+		{ index: 0, target: 'main', countries: [], status: 'ready', country: 'JP', proxy_type: 'residential', candidate_ip: '198.51.100.20', exit_ip: '203.0.113.20', egress_ok: true, checked_at: 1_700_000_000, last_error_code: '' },
+		{ index: 1, target: 'slot:0', countries: [], status: 'ready', country: 'JP', proxy_type: 'residential', candidate_ip: '198.51.100.21', exit_ip: '203.0.113.21', egress_ok: true, checked_at: 1_700_000_000, last_error_code: '' },
+		{ index: 2, target: 'slot:1', countries: [], status: 'waiting_manual', country: 'KR', proxy_type: 'datacenter', candidate_ip: '', exit_ip: '', egress_ok: false, checked_at: 1_700_000_000, last_error_code: 'recovery_budget_exhausted' },
+	]
+	mocks.apiFetch.mockImplementation((path: string, init?: RequestInit) => {
+		if (path === '/api/v1/proxy-groups') return Promise.resolve(rows)
+		if (path === '/api/v1/settings/aimilivpn/countries') return Promise.resolve([])
+		if (path === '/api/v1/settings/aimilivpn/refresh') return Promise.resolve({ state: 'idle', country: '', phase: '', testedCount: 0, validCount: 0 })
+		if (path === '/api/v1/settings/aimilivpn/standbys') return Promise.resolve(standbys)
+		if (path === '/api/v1/settings/aimilivpn/standbys/2/assign' && init?.method === 'POST') return Promise.resolve({ ok: true })
+		return Promise.resolve(undefined)
+	})
+	const wrapper = mount(VpnPoolView)
+	await flushPromises()
+
+	expect(wrapper.get('[data-standby-cell="agw-main"]').text()).toContain('已就绪')
+	expect(wrapper.get('[data-standby-cell="kr-one"]').text()).toContain('等待人工处理')
+	await wrapper.get('[data-standby-manual="kr-one"]').trigger('click')
+	expect(wrapper.get('[data-standby-manual-dialog]').text()).toContain('出口位 2')
+	await wrapper.get('[data-standby-manual-dialog] select').setValue('us-standby')
+	await wrapper.get('[data-standby-manual-confirm]').trigger('click')
+	await flushPromises()
+	expect(mocks.apiFetch).toHaveBeenCalledWith('/api/v1/settings/aimilivpn/standbys/2/assign', { method: 'POST', body: JSON.stringify({ candidateId: 'us-standby' }) })
+})
+
 it('copies all filtered addresses without a trailing newline and leaves the clipboard unchanged for an empty export', async () => {
 	const wrapper = mount(VpnPoolView)
 	await flushPromises()
