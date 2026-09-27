@@ -425,7 +425,7 @@ func (o *Orchestrator) Pool(ctx context.Context) ([]domain.ProxyGroup, error) {
 			mainGroup.VLESSLatencyMS = storedMain.VLESSLatencyMS
 			mainGroup.SOCKSLatencyMS = storedMain.SOCKSLatencyMS
 			mainGroup.LastCheckedAt = storedMain.LastCheckedAt
-			if storedMain.LastErrorCode != "" && storedMain.CandidateID == candidateID && lastError != "manual_replacement_required" {
+			if storedMain.LastErrorCode != "" && lastError != "manual_replacement_required" {
 				mainGroup.LastErrorCode = storedMain.LastErrorCode
 				mainGroup.Status = domain.ProxyGroupDegraded
 			}

@@ -623,6 +623,7 @@ func TestCheckMainPersistsFailureAndClearsItAfterRecovery(t *testing.T) {
 		t.Fatalf("%+v", fixture.store.mainEgress)
 	}
 	fixture.store.protocolModes["agw-main"] = domain.EgressProtocolMode{EgressID: "agw-main", ActiveMode: domain.ProtocolVLESSTCPRealityVision, DesiredMode: domain.ProtocolVLESSTCPRealityVision, State: domain.ProtocolReady, Version: 1, UpdatedAt: fixture.now()}
+	fixture.aimili.mainStatus.CandidateID = "background-promoted-main"
 	groups, poolErr := o.Pool(context.Background())
 	if poolErr != nil {
 		t.Fatal(poolErr)
