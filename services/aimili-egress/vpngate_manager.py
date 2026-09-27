@@ -133,18 +133,6 @@ REPAIR_CANDIDATE_FRESH_SECONDS = env_int("REPAIR_CANDIDATE_FRESH_SECONDS", 120, 
 OPENVPN_TEST_TIMEOUT_SECONDS = env_int("OPENVPN_TEST_TIMEOUT_SECONDS", 35, 1)
 OPENVPN_CONNECT_RETRY_MAX = env_int("OPENVPN_CONNECT_RETRY_MAX", 3, 1, 10)
 OPENVPN_TEST_CONCURRENCY = env_int("OPENVPN_TEST_CONCURRENCY", 4, 1, 16)
-_initial_slot_count = env_int("MULTI_EXIT_SLOTS", 0, 0, 16)
-_initial_facts = capacity.read_host_facts()
-_initial_capacity_slots = capacity.limits_for(
-    capacity.HostFacts(
-        _initial_facts.memory_total_bytes,
-        _initial_facts.memory_total_bytes,
-        _initial_facts.cpu_count,
-        0.0,
-    ),
-    _initial_slot_count,
-).regular_exit_slots_max
-MAX_OPENVPN_PROCESSES = env_int("MAX_OPENVPN_PROCESSES", max(9, _initial_capacity_slots * 2 + 3), 4, 64)
 MAX_OPENVPN_PROBES = env_int("MAX_OPENVPN_PROBES", 2, 1, 8)
 OPENVPN_PROBE_SUCCESS_ROUNDS = env_int("OPENVPN_PROBE_SUCCESS_ROUNDS", 2, 1, 3)
 TCP_PRESCREEN_CONCURRENCY = env_int("TCP_PRESCREEN_CONCURRENCY", 100, 1, 512)
@@ -316,6 +304,25 @@ main_proxy_registry = proxy_server.ConnRegistry()  # 主代理活跃下游连接
 main_assignment_coordinator = MainAssignmentCoordinator(MAIN_ASSIGNMENT_FILE)
 egress_repair_store = egress_repair.RepairStore(EGRESS_REPAIR_FILE)
 main_assignment_thread = threading.local()
+_initial_slot_count = env_int("MULTI_EXIT_SLOTS", 0, 0, 16)
+# 网页持久化的出口数量优先于首次部署留下的环境默认值。
+try:
+    _saved_slots_config = json.loads((DATA_DIR / "ui_auth.json").read_text(encoding="utf-8"))
+    if isinstance(_saved_slots_config, dict):
+        _initial_slot_count = bounded_int(_saved_slots_config.get("exit_slot_count"), _initial_slot_count, 0, MAX_EXIT_SLOTS)
+except (OSError, ValueError):
+    pass
+_initial_facts = capacity.read_host_facts()
+_initial_capacity_slots = capacity.limits_for(
+    capacity.HostFacts(
+        _initial_facts.memory_total_bytes,
+        _initial_facts.memory_total_bytes,
+        _initial_facts.cpu_count,
+        0.0,
+    ),
+    _initial_slot_count,
+).regular_exit_slots_max
+MAX_OPENVPN_PROCESSES = env_int("MAX_OPENVPN_PROCESSES", max(9, _initial_capacity_slots * 2 + 3), 4, 64)
 openvpn_capacity = threading.BoundedSemaphore(MAX_OPENVPN_PROCESSES)
 openvpn_probe_capacity = threading.BoundedSemaphore(MAX_OPENVPN_PROBES)
 candidate_reservation_lock = threading.RLock()

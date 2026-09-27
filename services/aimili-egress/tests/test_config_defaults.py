@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 import unittest
+import tempfile
 from pathlib import Path
 
 
@@ -61,6 +62,24 @@ print(json.dumps({
         self.assertEqual(result["busyRetry"], 600)
         self.assertEqual(result["fetchInterval"], 21600)
         self.assertEqual(result["checkInterval"], 21600)
+
+    def test_persisted_four_slots_override_legacy_three_slot_default(self):
+        service_dir = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "ui_auth.json").write_text(json.dumps({"exit_slot_count": 4}))
+            environment = {**os.environ, "VPNGATE_DATA_DIR": directory, "MULTI_EXIT_SLOTS": "3"}
+            environment.pop("MAX_OPENVPN_PROCESSES", None)
+            command = """
+import capacity
+capacity.read_host_facts = lambda: capacity.HostFacts(458*1048576, 184*1048576, 1, 0)
+import vpngate_manager as manager
+print(manager.MAX_OPENVPN_PROCESSES)
+"""
+            result = subprocess.run([sys.executable, "-c", command], cwd=service_dir, env=environment, capture_output=True, text=True, check=True)
+            self.assertEqual(int(result.stdout.strip()), 11)
+            environment["MAX_OPENVPN_PROCESSES"] = "9"
+            result = subprocess.run([sys.executable, "-c", command], cwd=service_dir, env=environment, capture_output=True, text=True, check=True)
+            self.assertEqual(int(result.stdout.strip()), 9)
 
 
 if __name__ == "__main__":
