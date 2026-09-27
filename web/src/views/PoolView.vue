@@ -23,17 +23,13 @@ const checkProgress = ref('')
 const loading = ref(true)
 const topNotice = ref<UiNoticeData | null>(null)
 const refreshNotice = ref<UiNoticeData | null>(null)
-const replacementNotice = ref<UiNoticeData | null>(null)
 const selectedCandidateID = ref('')
-const replacementTarget = ref('')
-const replacementMenuOpen = ref(false)
 const refreshNoticeFingerprint = ref('')
 const dedicatedStandbys = ref<DedicatedStandbyPayload[]>([])
 const standbyBusy = ref(false)
 const standbyManualIndex = ref<number | null>(null)
 const standbyManualNotice = ref<UiNoticeData | null>(null)
 const replacementOpen = ref(false)
-const replacementMode = ref<'active' | 'standby'>('active')
 const replacementCountry = ref('')
 const replacementType = ref('')
 let refreshTimer: ReturnType<typeof setTimeout> | undefined
@@ -74,16 +70,6 @@ const rows = computed(() => groups.value.filter(row => {
   const right = props.protocol === 'vless' ? b.vlessLatencyMs : b.socksLatencyMs
   return (left || Number.MAX_SAFE_INTEGER) - (right || Number.MAX_SAFE_INTEGER)
 }))
-const replacementTargets = computed(() => groups.value.filter(row => row.status !== 'standby' && (row.egressSource === 'main' || (row.slotNumber ?? 0) > 0)).sort((a, b) => {
-  if (a.egressSource === 'main') return -1
-  if (b.egressSource === 'main') return 1
-  return (a.slotNumber ?? 0) - (b.slotNumber ?? 0)
-}))
-const automaticRepairFailed = (row: ProxyGroupPayload) => ['no_same_country_candidate', 'replacement_failed', 'repair_interrupted', 'manual_repair_required', 'manual_replacement_required'].includes(row.lastErrorCode || '')
-const selectedReplacementTarget = computed(() => replacementTargets.value.find(row => row.id === replacementTarget.value) ?? null)
-const replacementTargetWarning = computed(() => selectedReplacementTarget.value && automaticRepairFailed(selectedReplacementTarget.value) ? selectedReplacementTarget.value : null)
-const replacementTargetName = (row: ProxyGroupPayload) => row.egressSource === 'main' ? '主连接' : `出口位 ${row.slotNumber}`
-const replacementTargetLabel = (row: ProxyGroupPayload) => `${automaticRepairFailed(row) ? '【故障·自动修复失败】' : ''}${replacementTargetName(row)} · ${countryDisplayName(row.countryCode, [{ code: row.countryCode, name: row.countryName || row.countryCode }])} · ${row.exitIp || '当前无可用出口 IP'}`
 const subscriptionReady = computed(() => groups.value.some(row => row.status === 'ready' && row.protocolState === 'ready' && row.subscriptionState === 'ready'))
 const standbyTargetCount = computed(() => dedicatedStandbys.value.filter(row => row.status !== 'disabled').length)
 const standbyReadyCount = computed(() => dedicatedStandbys.value.filter(row => row.status === 'ready').length)
@@ -169,15 +155,13 @@ async function retryDedicatedStandby(index: number): Promise<void> {
 }
 
 function openStandbyManual(index: number): void {
-  if (standbyBusy.value || busy.value) return
+  if (standbyBusy.value || busy.value || !dedicatedStandbys.value.some(row => row.index === index && row.status !== 'disabled')) return
   standbyManualIndex.value = index
   selectedCandidateID.value = ''
   standbyManualNotice.value = null
   replacementOpen.value = true
-  replacementMode.value = 'standby'
   replacementCountry.value = country.value
   replacementType.value = proxyType.value
-  replacementTarget.value = replacementTargets.value.find(row => row.egressSource !== 'main')?.id ?? ''
 }
 
 async function confirmStandbyManual(): Promise<void> {
@@ -317,19 +301,6 @@ async function mutate(row: ProxyGroupPayload, action: 'activate' | 'check' | 'ro
   finally { busy.value = '' }
 }
 
-function openReplacement(row: ProxyGroupPayload): void {
-  replacementOpen.value = true
-  replacementMode.value = 'active'
-  replacementCountry.value = country.value
-  replacementType.value = proxyType.value
-  standbyManualIndex.value = dedicatedStandbys.value.find(item => item.target !== 'main' && item.status !== 'disabled')?.index ?? dedicatedStandbys.value[0]?.index ?? null
-  selectedCandidateID.value = row.id
-  standbyManualNotice.value = null
-  replacementTarget.value = replacementTargets.value.find(target => target.egressSource !== 'main')?.id ?? ''
-  replacementMenuOpen.value = false
-  replacementNotice.value = null
-}
-
 async function refreshAllCountries(): Promise<void> {
   busy.value = 'all-country-refresh'
   refreshNoticeFingerprint.value = ''
@@ -347,36 +318,11 @@ async function refreshAllCountries(): Promise<void> {
 }
 
 function closeReplacement(): void {
-  if (standbyBusy.value || busy.value.startsWith('replace-')) return
+  if (standbyBusy.value) return
   replacementOpen.value = false
   selectedCandidateID.value = ''
-  replacementTarget.value = ''
-  replacementMenuOpen.value = false
-  replacementNotice.value = null
   standbyManualIndex.value = null
   standbyManualNotice.value = null
-}
-
-async function confirmReplacement(): Promise<void> {
-  if (busy.value || standbyBusy.value || !replacementTargets.value.some(row => row.id === replacementTarget.value)) return
-  const candidate = replacementCandidates.value.find(row => row.id === selectedCandidateID.value)
-  if (!candidate || candidate.status !== 'standby') return
-  const target = replacementTarget.value
-  busy.value = `replace-${candidate.id}`
-  replacementNotice.value = makeNotice('progress', '正在替换出口', '将保留原端口和入站，失败时自动回滚。')
-  try {
-    await apiFetch(`/api/v1/proxy-groups/${candidate.id}/replace`, { method: 'POST', headers: idempotencyHeaders(), body: JSON.stringify({ targetGroupId: target }) })
-    busy.value = ''
-    closeReplacement()
-    topNotice.value = target === 'agw-main'
-      ? makeNotice('success', '主连接替换成功', '失败回滚边界已保留。')
-      : makeNotice('success', '出口位替换成功', '端口与入站保持不变。')
-    await Promise.all([loadGroups(false), loadDedicatedStandbys()])
-  } catch (error) {
-    replacementNotice.value = makeNotice('error', '出口替换失败', localizedError(error, '出口替换失败，请重试或选择其他候选。'))
-    await loadGroups(false)
-  }
-  finally { busy.value = '' }
 }
 
 async function switchProtocol(row: ProxyGroupPayload, protocolMode: ProtocolMode): Promise<void> {
@@ -542,42 +488,22 @@ function formatRefreshTime(value?: number): string {
       </div>
     </section>
     <div v-if="loading" class="loading">正在读取代理池…</div>
-    <PoolTable v-else :rows="rows" :protocol="protocol" :busy="standbyBusy ? 'standby' : busy" :standbys="dedicatedStandbys" @copy="copyAddress" @replace="openReplacement" @check="checkRow" @protocol="switchProtocol" @standby-manual="openStandbyManual" />
+    <PoolTable v-else :rows="rows" :protocol="protocol" :busy="standbyBusy ? 'standby' : busy" :standbys="dedicatedStandbys" @copy="copyAddress" @check="checkRow" @protocol="switchProtocol" @standby-manual="openStandbyManual" />
     <div v-if="replacementOpen" class="dialog-backdrop" @click.self="closeReplacement">
-      <section data-replace-dialog :data-standby-manual-dialog="replacementMode === 'standby' ? true : undefined" class="replace-dialog" role="dialog" aria-modal="true" aria-labelledby="replace-title">
+      <section data-replace-dialog data-standby-manual-dialog class="replace-dialog" role="dialog" aria-modal="true" aria-labelledby="replace-title">
         <button class="dialog-close" type="button" aria-label="关闭" :disabled="standbyBusy" @click="closeReplacement">×</button>
-        <p class="eyebrow">EGRESS & HOT STANDBY</p><h2 id="replace-title">选择节点用途</h2>
-        <div class="replacement-modes" role="group" aria-label="替换用途">
-          <button data-mode-active :aria-pressed="replacementMode === 'active'" :disabled="!!busy || standbyBusy" @click="replacementMode = 'active'">替换到出口位</button>
-          <button data-mode-standby :aria-pressed="replacementMode === 'standby'" :disabled="!!busy || standbyBusy || !dedicatedStandbys.length" @click="replacementMode = 'standby'">替换专属备用</button>
-        </div>
+        <p class="eyebrow">DEDICATED HOT STANDBY</p><h2 id="replace-title">更换当前出口位的专属备用</h2>
         <div class="replacement-filters">
           <label>国家<select data-replacement-country v-model="replacementCountry" :disabled="!!busy || standbyBusy" @change="selectedCandidateID = ''"><option value="">全部国家</option><option v-for="item in countries" :key="item.code" :value="item.code">{{ item.name }}</option></select></label>
           <label>IP 类型<select data-replacement-type v-model="replacementType" :disabled="!!busy || standbyBusy" @change="selectedCandidateID = ''"><option value="">全部类型</option><option value="residential">住宅</option><option value="datacenter">机房</option></select></label>
         </div>
         <label>候选节点 · {{ replacementCandidates.length }} 个<select data-replacement-candidate v-model="selectedCandidateID" :disabled="!!busy || standbyBusy"><option value="">请选择可用候选</option><option v-for="candidate in replacementCandidates" :key="candidate.id" :value="candidate.id">{{ standbyCandidateLabel(candidate) }}</option></select></label>
         <p v-if="!replacementCandidates.length">当前筛选没有可用候选，请调整国家或 IP 类型。</p>
-        <template v-if="replacementMode === 'active'">
-          <p>立即更换所选活动出口，可能短暂中断该出口连接；原端口和入站保持不变，失败时回滚。更换主连接需要主动选择。</p>
-        </template>
-        <template v-else-if="standbyManualRow">
-          <label>备用所属出口<select data-standby-target v-model="standbyManualIndex" :disabled="!!busy || standbyBusy"><option v-for="item in dedicatedStandbys.filter(item => item.status !== 'disabled')" :key="item.index" :value="item.index">{{ standbyTargetLabel(item) }} · 专属备用</option></select></label>
-          <p>目标为 <strong>{{ standbyTargetLabel(standbyManualRow) }}</strong>。两种用途共用上方国家、类型和候选筛选，验证真实出口成功后才会写入备用绑定；不会切换当前活动出口。</p>
+        <template v-if="standbyManualRow">
+          <p>目标为 <strong>{{ standbyTargetLabel(standbyManualRow) }}</strong>。系统只会更新这个出口位的专属备用，验证真实出口成功后才写入绑定，不会切换当前活动出口。</p>
           <dl class="standby-details"><div><dt>当前状态</dt><dd>{{ standbySummaryState(standbyManualRow) }}</dd></div><div><dt>恢复轮次</dt><dd>{{ standbyManualRow.attempt_count ?? 0 }}</dd></div><div v-if="standbyManualRow.last_error_code"><dt>最近原因</dt><dd>{{ messageForCode(standbyManualRow.last_error_code, '最近恢复未通过验证，请查看恢复日志') }}</dd></div></dl>
         </template>
-        <template v-if="replacementMode === 'active'">
-        <div class="target-field">
-          <span id="replace-target-label">目标逻辑出口</span>
-          <button data-replace-target class="target-trigger" :class="{ 'fault-target': replacementTargetWarning }" type="button" :aria-expanded="replacementMenuOpen" aria-controls="replace-target-options" aria-labelledby="replace-target-label" @click="replacementMenuOpen = !replacementMenuOpen">{{ selectedReplacementTarget ? replacementTargetLabel(selectedReplacementTarget) : '请选择出口位' }}<span aria-hidden="true">⌄</span></button>
-          <div v-if="replacementMenuOpen" id="replace-target-options" data-replace-options class="target-options" role="group" aria-label="可替换的逻辑出口" @keydown.esc="replacementMenuOpen = false">
-            <button v-for="target in replacementTargets" :key="target.id" data-replace-option :data-target-id="target.id" class="target-option" :class="{ selected: replacementTarget === target.id, 'fault-target-option': automaticRepairFailed(target) }" type="button" @click="replacementTarget = target.id; replacementMenuOpen = false">{{ replacementTargetLabel(target) }}</button>
-          </div>
-        </div>
-        <p v-if="replacementTargetWarning" data-replace-target-warning class="fault-target-warning">{{ replacementTargetName(replacementTargetWarning) }}{{ replacementTargetWarning.egressSource === 'main' ? '' : ' ' }}自动修复已失败；你仍可将当前候选替换到这里，系统会重新验证完整链路。</p>
-        <UiNotice v-if="replacementNotice" :key="replacementNotice.id" data-replace-notice class="replacement-notice" :notice="replacementNotice" @close="replacementNotice=null" />
-        <div class="dialog-actions"><button class="secondary" type="button" @click="closeReplacement">取消</button><button data-confirm-replace type="button" :disabled="!replacementTarget || !selectedCandidateID || busy !== ''" @click="confirmReplacement">{{ busy.startsWith('replace-') ? '正在替换…' : '确认替换' }}</button></div>
-        </template>
-        <template v-else-if="standbyManualRow">
+        <template v-if="standbyManualRow">
           <UiNotice v-if="standbyManualNotice" :key="standbyManualNotice.id" data-standby-manual-notice :notice="standbyManualNotice" @close="standbyManualNotice=null" />
           <div class="dialog-actions standby-manual-actions"><button data-retry-standby class="secondary" type="button" :disabled="standbyBusy || busy !== ''" @click="retryDedicatedStandby(standbyManualRow.index)">重新开始自动恢复</button><button data-standby-manual-confirm type="button" :disabled="standbyBusy || busy !== '' || !selectedCandidateID" @click="confirmStandbyManual">{{ standbyBusy ? '正在验证…' : '验证并设为备用' }}</button></div>
         </template>

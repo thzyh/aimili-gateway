@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"net"
 	"sort"
 	"strings"
 	"time"
@@ -393,12 +394,24 @@ func (o *Orchestrator) Pool(ctx context.Context) ([]domain.ProxyGroup, error) {
 		candidateID, exitIP := storedMain.CandidateID, storedMain.ExitIP
 		publicPort, mixedPort := storedMain.PublicPort, storedMain.MixedPort
 		if mainErr == nil && main.Active {
-			proxyType = domain.ProxyType(main.ProxyType)
-			if !proxyType.Valid() {
-				proxyType = storedMain.ProxyType
+			// A recovered tunnel can be reported before its node metadata has
+			// been repopulated. Keep the last durable identity in that window;
+			// exposing an invented ZZ country makes a healthy main connection
+			// look broken and prevents the user from distinguishing metadata
+			// lag from a real egress failure.
+			if validObservedMainIdentity(main) || storedMainErr != nil || strings.TrimSpace(storedMain.CandidateID) != strings.TrimSpace(main.CandidateID) {
+				proxyType = domain.ProxyType(main.ProxyType)
+				if !proxyType.Valid() {
+					proxyType = storedMain.ProxyType
+				}
+				country = strings.ToUpper(strings.TrimSpace(main.Country))
+				countryName, candidateID, exitIP = main.CountryName, main.CandidateID, main.ExitIP
+			} else {
+				candidateID = main.CandidateID
+				if net.ParseIP(main.ExitIP) != nil {
+					exitIP = main.ExitIP
+				}
 			}
-			country = strings.ToUpper(strings.TrimSpace(main.Country))
-			countryName, candidateID, exitIP = main.CountryName, main.CandidateID, main.ExitIP
 			publicPort, mixedPort = 8443, o.config.MainMixedPort
 		}
 		if !proxyType.Valid() {
