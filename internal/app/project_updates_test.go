@@ -55,3 +55,33 @@ func TestProjectCheckDoesNotInstallAndRestoresProgress(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestProjectCatalogEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name, status string
+		catalog      *updateCatalog
+	}{
+		{"missing", "not_checked", nil},
+		{"old-worker", "", &updateCatalog{Capability: true, ExpiresAt: time.Now().Add(time.Hour)}},
+		{"fresh-empty", "ready", &updateCatalog{Capability: true, Status: "ready", Latest: "v0.2.31-vps", ExpiresAt: time.Now().Add(time.Hour)}},
+		{"expired", "stale", &updateCatalog{Capability: true, Status: "ready", Latest: "v0.2.31-vps", ExpiresAt: time.Now().Add(-time.Hour), Available: []httpapi.UpdateVersion{{Kind: "project", Version: "v0.2.31-vps", Compatible: true}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			if tc.catalog != nil {
+				b, _ := json.Marshal(tc.catalog)
+				if err := os.WriteFile(filepath.Join(root, "catalog.json"), b, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			m := &projectUpdateManager{root: root, client: &updatetxn.Client{RequestDir: filepath.Join(root, "requests"), ResultDir: filepath.Join(root, "results")}}
+			summary, err := m.List(context.Background())
+			if err != nil || summary.CatalogStatus != tc.status || len(summary.Available) != 0 {
+				t.Fatalf("%+v %v", summary, err)
+			}
+			if tc.catalog != nil && summary.CatalogLatest != tc.catalog.Latest {
+				t.Fatal("verified release identity lost")
+			}
+		})
+	}
+}
