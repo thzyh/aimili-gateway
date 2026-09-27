@@ -15,6 +15,28 @@ beforeEach(() => {
 })
 afterEach(() => vi.useRealTimers())
 
+it.each([
+  [{}, '无法确认'],
+  [{ catalogStatus: 'stale', catalogLatest: 'v0.2.29-vps' }, '已过期'],
+  [{ catalogStatus: 'ready', catalogLatest: 'v0.2.29-vps' }, '已核对 v0.2.29-vps'],
+  [{ catalogStatus: 'ready', catalogLatest: 'v0.2.28-vps' }, '与本机版本不同'],
+  [{ catalogStatus: 'ready' }, '无法确认'],
+])('does not infer latest from an empty catalog: %j', async (catalog: { catalogStatus?: string; catalogLatest?: string }, expected) => {
+  fetchAPI.mockImplementation(async (path: string, options?: RequestInit) => {
+    if (options?.method === 'POST') return {}
+    if (path === '/api/v1/system/updates') return { ...initial, currentGateway: 'v0.2.29-vps', ...catalog }
+    return { runId: 'a'.repeat(64), kind: 'project', action: 'check', state: 'success' }
+  })
+  const view = mount(ProjectUpdatePanel, { props: { initial } })
+  await view.get('[data-check-project]').trigger('click'); await flushPromises()
+  const text = view.get('[role="status"]').text()
+  if (catalog.catalogLatest === 'v0.2.28-vps') expect(text).toContain('与本机版本不同')
+  else if (!catalog.catalogLatest) expect(text).toContain('无法确认')
+  else expect(text).toContain(expected)
+  expect(view.find('[data-confirm-project]').exists()).toBe(false)
+  view.unmount()
+})
+
 it('discovers signed server catalog and cancel never posts an apply', async () => {
   const view = mount(ProjectUpdatePanel, { props: { initial } })
   await view.get('[data-check-project]').trigger('click'); await flushPromises()

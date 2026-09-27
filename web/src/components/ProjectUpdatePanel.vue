@@ -89,7 +89,10 @@ async function poll(runId: string): Promise<void> {
           message.value = candidate.value
             ? `发现新版本 ${candidate.value.version}。${candidate.value.requiresUpdaterUpgrade ? '将先自动升级更新器，再继续同一更新事务。' : '等待您确认。'}`
             : latest ? `发现 ${latest.version}，暂不能自动更新：${errors[latest.reasonCode ?? ''] ?? latest.reasonCode ?? '不兼容'}${latest.component ? `（组件：${componentNames[latest.component] ?? latest.component}）` : ''}`
-              : summary.value.catalogStatus === 'ready' ? `当前已是最新正式版本（已核对 ${summary.value.catalogLatest || '正式发布'}）。`
+              : summary.value.catalogStatus === 'ready' && summary.value.catalogLatest
+                ? summary.value.catalogLatest === summary.value.currentGateway
+                  ? `当前已是最新正式版本（已核对 ${summary.value.catalogLatest}）。源码提交或测试部署不等于正式发布。`
+                  : `最新正式发布为 ${summary.value.catalogLatest}，与本机版本不同；请核对本机是否使用测试版本，未执行降级。`
                 : summary.value.catalogStatus === 'stale' ? '版本目录已过期，暂时无法确认是否有新版本；请重新检测。'
                   : '版本目录尚未成功核对，无法确认是否有新版本；请重新检测。'
         } else {

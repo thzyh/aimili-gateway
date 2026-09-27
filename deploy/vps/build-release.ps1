@@ -19,6 +19,11 @@ $releaseTag = if ($BridgeRelease) { $Tag } else { "project-$Tag" }
 if ((git -C $source rev-parse HEAD).Trim() -ne $expected) { throw '3x-ui upstream commit mismatch' }
 if (-not (Test-Path (Join-Path $source 'internal/web/dist/index.html'))) { throw '3x-ui frontend dist missing' }
 if (-not (Test-Path $SigningKey)) { throw 'release signing key missing' }
+# 发布前检查包内 Python 文件的语法，避免只验证 Go/UI 后发布不能执行的更新器。
+Get-ChildItem (Join-Path $root 'deploy\vps'),(Join-Path $root 'services\aimili-egress') -Filter '*.py' -File | ForEach-Object {
+    python -c 'import ast,sys; ast.parse(open(sys.argv[1], encoding="utf-8-sig").read(), filename=sys.argv[1])' $_.FullName
+    if ($LASTEXITCODE -ne 0) { throw "Python syntax check failed: $($_.Name)" }
+}
 if ((Test-Path $Output) -and (Get-ChildItem -LiteralPath $Output -Force | Select-Object -First 1)) { throw 'Release output directory must be empty' }
 New-Item -ItemType Directory -Force $Output | Out-Null
 $env:GOOS = 'linux'; $env:GOARCH = 'amd64'; $env:CGO_ENABLED = '0'

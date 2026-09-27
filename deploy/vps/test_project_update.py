@@ -14,6 +14,26 @@ import project_update_boot as boot
 
 
 class ProjectUpdateTests(unittest.TestCase):
+    def test_check_keeps_signed_latest_even_without_available_update(self):
+        for current in ("v0.2.29-vps", "v0.2.31-vps", "v0.2.32-vps", "dev"):
+            with self.subTest(current=current), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                request = dict(runId="a"*64, kind="project", action="check", version="")
+                stage = root/"staging"/request["runId"]
+                stage.mkdir(parents=True)
+                (stage/"ready.json").write_text(json.dumps(dict(version="v0.2.31-vps")))
+                for name in ("manifest.json", "manifest.sig"):
+                    (stage/name).write_bytes(b"fixture")
+                (root/"current.json").write_text(json.dumps(dict(version=current)))
+                with patch.object(u, "PUBLIC", root), patch.object(u, "STAGING", root/"staging"), patch.object(u, "PRIVATE", root/"private"), patch.object(u, "verify_manifest", return_value={}), patch.object(u, "current_facts", return_value={}), patch.object(u, "assess_compatibility", return_value=dict(kind="project", compatible=True)), patch.object(u, "progress"), patch.object(u, "finish"), patch.object(os, "chown", create=True):
+                    u.install(request)
+                catalog = json.loads((root/"catalog.json").read_text())
+                self.assertEqual(catalog["latestVersion"], "v0.2.31-vps")
+                self.assertEqual(catalog["status"], "ready")
+                self.assertEqual(bool(catalog["available"]), current in ("v0.2.29-vps", "dev"))
+                if current == "dev":
+                    self.assertEqual(catalog["available"][0]["reasonCode"], "version_invalid")
+
     def test_project_update_installs_management_menu_from_signed_package(self):
         with tempfile.TemporaryDirectory() as folder:
             package = Path(folder)

@@ -36,7 +36,7 @@ VERSION = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-vps\Z"
 PROJECT_TAG = re.compile(r"project-(v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)-vps)\Z")
 HEX = re.compile(r"[a-f0-9]{64}\Z")
 MAX_PACKAGE = 256 * 1024 * 1024
-UPDATER_VERSION = 3
+UPDATER_VERSION = 4
 UPGRADE_GUIDE = "https://github.com/thzyh/aimili-gateway/blob/main/docs/upgrade.md#"
 SUPPORTED_COMPONENT_ACTIONS = {
     "gateway": {"replace", "preserve"},
@@ -617,7 +617,7 @@ def install(r):
         if invalid_current:
             report=blocked("version_invalid");report["version"]=tag
         available=[report] if invalid_current or is_newer(tag,current) else []
-		atomic_json(PUBLIC/"catalog.json",dict(capability=True,status="ready",latestVersion=tag,checkedAt=dt.datetime.now(dt.timezone.utc).isoformat(),expiresAt=(dt.datetime.now(dt.timezone.utc)+dt.timedelta(hours=1)).isoformat(),available=available))
+        atomic_json(PUBLIC/"catalog.json",dict(capability=True,status="ready",latestVersion=tag,expiresAt=(dt.datetime.now(dt.timezone.utc)+dt.timedelta(hours=1)).isoformat(),available=available))
         progress(r,"verifying",95,"catalog"); finish(r,"success"); return
     if not isinstance(current,str) or not is_newer(tag,current): raise UpdateError("version_invalid")
     if not report["compatible"]: raise UpdateError(report["reasonCode"])
