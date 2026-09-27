@@ -4,7 +4,7 @@ import { countryDisplayName } from './errorMessages'
 import { poolStatusDetail, poolStatusGroup, poolStatusLabel } from './poolStatus'
 
 const props = defineProps<{ rows: ProxyGroupPayload[]; protocol: 'vless' | 'socks5h'; busy: string; standbys?: DedicatedStandbyPayload[] }>()
-const emit = defineEmits<{ copy: [row: ProxyGroupPayload]; check: [row: ProxyGroupPayload]; protocol: [row: ProxyGroupPayload, mode: ProtocolMode]; 'standby-manual': [index: number] }>()
+const emit = defineEmits<{ copy: [row: ProxyGroupPayload]; check: [row: ProxyGroupPayload]; protocol: [row: ProxyGroupPayload, mode: ProtocolMode]; 'standby-manual': [row: ProxyGroupPayload] }>()
 const typeLabel = (value: string) => value === 'residential' ? '住宅' : '机房'
 const latency = (row: ProxyGroupPayload) => props.protocol === 'vless' ? row.vlessLatencyMs : row.socksLatencyMs
 const checkedAt = (value?: string) => value ? new Intl.DateTimeFormat('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}).format(new Date(value)) : '尚未检测'
@@ -57,7 +57,7 @@ function changeProtocol(row: ProxyGroupPayload, event: Event): void {
           <td class="row-actions">
             <template v-if="row.egressSource === 'main' || row.slotNumber">
               <button :data-copy="row.id" class="primary-small" :disabled="copyDisabled(row)" @click="emit('copy', row)">复制{{ protocol === 'vless' ? '节点' : '代理' }}</button>
-              <button v-if="standbyFor(row) && standbyFor(row)?.status !== 'disabled'" :data-standby-manual="row.id" class="icon-button standby-action" :disabled="busy !== ''" title="为当前出口位更换专属备用" @click="emit('standby-manual', standbyFor(row)!.index)">更换专属备用</button>
+              <button :data-standby-manual="row.id" class="icon-button activate-button" :disabled="busy !== ''" title="更换当前出口节点或专属备用" @click="emit('standby-manual', row)">更换节点</button>
               <button v-if="row.status === 'ready'" :data-check="row.id" class="icon-button" :disabled="busy !== ''" title="重新检测" @click="emit('check', row)">检测</button>
               <template v-else-if="row.status === 'repair_required' || row.status === 'degraded'">
                 <button :data-repair="row.id" class="icon-button" :disabled="busy !== ''" :title="automaticRepairFinished(row) ? '复核当前状态，并查看专属备用恢复进度' : '检测节点；后台确认失效后优先由专属热备用接替'" @click="emit('check', row)">{{ automaticRepairFinished(row) ? '复核状态' : '检测并自动修复' }}</button>

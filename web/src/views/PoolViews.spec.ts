@@ -832,6 +832,27 @@ it('can switch the current-exit dialog to replace the active exit without target
 	expect(mocks.apiFetch).toHaveBeenCalledWith('/api/v1/proxy-groups/us-standby/replace', {
 		method: 'POST', headers: { 'Idempotency-Key': 'test-key' }, body: JSON.stringify({ targetGroupId: 'jp-one' }),
 	})
+	expect(wrapper.find('[data-replace-dialog]').exists()).toBe(false)
+})
+
+it('keeps active replacement available without a dedicated standby and preserves errors for retry', async () => {
+	mocks.apiFetch.mockImplementation((path: string) => {
+		if (path === '/api/v1/proxy-groups') return Promise.resolve(rows)
+		if (path === '/api/v1/settings/aimilivpn/countries' || path === '/api/v1/settings/aimilivpn/standbys') return Promise.resolve([])
+		if (path.endsWith('/replace')) return Promise.reject(new Error('replacement_failed'))
+		return Promise.resolve({ state: 'idle' })
+	})
+	const wrapper = mount(VpnPoolView)
+	await flushPromises()
+	await wrapper.get('[data-standby-manual="jp-one"]').trigger('click')
+	expect(wrapper.get('[data-mode-active]').attributes('aria-pressed')).toBe('true')
+	expect((wrapper.get('[data-mode-standby]').element as HTMLButtonElement).disabled).toBe(true)
+	await wrapper.get('[data-replacement-candidate]').setValue('us-standby')
+	await wrapper.get('[data-confirm-replace]').trigger('click')
+	await flushPromises()
+	expect(wrapper.get('[data-replace-notice]').text()).toContain('出口替换失败')
+	expect((wrapper.get('[data-replacement-candidate]').element as HTMLSelectElement).value).toBe('us-standby')
+	expect((wrapper.get('[data-confirm-replace]').element as HTMLButtonElement).disabled).toBe(false)
 })
 
 it('preserves manual selection on failed assignment/readback and shows retry failures inside the dialog', async () => {

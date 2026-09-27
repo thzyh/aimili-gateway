@@ -159,20 +159,16 @@ async function retryDedicatedStandby(index: number): Promise<void> {
   finally { await loadDedicatedStandbys(true); standbyBusy.value = false }
 }
 
-function openStandbyManual(index: number): void {
-  if (standbyBusy.value || busy.value || !dedicatedStandbys.value.some(row => row.index === index && row.status !== 'disabled')) return
-  standbyManualIndex.value = index
+function openStandbyManual(row: ProxyGroupPayload): void {
+  if (standbyBusy.value || busy.value) return
+  const target = row.egressSource === 'main' || row.id === 'agw-main' ? 'main' : `slot:${(row.slotNumber ?? 0) - 1}`
+  const standby = dedicatedStandbys.value.find(item => item.target === target && item.status !== 'disabled')
+  standbyManualIndex.value = standby?.index ?? null
   selectedCandidateID.value = ''
   standbyManualNotice.value = null
   replacementOpen.value = true
-  replacementMode.value = 'standby'
-  replacementTarget.value = dedicatedStandbys.value.find(row => row.index === index)?.target === 'main'
-    ? 'agw-main'
-    : (() => {
-        const target = dedicatedStandbys.value.find(row => row.index === index)?.target ?? ''
-        const slot = /^slot:(\d+)$/.exec(target)
-        return slot ? groups.value.find(row => row.slotNumber === Number(slot[1]) + 1)?.id ?? '' : ''
-      })()
+  replacementMode.value = standby ? 'standby' : 'active'
+  replacementTarget.value = row.id
   replacementNotice.value = null
   replacementCountry.value = country.value
   replacementType.value = proxyType.value
@@ -188,11 +184,12 @@ function setReplacementMode(mode: 'active' | 'standby'): void {
 async function confirmReplacement(): Promise<void> {
   const target = replacementTargetRow.value
   const candidate = replacementCandidates.value.find(row => row.id === selectedCandidateID.value)
-  if (busy.value || standbyBusy.value || !target || !candidate) return
+  if (replacementMode.value !== 'active' || busy.value || standbyBusy.value || !target || !candidate) return
   busy.value = `replace-${candidate.id}`
-  replacementNotice.value = makeNotice('progress', replacementMode.value === 'active' ? '正在替换现有出口' : '正在验证专属备用', replacementMode.value === 'active' ? '将保留当前端口和入站，失败时自动回滚。' : '验证真实出口成功后才会写入当前出口位的备用绑定。')
+  replacementNotice.value = makeNotice('progress', '正在替换现有出口', '将保留当前端口和入站，失败时自动回滚。')
   try {
     await apiFetch(`/api/v1/proxy-groups/${candidate.id}/replace`, { method: 'POST', headers: idempotencyHeaders(), body: JSON.stringify({ targetGroupId: target.id }) })
+    busy.value = ''
     closeReplacement()
     topNotice.value = makeNotice('success', target.egressSource === 'main' ? '主连接替换成功' : '出口位替换成功', '端口与入站保持不变。')
     await Promise.all([loadGroups(false), loadDedicatedStandbys()])
