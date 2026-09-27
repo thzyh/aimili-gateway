@@ -5617,9 +5617,15 @@ def _standby_enabled(config: dict) -> bool:
 def _resume_waiting_target(config: dict) -> None:
     target = config["target"]
     pending = egress_repair_store.get(target)
-    if pending.get("status") != "waiting_standby" or not _standby_enabled(config):
+    if not _standby_enabled(config):
         return
     standby = egress_repair_store.get(f"standby:{config['index']}")
+    if pending.get("status") == "manual_required" and standby.get("status") == "healthy":
+        if egress_repair_store.requeue_for_standby(target, str(pending.get("failed_candidate_id") or ""), str(pending.get("country") or "")):
+            recovery_event(target, "legacy_failure_requeued", reason=pending.get("error_code"))
+        pending = egress_repair_store.get(target)
+    if pending.get("status") != "waiting_standby":
+        return
     if standby.get("status") == "manual_required":
         egress_repair_store.require_manual(target, standby.get("error_code") or "recovery_budget_exhausted")
         recovery_event(target, "manual_required", reason=standby.get("error_code"))

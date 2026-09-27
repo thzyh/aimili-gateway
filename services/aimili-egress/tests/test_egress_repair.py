@@ -66,6 +66,30 @@ class RepairStoreTests(unittest.TestCase):
             self.assertTrue(store.claim("main", "jp-manual", "JP"))
             self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["version"], 1)
 
+    def test_legacy_manual_failure_is_requeued_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = RepairStore(Path(directory) / "repair.json", now=lambda: 20.0)
+            store.claim("main", "jp-broken", "JP")
+            store.require_manual("main", "replacement_failed")
+            self.assertTrue(store.requeue_for_standby("main", "jp-standby", "JP"))
+            row = store.get("main")
+            self.assertEqual(row["status"], "waiting_standby")
+            self.assertEqual(row["failed_candidate_id"], "jp-standby")
+            self.assertEqual(row["previous_error_code"], "replacement_failed")
+            self.assertFalse(store.requeue_for_standby("main", "jp-other", "JP"))
+
+    def test_new_recovery_budget_failure_is_not_unlocked(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "repair.json"
+            store = RepairStore(path)
+            store.claim("main", "failed", "JP")
+            store.require_manual("main", "replacement_failed")
+            data = json.loads(path.read_text())
+            data["egresses"]["main"]["recovery_version"] = 2
+            path.write_text(json.dumps(data))
+            self.assertFalse(RepairStore(path).requeue_for_standby("main", "other", "JP"))
+            self.assertEqual(RepairStore(path).get("main")["status"], "manual_required")
+
 
 if __name__ == "__main__":
     unittest.main()

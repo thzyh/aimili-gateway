@@ -654,6 +654,11 @@ func (o *Orchestrator) rollbackCandidateReplacement(ctx context.Context, group d
 func (o *Orchestrator) CheckMain(ctx context.Context) (store.MainEgress, error) {
 	checked, err := o.checkMain(ctx, true, true)
 	if err != nil {
+		// 保留可用节点身份，但把本次代理链路失败写回状态。这样列表不会
+		// 继续显示上一次成功检测，也不会把 Xray/SOCKS5H 故障误判成节点故障。
+		if saveErr := o.recordMainCheckFailure(ctx, errorCode(err)); saveErr != nil {
+			return store.MainEgress{}, saveErr
+		}
 		return store.MainEgress{}, err
 	}
 	if err := o.finalizeCheckedMainAssignment(ctx, checked); err != nil {
@@ -666,6 +671,30 @@ func (o *Orchestrator) CheckMain(ctx context.Context) (store.MainEgress, error) 
 		return store.MainEgress{}, err
 	}
 	return checked, nil
+}
+
+func (o *Orchestrator) recordMainCheckFailure(ctx context.Context, code string) error {
+	if code != "protocol_failed" && code != "timeout" && code != "dns_failed" && code != "connection_failed" {
+		return nil
+	}
+	log.Printf("main check failed: code=%s", code)
+	mainStore, ok := o.store.(mainEgressStore)
+	if !ok {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+	defer cancel()
+	current, err := mainStore.GetMainEgress(ctx)
+	if err != nil || !current.Enabled {
+		return nil
+	}
+	current.LastErrorCode = code
+	current.LastCheckedAt = o.config.Now().UTC()
+	current.UpdatedAt = current.LastCheckedAt
+	if err := mainStore.SaveMainEgress(ctx, current); err != nil {
+		return &Error{Code: "storage_failed"}
+	}
+	return nil
 }
 
 func (o *Orchestrator) finalizeCheckedMainAssignment(ctx context.Context, checked store.MainEgress) error {

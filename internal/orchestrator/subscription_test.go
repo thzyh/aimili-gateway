@@ -610,6 +610,45 @@ func TestCheckMainStoresBothProtocolLatencies(t *testing.T) {
 	}
 }
 
+func TestCheckMainPersistsFailureAndClearsItAfterRecovery(t *testing.T) {
+	fixture := newFixture()
+	fixture.store.mainEgress = store.MainEgress{ResourceName: "agw-main", CountryCode: "JP", CountryName: "日本", ProxyType: domain.ProxyTypeResidential, CandidateID: "main-node", ExitIP: "203.0.113.20", PublicInboundID: 1, MixedInboundID: 98, PublicPort: 8443, MixedPort: 31000, Enabled: true, UpdatedAt: fixture.now()}
+	fixture.aimili.mainStatus = aimili.MainStatus{CandidateID: "main-node", Country: "JP", CountryName: "日本", ProxyType: "residential", ExitIP: "203.0.113.20", Port: 7928, EgressOK: true, Active: true}
+	o := fixture.orchestratorWithMax(t, 3)
+	fixture.validator.vlessError = &validator.Error{Code: "protocol_failed"}
+	if _, err := o.CheckMain(context.Background()); codeOf(err) != "protocol_failed" {
+		t.Fatalf("%v", err)
+	}
+	if fixture.store.mainEgress.LastErrorCode != "protocol_failed" || fixture.store.mainEgress.LastCheckedAt.IsZero() || !fixture.store.mainEgress.Enabled {
+		t.Fatalf("%+v", fixture.store.mainEgress)
+	}
+	fixture.store.protocolModes["agw-main"] = domain.EgressProtocolMode{EgressID: "agw-main", ActiveMode: domain.ProtocolVLESSTCPRealityVision, DesiredMode: domain.ProtocolVLESSTCPRealityVision, State: domain.ProtocolReady, Version: 1, UpdatedAt: fixture.now()}
+	groups, poolErr := o.Pool(context.Background())
+	if poolErr != nil {
+		t.Fatal(poolErr)
+	}
+	found := false
+	for _, group := range groups {
+		if group.ID == "agw-main" {
+			found = true
+			if group.Status != domain.ProxyGroupDegraded || group.LastErrorCode != "protocol_failed" {
+				t.Fatalf("main failure hidden: %+v", group)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("main missing")
+	}
+	delete(fixture.store.protocolModes, "agw-main")
+	fixture.validator.vlessError = nil
+	if _, err := o.CheckMain(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if fixture.store.mainEgress.LastErrorCode != "" {
+		t.Fatal("stale failure persisted")
+	}
+}
+
 func TestCheckMainFinalizesMatchingRepairRequiredAssignment(t *testing.T) {
 	fixture := newFixture()
 	fixture.aimili.mainStatus = aimili.MainStatus{CandidateID: "current-main", Country: "JP", CountryName: "日本", ProxyType: "residential", ExitIP: "203.0.113.20", Port: 7928, EgressOK: true, Active: true}

@@ -79,6 +79,25 @@ class RecoveryRuntimeTests(unittest.TestCase):
             connect.assert_not_called()
             self.assertEqual(m.egress_repair_store.get('main')['status'], 'waiting_standby')
 
+    def test_legacy_manual_failure_promotes_ready_standby(self):
+        with tempfile.TemporaryDirectory() as root, mock.patch.object(m, 'egress_repair_store', RepairStore(Path(root) / 'repair.json')), mock.patch.object(
+            m, '_standby_enabled', return_value=True
+        ), mock.patch.object(m, 'repair_main_once', return_value=None) as repair:
+            m.egress_repair_store.claim('main', 'jp-broken', 'JP')
+            m.egress_repair_store.require_manual('main', 'replacement_failed')
+            m.egress_repair_store.mark_healthy('standby:0', 'jp-standby')
+            m._resume_waiting_target({'index': 0, 'target': 'main'})
+            self.assertEqual(m.egress_repair_store.get('main')['status'], 'waiting_standby')
+            repair.assert_called_once()
+
+    def test_legacy_failure_without_healthy_standby_remains_manual(self):
+        with tempfile.TemporaryDirectory() as root, mock.patch.object(m, 'egress_repair_store', RepairStore(Path(root) / 'repair.json')), mock.patch.object(m, '_standby_enabled', return_value=True), mock.patch.object(m, 'repair_main_once') as repair:
+            m.egress_repair_store.claim('main', 'broken', 'JP')
+            m.egress_repair_store.require_manual('main', 'replacement_failed')
+            m._resume_waiting_target({'index': 0, 'target': 'main'})
+            repair.assert_not_called()
+            self.assertEqual(m.egress_repair_store.get('main')['status'], 'manual_required')
+
     def test_sparse_standby_candidates_keep_residential_priority(self):
         nodes = [dict(id='dc', country_short='JP', ip_type='hosting', probe_status='available', config_text='client'),
                  dict(id='home', country_short='JP', ip_type='residential', probe_status='available', config_text='client')]

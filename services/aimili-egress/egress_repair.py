@@ -99,6 +99,24 @@ class RepairStore:
             )
             self._write(document)
 
+    def requeue_for_standby(self, egress: str, candidate_id: str, country: str) -> bool:
+        """将旧版一次性失败状态安全转交给已经就绪的专属备用。"""
+        with self.lock:
+            document = self._read()
+            row = document["egresses"].get(str(egress), {})
+            if (not isinstance(row, dict) or row.get("status") != "manual_required"
+                    or row.get("recovery_version") == 2
+                    or row.get("error_code") not in {"replacement_failed", "no_same_country_candidate", "repair_interrupted"}):
+                return False
+            document["egresses"][str(egress)] = dict(
+                status="waiting_standby", failed_candidate_id=str(candidate_id or row.get("failed_candidate_id") or ""),
+                country=str(country or row.get("country") or "").upper(), started_at=self.now(),
+                attempt_count=0, error_code="recovery_pending", recovery_version=2,
+                previous_error_code=str(row.get("error_code") or ""),
+            )
+            self._write(document)
+            return True
+
     def begin_round(self, egress: str, country: str, settings: dict) -> bool:
         with self.lock:
             document = self._read()

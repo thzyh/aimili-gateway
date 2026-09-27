@@ -215,7 +215,7 @@ it('keeps failed automatic repairs selectable in the unified replacement flow', 
 	})
 })
 
-it('treats an interrupted automatic repair as a finished one-shot attempt', async () => {
+it('offers recovery review for an interrupted legacy repair', async () => {
 	const interruptedMain = { ...rows[0], status: 'degraded', lastErrorCode: 'repair_interrupted' }
 	mocks.apiFetch.mockImplementation((path: string) => {
 		if (path === '/api/v1/proxy-groups') return Promise.resolve([interruptedMain])
@@ -228,7 +228,7 @@ it('treats an interrupted automatic repair as a finished one-shot attempt', asyn
 	await flushPromises()
 
 	expect(wrapper.get('[data-repair="agw-main"]').text()).toContain('复核状态')
-	expect(wrapper.get('[data-repair="agw-main"]').attributes('title')).toContain('不会再次自动更换节点')
+	expect(wrapper.get('[data-repair="agw-main"]').attributes('title')).toContain('查看专属备用恢复进度')
 })
 
 it('rotates SOCKS5H credentials with visible progress and a safe success message', async () => {
@@ -277,7 +277,7 @@ it('shows closable progress and success feedback when a ready exit passes detect
 	let notice = wrapper.get('[data-top-notice]')
 	expect(notice.attributes('data-notice-kind')).toBe('progress')
 	expect(notice.text()).toContain('正在检测出口 1')
-	expect(notice.text()).toContain('只会自动选择一个同国家候选修复一次')
+	expect(notice.text()).toContain('优先由专属热备用接替')
 
 	finishCheck(rows[1])
 	await flushPromises()
@@ -338,7 +338,7 @@ it('checks every fixed egress sequentially and reports failures without stopping
 	expect(notice.text()).toContain('出口 2')
 })
 
-it('runs detection and at most one automatic repair in a single request', async () => {
+it('displays legacy repair failure with the current standby recovery path', async () => {
 	const degradedRow = { ...rows[1], id: 'degraded-slot', status: 'degraded', slotNumber: 3 }
 	mocks.apiFetch.mockImplementation((path: string) => {
 		if (path === '/api/v1/proxy-groups') return Promise.resolve([degradedRow])
@@ -361,7 +361,7 @@ it('runs detection and at most one automatic repair in a single request', async 
 	])
 	const notice = wrapper.get('[data-top-notice]')
 	expect(notice.attributes('data-notice-kind')).toBe('error')
-	expect(notice.text()).toContain('已执行本次故障唯一一次自动修复')
+	expect(notice.text()).toContain('专属热备用就绪后可接替')
 	expect(notice.text()).toContain('没有找到同国家可用节点')
 	expect(notice.text()).not.toContain('no_same_country_candidate')
 })
@@ -384,7 +384,7 @@ it('does not rotate a degraded exit when detection reports a non-runtime failure
 	expect(mocks.apiFetch.mock.calls.some(([path]) => path === '/api/v1/proxy-groups/degraded-slot/rotate')).toBe(false)
 	const notice = wrapper.get('[data-top-notice]')
 	expect(notice.attributes('data-notice-kind')).toBe('error')
-	expect(notice.text()).toContain('协议链路检测失败')
+	expect(notice.text()).toContain('本机 Xray/SOCKS5H 链路或检测目标未通过验证')
 	expect(notice.text()).not.toContain('protocol_failed')
 })
 
@@ -882,7 +882,18 @@ it('merges dedicated standby state into each exit row and reuses manual assignme
 	expect(wrapper.get('[data-standby-cell="kr-one"]').text()).toContain('等待人工处理')
 	await wrapper.get('[data-standby-manual="kr-one"]').trigger('click')
 	expect(wrapper.get('[data-standby-manual-dialog]').text()).toContain('出口位 2')
-	await wrapper.get('[data-standby-manual-dialog] select').setValue('us-standby')
+	expect(wrapper.findAll('[role="dialog"]')).toHaveLength(1)
+	await wrapper.get('[data-replacement-country]').setValue('US')
+	await wrapper.get('[data-replacement-candidate]').setValue('us-standby')
+	await wrapper.get('[data-mode-active]').trigger('click')
+	expect((wrapper.get('[data-replacement-country]').element as HTMLSelectElement).value).toBe('US')
+	expect((wrapper.get('[data-replacement-candidate]').element as HTMLSelectElement).value).toBe('us-standby')
+	await wrapper.get('[data-mode-standby]').trigger('click')
+	await wrapper.get('[data-replacement-country]').setValue('JP')
+	expect((wrapper.get('[data-replacement-candidate]').element as HTMLSelectElement).value).toBe('')
+	expect(wrapper.get('[data-standby-manual-confirm]').attributes('disabled')).toBeDefined()
+	await wrapper.get('[data-replacement-country]').setValue('US')
+	await wrapper.get('[data-replacement-candidate]').setValue('us-standby')
 	await wrapper.get('[data-standby-manual-confirm]').trigger('click')
 	await flushPromises()
 	expect(mocks.apiFetch).toHaveBeenCalledWith('/api/v1/settings/aimilivpn/standbys/2/assign', { method: 'POST', body: JSON.stringify({ candidateId: 'us-standby' }) })
@@ -901,11 +912,11 @@ it('preserves manual selection on failed assignment/readback and shows retry fai
 	const wrapper = mount(SocksPoolView)
 	await flushPromises()
 	await wrapper.get('[data-standby-manual="agw-main"]').trigger('click')
-	await wrapper.get('[data-standby-manual-dialog] select').setValue('us-standby')
+	await wrapper.get('[data-replacement-candidate]').setValue('us-standby')
 	await wrapper.get('[data-standby-manual-confirm]').trigger('click')
 	await flushPromises()
 	expect(wrapper.get('[data-standby-manual-notice]').text()).toContain('失败')
-	expect((wrapper.get('[data-standby-manual-dialog] select').element as HTMLSelectElement).value).toBe('us-standby')
+	expect((wrapper.get('[data-replacement-candidate]').element as HTMLSelectElement).value).toBe('us-standby')
 	await wrapper.get('[data-retry-standby]').trigger('click')
 	await flushPromises()
 	expect(wrapper.get('[data-standby-manual-notice]').text()).toContain('重试未开始')

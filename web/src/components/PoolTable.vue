@@ -59,7 +59,7 @@ function changeProtocol(row: ProxyGroupPayload, event: Event): void {
             <button v-if="row.status === 'standby'" :data-replace="row.id" class="icon-button activate-button" :disabled="busy !== ''" title="选择一个已启用出口位进行替换" @click="emit('replace', row)">替换到出口位</button>
             <button v-else-if="row.status === 'ready'" :data-check="row.id" class="icon-button" :disabled="busy !== ''" title="重新检测" @click="emit('check', row)">检测</button>
             <template v-else-if="row.status === 'repair_required' || row.status === 'degraded'">
-              <button :data-repair="row.id" class="icon-button" :disabled="busy !== ''" :title="automaticRepairFinished(row) ? '复核当前状态；本次故障不会再次自动更换节点' : '检测节点；确认节点失效后只自动选择一个同国家候选修复一次'" @click="emit('check', row)">{{ automaticRepairFinished(row) ? '复核状态' : '检测并自动修复' }}</button>
+              <button :data-repair="row.id" class="icon-button" :disabled="busy !== ''" :title="automaticRepairFinished(row) ? '复核当前状态，并查看专属备用恢复进度' : '检测节点；后台确认失效后优先由专属热备用接替'" @click="emit('check', row)">{{ automaticRepairFinished(row) ? '复核状态' : '检测并自动修复' }}</button>
             </template>
           </td>
         </tr>
