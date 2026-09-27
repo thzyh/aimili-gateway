@@ -1165,6 +1165,39 @@ class PoolMaintenanceTests(unittest.TestCase):
             manager.main_assignment_requested.clear()
             manager.maintenance_probe_active.clear()
 
+    def test_ready_main_standby_preempts_pool_at_probe_boundary(self):
+        existing = [node(0, "available")]
+        candidates = [node(index) for index in range(1, 5)]
+        standby_ready = [False]
+        def repair_state(key):
+            if key == "main": return {"status": "waiting_standby"}
+            return {"status": "healthy" if standby_ready[0] else "repairing"}
+        def probe(batch):
+            standby_ready[0] = True
+            return [dict(item, probe_status="available") for item in batch]
+        with (
+            mock.patch.object(manager, "TARGET_VALID_POOL_SIZE", 4),
+            mock.patch.object(manager, "OPENVPN_TEST_CONCURRENCY", 1),
+            mock.patch.object(manager, "NODE_TEST_BATCH_SIZE", 2),
+            mock.patch.object(manager, "refresh_capacity_limits"),
+            mock.patch.object(manager, "active_openvpn_running", return_value=True),
+            mock.patch.object(manager, "read_nodes", return_value=existing),
+            mock.patch.object(manager, "fetch_candidates", return_value=candidates),
+            mock.patch.object(manager, "load_blacklist", return_value={}),
+            mock.patch.object(manager.egress_repair_store, "get", side_effect=repair_state),
+            mock.patch.object(manager, "dedicated_standby_config_snapshot", return_value=[{"index": 0, "target": "main"}]),
+            mock.patch.object(manager, "probe_nodes", side_effect=probe) as tested,
+            mock.patch.object(manager, "set_state"),
+            mock.patch.object(manager, "log_to_json"),
+            mock.patch.object(manager, "write_json") as write,
+        ):
+            message = manager.maintain_valid_nodes()
+        self.assertIn("热备用接替", message)
+        tested.assert_called_once()
+        write.assert_not_called()
+        self.assertFalse(manager.maintenance_probe_active.is_set())
+        self.assertFalse(manager.is_connecting)
+
     def test_api_failure_recovers_main_connection_from_cached_pool(self):
         existing = [node(1, "available")]
         runtime = {"connected": False}

@@ -4243,6 +4243,18 @@ def disconnect_main_connection() -> dict[str, Any]:
     )
     return {"ok": True}
 
+def pool_maintenance_should_yield() -> bool:
+    if main_assignment_requested.is_set():
+        return True
+    if egress_repair_store.get("main").get("status") != "waiting_standby":
+        return False
+    return any(
+        config["target"] == "main"
+        and egress_repair_store.get(f"standby:{config['index']}").get("status") == "healthy"
+        for config in dedicated_standby_config_snapshot()
+    )
+
+
 @_mutation_guard("operation_busy")
 def maintain_valid_nodes(
     force: bool = False,
@@ -4367,7 +4379,7 @@ def maintain_valid_nodes(
         def probe_pool_batch(batch: list[dict[str, Any]]) -> list[dict[str, Any]]:
             results: list[dict[str, Any]] = []
             for start in range(0, len(batch), max(1, OPENVPN_TEST_CONCURRENCY)):
-                if main_assignment_requested.is_set():
+                if pool_maintenance_should_yield():
                     break
                 results.extend(probe_nodes(batch[start:start + max(1, OPENVPN_TEST_CONCURRENCY)]))
             return results
@@ -4379,13 +4391,17 @@ def maintain_valid_nodes(
             load_blacklist(),
             probe_pool_batch,
             revalidate_existing=revalidate_existing,
-            stop_requested=main_assignment_requested.is_set,
+            stop_requested=pool_maintenance_should_yield,
         )
         maintenance_probe_active.clear()
         if pool_stats["stop_reason"] == "assignment_priority":
-            message = "节点池维护已在探测批次边界让位于人工主出口替换；现有节点池未改动"
+            message = "节点池维护已在探测批次边界让位于主出口替换或热备用接替；现有节点池未改动"
             set_state(is_connecting=False, last_check_message=message)
             log_to_json("INFO", "Main", message)
+            if all_refresh_started_at:
+                _replace_country_refresh(state="failed", country="ALL", phase="",
+                    startedAt=all_refresh_started_at, finishedAt=time.time(),
+                    resultCode="operation_busy", errorCode="operation_busy")
             return message
         metadata = load_pool_metadata()
         next_round = int(metadata.get("maintenanceRound") or 0) + 1
