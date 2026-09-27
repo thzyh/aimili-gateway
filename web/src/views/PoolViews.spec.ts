@@ -793,10 +793,10 @@ it('merges dedicated standby state into each exit row and reuses manual assignme
 	expect(wrapper.findAll('[role="dialog"]')).toHaveLength(1)
 	await wrapper.get('[data-replacement-country]').setValue('US')
 	await wrapper.get('[data-replacement-candidate]').setValue('us-standby')
-	expect(wrapper.find('[data-mode-active]').exists()).toBe(false)
+	expect(wrapper.find('[data-mode-active]').exists()).toBe(true)
 	expect((wrapper.get('[data-replacement-country]').element as HTMLSelectElement).value).toBe('US')
 	expect((wrapper.get('[data-replacement-candidate]').element as HTMLSelectElement).value).toBe('us-standby')
-	expect(wrapper.find('[data-mode-standby]').exists()).toBe(false)
+	expect(wrapper.find('[data-mode-standby]').exists()).toBe(true)
  expect(wrapper.find('[data-standby-target]').exists()).toBe(false)
  expect(wrapper.find('[data-replace-target]').exists()).toBe(false)
 	await wrapper.get('[data-replacement-country]').setValue('JP')
@@ -807,6 +807,31 @@ it('merges dedicated standby state into each exit row and reuses manual assignme
 	await wrapper.get('[data-standby-manual-confirm]').trigger('click')
 	await flushPromises()
 	expect(mocks.apiFetch).toHaveBeenCalledWith('/api/v1/settings/aimilivpn/standbys/2/assign', { method: 'POST', body: JSON.stringify({ candidateId: 'us-standby' }) })
+})
+
+it('can switch the current-exit dialog to replace the active exit without target selection', async () => {
+	const standbys = [{ index: 1, target: 'slot:0', countries: [], status: 'ready', country: 'JP', proxy_type: 'residential', candidate_ip: '198.51.100.21', exit_ip: '203.0.113.21', egress_ok: true, checked_at: 1_700_000_000, last_error_code: '' }]
+	mocks.apiFetch.mockImplementation((path: string, init?: RequestInit) => {
+		if (path === '/api/v1/proxy-groups') return Promise.resolve(rows)
+		if (path === '/api/v1/settings/aimilivpn/countries') return Promise.resolve([])
+		if (path === '/api/v1/settings/aimilivpn/refresh') return Promise.resolve({ state: 'idle', country: '', phase: '', testedCount: 0, validCount: 0 })
+		if (path === '/api/v1/settings/aimilivpn/standbys') return Promise.resolve(standbys)
+		if (path === '/api/v1/proxy-groups/us-standby/replace' && init?.method === 'POST') return Promise.resolve({ ...rows[1], id: 'jp-one', status: 'ready' })
+		return Promise.resolve(undefined)
+	})
+	const wrapper = mount(VpnPoolView)
+	await flushPromises()
+	await wrapper.get('[data-standby-manual="jp-one"]').trigger('click')
+	expect(wrapper.get('[data-mode-standby]').attributes('aria-pressed')).toBe('true')
+	await wrapper.get('[data-mode-active]').trigger('click')
+	expect(wrapper.get('[data-mode-active]').attributes('aria-pressed')).toBe('true')
+	expect(wrapper.find('[data-replace-target]').exists()).toBe(false)
+	await wrapper.get('[data-replacement-candidate]').setValue('us-standby')
+	await wrapper.get('[data-confirm-replace]').trigger('click')
+	await flushPromises()
+	expect(mocks.apiFetch).toHaveBeenCalledWith('/api/v1/proxy-groups/us-standby/replace', {
+		method: 'POST', headers: { 'Idempotency-Key': 'test-key' }, body: JSON.stringify({ targetGroupId: 'jp-one' }),
+	})
 })
 
 it('preserves manual selection on failed assignment/readback and shows retry failures inside the dialog', async () => {
