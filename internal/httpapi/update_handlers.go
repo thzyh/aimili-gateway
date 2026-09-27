@@ -31,6 +31,8 @@ type UpdateSummary struct {
 	Enabled        bool            `json:"enabled"`
 	CurrentGateway string          `json:"currentGateway"`
 	CurrentUI      string          `json:"currentUi,omitempty"`
+	CatalogStatus  string          `json:"catalogStatus,omitempty"`
+	CatalogLatest  string          `json:"catalogLatest,omitempty"`
 	Available      []UpdateVersion `json:"available"`
 }
 

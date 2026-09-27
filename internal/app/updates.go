@@ -41,6 +41,8 @@ func newUpdateManager(cfg config.Config) httpapi.UpdateManager {
 type updateCatalog struct {
 	Capability bool                    `json:"capability"`
 	ExpiresAt  time.Time               `json:"expiresAt"`
+	Status     string                  `json:"status,omitempty"`
+	Latest     string                  `json:"latestVersion,omitempty"`
 	Available  []httpapi.UpdateVersion `json:"available"`
 }
 

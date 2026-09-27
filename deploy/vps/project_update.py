@@ -617,7 +617,7 @@ def install(r):
         if invalid_current:
             report=blocked("version_invalid");report["version"]=tag
         available=[report] if invalid_current or is_newer(tag,current) else []
-        atomic_json(PUBLIC/"catalog.json",dict(capability=True,expiresAt=(dt.datetime.now(dt.timezone.utc)+dt.timedelta(hours=1)).isoformat(),available=available))
+		atomic_json(PUBLIC/"catalog.json",dict(capability=True,status="ready",latestVersion=tag,checkedAt=dt.datetime.now(dt.timezone.utc).isoformat(),expiresAt=(dt.datetime.now(dt.timezone.utc)+dt.timedelta(hours=1)).isoformat(),available=available))
         progress(r,"verifying",95,"catalog"); finish(r,"success"); return
     if not isinstance(current,str) or not is_newer(tag,current): raise UpdateError("version_invalid")
     if not report["compatible"]: raise UpdateError(report["reasonCode"])

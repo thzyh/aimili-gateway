@@ -28,7 +28,7 @@ func newProjectUpdateManager() *projectUpdateManager {
 }
 
 func (m *projectUpdateManager) List(ctx context.Context) (httpapi.UpdateSummary, error) {
-	summary := httpapi.UpdateSummary{Enabled: true, Project: true, CurrentGateway: buildinfo.Current().Version, Available: []httpapi.UpdateVersion{}}
+	summary := httpapi.UpdateSummary{Enabled: true, Project: true, CurrentGateway: buildinfo.Current().Version, CatalogStatus: "not_checked", Available: []httpapi.UpdateVersion{}}
 	var current struct {
 		Version string `json:"version"`
 	}
@@ -36,8 +36,13 @@ func (m *projectUpdateManager) List(ctx context.Context) (httpapi.UpdateSummary,
 		summary.CurrentGateway = current.Version
 	}
 	var catalog updateCatalog
-	if updatetxn.ReadTrustedStateFile(filepath.Join(m.root, "catalog.json"), m.client.TrustedResultUID, &catalog) == nil && catalog.Capability && catalog.ExpiresAt.After(time.Now()) {
-		summary.Available = catalog.Available
+	if updatetxn.ReadTrustedStateFile(filepath.Join(m.root, "catalog.json"), m.client.TrustedResultUID, &catalog) == nil {
+		summary.CatalogStatus, summary.CatalogLatest = catalog.Status, catalog.Latest
+		if catalog.Capability && catalog.ExpiresAt.After(time.Now()) {
+			summary.Available = catalog.Available
+		} else if summary.CatalogStatus == "ready" {
+			summary.CatalogStatus = "stale"
+		}
 	}
 	var lease struct {
 		RunID   string `json:"runId"`
