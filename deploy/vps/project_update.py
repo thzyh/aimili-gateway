@@ -610,6 +610,13 @@ def install(r):
         (private/name).write_bytes(read_file(stage/name))
     manifest=verify_manifest(private,tag,ready.get("releaseTag"))
     current=read_json(PUBLIC/"current.json")["version"]
+    # 安装服务可能在一次切换后再次拾取同一请求（例如 fetch/install 定时器
+    # 在边界时刻同时唤醒）。此时文件和二进制已经是目标版本，应把事务收敛
+    # 为成功，不能把已经完成的升级覆盖成 version_invalid 失败。
+    if r["action"] == "apply" and current == tag:
+        atomic_json(PUBLIC/"current.json",dict(version=tag))
+        finish(r,"success")
+        return
     report=assess_compatibility(manifest,current_facts())
     report["version"]=tag
     if r["action"]=="check":

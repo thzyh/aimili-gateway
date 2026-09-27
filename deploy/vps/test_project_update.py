@@ -228,6 +228,23 @@ class ProjectUpdateTests(unittest.TestCase):
         self.assertFalse(u.is_newer("v0.2.11-vps", "v0.2.12-vps"))
         self.assertTrue(u.is_newer("v0.2.12-vps", "legacy-eea92cb"))
 
+    def test_replayed_apply_after_switch_is_successful(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            run = "c" * 64
+            stage = root / "staging" / run
+            stage.mkdir(parents=True)
+            (stage / "ready.json").write_text(json.dumps({"version": "v0.2.37-vps"}))
+            (stage / "manifest.json").write_text("{}")
+            (stage / "manifest.sig").write_bytes(b"sig")
+            (root / "current.json").write_text(json.dumps({"version": "v0.2.37-vps"}))
+            request = dict(runId=run, kind="project", action="apply", version="v0.2.37-vps")
+            with patch.object(u, "PUBLIC", root), patch.object(u, "STAGING", root / "staging"), \
+                 patch.object(u, "PRIVATE", root / "private"), patch.object(u, "verify_manifest", return_value={}), \
+                 patch.object(u, "finish") as finish:
+                u.install(request)
+            finish.assert_called_once_with(request, "success")
+
     def test_terminal_result_is_not_a_progress_record(self):
         with tempfile.TemporaryDirectory() as root:
             old = u.PUBLIC; u.PUBLIC = Path(root)
