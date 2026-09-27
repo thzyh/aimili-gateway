@@ -291,6 +291,7 @@ country_refresh_state: dict[str, Any] = {
 active_sessions: dict[str, float] = {}
 active_openvpn_process: subprocess.Popen[str] | None = None
 active_openvpn_node_id = ""
+active_openvpn_identity: dict[str, Any] = {}
 active_openvpn_device = "tun0"
 active_openvpn_table = 100
 active_openvpn_config_path = ""
@@ -1017,6 +1018,10 @@ def safe_main_status() -> dict[str, Any]:
     state = get_state()
     active_id = str(active_openvpn_node_id or state.get("active_openvpn_node_id") or "")
     active = next((node for node in read_nodes() if str(node.get("id") or "") == active_id), {})
+    # Catalog maintenance may evict a live node. Its dial-time identity belongs
+    # to the running tunnel, not to the replenishable candidate catalog.
+    if not active and active_openvpn_identity.get("id") == active_id:
+        active = dict(active_openvpn_identity)
     repair = egress_repair_store.get("main")
     return {
         "candidate_id": active_id,
@@ -4077,6 +4082,7 @@ def auto_switch_node(attempt: int = 0) -> None:
 @_mutation_guard(raise_busy=True)
 def connect_node(node_id: str) -> str:
     global active_openvpn_process, active_openvpn_node_id, is_connecting
+    global active_openvpn_identity
     global active_openvpn_device, active_openvpn_table, active_openvpn_config_path
     if not main_mutation_allowed() and not bool(getattr(main_assignment_thread, "authorized", False)):
         raise RuntimeError("主连接事务正在进行，请稍后再试")
@@ -4156,6 +4162,7 @@ def connect_node(node_id: str) -> str:
         with lock:
             active_openvpn_process = process
             active_openvpn_node_id = node_id
+            active_openvpn_identity = {key: node.get(key, "") for key in ("id", "country_short", "country", "ip_type")}
             active_openvpn_device = "tun0"
             active_openvpn_table = 100
             active_openvpn_config_path = str(config_path)
@@ -5917,6 +5924,7 @@ def promote_dedicated_standby_to_slot(slot: int) -> bool:
 
 def promote_dedicated_standby_to_main() -> bool:
     global active_openvpn_process, active_openvpn_node_id
+    global active_openvpn_identity
     global active_openvpn_device, active_openvpn_table, active_openvpn_config_path
     index = _healthy_dedicated_standby_index("main")
     if index is None:
@@ -5942,6 +5950,10 @@ def promote_dedicated_standby_to_main() -> bool:
         with lock:
             active_openvpn_process = process
             active_openvpn_node_id = node_id
+            active_openvpn_identity = {
+                "id": node_id, "country_short": runtime.get("country_short", ""),
+                "country": runtime.get("country", ""), "ip_type": runtime.get("proxy_type", ""),
+            }
             active_openvpn_device = str(runtime.get("device") or standby_device(index))
             active_openvpn_table = parse_int(runtime.get("table")) or standby_table(index)
             active_openvpn_config_path = str(runtime.get("config_path") or "")
