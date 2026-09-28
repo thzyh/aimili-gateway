@@ -19,7 +19,7 @@ it('shows the dedicated standby inside each fixed exit row and exposes manual re
   expect(wrapper.get('[data-standby-cell="agw-main"]').text()).toContain('已就绪')
   expect(wrapper.get('[data-standby-cell="slot-one"]').text()).toContain('等待人工处理')
   await wrapper.get('[data-standby-manual="slot-one"]').trigger('click')
-  expect(wrapper.emitted('standby-manual')?.[0]).toEqual([1])
+  expect(wrapper.emitted('standby-manual')?.[0]).toEqual([rows[1]])
 })
 
 it('keeps the same standby presentation for the SOCKS5H pool', () => {
@@ -28,10 +28,10 @@ it('keeps the same standby presentation for the SOCKS5H pool', () => {
   expect(wrapper.get('[data-standby-cell="slot-one"]').text()).toContain('备用出口未就绪')
 })
 
-it('allows proactive replacement of a ready standby using its actual target binding', async () => {
+it('opens replacement for the current exit even when its standby index changes', async () => {
   const wrapper = mount(PoolTable, { props: { rows, protocol: 'vless', busy: '', standbys: [{ ...standbys[0], index: 7 }] } })
   await wrapper.get('[data-standby-manual="agw-main"]').trigger('click')
-  expect(wrapper.emitted('standby-manual')?.[0]).toEqual([7])
+  expect(wrapper.emitted('standby-manual')?.[0]).toEqual([rows[0]])
   await wrapper.setProps({ busy: 'standby' })
   expect(wrapper.get('[data-standby-manual="agw-main"]').attributes('disabled')).toBeDefined()
 })
