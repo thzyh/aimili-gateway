@@ -15,6 +15,15 @@ import (
 	"time"
 )
 
+func TestCapacityKeepsSavedCacheDuringResourcePressure(t *testing.T) {
+	v := Capacity{CandidatePoolCapacity: 200, TargetValidNodeCount: 200, MaxValidNodeCount: 200,
+		RegularExitSlots: 4, ReadyRegularExitSlots: 4, RegularExitSlotsMax: 4, LogicalExits: 5,
+		Limits: CapacityLimits{RegularExitSlotsMax: 4, TargetValidNodesMax: 16, EmergencyNodesMax: 16}}
+	if !validCapacity(v) {
+		t.Fatal("temporary pressure rejected the saved pool capacity")
+	}
+}
+
 func TestClientCandidatesSendsBearerTokenAndDecodesSafeFields(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodGet || request.URL.Path != "/control/v1/candidates" {

@@ -1322,6 +1322,21 @@ class FetchCandidatesTests(unittest.TestCase):
         self.assertEqual(candidates, [])
         diagnose.assert_not_called()
 
+    def test_pool_scan_can_read_beyond_legacy_limit_without_probing(self):
+        with (
+            mock.patch.object(manager, "MAX_FETCH_ROWS", 100),
+            mock.patch.object(manager, "load_blacklist", return_value={}),
+            mock.patch.object(manager, "cached_nodes", return_value=[]),
+            mock.patch.object(manager, "fetch_api_text", return_value=self.api_text(220)),
+            mock.patch.object(manager, "store_country_catalog"),
+            mock.patch.object(manager, "set_state"),
+            mock.patch.object(manager, "log_to_json"),
+            mock.patch.object(manager, "probe_nodes") as probe,
+        ):
+            candidates = manager.fetch_candidates(scan_limit=400)
+        self.assertEqual(len(candidates), 220)
+        probe.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

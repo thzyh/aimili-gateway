@@ -106,6 +106,8 @@ func TestCapacityRoutesRequireSessionAndClosedMutation(t *testing.T) {
 	csrf := environment.session(t).CSRFToken
 	assertResponseStatus(t, environment.request(t, http.MethodPut, path, map[string]int{"targetValidNodeCount": 48}, "", csrf), http.StatusForbidden)
 	assertResponseStatus(t, environment.request(t, http.MethodPut, path, map[string]int{"targetValidNodeCount": 48}, environment.origin, csrf), http.StatusOK)
+	assertResponseStatus(t, environment.request(t, http.MethodPut, path, map[string]int{"candidatePoolCapacity": 200}, environment.origin, csrf), http.StatusOK)
+	assertResponseStatus(t, environment.request(t, http.MethodPut, path, map[string]int{"candidatePoolCapacity": 200, "maxValidNodeCount": 100}, environment.origin, csrf), http.StatusBadRequest)
 	assertResponseStatus(t, environment.request(t, http.MethodPut, path, map[string]any{"targetValidNodeCount": 48, "command": "unsafe"}, environment.origin, csrf), http.StatusBadRequest)
 }
 

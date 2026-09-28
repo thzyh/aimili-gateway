@@ -2049,7 +2049,7 @@ def row_to_node(row: dict[str, str], config_text: str) -> dict[str, Any]:
         "probed_at": 0,
     }
 
-def fetch_candidates(country: str = "") -> list[dict[str, Any]]:
+def fetch_candidates(country: str = "", *, scan_limit: int | None = None) -> list[dict[str, Any]]:
     blacklist = load_blacklist()
     candidates: list[dict[str, Any]] = []
     seen_ips = set()
@@ -2089,7 +2089,7 @@ def fetch_candidates(country: str = "") -> list[dict[str, Any]]:
                     rows = node_pool.filter_country_rows(rows, normalized_country)
                 fetch_succeeded = True
                 for row in rows:
-                    if len(candidates) >= MAX_FETCH_ROWS:
+                    if len(candidates) >= (MAX_FETCH_ROWS if scan_limit is None else scan_limit):
                         break
                     ip = row.get("IP", "")
                     if not ip or ip in seen_ips:
@@ -4437,7 +4437,8 @@ def maintain_valid_nodes(
             if all_refresh_started_at:
                 _set_country_refresh(phase="fetching")
             set_state(is_connecting=True, last_check_message="正在拉取最新的免费 VPN 节点列表...")
-            candidates = fetch_candidates()
+            # 目录读取不拨号；避免旧 100 条扫描上限妨碍 200 条候选池。
+            candidates = fetch_candidates(scan_limit=max(MAX_FETCH_ROWS, TARGET_VALID_POOL_SIZE * 2))
         except Exception as exc:
             vpn_utils.check_and_fix_dns()
             diag_msg = str(exc)
