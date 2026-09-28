@@ -86,7 +86,7 @@ export interface DedicatedStandbyConfigPayload { index: number; target: string; 
 export type CountryRefreshState = 'idle' | 'running' | 'completed' | 'failed'
 export interface CountryRefreshPayload {
   state: CountryRefreshState; country: string; phase: string
-  resultCode?: 'success' | 'no_official_candidates' | 'no_usable_nodes' | 'operation_busy' | 'maintenance_busy' | 'upstream_unavailable'
+  resultCode?: 'success' | 'no_official_candidates' | 'no_usable_nodes' | 'operation_busy' | 'maintenance_busy' | 'upstream_unavailable' | 'recovery_priority' | 'maintenance_wait_timeout' | 'worker_start_failed'
   officialCount?: number; usableCount?: number; newUsableCount?: number; retainedCount?: number
   catalogCount?: number; countryCandidateCount?: number; testedCount: number; passedCount?: number; failedCount?: number; revalidatedCount?: number; validCount: number; preservedCount?: number
   startedAt?: number; finishedAt?: number; errorCode?: string

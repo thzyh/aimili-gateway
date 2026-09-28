@@ -266,6 +266,9 @@ mutation_lock = threading.RLock()
 main_recovery_lock = threading.RLock()
 maintenance_lock = threading.Lock()
 maintenance_probe_active = threading.Event()
+maintenance_scan_active = threading.Event()
+main_connection_in_progress = threading.Event()
+country_refresh_requested = threading.Event()
 main_assignment_requested = threading.Event()
 country_refresh_lock = threading.RLock()
 country_refresh_state: dict[str, Any] = {
@@ -2326,6 +2329,27 @@ def update_handshake_status(line_lower: str) -> None:
             set_state(active_node_latency=short_status, last_check_message=detailed_desc)
             break
 
+
+def _openvpn_log_level(line: str, *, route_nopull: bool) -> str:
+    """Classify OpenVPN output without treating rejected pushed routes as failures.
+
+    Aimili intentionally uses ``--route-nopull`` for split policy routing.  In
+    that mode servers commonly push ``dhcp-option`` and ``redirect-gateway``;
+    OpenVPN reports their rejection as an option error even though the tunnel
+    and assigned address are valid.  Keep the raw line for diagnostics, but
+    record it as INFO so it cannot masquerade as a failed recovery.
+    """
+    lower = line.lower()
+    if route_nopull and "[push-options]" in lower and (
+        "option 'dhcp-option'" in lower or "option 'redirect-gateway'" in lower
+    ):
+        return "INFO"
+    if any(token in lower for token in ("error", "failed", "cannot", "fatal", "permission denied")):
+        return "ERROR"
+    if "warning" in lower or "warn" in lower or "deprecated" in lower:
+        return "WARNING"
+    return "INFO"
+
 def run_openvpn_until_ready(config_file: str, keep_alive: bool, route_nopull: bool, timeout: int | None = None, dev: str = "tun0", extra_args: list[str] | None = None, report_status: bool = True) -> tuple[bool, str, subprocess.Popen[str] | None]:
     limit = timeout if timeout is not None else OPENVPN_TEST_TIMEOUT_SECONDS
     # Every OpenVPN launch, including short-lived probes, shares one hard process
@@ -2383,12 +2407,7 @@ def run_openvpn_until_ready(config_file: str, keep_alive: bool, route_nopull: bo
             else:
                 if keep_alive and report_status:
                     print(f"[OpenVPN] {line_str}", flush=True)
-                    level = "INFO"
-                    line_lower = line_str.lower()
-                    if "error" in line_lower or "failed" in line_lower or "cannot" in line_lower or "fatal" in line_lower or "permission denied" in line_lower:
-                        level = "ERROR"
-                    elif "warning" in line_lower or "warn" in line_lower or "deprecated" in line_lower:
-                        level = "WARNING"
+                    level = _openvpn_log_level(line_str, route_nopull=route_nopull)
                     log_to_json(level, "VPN", f"[OpenVPN] {line_str}")
         if not startup_done[0]:
             lines.put(None)
@@ -2434,12 +2453,7 @@ def run_openvpn_until_ready(config_file: str, keep_alive: bool, route_nopull: bo
 
     # Bulk write accumulated startup logs
     for line_str in openvpn_logs:
-        level = "INFO"
-        line_lower = line_str.lower()
-        if "error" in line_lower or "failed" in line_lower or "cannot" in line_lower or "fatal" in line_lower or "permission denied" in line_lower:
-            level = "ERROR"
-        elif "warning" in line_lower or "warn" in line_lower or "deprecated" in line_lower:
-            level = "WARNING"
+        level = _openvpn_log_level(line_str, route_nopull=route_nopull)
         log_to_json(level, "VPN", f"[OpenVPN] {line_str}")
 
     if not ok:
@@ -3321,12 +3335,6 @@ def replenish_valid_pool(
     batch_count = 0
 
     while len(pool) < TARGET_VALID_POOL_SIZE:
-        if stop_requested is not None and stop_requested():
-            return pool, failed_entries, {
-                "tested": tested_count,
-                "batches": batch_count,
-                "stop_reason": "assignment_priority",
-            }
         queue = node_pool.candidate_queue(
             candidates,
             pool,
@@ -3370,6 +3378,11 @@ def replenish_valid_pool(
         pool, failed = node_pool.merge_probe_results(
             pool, results, TARGET_VALID_POOL_SIZE
         )
+        if stop_requested is not None and stop_requested():
+            return pool, failed_entries, {
+                "tested": tested_count, "batches": batch_count,
+                "stop_reason": "assignment_priority",
+            }
         for item in failed:
             node_id = str(item.get("id") or "")
             if not node_id:
@@ -3471,6 +3484,8 @@ def _all_country_refresh_worker(start_gate: threading.Event) -> None:
         if still_running:
             if message == "operation_busy":
                 error_code = "operation_busy"
+            elif "热备用接替" in str(message) or "主出口替换" in str(message):
+                error_code = "recovery_priority"
             elif "正在运行" in str(message):
                 error_code = "maintenance_busy"
             else:
@@ -3500,12 +3515,65 @@ def _all_country_refresh_worker(start_gate: threading.Event) -> None:
         main_assignment_thread.country_refresh_authorized = False
 
 
+def _queued_country_refresh_worker(country: str) -> None:
+    """在批次边界领取维护锁；请求立即返回，网页持续显示等待进度。"""
+    main_assignment_thread.country_refresh_authorized = True
+    deadline = time.monotonic() + 120
+    try:
+        while time.monotonic() < deadline:
+            if _acquire_runtime_mutation(allow_main_repair=True):
+                acquired = False
+                try:
+                    if not maintenance_lock.locked():
+                        acquired = country == "ALL" or maintenance_lock.acquire(blocking=False)
+                finally:
+                    _release_runtime_mutation()
+                if acquired:
+                    country_refresh_requested.clear()
+                    _set_country_refresh(phase="fetching")
+                    gate = threading.Event()
+                    gate.set()
+                    if country == "ALL":
+                        _all_country_refresh_worker(gate)
+                    else:
+                        _country_refresh_worker(country, gate)
+                    return
+            time.sleep(0.2)
+        _set_country_refresh(state="failed", phase="", finishedAt=time.time(),
+                             resultCode="maintenance_wait_timeout", errorCode="maintenance_wait_timeout")
+        recovery_event("country_refresh", "wait_timeout", country=country)
+    finally:
+        country_refresh_requested.clear()
+        main_assignment_thread.country_refresh_authorized = False
+
+
 def start_country_refresh(country: str) -> dict[str, Any]:
     normalized_country = str(country or "").strip().upper()
     all_countries = normalized_country == "ALL"
     if not all_countries and not re.fullmatch(r"[A-Z]{2}", normalized_country):
         return {"state": "failed", "country": normalized_country, "errorCode": "invalid_country"}
+    with country_refresh_lock:
+        if country_refresh_state.get("state") == "running":
+            return dict(country_refresh_state)
     if not _acquire_runtime_mutation(allow_main_repair=True):
+        if maintenance_scan_active.is_set():
+            with country_refresh_lock:
+                if country_refresh_state.get("state") == "running":
+                    return dict(country_refresh_state)
+                accepted = _replace_country_refresh(
+                    state="running", country=normalized_country, phase="waiting_maintenance",
+                    testedCount=0, validCount=0, startedAt=time.time(), finishedAt=0, errorCode="",
+                )
+                country_refresh_requested.set()
+                try:
+                    threading.Thread(target=_queued_country_refresh_worker,
+                                     args=(normalized_country,), daemon=True).start()
+                except Exception:
+                    country_refresh_requested.clear()
+                    return _set_country_refresh(state="failed", phase="", finishedAt=time.time(),
+                                                resultCode="worker_start_failed", errorCode="worker_start_failed")
+                recovery_event("country_refresh", "queued", country=normalized_country)
+                return accepted
         return {
             "state": "failed", "country": normalized_country,
             "resultCode": "operation_busy", "errorCode": "operation_busy",
@@ -3688,6 +3756,10 @@ def refresh_country_nodes(
         stop_reason = "candidates_exhausted" if full_country_scan else "target_reached"
 
         while tested_count < probe_limit and (full_country_scan or len(selected) < selection_limit):
+            if pool_maintenance_should_yield():
+                return {"state": "failed", "country": normalized_country,
+                        "resultCode": "recovery_priority", "errorCode": "recovery_priority",
+                        "testedCount": tested_count, "validCount": len(existing_country_available_ids)}
             queue = node_pool.candidate_queue(
                 candidates,
                 selected,
@@ -3701,7 +3773,7 @@ def refresh_country_nodes(
                 break
             remaining = probe_limit - tested_count
             needed = remaining if full_country_scan else selection_limit - len(selected)
-            batch = queue[: min(NODE_TEST_BATCH_SIZE, remaining, needed)]
+            batch = queue[: min(NODE_TEST_BATCH_SIZE, max(1, OPENVPN_TEST_CONCURRENCY), remaining, needed)]
             batch_ids = {str(item.get("id") or "").strip() for item in batch}
             tested_ids.update(batch_ids)
             results = list(probe_nodes(batch) or [])
@@ -3751,6 +3823,10 @@ def refresh_country_nodes(
         ):
             stop_reason = "probe_limit_reached"
 
+        if pool_maintenance_should_yield():
+            return {"state": "failed", "country": normalized_country,
+                    "resultCode": "recovery_priority", "errorCode": "recovery_priority",
+                    "testedCount": tested_count, "validCount": len(existing_country_available_ids)}
         if _lock_held:
             _set_country_refresh(phase="merging")
         selected_available_ids = {
@@ -3939,11 +4015,16 @@ def _repair_main_once_unlocked(failed_snapshot: dict[str, Any]) -> dict[str, Any
 
 def repair_main_once(failed_snapshot: dict[str, Any]) -> dict[str, Any]:
     """Serialize background promotion with manual main assignment mutations."""
+    # 先记下已确认的故障，再领取操作锁。否则持锁扫描看不到接管请求，
+    # 而恢复线程又一直拿不到锁，直到整池扫描结束才可能恢复。
+    failed_id = str(failed_snapshot.get("candidate_id") or "")
+    if failed_id == str(active_openvpn_node_id or "") and main_mutation_allowed():
+        egress_repair_store.wait_for_standby("main", failed_id, str(failed_snapshot.get("country") or ""))
     if not main_recovery_lock.acquire(blocking=False):
-        return {"ok": False, "error_code": "operation_busy"}
+        return {"ok": False, "error_code": "recovery_pending"}
     try:
         if not _acquire_runtime_mutation(allow_main_repair=True):
-            return {"ok": False, "error_code": "operation_busy"}
+            return {"ok": False, "error_code": "recovery_pending"}
         try:
             return _repair_main_once_unlocked(failed_snapshot)
         finally:
@@ -4104,6 +4185,7 @@ def connect_node(node_id: str) -> str:
             print("[连接] 正在建立其他连接中，跳过此请求", flush=True)
             raise RuntimeError("当前已有连接或节点检测任务正在运行，请稍后再试")
         is_connecting = True
+        main_connection_in_progress.set()
         set_state(is_connecting=True, active_node_latency="正在连接", last_check_message=f"正在初始化连接配置: {node_id}")
 
     try:
@@ -4235,6 +4317,7 @@ def connect_node(node_id: str) -> str:
     finally:
         with lock:
             is_connecting = False
+            main_connection_in_progress.clear()
 
 @_mutation_guard({"ok": False, "error_code": "operation_busy"})
 def disconnect_main_connection() -> dict[str, Any]:
@@ -4258,10 +4341,13 @@ def disconnect_main_connection() -> dict[str, Any]:
     return {"ok": True}
 
 def pool_maintenance_should_yield() -> bool:
-    if main_assignment_requested.is_set():
+    if main_assignment_requested.is_set() or country_refresh_requested.is_set():
         return True
     if egress_repair_store.get("main").get("status") != "waiting_standby":
         return False
+    # Once a standby is ready, stop at the current probe boundary so the
+    # promotion can acquire the mutation lease. While it is still dialing,
+    # the standby worker does not need the pool lease and may proceed.
     return any(
         config["target"] == "main"
         and egress_repair_store.get(f"standby:{config['index']}").get("status") == "healthy"
@@ -4284,6 +4370,7 @@ def maintain_valid_nodes(
         set_state(last_check_message=msg)
         return msg
     is_connecting = True
+    maintenance_scan_active.set()
     with country_refresh_lock:
         all_refresh_started_at = (
             float(country_refresh_state.get("startedAt") or 0)
@@ -4566,6 +4653,7 @@ def maintain_valid_nodes(
         is_connecting = False
         maintenance_lock.release()
         maintenance_probe_active.clear()
+        maintenance_scan_active.clear()
 
 
 def schedule_valid_pool_replenishment(
@@ -10507,17 +10595,26 @@ def check_proxy_health() -> dict[str, Any]:
     except Exception as e:
         return {"ok": False, "error": f"出口连接测试异常: {e}"}
 
+def main_health_check_deferred() -> bool:
+    return (main_connection_in_progress.is_set()
+            or not main_mutation_allowed()
+            or (is_connecting and not maintenance_scan_active.is_set()))
+
+
 def background_proxy_checker() -> None:
     global last_checker_heartbeat, is_connecting, main_egress_fail_count
     time.sleep(30)
     while True:
         last_checker_heartbeat = time.time()
         try:
-            if is_connecting:
+            if main_health_check_deferred():
                 time.sleep(5)
                 continue
 
+            checked_identity = (active_openvpn_node_id, active_openvpn_process, current_main_device())
             res = check_proxy_health()
+            if checked_identity != (active_openvpn_node_id, active_openvpn_process, current_main_device()):
+                continue
             if res["ok"]:
                 set_state(
                     proxy_ok=True,
@@ -10576,7 +10673,7 @@ def background_proxy_checker() -> None:
         except Exception as e:
             print(f"[错误] 代理后台检测发生异常: {e}", flush=True)
             log_to_json("ERROR", "Proxy", f"检测守护线程发生异常: {e}")
-        time.sleep(30)
+        time.sleep(_recovery_settings()["healthIntervalSeconds"])
 
 def active_node_pinger() -> None:
     global last_pinger_heartbeat

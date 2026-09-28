@@ -452,7 +452,9 @@ function refreshNoticeFor(current: CountryRefreshPayload): UiNoticeData | null {
   const name = refreshCountryName(current.country)
   if (current.state === 'running') {
     const total = current.countryCandidateCount ?? 0
-    const scope = current.country === 'ALL' ? '正在检查全部去重候选' : '正在检查该国全部官方候选'
+    const scope = current.phase === 'waiting_maintenance'
+      ? '正在等待当前节点池批次结束；主连接故障恢复优先，在线代理不会中断'
+      : current.country === 'ALL' ? '正在检查全部去重候选' : '正在检查该国全部官方候选'
     return makeNotice('progress', `${name}正在刷新`, `${scope} · 已检测 ${current.testedCount}${total ? `/${total}` : ''} · 通过 ${current.passedCount ?? 0} · 失败 ${current.failedCount ?? 0}，当前在线代理不会中断。`)
   }
   const official = current.officialCount ?? current.catalogCount ?? 0
