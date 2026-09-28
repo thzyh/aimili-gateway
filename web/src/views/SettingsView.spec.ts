@@ -321,14 +321,13 @@ it('shows live capacity limits and saves only the selected values', async () => 
   await flushPromises()
   expect(wrapper.text()).toContain('42 / 150')
   expect(wrapper.text()).toContain('4 + 主 1')
-  expect(wrapper.get('[data-capacity-target]').attributes('max')).toBe('96')
-  await wrapper.get('[data-capacity-target]').setValue('48')
-  await wrapper.get('[data-capacity-emergency]').setValue('100')
+  expect(wrapper.get('[data-capacity-pool]').attributes('max')).toBe('214')
+  await wrapper.get('[data-capacity-pool]').setValue('100')
   await wrapper.get('[data-capacity-slots]').setValue('5')
   await wrapper.get('[data-capacity-form]').trigger('submit')
   await flushPromises()
   expect(mocks.apiFetch).toHaveBeenCalledWith('/api/v1/settings/capacity', {
-    method: 'PUT', body: JSON.stringify({ targetValidNodeCount: 48, maxValidNodeCount: 100, regularExitSlots: 5 }),
+    method: 'PUT', body: JSON.stringify({ candidatePoolCapacity: 100, regularExitSlots: 5 }),
   })
   expect(wrapper.text()).toContain('其中 4 个已就绪')
   wrapper.unmount()

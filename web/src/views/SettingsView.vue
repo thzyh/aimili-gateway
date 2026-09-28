@@ -10,8 +10,7 @@ import type { NoticeKind, UiNoticeData } from '../components/errorMessages'
 
 const summary = ref<SettingsSummaryPayload | null>(null)
 const capacity = ref<CapacityPayload | null>(null)
-const capacityTarget = ref(0)
-const capacityEmergency = ref(0)
+const capacityPool = ref(0)
 const capacitySlots = ref(0)
 const capacitySaving = ref(false)
 const policy = ref<MixedSourcePolicyPayload | null>(null)
@@ -50,8 +49,7 @@ onMounted(async () => {
     summary.value = loadedSummary
     capacity.value = loadedCapacity
     if (loadedCapacity) {
-      capacityTarget.value = loadedCapacity.targetValidNodeCount
-      capacityEmergency.value = loadedCapacity.maxValidNodeCount
+      capacityPool.value = loadedCapacity.candidatePoolCapacity || loadedCapacity.maxValidNodeCount
       capacitySlots.value = loadedCapacity.regularExitSlots
     }
     policy.value = loadedPolicy
@@ -70,12 +68,10 @@ async function refreshCapacity(): Promise<void> {
   if (capacitySaving.value || !capacity.value) return
   try {
     const updated = await apiFetch<CapacityPayload>('/api/v1/settings/capacity')
-    const preserveTarget = capacityTarget.value !== capacity.value.targetValidNodeCount
-    const preserveEmergency = capacityEmergency.value !== capacity.value.maxValidNodeCount
+    const preservePool = capacityPool.value !== (capacity.value.candidatePoolCapacity || capacity.value.maxValidNodeCount)
     const preserveSlots = capacitySlots.value !== capacity.value.regularExitSlots
     capacity.value = updated
-    if (!preserveTarget) capacityTarget.value = updated.targetValidNodeCount
-    if (!preserveEmergency) capacityEmergency.value = updated.maxValidNodeCount
+    if (!preservePool) capacityPool.value = updated.candidatePoolCapacity || updated.maxValidNodeCount
     if (!preserveSlots) capacitySlots.value = updated.regularExitSlots
   } catch { /* 下次轮询重试；保留当前编辑内容 */ }
 }
@@ -87,14 +83,12 @@ async function saveCapacity(): Promise<void> {
     const updated = await apiFetch<CapacityPayload>('/api/v1/settings/capacity', {
       method: 'PUT',
       body: JSON.stringify({
-        targetValidNodeCount: Number(capacityTarget.value),
-        maxValidNodeCount: Number(capacityEmergency.value),
+        candidatePoolCapacity: Number(capacityPool.value),
         regularExitSlots: Number(capacitySlots.value),
       }),
     })
     capacity.value = updated
-    capacityTarget.value = updated.targetValidNodeCount
-    capacityEmergency.value = updated.maxValidNodeCount
+    capacityPool.value = updated.candidatePoolCapacity || updated.maxValidNodeCount
     capacitySlots.value = updated.regularExitSlots
     notice.value = makeNotice('success', '运行容量已保存', `已配置 ${updated.regularExitSlots} 个普通出口位，其中 ${updated.readyRegularExitSlots} 个已就绪；其余出口需要通过真实出网检测后才能使用。`)
   } catch (error) {
@@ -439,18 +433,17 @@ function messageFor(error: unknown, fallback: string): string {
         <p class="section-kicker">CAPACITY</p><h2>运行容量</h2>
         <div class="capacity-content"><div class="capacity-overview">
         <div class="capacity-legacy"><strong>{{ summary?.onlineCount ?? 0 }} / {{ summary?.maxOnline ?? 0 }}</strong><span>在线逻辑出口</span></div>
-        <div v-if="capacity" class="capacity-value"><strong>{{ capacity.currentValidNodeCount }} / {{ capacity.maxValidNodeCount }}</strong><span>当前有效节点 / 紧急保护</span></div>
-        <dl v-if="capacity"><div><dt>常规目标</dt><dd>{{ capacity.targetValidNodeCount }}</dd></div><div><dt>出口数量</dt><dd>{{ capacity.regularExitSlots }} + 主 1</dd></div><div><dt>普通出口已就绪</dt><dd>{{ capacity.readyRegularExitSlots }} / {{ capacity.regularExitSlots }}</dd></div><div><dt>自动最大出口</dt><dd>{{ capacity.regularExitSlotsMax }} + 主 1</dd></div><div><dt>VPS 内存可用</dt><dd>{{ Math.round(capacity.limits.memoryAvailableBytes / 1048576) }} MiB</dd></div></dl>
+        <div v-if="capacity" class="capacity-value"><strong>{{ capacity.currentValidNodeCount }} / {{ capacity.candidatePoolCapacity || capacity.maxValidNodeCount }}</strong><span>当前候选节点 / 候选池容量</span></div>
+        <dl v-if="capacity"><div><dt>出口数量</dt><dd>{{ capacity.regularExitSlots }} + 主 1</dd></div><div><dt>普通出口已就绪</dt><dd>{{ capacity.readyRegularExitSlots }} / {{ capacity.regularExitSlots }}</dd></div><div><dt>自动最大出口</dt><dd>{{ capacity.regularExitSlotsMax }} + 主 1</dd></div><div><dt>VPS 内存可用</dt><dd>{{ Math.round(capacity.limits.memoryAvailableBytes / 1048576) }} MiB</dd></div></dl>
         <button v-if="capacity" class="secondary" type="button" :disabled="capacitySaving" @click="refreshCapacity">刷新资源上限</button>
         <p v-else class="capacity-help">当前版本尚未提供动态容量接口。升级整套服务后可在这里调整。</p>
         </div><div class="capacity-controls">
         <form v-if="capacity" data-capacity-form class="capacity-form" @submit.prevent="saveCapacity">
-          <label class="field">常规有效节点目标<input v-model.number="capacityTarget" data-capacity-target type="number" :min="16" :max="capacity.limits.targetValidNodesMax" step="1"><small>范围 16–{{ capacity.limits.targetValidNodesMax }}；只影响候选池维护目标。</small></label>
-          <label class="field">紧急保护上限<input v-model.number="capacityEmergency" data-capacity-emergency type="number" :min="capacityTarget" :max="capacity.limits.emergencyValidNodesMax" step="1"><small>不能低于常规目标，也不能超过当前 VPS 自动上限。</small></label>
+          <label class="field">候选池容量<input v-model.number="capacityPool" data-capacity-pool type="number" min="16" :max="Math.max(capacity.candidatePoolCapacity || capacity.maxValidNodeCount, capacity.limits.emergencyValidNodesMax)" step="1"><small>容量不等于实际节点数；逐批检测补充，资源紧张时暂停新增拨号，保留现有代理。降低容量会在维护时清理超额普通候选。</small></label>
           <label class="field">普通出口位<input v-model.number="capacitySlots" data-capacity-slots type="number" min="1" :max="capacity.regularExitSlotsMax" step="1"><small>当前 {{ capacitySlots }} 个普通出口位，另加主连接；降低数量不会删除已存在的 Gateway 组。</small></label>
           <button :disabled="capacitySaving" type="submit">{{ capacitySaving ? '正在应用' : '保存运行容量' }}</button>
         </form>
-        <p v-if="capacity" class="capacity-help">自动上限会根据总内存、当前可用内存、CPU 和系统负载重新计算，并把其他项目占用纳入可用内存。保存超出上限的值会被拒绝，不会强行启动更多 OpenVPN 或检测任务。</p>
+        <p v-if="capacity" class="capacity-help">候选池容量只限制缓存节点数量；扩容上限根据可用内存动态计算。每轮串行探测最多 32 个、启动预算 120 秒；预算结束或资源紧张时稍后续检，不增加出口数量。</p>
         </div></div>
       </aside>
 

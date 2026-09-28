@@ -215,9 +215,9 @@ func (service *Service) UpdateCapacity(ctx context.Context, update aimili.Capaci
 	if update.RegularExitSlots != nil {
 		if err := setter.SetCapacity(result.RegularExitSlots); err != nil {
 			if _, rollbackErr := source.UpdateCapacity(ctx, aimili.CapacityUpdate{
-				RegularExitSlots:     &previous.RegularExitSlots,
-				TargetValidNodeCount: &previous.TargetValidNodeCount,
-				MaxValidNodeCount:    &previous.MaxValidNodeCount,
+                RegularExitSlots:     &previous.RegularExitSlots,
+                TargetValidNodeCount: &previous.TargetValidNodeCount,
+                MaxValidNodeCount:    &previous.MaxValidNodeCount,
 			}); rollbackErr != nil {
 				return CapacitySummary{}, &Error{Code: "repair_required"}
 			}

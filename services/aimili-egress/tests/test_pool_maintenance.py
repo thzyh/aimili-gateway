@@ -31,6 +31,14 @@ def country_node(node_id, country, status="not_checked"):
 
 
 class PoolMaintenanceTests(unittest.TestCase):
+    def setUp(self):
+        # 测试主机是 Windows；探测预算使用明确的健康 VPS 采样。
+        facts = manager.capacity.HostFacts(512 * 1048576, 160 * 1048576, 1, 0.2)
+        patcher = mock.patch.object(manager.capacity, "read_host_facts", return_value=facts)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(manager.pool_resume_requested.clear)
+
     def test_country_catalog_reports_regular_target_and_temporary_limit(self):
         with (
             mock.patch.object(manager, "refresh_capacity_limits"),

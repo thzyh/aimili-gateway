@@ -536,9 +536,9 @@ it('separates cached-country filtering from official-country supplementation', a
 	expect(wrapper.find('[data-sync-pool]').exists()).toBe(false)
 	expect(wrapper.get('[data-refresh-all]').text()).toContain('刷新所有国家')
 	expect(wrapper.get('[data-pool-stats-official]').text()).toContain('官方 100')
-	expect(wrapper.get('[data-pool-stats-target]').text()).toContain('常规目标 64')
-	expect(wrapper.get('[data-pool-stats-valid]').text()).toContain('当前有效 66')
-	expect(wrapper.get('[data-pool-stats-maximum]').text()).toContain('紧急保护 150')
+	expect(wrapper.get('[data-pool-stats-valid]').text()).toContain('候选节点 66 个')
+	expect(wrapper.find('[data-pool-stats-target]').exists()).toBe(false)
+	expect(wrapper.find('[data-pool-stats-maximum]').exists()).toBe(false)
 	expect(wrapper.get('[data-pool-stats-countries]').text()).toContain('5 国')
 })
 

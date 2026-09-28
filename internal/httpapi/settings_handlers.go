@@ -114,18 +114,30 @@ func (s *server) handleUpdateCapacity(response http.ResponseWriter, request *htt
 		return
 	}
 	var input struct {
-		TargetValidNodeCount *int `json:"targetValidNodeCount"`
-		MaxValidNodeCount    *int `json:"maxValidNodeCount"`
-		RegularExitSlots     *int `json:"regularExitSlots"`
+		CandidatePoolCapacity *int `json:"candidatePoolCapacity"`
+		TargetValidNodeCount  *int `json:"targetValidNodeCount"`
+		MaxValidNodeCount     *int `json:"maxValidNodeCount"`
+		RegularExitSlots      *int `json:"regularExitSlots"`
 	}
-	if decodeJSON(request, &input) != nil || input.TargetValidNodeCount == nil && input.MaxValidNodeCount == nil && input.RegularExitSlots == nil {
+	if decodeJSON(request, &input) != nil || input.CandidatePoolCapacity == nil && input.TargetValidNodeCount == nil && input.MaxValidNodeCount == nil && input.RegularExitSlots == nil {
 		writeAPIError(response, http.StatusBadRequest, "invalid_request")
 		return
 	}
+	if input.CandidatePoolCapacity != nil {
+		if (input.TargetValidNodeCount != nil && *input.TargetValidNodeCount != *input.CandidatePoolCapacity) ||
+			(input.MaxValidNodeCount != nil && *input.MaxValidNodeCount != *input.CandidatePoolCapacity) {
+			writeAPIError(response, http.StatusBadRequest, "conflicting_capacity_fields")
+			return
+		}
+        // Keep the legacy response aliases aligned with the unified capacity.
+		input.TargetValidNodeCount = input.CandidatePoolCapacity
+		input.MaxValidNodeCount = input.CandidatePoolCapacity
+	}
 	result, err := service.UpdateCapacity(request.Context(), aimili.CapacityUpdate{
-		TargetValidNodeCount: input.TargetValidNodeCount,
-		MaxValidNodeCount:    input.MaxValidNodeCount,
-		RegularExitSlots:     input.RegularExitSlots,
+		CandidatePoolCapacity: input.CandidatePoolCapacity,
+		TargetValidNodeCount:  input.TargetValidNodeCount,
+		MaxValidNodeCount:     input.MaxValidNodeCount,
+		RegularExitSlots:      input.RegularExitSlots,
 	})
 	writeMaintenanceResult(response, result, err)
 }

@@ -60,7 +60,7 @@ export interface CapacityLimitsPayload {
   memoryTotalBytes: number; memoryAvailableBytes: number; cpuCount: number; load1: number; sampledAt: number
 }
 export interface CapacityPayload {
-  targetValidNodeCount: number; maxValidNodeCount: number; currentValidNodeCount: number
+  candidatePoolCapacity?: number; targetValidNodeCount: number; maxValidNodeCount: number; currentValidNodeCount: number
   regularExitSlots: number; readyRegularExitSlots: number; regularExitSlotsMax: number; logicalExits: number
   limits: CapacityLimitsPayload; autoManaged: boolean
 }

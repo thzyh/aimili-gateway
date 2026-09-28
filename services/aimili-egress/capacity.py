@@ -127,16 +127,9 @@ def limits_for(facts: HostFacts, current_slots: int, process_limit: int | None =
         regular_max = max(current_slots, MIN_REGULAR_SLOTS)
     # 只有活动出口/探测需要按槽位限制；节点池本身是轻量缓存，不能
     # 继续复用槽位预算，否则会把紧急保护值错误地当成进程容量。
-    pool_budget = max(1, min(regular_max, free_mb // 40))
-    if facts.load1 > facts.cpu_count * 1.75:
-        pool_budget = max(1, pool_budget - 1)
-    target_max = max(MIN_TARGET_POOL, current_slots + 3, min(MAX_TARGET_POOL, pool_budget * 16))
     cache_bytes = max(0, facts.memory_available_bytes - POOL_RUNTIME_RESERVE_BYTES)
-    cache_memory_limit = cache_bytes // POOL_ENTRY_MEMORY_BUDGET_BYTES
-    emergency_max = max(
-        target_max,
-        min(_emergency_host_cap(facts), int(cache_memory_limit)),
-    )
+    emergency_max = max(MIN_TARGET_POOL, min(_emergency_host_cap(facts), int(cache_bytes // POOL_ENTRY_MEMORY_BUDGET_BYTES)))
+    target_max = emergency_max
     return CapacityLimits(
         regular_max,
         target_max,
@@ -153,3 +146,8 @@ def clamp_settings(target: int, emergency: int, limits: CapacityLimits) -> tuple
     target = max(MIN_TARGET_POOL, min(limits.target_valid_nodes_max, int(target)))
     emergency = max(target, min(limits.emergency_valid_nodes_max, int(emergency)))
     return target, emergency
+
+
+def pool_probe_allowed(facts: HostFacts) -> bool:
+    """压力只阻止新增拨号，不删除已有节点或关闭代理。"""
+    return facts.memory_available_bytes >= 96 * 1024 * 1024 and facts.load1 <= facts.cpu_count * 1.75

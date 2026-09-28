@@ -177,11 +177,17 @@ class ControlHandler(BaseHTTPRequestHandler):
             self._manager_result(self.server.manager.capacity_snapshot())
             return
         if self.command == "PUT" and path == f"{API_PREFIX}/capacity":
-            payload = self._read_object({"targetValidNodeCount", "maxValidNodeCount", "regularExitSlots"})
+            payload = self._read_object({"candidatePoolCapacity", "targetValidNodeCount", "maxValidNodeCount", "regularExitSlots"})
+            if "candidatePoolCapacity" in payload and any(
+                key in payload and payload[key] != payload["candidatePoolCapacity"]
+                for key in ("targetValidNodeCount", "maxValidNodeCount")
+            ):
+                self._manager_result({"ok": False, "error_code": "invalid_capacity"})
+                return
             self._manager_result(
                 self.server.manager.update_capacity(
                     payload.get("targetValidNodeCount"),
-                    payload.get("maxValidNodeCount"),
+                    payload.get("candidatePoolCapacity", payload.get("maxValidNodeCount")),
                     payload.get("regularExitSlots"),
                 )
             )

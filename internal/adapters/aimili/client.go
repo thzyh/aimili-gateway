@@ -43,6 +43,7 @@ type CapacityLimits struct {
 }
 
 type Capacity struct {
+	CandidatePoolCapacity int            `json:"candidatePoolCapacity,omitempty"`
 	TargetValidNodeCount  int            `json:"targetValidNodeCount"`
 	MaxValidNodeCount     int            `json:"maxValidNodeCount"`
 	CurrentValidNodeCount int            `json:"currentValidNodeCount"`
@@ -55,9 +56,10 @@ type Capacity struct {
 }
 
 type CapacityUpdate struct {
-	TargetValidNodeCount *int `json:"targetValidNodeCount,omitempty"`
-	MaxValidNodeCount    *int `json:"maxValidNodeCount,omitempty"`
-	RegularExitSlots     *int `json:"regularExitSlots,omitempty"`
+	CandidatePoolCapacity *int `json:"candidatePoolCapacity,omitempty"`
+	TargetValidNodeCount  *int `json:"targetValidNodeCount,omitempty"`
+	MaxValidNodeCount     *int `json:"maxValidNodeCount,omitempty"`
+	RegularExitSlots      *int `json:"regularExitSlots,omitempty"`
 }
 
 type Candidate struct {
@@ -346,11 +348,15 @@ func (c *Client) UpdateCapacity(ctx context.Context, update CapacityUpdate) (Cap
 }
 
 func validCapacity(value Capacity) bool {
+	poolCapacity := value.CandidatePoolCapacity
+	if poolCapacity == 0 {
+		poolCapacity = value.MaxValidNodeCount
+	}
 	return value.RegularExitSlots >= 0 && value.ReadyRegularExitSlots >= 0 && value.ReadyRegularExitSlots <= value.RegularExitSlots &&
 		value.RegularExitSlotsMax >= value.RegularExitSlots && value.LogicalExits == value.RegularExitSlots+1 &&
-		value.TargetValidNodeCount >= 1 && value.MaxValidNodeCount >= value.TargetValidNodeCount && value.CurrentValidNodeCount >= 0 &&
-		value.Limits.RegularExitSlotsMax >= value.RegularExitSlots && value.Limits.TargetValidNodesMax >= value.TargetValidNodeCount &&
-		value.Limits.EmergencyNodesMax >= value.MaxValidNodeCount
+		value.TargetValidNodeCount >= 1 && poolCapacity >= value.TargetValidNodeCount && value.MaxValidNodeCount >= value.TargetValidNodeCount && value.CurrentValidNodeCount >= 0 &&
+		value.Limits.RegularExitSlotsMax >= value.RegularExitSlots && value.MaxValidNodeCount <= 512 &&
+		value.Limits.EmergencyNodesMax >= 1
 }
 
 func (c *Client) Candidates(ctx context.Context) ([]Candidate, error) {
@@ -434,7 +440,7 @@ func validCountryRefresh(refresh CountryRefresh) bool {
 	}
 	if refresh.ResultCode != "" {
 		switch refresh.ResultCode {
-		case "success", "no_official_candidates", "no_usable_nodes", "operation_busy", "maintenance_busy", "upstream_unavailable":
+		case "success", "no_official_candidates", "no_usable_nodes", "operation_busy", "maintenance_busy", "upstream_unavailable", "resource_pressure", "batch_budget", "candidates_exhausted", "target_reached":
 		default:
 			return false
 		}

@@ -11,6 +11,8 @@ const codeMessages: Record<string, string> = {
   egress_unavailable: '当前出口不可用或身份已经变化，请重新检测后重试',
   operation_busy: '当前有维护或切换任务正在进行，请稍后重试',
   maintenance_busy: '节点维护正在进行，请稍后重试',
+  resource_pressure: 'VPS 当前内存或 CPU 余量不足，已暂停新增检测并保留现有节点，请稍后重试',
+  conflicting_capacity_fields: '候选池容量字段不一致，请刷新页面后重新保存',
   no_official_candidates: '该国家当前没有官方候选节点',
   no_usable_nodes: '检测完成，但没有找到可用节点',
   upstream_unavailable: '官方节点服务暂时不可用，请稍后重试',

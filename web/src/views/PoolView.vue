@@ -454,7 +454,7 @@ function refreshNoticeFor(current: CountryRefreshPayload): UiNoticeData | null {
     const total = current.countryCandidateCount ?? 0
     const scope = current.phase === 'waiting_maintenance'
       ? '正在等待当前节点池批次结束；主连接故障恢复优先，在线代理不会中断'
-      : current.country === 'ALL' ? '正在检查全部去重候选' : '正在检查该国全部官方候选'
+      : current.country === 'ALL' ? '正在分批复验和补充候选，保留未检查的缓存' : '正在检查该国全部官方候选'
     return makeNotice('progress', `${name}正在刷新`, `${scope} · 已检测 ${current.testedCount}${total ? `/${total}` : ''} · 通过 ${current.passedCount ?? 0} · 失败 ${current.failedCount ?? 0}，当前在线代理不会中断。`)
   }
   const official = current.officialCount ?? current.catalogCount ?? 0
@@ -465,7 +465,12 @@ function refreshNoticeFor(current: CountryRefreshPayload): UiNoticeData | null {
     ? `官方候选 ${official} · 本次检测 ${current.testedCount} · 最终保留 ${poolTotal} · 节点池共 ${poolTotal}${time ? ` · ${time}` : ''}`
     : `官方原始 ${official} · 去重候选 ${current.countryCandidateCount ?? 0} · 本次检测 ${current.testedCount} · 检测通过 ${current.passedCount ?? 0} · 复验通过 ${current.revalidatedCount ?? 0} · 新增节点 ${current.newUsableCount ?? 0} · 检测失败 ${current.failedCount ?? 0} · 该国现有 ${current.countryValidCount ?? usable} · 节点池共 ${poolTotal}${time ? ` · ${time}` : ''}`
   if (current.state === 'completed' && (!current.resultCode || current.resultCode === 'success')) {
-    return makeNotice('success', `最后刷新：${name} · 成功`, `刷新已完成 · ${counts}`)
+    const reasons: Record<string, string> = { resource_pressure: '资源紧张，已暂停新增拨号，后台稍后重试',
+      batch_budget: '本轮检测预算已用完，后台稍后继续',
+      candidates_exhausted: '本轮候选已检查完，不足容量时等待后续目录',
+      target_reached: '候选池已达到容量' }
+    const reason = reasons[current.stopReason ?? '']
+    return makeNotice('success', `最后刷新：${name} · 成功`, `刷新已完成 · ${counts}${reason ? ' · ' + reason : ''}`)
   }
   const code = current.resultCode || current.errorCode || 'refresh_failed'
   return makeNotice('error', `最后刷新：${name} · 失败`, `${counts}。${messageForCode(code, '国家节点刷新失败，请稍后重试。')}`)
@@ -513,7 +518,7 @@ function formatRefreshTime(value?: number): string {
     <UiNotice v-if="topNotice" :key="topNotice.id" data-top-notice :notice="topNotice" @close="topNotice=null" />
     <section class="pool-toolbar">
       <PoolFilters :countries="countries" :official-countries="officialCountries" :country="country" :supplement-country="supplementCountry" :proxy-type="proxyType" :status="status" :sort="sort" @country="country=$event" @supplement-country="supplementCountry=$event" @proxy-type="proxyType=$event" @status="status=$event" @sort="sort=$event" />
-      <div data-pool-stats class="pool-stats"><span data-pool-stats-official class="pool-stat official">官方 <strong>{{ poolStats?.officialCandidateTotal ?? candidateCountries.reduce((sum,item) => sum + item.candidateCount, 0) }}</strong></span><span data-pool-stats-target class="pool-stat target">常规目标 <strong>{{ poolStats?.targetValidNodeCount ?? '—' }}</strong></span><span data-pool-stats-valid class="pool-stat valid">当前有效 <strong>{{ poolStats?.validNodeCount ?? '—' }}</strong></span><span data-pool-stats-maximum class="pool-stat maximum">紧急保护 <strong>{{ poolStats?.maxValidNodeCount ?? '—' }}</strong></span><span data-pool-stats-countries class="pool-stat countries"><strong>{{ poolStats?.validCountryCount ?? countries.length }}</strong> 国</span></div>
+      <div data-pool-stats class="pool-stats"><span data-pool-stats-official class="pool-stat official">官方 <strong>{{ poolStats?.officialCandidateTotal ?? candidateCountries.reduce((sum,item) => sum + item.candidateCount, 0) }}</strong></span><span data-pool-stats-valid class="pool-stat valid" title="本机已检测通过并保留的候选；容量在高级设置中调整">候选节点 <strong>{{ poolStats?.validNodeCount ?? '—' }}</strong> 个</span><span data-pool-stats-countries class="pool-stat countries"><strong>{{ poolStats?.validCountryCount ?? countries.length }}</strong> 国</span></div>
     </section>
     <UiNotice v-if="refreshNotice" :key="refreshNotice.id" data-refresh-notice class="refresh-notice" :notice="refreshNotice" @close="dismissRefreshNotice" />
     <CountryAvailability :rows="candidateCountries" />

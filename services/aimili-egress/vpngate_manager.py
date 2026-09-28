@@ -267,6 +267,7 @@ main_recovery_lock = threading.RLock()
 maintenance_lock = threading.Lock()
 maintenance_probe_active = threading.Event()
 maintenance_scan_active = threading.Event()
+pool_resume_requested = threading.Event()
 main_connection_in_progress = threading.Event()
 country_refresh_requested = threading.Event()
 main_assignment_requested = threading.Event()
@@ -464,37 +465,24 @@ def _load_capacity_settings() -> dict[str, int]:
     saved = read_json(CAPACITY_FILE, {})
     if not isinstance(saved, dict):
         saved = {}
-    # 没有持久化覆盖时，直接采用当前主机的自动阶梯值；升级旧版本不会
-    # 把旧的 64/150 常量继续当成新 VPS 的永久配置。
-    default_target = TARGET_VALID_POOL_SIZE if "TARGET_VALID_POOL_SIZE" in os.environ else 0
-    default_emergency = MAX_VALID_POOL_SIZE if "MAX_VALID_POOL_SIZE" in os.environ else 0
+    # 使用旧缓存上限迁移，原 64/48 补池目标不再作为容量。
     try:
-        target = int(saved.get("targetValidNodeCount", default_target))
+        value = int(saved.get("candidatePoolCapacity", saved.get("maxValidNodeCount", 200)))
     except (TypeError, ValueError):
-        target = default_target
-    try:
-        emergency = int(saved.get("maxValidNodeCount", default_emergency))
-    except (TypeError, ValueError):
-        emergency = default_emergency
-    return {"targetValidNodeCount": target, "maxValidNodeCount": emergency}
+        value = 200
+    return {"candidatePoolCapacity": max(16, min(512, value))}
 
 
 def refresh_capacity_limits() -> capacity.CapacityLimits:
-    """按当前主机压力收敛自动上限，并保留用户在安全范围内的目标值。"""
+    """资源压力控制探测，不因短暂压力裁剪现有缓存或改写用户容量。"""
     global TARGET_VALID_POOL_SIZE, TARGET_VALID_NODES, MAX_VALID_POOL_SIZE
     limits = _capacity_limits()
     with _capacity_lock:
         if not _capacity_settings:
             _capacity_settings.update(_load_capacity_settings())
-        target, emergency = capacity.clamp_settings(
-            _capacity_settings.get("targetValidNodeCount") or limits.target_valid_nodes_max,
-            _capacity_settings.get("maxValidNodeCount") or limits.emergency_valid_nodes_max,
-            limits,
-        )
-        TARGET_VALID_POOL_SIZE = target
-        TARGET_VALID_NODES = target
-        MAX_VALID_POOL_SIZE = emergency
-        return limits
+        value = _capacity_settings.get("candidatePoolCapacity") or _capacity_settings.get("maxValidNodeCount") or 200
+        TARGET_VALID_POOL_SIZE = TARGET_VALID_NODES = MAX_VALID_POOL_SIZE = max(16, min(512, value))
+    return limits
 
 
 def capacity_snapshot() -> dict[str, Any]:
@@ -514,6 +502,7 @@ def capacity_snapshot() -> dict[str, Any]:
     nodes = read_json(NODES_FILE, [])
     current_valid = len([item for item in nodes if isinstance(item, dict) and item.get("probe_status") == "available"])
     return {
+        "candidatePoolCapacity": settings["maxValidNodeCount"],
         "targetValidNodeCount": settings["targetValidNodeCount"],
         "maxValidNodeCount": settings["maxValidNodeCount"],
         "currentValidNodeCount": current_valid,
@@ -592,20 +581,18 @@ def update_capacity(target: Any = None, emergency: Any = None, regular_slots: An
     current_slots = _active_regular_slot_count()
     try:
         requested_slots = current_slots if regular_slots is None else int(regular_slots)
-        requested_target = TARGET_VALID_POOL_SIZE if target is None else int(target)
-        requested_emergency = MAX_VALID_POOL_SIZE if emergency is None else int(emergency)
+        requested_target = requested_emergency = int(
+            emergency if emergency is not None else target if target is not None else MAX_VALID_POOL_SIZE
+        )
     except (TypeError, ValueError):
         return {"ok": False, "error_code": "invalid_capacity"}
     if requested_slots < capacity.MIN_REGULAR_SLOTS or requested_slots > limits.regular_exit_slots_max:
         return {"ok": False, "error_code": "capacity_limit_exceeded", "limits": limits.as_dict()}
     if requested_slots > MAX_EXIT_SLOTS:
         return {"ok": False, "error_code": "capacity_limit_exceeded", "limits": limits.as_dict()}
-    requested_target, requested_emergency = capacity.clamp_settings(
-        requested_target, requested_emergency, limits
-    )
-    if target is not None and requested_target != int(target):
-        return {"ok": False, "error_code": "capacity_limit_exceeded", "limits": limits.as_dict()}
-    if emergency is not None and requested_emergency != int(emergency):
+    if not 16 <= requested_emergency <= 512 or (
+        requested_emergency > MAX_VALID_POOL_SIZE and requested_emergency > limits.emergency_valid_nodes_max
+    ):
         return {"ok": False, "error_code": "capacity_limit_exceeded", "limits": limits.as_dict()}
     if requested_slots > current_slots and not _slot_expansion_ready(requested_slots):
         return {"ok": False, "error_code": "capacity_upgrade_required"}
@@ -618,7 +605,7 @@ def update_capacity(target: Any = None, emergency: Any = None, regular_slots: An
             return {"ok": False, "error_code": "capacity_storage_failed"}
     with _capacity_lock:
         previous = dict(_capacity_settings)
-        desired = {"targetValidNodeCount": requested_target, "maxValidNodeCount": requested_emergency}
+        desired = {"candidatePoolCapacity": requested_emergency}
         try:
             write_json(CAPACITY_FILE, desired)
         except OSError:
@@ -3271,6 +3258,8 @@ def replenish_valid_pool(
     now: float | None = None,
     revalidate_existing: bool = True,
     stop_requested=None,
+    bounded: bool = False,
+    fresh_ids: set[str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]], dict[str, Any]]:
     """复验既有节点并分批补池，直到达到目标或候选耗尽。"""
     checked_at = time.time() if now is None else now
@@ -3278,6 +3267,9 @@ def replenish_valid_pool(
         active_openvpn_node_id,
         [*current_slot_node_ids(), *get_slot_pin_map().values()],
     )
+    protected_ids.update(fresh_ids or set())
+    if bounded:
+        protected_ids.update(reserved_slot_candidate_ids())
     protected_pool = [
         item
         for item in existing_nodes
@@ -3333,8 +3325,17 @@ def replenish_valid_pool(
     tested_ids: set[str] = set()
     tested_count = 0
     batch_count = 0
+    deadline = time.monotonic() + 120
 
     while len(pool) < TARGET_VALID_POOL_SIZE:
+        if bounded:
+            reason = (
+                "assignment_priority" if stop_requested and stop_requested() else
+                "resource_pressure" if not capacity.pool_probe_allowed(capacity.read_host_facts()) else
+                "batch_budget" if tested_count >= 32 or time.monotonic() >= deadline else ""
+            )
+            if reason:
+                return pool, failed_entries, {"tested": tested_count, "batches": batch_count, "stop_reason": reason}
         queue = node_pool.candidate_queue(
             candidates,
             pool,
@@ -3350,7 +3351,7 @@ def replenish_valid_pool(
                 "stop_reason": "candidates_exhausted",
             }
 
-        batch_size = NODE_TEST_BATCH_SIZE
+        batch_size = 1 if bounded else NODE_TEST_BATCH_SIZE
         if not revalidate_existing:
             batch_size = min(
                 batch_size,
@@ -3375,9 +3376,14 @@ def replenish_valid_pool(
 
         tested_count += len(batch)
         batch_count += 1
+        if bounded:
+            _set_country_refresh(testedCount=tested_count)
         pool, failed = node_pool.merge_probe_results(
             pool, results, TARGET_VALID_POOL_SIZE
         )
+        for item in results:
+            if item.get("probe_status") == "available":
+                failed_entries.pop(str(item.get("id") or ""), None)
         if stop_requested is not None and stop_requested():
             return pool, failed_entries, {
                 "tested": tested_count, "batches": batch_count,
@@ -3773,7 +3779,11 @@ def refresh_country_nodes(
                 break
             remaining = probe_limit - tested_count
             needed = remaining if full_country_scan else selection_limit - len(selected)
-            batch = queue[: min(NODE_TEST_BATCH_SIZE, max(1, OPENVPN_TEST_CONCURRENCY), remaining, needed)]
+            if not capacity.pool_probe_allowed(capacity.read_host_facts()):
+                return {"state": "failed", "country": normalized_country,
+                        "resultCode": "resource_pressure", "errorCode": "resource_pressure",
+                        "testedCount": tested_count, "validCount": len(existing_country_available_ids)}
+            batch = queue[: min(1, remaining, needed)]
             batch_ids = {str(item.get("id") or "").strip() for item in batch}
             tested_ids.update(batch_ids)
             results = list(probe_nodes(batch) or [])
@@ -4462,9 +4472,10 @@ def maintain_valid_nodes(
                 )
             return f"获取节点失败，保留现有有效节点 {len(existing_nodes)} 个"
 
+        official_candidates = candidates
         msg = (
             f"开始维护有效节点池：现有可见节点 {len(existing_nodes)} 个，"
-            f"本轮官方候选 {len(candidates)} 个，目标 {TARGET_VALID_POOL_SIZE} 个"
+            f"本轮官方候选 {len(official_candidates)} 个，目标 {TARGET_VALID_POOL_SIZE} 个"
         )
         print(f"[周期检测] {msg}", flush=True)
         log_to_json("INFO", "Main", msg)
@@ -4474,7 +4485,7 @@ def maintain_valid_nodes(
             official_count = sum(max(0, parse_int(item.get("candidateCount"))) for item in catalog)
             _set_country_refresh(
                 phase="probing", catalogCount=official_count,
-                officialCount=official_count, countryCandidateCount=len(candidates),
+                officialCount=official_count, countryCandidateCount=len(official_candidates),
             )
         set_state(is_connecting=True, last_check_message="正在分批复验并补充有效节点...")
         def probe_pool_batch(batch: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -4485,6 +4496,24 @@ def maintain_valid_nodes(
                 results.extend(probe_nodes(batch[start:start + max(1, OPENVPN_TEST_CONCURRENCY)]))
             return results
 
+        if revalidate_existing:
+            known = sorted(
+                (n for n in existing_nodes if n.get("probe_status") == "available"),
+                key=lambda n: float(n.get("probed_at") or 0),
+            )
+            # 最近通过的缓存不重复拨号；旧记录优先，失败有冷却。
+            fresh_ids = {n["id"] for n in known if time.time() - float(n.get("probed_at") or 0) < CHECK_INTERVAL_SECONDS}
+            seen = set()
+            merged_candidates = []
+            for node in [*known, *official_candidates]:
+                node_id = str(node.get("id") or "").strip()
+                if node_id and node_id not in seen:
+                    seen.add(node_id)
+                    merged_candidates.append(node)
+            candidates = merged_candidates
+        else:
+            fresh_ids = set()
+
         maintenance_probe_active.set()
         merged, blacklist, pool_stats = replenish_valid_pool(
             existing_nodes,
@@ -4493,6 +4522,8 @@ def maintain_valid_nodes(
             probe_pool_batch,
             revalidate_existing=revalidate_existing,
             stop_requested=pool_maintenance_should_yield,
+            bounded=True,
+            fresh_ids=fresh_ids,
         )
         maintenance_probe_active.clear()
         if pool_stats["stop_reason"] == "assignment_priority":
@@ -4519,10 +4550,12 @@ def maintain_valid_nodes(
         protected_ids.update(main_assignment_coordinator.reserved_candidate_ids())
         if all_refresh_started_at:
             _set_country_refresh(phase="merging", testedCount=pool_stats["tested"])
+        refreshed = {str(item.get("id") or ""): item for item in merged}
         eligible_existing_nodes = [
-            item
+            refreshed.get(str(item.get("id") or ""), item)
             for item in existing_nodes
             if str(item.get("id") or "").strip() not in blacklist
+            or str(item.get("id") or "").strip() in protected_ids
         ]
         merged = node_pool.rebalance_valid_pool(
             eligible_existing_nodes,
@@ -4557,7 +4590,7 @@ def maintain_valid_nodes(
             active_node = next((n["id"] for n in merged if n.get("active")), "无")
 
             status_report = (
-                f"周期节点检测完成。官方候选 {len(candidates)} 个，本轮测试 "
+                f"周期节点检测完成。官方候选 {len(official_candidates)} 个，本轮测试 "
                 f"{pool_stats['tested']} 个，当前【有效节点池】{len(available_nodes)} 个；"
                 f"停止原因: {pool_stats['stop_reason']}；"
                 f"当前【正在正常运行的活动连接节点】为: {active_node}。"
@@ -4607,7 +4640,7 @@ def maintain_valid_nodes(
 
         valid_nodes_count = len([n for n in merged if n.get("probe_status") == "available"])
         message = (
-            f"Fetched {len(candidates)} candidates. Tested {pool_stats['tested']} nodes. "
+            f"Fetched {len(official_candidates)} candidates. Tested {pool_stats['tested']} nodes. "
             f"Valid pool: {valid_nodes_count}. Stop: {pool_stats['stop_reason']}."
         )
         set_state(
@@ -4628,7 +4661,7 @@ def maintain_valid_nodes(
                 "resultCode": "success" if valid_nodes_count > 0 else "no_usable_nodes",
                 "catalogCount": official_count,
                 "officialCount": official_count,
-                "countryCandidateCount": len(candidates),
+                "countryCandidateCount": len(official_candidates),
                 "testedCount": pool_stats["tested"],
                 "usableCount": valid_nodes_count,
                 "retainedCount": retained_count,
@@ -4654,6 +4687,11 @@ def maintain_valid_nodes(
         maintenance_lock.release()
         maintenance_probe_active.clear()
         maintenance_scan_active.clear()
+        if "pool_stats" in locals() and pool_stats["stop_reason"] in {
+            "batch_budget", "resource_pressure", "assignment_priority"
+        }:
+            # 手动全量刷新和后台维护共用续检信号，唤醒六小时休眠。
+            pool_resume_requested.set()
 
 
 def schedule_valid_pool_replenishment(
@@ -7036,12 +7074,16 @@ def collector_loop() -> None:
             log_to_json("ERROR", "Main", err_msg)
             set_state(last_check_at=time.time(), last_check_message=f"check error: {exc}")
 
-        if res == "operation_busy":
+        if res == "operation_busy" or "Stop: batch_budget" in res or "Stop: resource_pressure" in res:
+            pool_resume_requested.clear()
             sleep_time = COLLECTOR_BUSY_RETRY_SECONDS
         elif not active_openvpn_running() and not success:
             sleep_time = COLLECTOR_FAILURE_BACKOFF_SECONDS
         else:
-            sleep_time = CHECK_INTERVAL_SECONDS
+            if pool_resume_requested.wait(CHECK_INTERVAL_SECONDS):
+                pool_resume_requested.clear()
+                time.sleep(COLLECTOR_BUSY_RETRY_SECONDS)
+            continue
 
         time.sleep(sleep_time)
 

@@ -12,7 +12,7 @@ class CapacityTests(unittest.TestCase):
         facts = capacity.HostFacts(458 * 1024 * 1024, 191 * 1024 * 1024, 1, 0.2)
         limits = capacity.limits_for(facts, 4)
         self.assertEqual(limits.regular_exit_slots_max, 4)
-        self.assertEqual(limits.target_valid_nodes_max, 64)
+        self.assertEqual(limits.target_valid_nodes_max, 200)
         self.assertEqual(limits.emergency_valid_nodes_max, 200)
 
     def test_pressure_reduces_future_limit_but_never_below_current_slots(self):
@@ -33,12 +33,12 @@ class CapacityTests(unittest.TestCase):
                 mock.patch.object(manager, "TARGET_VALID_POOL_SIZE", 64), \
                 mock.patch.object(manager, "TARGET_VALID_NODES", 64), \
                 mock.patch.object(manager, "MAX_VALID_POOL_SIZE", 150):
-                self.assertEqual(manager.refresh_capacity_limits().target_valid_nodes_max, 64)
-                self.assertEqual(manager.TARGET_VALID_POOL_SIZE, 64)
+                self.assertEqual(manager.refresh_capacity_limits().target_valid_nodes_max, 200)
+                self.assertEqual(manager.TARGET_VALID_POOL_SIZE, 200)
                 self.assertEqual(manager.refresh_capacity_limits().target_valid_nodes_max, 16)
-                self.assertEqual(manager.TARGET_VALID_POOL_SIZE, 16)
-                self.assertEqual(manager.refresh_capacity_limits().target_valid_nodes_max, 64)
-                self.assertEqual(manager.TARGET_VALID_POOL_SIZE, 64)
+                self.assertEqual(manager.TARGET_VALID_POOL_SIZE, 200)
+                self.assertEqual(manager.refresh_capacity_limits().target_valid_nodes_max, 200)
+                self.assertEqual(manager.TARGET_VALID_POOL_SIZE, 200)
 
     def test_over_limit_request_rejects_before_changing_slots(self):
         facts = capacity.HostFacts(2048 * 1024 * 1024, 1000 * 1024 * 1024, 2, 0.1)
@@ -76,10 +76,10 @@ class CapacityTests(unittest.TestCase):
                 mock.patch.object(manager, "TARGET_VALID_NODES", 64), \
                 mock.patch.object(manager, "MAX_VALID_POOL_SIZE", 150):
                 result = manager.update_capacity(target=80, emergency=160, regular_slots=5)
-                self.assertEqual(manager.TARGET_VALID_POOL_SIZE, 80)
+                self.assertEqual(manager.TARGET_VALID_POOL_SIZE, 160)
             self.assertEqual(result["readyRegularExitSlots"], 4)
             self.assertEqual(set_slots.call_args.kwargs, {"count": 5})
-            self.assertEqual(capacity_file.read_text(encoding="utf-8").count('"targetValidNodeCount": 80'), 1)
+            self.assertIn('"candidatePoolCapacity": 160', capacity_file.read_text(encoding="utf-8"))
 
     def test_capacity_file_failure_restores_previous_slot_count(self):
         facts = capacity.HostFacts(2048 * 1024 * 1024, 1000 * 1024 * 1024, 2, 0.1)
@@ -96,14 +96,14 @@ class CapacityTests(unittest.TestCase):
         facts = capacity.HostFacts(4096 * 1024 * 1024, 3000 * 1024 * 1024, 4, 0.4)
         limits = capacity.limits_for(facts, 4)
         self.assertEqual(limits.regular_exit_slots_max, 16)
-        self.assertEqual(limits.target_valid_nodes_max, 256)
+        self.assertEqual(limits.target_valid_nodes_max, 512)
         self.assertEqual(limits.emergency_valid_nodes_max, 512)
 
     def test_medium_host_has_two_hundred_cache_entries_without_increasing_exit_capacity(self):
         facts = capacity.HostFacts(469 * 1024 * 1024, 140 * 1024 * 1024, 1, 0.3)
         limits = capacity.limits_for(facts, 4)
         self.assertEqual(limits.regular_exit_slots_max, 4)
-        self.assertEqual(limits.target_valid_nodes_max, 48)
+        self.assertEqual(limits.target_valid_nodes_max, 200)
         self.assertEqual(limits.emergency_valid_nodes_max, 200)
 
     def test_busy_host_stops_new_exits_and_recovers_without_reconfiguration(self):
@@ -112,7 +112,9 @@ class CapacityTests(unittest.TestCase):
         busy = capacity.limits_for(capacity.HostFacts(total, 3000 * 1024 * 1024, 4, 8.0), 4)
         self.assertEqual(calm.regular_exit_slots_max, 16)
         self.assertEqual(busy.regular_exit_slots_max, 4)
-        self.assertLess(busy.target_valid_nodes_max, calm.target_valid_nodes_max)
+        self.assertEqual(busy.target_valid_nodes_max, 512)
+        self.assertFalse(capacity.pool_probe_allowed(capacity.HostFacts(total, 100 * 1024 * 1024, 4, 8.0)))
+        self.assertTrue(capacity.pool_probe_allowed(capacity.HostFacts(total, 100 * 1024 * 1024, 4, 0.4)))
 
     def test_process_semaphore_override_restricts_new_exits(self):
         facts = capacity.HostFacts(4096 * 1024 * 1024, 3000 * 1024 * 1024, 4, 0.4)
