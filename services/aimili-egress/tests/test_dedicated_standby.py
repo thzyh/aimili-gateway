@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 from unittest import mock
 
@@ -18,6 +19,49 @@ class FakeProcess:
 
 
 class DedicatedStandbyTests(unittest.TestCase):
+    def test_resource_selection_excludes_live_slots_and_other_standbys(self):
+        slot = {"device": "tun122", "table": 202, "process": FakeProcess()}
+        other_standby = {"device": "tun124", "table": 204, "process": FakeProcess()}
+        with (
+            mock.patch.object(manager, "exit_slots", {2: slot}),
+            mock.patch.object(manager, "dedicated_standbys", {0: other_standby}),
+            mock.patch.object(manager, "dedicated_standby_resources", {
+                3: {"device": "tun122", "table": 202},
+            }),
+        ):
+            device, table = manager._prepare_standby_resource(3)
+        self.assertNotIn(device, {"tun122", "tun124"})
+        self.assertNotIn(table, {202, 204})
+
+    def test_repeated_promotion_exchanges_active_and_standby_resources(self):
+        index, slot = 3, 2
+        active = {"device": manager.slot_device(slot), "table": manager.slot_table(slot),
+                  "process": FakeProcess(), "node_id": "active"}
+        standby = {"device": f"tun{manager.STANDBY_DEV_BASE + index}",
+                   "table": manager.STANDBY_TABLE_BASE + index,
+                   "process": FakeProcess(), "node_id": "standby"}
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch.object(manager, "exit_slots", {slot: active}))
+            stack.enter_context(mock.patch.object(manager, "dedicated_standbys", {index: standby}))
+            stack.enter_context(mock.patch.object(manager, "dedicated_standby_resources", {}))
+            stack.enter_context(mock.patch.object(manager, "_healthy_dedicated_standby_index", return_value=index))
+            for name in ["stop_process", "cleanup_policy_routing", "ensure_slot_proxy",
+                         "set_slot_pin", "set_slot_country", "set_slot_type", "write_slots_state",
+                         "write_dedicated_standby_state", "log_to_json"]:
+                stack.enter_context(mock.patch.object(manager, name))
+            stack.enter_context(mock.patch.object(manager, "egress_repair_store"))
+            stack.enter_context(mock.patch.object(manager.threading, "Thread"))
+            stack.enter_context(mock.patch.object(manager, "detach_promoted_standby_config", return_value="unused"))
+            self.assertTrue(manager.promote_dedicated_standby_to_slot(slot))
+            self.assertEqual(manager.standby_device(index), active["device"])
+            manager.dedicated_standbys[index] = {
+                **active, "device": manager.standby_device(index),
+                "table": manager.standby_table(index), "process": FakeProcess(),
+            }
+            self.assertTrue(manager.promote_dedicated_standby_to_slot(slot))
+            self.assertEqual(manager.standby_device(index), standby["device"])
+            self.assertNotEqual(manager.runtime_slot_device(slot), manager.standby_device(index))
+
     def setUp(self):
         manager.dedicated_standbys.clear()
         manager.dedicated_standby_proxy_stops.clear()

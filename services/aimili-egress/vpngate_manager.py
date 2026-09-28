@@ -4748,6 +4748,7 @@ def kill_unregistered_slot_openvpn_processes(
             except (ProcessLookupError, PermissionError, OSError):
                 pass
 
+
 def slot_device(i: int) -> str:
     return f"tun{SLOT_DEV_BASE + i}"
 
@@ -4789,6 +4790,118 @@ def standby_port(index: int) -> int:
 
 def standby_config_path(index: int) -> Path:
     return CONFIG_DIR / f".standby_{index}.ovpn"
+
+
+def _active_tunnel_devices() -> set[str]:
+    """Return TUN devices currently owned by live active tunnels."""
+    devices: set[str] = set()
+    with lock:
+        if active_openvpn_process is not None and active_openvpn_process.poll() is None:
+            devices.add(str(active_openvpn_device or "tun0"))
+    with exit_slots_lock:
+        for slot in exit_slots.values():
+            process = slot.get("process")
+            if process is not None and process.poll() is None:
+                device = str(slot.get("device") or "")
+                if device:
+                    devices.add(device)
+    # A promoted standby keeps its original AIMILI_STANDBY marker and is
+    # represented in exit_slots; the remaining standbys are still in this map.
+    # Include both sets so a replacement never selects another live standby's
+    # device while calculating a free resource.
+    with dedicated_standby_lock:
+        for runtime in dedicated_standbys.values():
+            process = runtime.get("process")
+            if process is not None and process.poll() is None:
+                device = str(runtime.get("device") or "")
+                if device:
+                    devices.add(device)
+    return devices
+
+
+def _prepare_standby_resource(index: int) -> tuple[str, int]:
+    """Choose a standby device/table that cannot collide with active exits."""
+    active_devices = _active_tunnel_devices()
+    active_tables: set[int] = set()
+    with lock:
+        if active_openvpn_process is not None and active_openvpn_process.poll() is None:
+            active_tables.add(int(active_openvpn_table or 100))
+    with exit_slots_lock:
+        for slot in exit_slots.values():
+            process = slot.get("process")
+            if process is not None and process.poll() is None:
+                table = parse_int(slot.get("table"))
+                if table:
+                    active_tables.add(table)
+    with dedicated_standby_lock:
+        for runtime in dedicated_standbys.values():
+            process = runtime.get("process")
+            if process is not None and process.poll() is None:
+                table = parse_int(runtime.get("table"))
+                if table:
+                    active_tables.add(table)
+    with dedicated_standby_lock:
+        resources = dedicated_standby_resources.setdefault(index, {})
+        device = str(resources.get("device") or f"tun{STANDBY_DEV_BASE + index}")
+        table = parse_int(resources.get("table")) or STANDBY_TABLE_BASE + index
+        if device in active_devices:
+            for offset in range(MAX_EXIT_SLOTS + DEDICATED_STANDBY_MAX + 8):
+                candidate = f"tun{STANDBY_DEV_BASE + offset}"
+                if candidate not in active_devices:
+                    device = candidate
+                    break
+        if table in active_tables:
+            for offset in range(MAX_EXIT_SLOTS + DEDICATED_STANDBY_MAX + 8):
+                candidate = STANDBY_TABLE_BASE + offset
+                if candidate not in active_tables:
+                    table = candidate
+                    break
+        resources.update(device=device, table=table)
+    return device, table
+
+
+def _reap_stale_standby_process(index: int, device: str) -> None:
+    """Reap only an orphaned process for this standby/device before dialing."""
+    if not sys.platform.startswith("linux") or device in _active_tunnel_devices():
+        return
+    marker = ["--setenv", STANDBY_PROCESS_MARKER, str(index)]
+    root = Path("/proc")
+    killed: list[int] = []
+    if not root.exists():
+        return
+    for proc_dir in root.iterdir():
+        if not proc_dir.name.isdigit():
+            continue
+        try:
+            args = [part.decode("utf-8", errors="replace") for part in (proc_dir / "cmdline").read_bytes().split(b"\0") if part]
+        except OSError:
+            continue
+        if not args or "openvpn" not in Path(args[0]).name.lower():
+            continue
+        if not any(args[pos:pos + 3] == marker for pos in range(len(args) - 2)):
+            continue
+        try:
+            process_device = args[args.index("--dev") + 1]
+        except (ValueError, IndexError):
+            continue
+        if process_device != device:
+            continue
+        try:
+            os.kill(int(proc_dir.name), signal.SIGTERM)
+            killed.append(int(proc_dir.name))
+        except (ProcessLookupError, PermissionError):
+            pass
+    if killed:
+        time.sleep(0.5)
+        for pid in killed:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        log_to_json("WARNING", "Recovery", json.dumps({
+            "phase": "stale_standby_process_reaped", "standby": index,
+            "device": device, "count": len(killed),
+        }, ensure_ascii=False))
 
 
 def detach_promoted_standby_config(index: int, runtime: dict[str, Any], target: str) -> str:
@@ -5426,6 +5539,8 @@ def _bring_up_reserved_dedicated_standby(
     index: int, node: dict[str, Any], node_id: str
 ) -> bool:
     tear_down_dedicated_standby(index)
+    standby_dev, standby_route_table = _prepare_standby_resource(index)
+    _reap_stale_standby_process(index, standby_dev)
     config_path = standby_config_path(index)
     try:
         CONFIG_DIR.mkdir(exist_ok=True, parents=True)
@@ -5444,7 +5559,7 @@ def _bring_up_reserved_dedicated_standby(
         keep_alive=True,
         route_nopull=True,
         timeout=remaining,
-        dev=standby_device(index),
+        dev=standby_dev,
         extra_args=["--setenv", STANDBY_PROCESS_MARKER, str(index)],
         report_status=False,
     )
@@ -5457,15 +5572,15 @@ def _bring_up_reserved_dedicated_standby(
         if failure_code:
             mark_candidate_unavailable(node_id, failure_code)
         return False
-    if not setup_policy_routing(standby_device(index), standby_table(index)):
+    if not setup_policy_routing(standby_dev, standby_route_table):
         stop_process(process)
-        cleanup_policy_routing(standby_table(index))
+        cleanup_policy_routing(standby_route_table)
         return False
     with dedicated_standby_lock:
         dedicated_standbys[index] = {
             "index": index,
-            "device": standby_device(index),
-            "table": standby_table(index),
+            "device": standby_dev,
+            "table": standby_route_table,
             "port": standby_port(index),
             "node_id": node_id,
             "country": str(node.get("country") or ""),
