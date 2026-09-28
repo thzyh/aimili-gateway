@@ -1,5 +1,14 @@
 # Aimili Gateway 当前状态交接
 
+## 2026-09-28 项目执行规则与 jjs 清理
+
+- 用户要求：日常 VPS 部署和 Gateway 修改不创建人工备份，只保留最新程序及当前数据；修改完成默认本地提交、推送 GitHub，Release 和签名包须另行同意；修复范围按根因和严重程度决定。当前规则见根目录 `AGENTS.md`，优先于历史记录的备份要求。
+- 本次仅调整执行规则，现有网页更新器的事务备份实现没有修改，不可声称其已变为无备份更新。
+- jjs 删除了 `/var/backups/aimili-gateway`、两个 `aimili-gateway-20260923-*` 目录、`aimili-slot-dns-recovery`；删除已完成事务的 staging/transactions 历史包、旧 `/tmp/aimili-*` 构建文件及列明的诊断临时文件。
+- `/opt/aimili-gateway/services/aimili-egress` 下 40 个 `jp-*.ovpn` 是测试遗留；进程、systemd、节点池和状态均未引用它们，已删除。实际运行配置位于数据目录 `configs`，未清理运行数据。
+- 清理释放约 2.5 GiB，根分区从 80% 降至 51%，可用空间约 4.2 GiB。更新器定时器在清理期间暂停，之后均恢复 active；没有重启 Gateway、出口、x-ui 或 Caddy。
+- 清理后控制 API 验证：主连接 healthy，4/4 普通出口 up，5/5 专属备用 ready，均 `egress_ok=true`；四项服务 active。保留当前版本指针、更新锁和公开事务结果记录；未发布 Release。
+
 ## 2026-09-27 热备用兼容修复与统一替换窗口（已部署与发布）
 
 - 本轮明确授权 jjs 部署、源码推送与完整签名 Release；bj 仅调查，xjp 不操作。
