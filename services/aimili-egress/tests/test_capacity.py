@@ -13,14 +13,14 @@ class CapacityTests(unittest.TestCase):
         limits = capacity.limits_for(facts, 4)
         self.assertEqual(limits.regular_exit_slots_max, 4)
         self.assertEqual(limits.target_valid_nodes_max, 64)
-        self.assertEqual(limits.emergency_valid_nodes_max, 150)
+        self.assertEqual(limits.emergency_valid_nodes_max, 200)
 
     def test_pressure_reduces_future_limit_but_never_below_current_slots(self):
         facts = capacity.HostFacts(458 * 1024 * 1024, 20 * 1024 * 1024, 1, 2.0)
         limits = capacity.limits_for(facts, 4)
         self.assertEqual(limits.regular_exit_slots_max, 4)
         self.assertEqual(limits.target_valid_nodes_max, 16)
-        self.assertEqual(limits.emergency_valid_nodes_max, 54)
+        self.assertEqual(limits.emergency_valid_nodes_max, 16)
 
     def test_effective_limits_recover_after_temporary_pressure(self):
         healthy = capacity.HostFacts(458 * 1024 * 1024, 191 * 1024 * 1024, 1, 0.2)
@@ -98,6 +98,13 @@ class CapacityTests(unittest.TestCase):
         self.assertEqual(limits.regular_exit_slots_max, 16)
         self.assertEqual(limits.target_valid_nodes_max, 256)
         self.assertEqual(limits.emergency_valid_nodes_max, 512)
+
+    def test_medium_host_has_two_hundred_cache_entries_without_increasing_exit_capacity(self):
+        facts = capacity.HostFacts(469 * 1024 * 1024, 140 * 1024 * 1024, 1, 0.3)
+        limits = capacity.limits_for(facts, 4)
+        self.assertEqual(limits.regular_exit_slots_max, 4)
+        self.assertEqual(limits.target_valid_nodes_max, 48)
+        self.assertEqual(limits.emergency_valid_nodes_max, 200)
 
     def test_busy_host_stops_new_exits_and_recovers_without_reconfiguration(self):
         total = 4096 * 1024 * 1024

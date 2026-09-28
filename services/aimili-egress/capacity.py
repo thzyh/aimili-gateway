@@ -15,8 +15,18 @@ from pathlib import Path
 
 MIN_TARGET_POOL = 16
 MAX_TARGET_POOL = 256
+MAX_EMERGENCY_POOL = MAX_TARGET_POOL * 2
+BASE_EMERGENCY_POOL = 200
 MIN_REGULAR_SLOTS = 1
 MAX_REGULAR_SLOTS = 16
+
+# 节点池条目是缓存数据，不是 OpenVPN 进程。旧公式把它按“每 40 MiB
+# 一个出口槽位”估算，导致 512 MiB VPS 在可用内存下降时把紧急保护值
+# 压到 86、118 这类过低的数值。这里为每个条目预留 128 KiB（远高于
+# 当前节点 JSON 的实际平均占用），并单独保留 80 MiB 给运行中的服务。
+# 活动出口和拨号并发仍由 regular_exit_slots_max 的严格公式保护。
+POOL_ENTRY_MEMORY_BUDGET_BYTES = 128 * 1024
+POOL_RUNTIME_RESERVE_BYTES = 80 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -93,6 +103,15 @@ def _memory_slot_limit(facts: HostFacts) -> int:
     return max(MIN_REGULAR_SLOTS, min(MAX_REGULAR_SLOTS, (total_mb - 256) // 64))
 
 
+def _emergency_host_cap(facts: HostFacts) -> int:
+    """Scale the cache ceiling with the VPS size without treating it as a process limit."""
+    total_mb = facts.memory_total_bytes // (1024 * 1024)
+    # 512 MiB 级别 VPS 先稳定在 200；每增加 512 MiB，再给缓存 64 个条目，
+    # 直到全局上限 512。更大的机器因此能扩展，512 MiB 机器不会被放大。
+    steps = max(0, (total_mb - 512) // 512)
+    return min(MAX_EMERGENCY_POOL, BASE_EMERGENCY_POOL + steps * 64)
+
+
 def limits_for(facts: HostFacts, current_slots: int, process_limit: int | None = None) -> CapacityLimits:
     memory_limit = _memory_slot_limit(facts)
     cpu_limit = max(MIN_REGULAR_SLOTS, min(MAX_REGULAR_SLOTS, facts.cpu_count * 4))
@@ -106,12 +125,18 @@ def limits_for(facts: HostFacts, current_slots: int, process_limit: int | None =
         regular_max = max(current_slots, MIN_REGULAR_SLOTS, min(regular_max, (process_limit - 3) // 2))
     if facts.load1 > facts.cpu_count * 1.75:
         regular_max = max(current_slots, MIN_REGULAR_SLOTS)
+    # 只有活动出口/探测需要按槽位限制；节点池本身是轻量缓存，不能
+    # 继续复用槽位预算，否则会把紧急保护值错误地当成进程容量。
     pool_budget = max(1, min(regular_max, free_mb // 40))
     if facts.load1 > facts.cpu_count * 1.75:
         pool_budget = max(1, pool_budget - 1)
     target_max = max(MIN_TARGET_POOL, current_slots + 3, min(MAX_TARGET_POOL, pool_budget * 16))
-    # 512 MiB / 4 槽位保留既有约 64/150 体验；更大主机按出口位阶梯提升。
-    emergency_max = max(target_max, min(MAX_TARGET_POOL * 2, pool_budget * 32 + 22))
+    cache_bytes = max(0, facts.memory_available_bytes - POOL_RUNTIME_RESERVE_BYTES)
+    cache_memory_limit = cache_bytes // POOL_ENTRY_MEMORY_BUDGET_BYTES
+    emergency_max = max(
+        target_max,
+        min(_emergency_host_cap(facts), int(cache_memory_limit)),
+    )
     return CapacityLimits(
         regular_max,
         target_max,
