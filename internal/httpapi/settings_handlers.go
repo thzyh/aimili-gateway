@@ -129,7 +129,7 @@ func (s *server) handleUpdateCapacity(response http.ResponseWriter, request *htt
 			writeAPIError(response, http.StatusBadRequest, "conflicting_capacity_fields")
 			return
 		}
-        // Keep the legacy response aliases aligned with the unified capacity.
+		// Keep the legacy response aliases aligned with the unified capacity.
 		input.TargetValidNodeCount = input.CandidatePoolCapacity
 		input.MaxValidNodeCount = input.CandidatePoolCapacity
 	}
