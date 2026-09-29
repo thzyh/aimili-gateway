@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"time"
 
@@ -52,6 +53,9 @@ func (s *Store) GetMainEgress(ctx context.Context) (MainEgress, error) {
 	err := s.db.QueryRowContext(ctx, `SELECT resource_name, country_code, country_name, proxy_type, candidate_id, exit_ip, public_inbound_id, mixed_inbound_id, public_port, mixed_port, enabled, candidate_latency_ms, vless_latency_ms, socks_latency_ms, last_checked_at, last_error_code, updated_at FROM main_egress WHERE id=1`).Scan(
 		&value.ResourceName, &value.CountryCode, &value.CountryName, &value.ProxyType, &value.CandidateID, &value.ExitIP, &value.PublicInboundID, &value.MixedInboundID, &value.PublicPort, &value.MixedPort, &enabled, &value.CandidateLatencyMS, &value.VLESSLatencyMS, &value.SOCKSLatencyMS, &lastChecked, &value.LastErrorCode, &updatedAt)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return MainEgress{}, ErrProxyGroupNotFound
+		}
 		return MainEgress{}, err
 	}
 	value.Enabled = enabled != 0

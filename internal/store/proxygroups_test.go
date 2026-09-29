@@ -414,3 +414,11 @@ func TestMainEgressMetadataPersistsWithoutUsingASlot(t *testing.T) {
 		t.Fatalf("main metadata=%q %q %d %d %d", name, candidateID, publicPort, mixedPort, enabled)
 	}
 }
+
+func TestMissingMainEgressUsesProxyGroupNotFoundSentinel(t *testing.T) {
+	database := openTestStore(t)
+	_, err := database.GetMainEgress(context.Background())
+	if !errors.Is(err, ErrProxyGroupNotFound) {
+		t.Fatalf("missing main egress error = %v, want ErrProxyGroupNotFound", err)
+	}
+}

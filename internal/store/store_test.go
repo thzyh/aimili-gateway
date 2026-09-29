@@ -59,6 +59,17 @@ func TestFreesubTablesRemovedByLatestMigration(t *testing.T) {
 	}
 }
 
+func TestFreshDatabaseStartsWithDisabledMixedSourcePolicy(t *testing.T) {
+	database := openTestStore(t)
+	policy, err := database.GetMixedSourcePolicy(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policy.Enabled || len(policy.CIDRs) != 0 || policy.ApplyStatus != MixedPolicyPending {
+		t.Fatalf("fresh mixed source policy = %#v", policy)
+	}
+}
+
 func TestOpenReadOnlyDoesNotCreateOrMigrateDatabase(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "gateway.db")
