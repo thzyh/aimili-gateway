@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -13,6 +14,42 @@ import (
 	"github.com/thzyh/aimili-gateway/internal/store"
 	"github.com/thzyh/aimili-gateway/internal/validator"
 )
+
+func TestFirstInstallMixedPolicyWithRealDatabaseAndNoMain(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		name := "disabled"
+		if enabled {
+			name = "enabled"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			database, err := store.Open(ctx, filepath.Join(t.TempDir(), "gateway.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer database.Close()
+			fixture := newFixture()
+			o := fixture.orchestrator(t)
+			o.store = database
+			for purpose, value := range fixture.store.credentials {
+				if err := database.PutCredential(ctx, purpose, value, o.masterKey); err != nil {
+					t.Fatal(err)
+				}
+			}
+			requested := store.MixedSourcePolicy{Enabled: enabled}
+			if enabled {
+				requested.CIDRs = []netip.Prefix{netip.MustParsePrefix("198.51.100.17/32")}
+			}
+			if err := o.SetMixedPolicy(ctx, requested); err != nil {
+				t.Fatalf("first install policy failed: %v", err)
+			}
+			policy, _, err := o.runtimeInputs(ctx)
+			if err != nil || policy.Enabled != enabled || policy.ApplyStatus != store.MixedPolicyApplied || len(policy.CIDRs) != len(requested.CIDRs) {
+				t.Fatalf("runtime policy=%#v err=%v", policy, err)
+			}
+		})
+	}
+}
 
 func TestRotateMixedCredentialsUpdatesFaultedGroupsAndValidatesOnlyHealthyExits(t *testing.T) {
 	fixture := newFixture()
