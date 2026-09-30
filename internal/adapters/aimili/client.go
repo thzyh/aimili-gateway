@@ -23,6 +23,7 @@ const (
 	controlOperationTimeout = 75 * time.Second
 	mainAssignmentTimeout   = 195 * time.Second
 	controlResponseLimit    = 64 << 10
+	candidateResponseLimit  = 1 << 20 // Up to 512 safe candidate records, including network metadata.
 )
 
 type Capabilities struct {
@@ -873,8 +874,12 @@ func (c *Client) doJSON(ctx context.Context, timeout time.Duration, method, path
 		return &AdapterError{Code: "connection_failed"}
 	}
 	defer response.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(response.Body, controlResponseLimit+1))
-	if err != nil || len(raw) > controlResponseLimit {
+	responseLimit := controlResponseLimit
+	if method == http.MethodGet && path == "control/v1/candidates" {
+		responseLimit = candidateResponseLimit
+	}
+	raw, err := io.ReadAll(io.LimitReader(response.Body, int64(responseLimit)+1))
+	if err != nil || len(raw) > responseLimit {
 		return &AdapterError{Code: "invalid_response"}
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
