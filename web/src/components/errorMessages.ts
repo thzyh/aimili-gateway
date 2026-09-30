@@ -46,6 +46,11 @@ const codeMessages: Record<string, string> = {
   not_ready: '当前节点尚未准备就绪',
   request_failed: '请求失败，请稍后重试',
   invalid_response: '服务返回了无法识别的结果',
+  invalid_error_response: '服务返回了无法识别的错误；请稍后重试并查看 Gateway 日志',
+  connection_failed: 'Gateway 与出口引擎的控制连接中断；在线代理保持不变，请稍后重试',
+  timeout: '出口引擎响应超时；在线代理保持不变，请稍后重试',
+  storage_failed: 'Gateway 数据库读取失败；未修改现有代理，请查看服务日志',
+  internal_error: 'Gateway 内部错误；未修改现有代理，请稍后重试',
   refresh_failed: '国家节点刷新失败，请稍后重试',
 }
 

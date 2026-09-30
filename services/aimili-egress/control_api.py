@@ -432,10 +432,21 @@ class ControlHandler(BaseHTTPRequestHandler):
     def _handle(self) -> None:
         try:
             self._dispatch()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            # The caller may cancel a superseded refresh while the response is
+            # being written.  The socket is already gone; attempting to send a
+            # synthetic 500 here only creates a false server error in logs.
+            return
         except ValueError:
-            self._error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            try:
+                self._error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                return
         except Exception:
-            self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "internal_error")
+            try:
+                self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "internal_error")
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                return
 
     do_GET = _handle
     do_POST = _handle

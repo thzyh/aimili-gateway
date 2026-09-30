@@ -18,6 +18,12 @@ class FakeProcess:
         return None if self.alive else 1
 
 
+class RegisteredProcess(FakeProcess):
+    def __init__(self, pid, alive=True):
+        super().__init__(alive)
+        self.pid = pid
+
+
 class DedicatedStandbyTests(unittest.TestCase):
     def test_resource_selection_excludes_live_slots_and_other_standbys(self):
         slot = {"device": "tun122", "table": 202, "process": FakeProcess()}
@@ -32,6 +38,59 @@ class DedicatedStandbyTests(unittest.TestCase):
             device, table = manager._prepare_standby_resource(3)
         self.assertNotIn(device, {"tun122", "tun124"})
         self.assertNotIn(table, {202, 204})
+
+    def test_standby_orphan_cleanup_keeps_registered_active_and_standby_processes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            proc_root = Path(directory)
+            net_root = proc_root / "net"
+            (net_root / "tun125").mkdir(parents=True)
+            (net_root / "tun126").mkdir()
+            commands = {
+                101: ["/usr/sbin/openvpn", "--setenv", "AIMILI_STANDBY", "1", "--dev", "tun125"],
+                102: ["/usr/sbin/openvpn", "--setenv", "AIMILI_STANDBY", "1", "--dev", "tun120"],
+                103: ["/usr/sbin/openvpn", "--setenv", "AIMILI_STANDBY", "2", "--dev", "tun126"],
+                104: ["/usr/sbin/openvpn", "--setenv", "NOT_AIMILI_STANDBY", "1"],
+            }
+            for pid, command in commands.items():
+                path = proc_root / str(pid)
+                path.mkdir()
+                (path / "cmdline").write_bytes(b"\0".join(part.encode() for part in command) + b"\0")
+            with (
+                mock.patch.object(manager.sys, "platform", "linux"),
+                mock.patch.object(manager, "dedicated_standbys", {1: {"process": RegisteredProcess(101)}}),
+                mock.patch.object(manager, "exit_slots", {0: {"process": RegisteredProcess(103)}}),
+                mock.patch.object(manager.os, "kill") as kill,
+                mock.patch.object(manager.time, "sleep"),
+                mock.patch.object(manager, "log_to_json"),
+            ):
+                manager.kill_unregistered_standby_openvpn_processes(1, proc_root=proc_root, net_root=net_root)
+
+        self.assertEqual([call.args[0] for call in kill.call_args_list], [102, 102])
+
+    def test_standby_cleanup_reaps_registered_process_when_tun_device_disappears(self):
+        with tempfile.TemporaryDirectory() as directory:
+            proc_root = Path(directory)
+            net_root = proc_root / "net"
+            net_root.mkdir()
+            path = proc_root / "101"
+            path.mkdir()
+            (path / "cmdline").write_bytes(
+                b"\0".join(part.encode() for part in [
+                    "/usr/sbin/openvpn", "--setenv", "AIMILI_STANDBY", "1",
+                    "--dev", "tun120",
+                ]) + b"\0"
+            )
+            with (
+                mock.patch.object(manager.sys, "platform", "linux"),
+                mock.patch.object(manager, "dedicated_standbys", {1: {"process": RegisteredProcess(101)}}),
+                mock.patch.object(manager, "exit_slots", {}),
+                mock.patch.object(manager.os, "kill") as kill,
+                mock.patch.object(manager.time, "sleep"),
+                mock.patch.object(manager, "log_to_json"),
+            ):
+                manager.kill_unregistered_standby_openvpn_processes(1, proc_root=proc_root, net_root=net_root)
+
+        self.assertEqual([call.args[0] for call in kill.call_args_list], [101, 101])
 
     def test_repeated_promotion_exchanges_active_and_standby_resources(self):
         index, slot = 3, 2

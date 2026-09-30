@@ -4837,9 +4837,18 @@ def kill_slot_openvpn_processes() -> None:
 
 
 def kill_unregistered_slot_openvpn_processes(
-    slot: int, proc_root: Path = Path("/proc")
+    slot: int,
+    proc_root: Path = Path("/proc"),
+    net_root: Path = Path("/sys/class/net"),
 ) -> None:
-    """Reap only unregistered OpenVPN processes carrying this exact slot marker."""
+    """Reap orphaned or registered-but-detached slot OpenVPN processes.
+
+    A process can remain alive after its TUN device has disappeared.  Keeping
+    that PID in the runtime map makes the supervisor believe the slot is
+    healthy, while proxy requests fail with ERR_ROUTE_DEV_NOT_FOUND.  A
+    registered process is safe to reap here only when its exact device is
+    absent; successful processes are left untouched.
+    """
     if not sys.platform.startswith("linux") or not proc_root.exists():
         return
     with exit_slots_lock:
@@ -4851,7 +4860,7 @@ def kill_unregistered_slot_openvpn_processes(
         if not proc_dir.name.isdigit():
             continue
         pid = int(proc_dir.name)
-        if pid in (os.getpid(), registered_pid):
+        if pid == os.getpid():
             continue
         try:
             raw = (proc_dir / "cmdline").read_bytes()
@@ -4861,6 +4870,18 @@ def kill_unregistered_slot_openvpn_processes(
         if not args or "openvpn" not in Path(args[0]).name.lower():
             continue
         if not any(args[index:index + 3] == marker for index in range(len(args) - 2)):
+            continue
+        try:
+            device = args[args.index("--dev") + 1]
+        except (ValueError, IndexError):
+            device = ""
+        registered_detached = (
+            pid == registered_pid
+            and bool(device)
+            and net_root.exists()
+            and not (net_root / device).exists()
+        )
+        if pid == registered_pid and not registered_detached:
             continue
         try:
             os.kill(pid, signal.SIGTERM)
@@ -5029,6 +5050,84 @@ def _reap_stale_standby_process(index: int, device: str) -> None:
             "phase": "stale_standby_process_reaped", "standby": index,
             "device": device, "count": len(killed),
         }, ensure_ascii=False))
+
+
+def kill_unregistered_standby_openvpn_processes(
+    index: int,
+    proc_root: Path = Path("/proc"),
+    net_root: Path = Path("/sys/class/net"),
+) -> None:
+    """回收同一专属备用编号下未登记的 OpenVPN 进程。
+
+    备用节点提升为活动出口后会保留 AIMILI_STANDBY 标记，因此活动槽位中
+    已登记的进程也必须保留。其余同编号进程是重拨/提升交叉期间留下的孤儿，
+    继续占用 tun 设备会让代理线程收到已经不存在的设备并产生 3004。
+    """
+    if not sys.platform.startswith("linux") or not proc_root.exists():
+        return
+    registered_pids: set[int] = set()
+    with dedicated_standby_lock:
+        runtime = dedicated_standbys.get(index, {})
+        process = runtime.get("process")
+        pid = getattr(process, "pid", None)
+        if isinstance(pid, int) and pid > 0:
+            registered_pids.add(pid)
+    with exit_slots_lock:
+        for slot in exit_slots.values():
+            process = slot.get("process")
+            pid = getattr(process, "pid", None)
+            if isinstance(pid, int) and pid > 0:
+                registered_pids.add(pid)
+
+    marker = ["--setenv", STANDBY_PROCESS_MARKER, str(index)]
+    killed: list[int] = []
+    for proc_dir in proc_root.iterdir():
+        if not proc_dir.name.isdigit():
+            continue
+        pid = int(proc_dir.name)
+        if pid == os.getpid():
+            continue
+        try:
+            args = [
+                part.decode("utf-8", errors="replace")
+                for part in (proc_dir / "cmdline").read_bytes().split(b"\0")
+                if part
+            ]
+        except OSError:
+            continue
+        if not args or "openvpn" not in Path(args[0]).name.lower():
+            continue
+        if not any(args[pos:pos + 3] == marker for pos in range(len(args) - 2)):
+            continue
+        try:
+            device = args[args.index("--dev") + 1]
+        except (ValueError, IndexError):
+            device = ""
+        registered_detached = (
+            pid in registered_pids
+            and bool(device)
+            and net_root.exists()
+            and not (net_root / device).exists()
+        )
+        if pid in registered_pids and not registered_detached:
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+            killed.append(pid)
+        except (ProcessLookupError, PermissionError):
+            pass
+    if not killed:
+        return
+    time.sleep(0.5)
+    for pid in killed:
+        try:
+            os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    log_to_json("WARNING", "Recovery", json.dumps({
+        "phase": "orphan_standby_process_reaped", "standby": index,
+        "count": len(killed), "pids": killed,
+    }, ensure_ascii=False))
 
 
 def detach_promoted_standby_config(index: int, runtime: dict[str, Any], target: str) -> str:
@@ -5940,6 +6039,7 @@ def _maintain_standby(config: dict) -> None:
     if not operation_lock.acquire(blocking=False):
         return
     try:
+        kill_unregistered_standby_openvpn_processes(index)
         if not _standby_enabled(config):
             tear_down_dedicated_standby(index)
             return
@@ -6503,6 +6603,10 @@ def supervise_exit_slots_once() -> None:
                         tear_down_slot(i, stop_proxy=True)
                     mark_slot_paused(i)
                     continue
+                # A live OpenVPN PID can outlive its TUN device.  Reap that
+                # detached runtime before trusting slot_process_alive(); the
+                # next branch will then run the normal repair path.
+                kill_unregistered_slot_openvpn_processes(i)
                 repair = egress_repair_store.get(f"slot:{i}")
                 if repair.get("status") == "manual_required":
                     with exit_slots_lock:

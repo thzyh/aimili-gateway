@@ -207,14 +207,31 @@ async function confirmStandbyManual(): Promise<void> {
 
 async function loadGroups(showLoading = true): Promise<void> {
   if (showLoading) loading.value = true
-  try { groups.value = await apiFetch<ProxyGroupPayload[]>('/api/v1/proxy-groups') }
-  catch { topNotice.value = makeNotice('error', '代理池读取失败', '暂时无法读取代理池。') }
+  try {
+    groups.value = await apiFetch<ProxyGroupPayload[]>('/api/v1/proxy-groups')
+  } catch (error) {
+    const hadData = groups.value.length > 0
+    const code = codeFromError(error)
+    const title = code === 'unauthorized' ? '登录会话已失效' : '代理池读取失败'
+    const message = localizedError(
+      error,
+      hadData
+        ? '本次刷新失败，页面保留上一次已验证的出口状态。'
+        : '暂时无法读取代理池，在线代理状态未被修改；请稍后重试。',
+    )
+    topNotice.value = makeNotice('error', title, message)
+  }
   finally { if (showLoading) loading.value = false }
 }
 
 async function loadCatalog(): Promise<void> {
-  try { candidateCountries.value = await apiFetch<CandidateCountryPayload[]>('/api/v1/settings/aimilivpn/countries') }
-  catch { candidateCountries.value = [] }
+  try {
+    candidateCountries.value = await apiFetch<CandidateCountryPayload[]>('/api/v1/settings/aimilivpn/countries')
+  } catch (error) {
+    if (candidateCountries.value.length === 0) {
+      topNotice.value = makeNotice('error', '候选目录读取失败', localizedError(error, '暂时无法读取候选国家目录；在线代理状态未被修改。'))
+    }
+  }
 }
 
 async function readRefreshStatus(): Promise<void> {
