@@ -6807,6 +6807,40 @@ def check_slot_egress(port: int) -> tuple[bool, str]:
             pass
     return False, ""
 
+
+def record_slot_egress_probe(
+    i: int,
+    ok: bool,
+    exit_ip: str = "",
+    failure_threshold: int | None = None,
+) -> bool:
+    """Persist a slot probe without turning one transient miss into a fault.
+
+    Returns ``True`` only when a failure has reached the configured threshold
+    and the caller should start recovery.  Until then a previously healthy
+    slot remains healthy, so a successful client-side probe is not contradicted
+    by one flaky health endpoint.
+    """
+    threshold = max(1, int(failure_threshold or _recovery_settings()["failureThreshold"]))
+    checked_at = time.time()
+    with exit_slots_lock:
+        slot = exit_slots.get(i)
+        if slot is None:
+            return False
+        slot["egress_checked_at"] = checked_at
+        if ok:
+            slot_egress_fail_counts[i] = 0
+            slot["exit_ip"] = exit_ip or str(slot.get("exit_ip") or "")
+            slot["egress_ok"] = True
+            return False
+        count = slot_egress_fail_counts.get(i, 0) + 1
+        slot_egress_fail_counts[i] = count
+        if count < threshold:
+            return False
+        slot["exit_ip"] = ""
+        slot["egress_ok"] = False
+        return True
+
 def managed_slot_snapshot(i: int) -> dict[str, Any]:
     """返回 Gateway 控制面需要的槽位安全快照。"""
     with exit_slots_lock:
@@ -6991,14 +7025,14 @@ def check_managed_slot(i: int) -> dict[str, Any]:
     route_ok = ensure_policy_routing(runtime_slot_device(i), runtime_slot_table(i)) if tunnel_running else False
     ok, exit_ip = check_slot_egress(parse_int(snapshot.get("port"))) if route_ok else (False, "")
     checked_at = time.time()
-    with exit_slots_lock:
-        slot = exit_slots.get(i)
-        if slot is not None:
-            slot["egress_ok"] = ok
-            slot["exit_ip"] = exit_ip
-            slot["egress_checked_at"] = checked_at
-    write_slots_state()
     if ok:
+        with exit_slots_lock:
+            slot = exit_slots.get(i)
+            if slot is not None:
+                slot["egress_ok"] = True
+                slot["exit_ip"] = exit_ip or str(slot.get("exit_ip") or "")
+                slot["egress_checked_at"] = checked_at
+        write_slots_state()
         candidate_id = str(snapshot.get("node_id") or "").strip()
         if candidate_id:
             egress_repair_store.mark_healthy(f"slot:{i}", candidate_id)
@@ -7013,6 +7047,9 @@ def check_managed_slot(i: int) -> dict[str, Any]:
     if tunnel_running:
         tunnel_egress_ok, _tunnel_exit_ip = check_interface_exit_ip(runtime_slot_device(i))
         if tunnel_egress_ok:
+            # Healthy TUN traffic does not prove the SOCKS path is healthy.
+            # Preserve identity, report the real failure, and let Gateway
+            # periodically revalidate the whole path before clearing it.
             return {
                 "ok": False,
                 "error_code": "egress_check_failed",
@@ -7021,6 +7058,14 @@ def check_managed_slot(i: int) -> dict[str, Any]:
             }
         if candidate_id:
             mark_candidate_unavailable(candidate_id, "candidate_egress_failed")
+
+    with exit_slots_lock:
+        slot = exit_slots.get(i)
+        if slot is not None:
+            slot["egress_ok"] = False
+            slot["exit_ip"] = ""
+            slot["egress_checked_at"] = checked_at
+    write_slots_state()
 
     repair = repair_slot_once(i, snapshot)
     repair_code = str(repair.get("error_code") or "replacement_failed")
@@ -7142,19 +7187,15 @@ def slot_egress_checker_loop() -> None:
                     continue
                 route_ok = ensure_policy_routing(runtime_slot_device(i), runtime_slot_table(i))
                 ok, ip = check_slot_egress(slot_port(i)) if route_ok else (False, "")
+                confirmed_failure = record_slot_egress_probe(i, ok, ip)
                 with exit_slots_lock:
                     s = exit_slots.get(i)
-                    if s is not None:
-                        s["exit_ip"] = (ip or str(s.get("exit_ip") or "")) if ok else ""
-                        s["egress_ok"] = ok
                     nid = s.get("node_id") if s else ""
                 if ok:
-                    slot_egress_fail_counts[i] = 0
                     if nid:
                         egress_repair_store.mark_healthy(f"slot:{i}", str(nid))
                     continue
-                slot_egress_fail_counts[i] = slot_egress_fail_counts.get(i, 0) + 1
-                if slot_egress_fail_counts[i] < _recovery_settings()["failureThreshold"]:
+                if not confirmed_failure:
                     continue
                 slot_egress_fail_counts[i] = 0
                 snapshot = managed_slot_snapshot(i)

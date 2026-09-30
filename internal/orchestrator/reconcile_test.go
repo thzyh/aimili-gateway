@@ -368,6 +368,39 @@ func TestReconcileRefreshesStaleManagedResourceFailureAfterSlotRecovers(t *testi
 	}
 }
 
+func TestReconcileClearsTransientEgressFailureAfterSlotProbeRecovers(t *testing.T) {
+	fixture := newFixture()
+	group, err := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeResidential, "jp-node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	group.Status = domain.ProxyGroupDegraded
+	group.LastErrorCode = "egress_check_failed"
+	group.AimiliSlot = 2
+	group.PublicPort = 20002
+	group.MixedPort = 30002
+	group.PublicInboundID = 7
+	group.MixedInboundID = 8
+	fixture.store.groups[group.ID] = group
+	fixture.store.protocolModes[group.ID] = domain.EgressProtocolMode{
+		EgressID: group.ID, ActiveMode: domain.ProtocolVLESSTCPRealityVision,
+		DesiredMode: domain.ProtocolVLESSTCPRealityVision, State: domain.ProtocolReady,
+	}
+	fixture.aimili.candidates = []aimili.Candidate{{ID: "jp-node", CountryCode: "JP", CountryName: "日本", ProxyType: "residential", ProbeStatus: "available"}}
+	fixture.aimili.createdSlots = map[int]aimili.Slot{
+		2: {Number: 2, Country: "JP", CountryName: "日本", ProxyType: "residential", Port: 17930, Status: "up", NodeID: "jp-node", ExitIP: "203.0.113.22", EgressOK: true},
+	}
+
+	result := fixture.orchestratorWithMax(t, 4).Reconcile(context.Background())
+	refreshed := fixture.store.groups[group.ID]
+	if result.Ready != 1 || result.Failed != 0 || refreshed.Status != domain.ProxyGroupReady || refreshed.LastErrorCode != "" {
+		t.Fatalf("transient egress failure was not cleared: result=%#v group=%#v", result, refreshed)
+	}
+	if !contains(fixture.calls, "slot.check") {
+		t.Fatalf("recovered runtime was not rechecked: %#v", fixture.calls)
+	}
+}
+
 func TestReconcilePassivelySynchronizesManualRepairStateWithoutCheckingAgain(t *testing.T) {
 	fixture := newFixture()
 	group, err := domain.NewProxyGroupIdentity("RU", domain.ProxyTypeDatacenter, "ru-old")

@@ -176,7 +176,8 @@ func (o *Orchestrator) refreshAssignedGroups(ctx context.Context, groups []domai
 		runtimeRecovered := false
 		if slot, ok := bySlot[group.AimiliSlot]; ok {
 			runtimeRecovered = slot.EgressOK && (slot.Status == "up" || slot.Status == "ready") &&
-				(group.LastErrorCode == "managed_resource_drift" || group.LastErrorCode == "rollback_failed")
+				(group.Status == domain.ProxyGroupDegraded ||
+					group.LastErrorCode == "managed_resource_drift" || group.LastErrorCode == "rollback_failed")
 		}
 		refreshable := assignmentDrift || runtimeRecovered || group.LastErrorCode == "slot_not_found" || (group.LastErrorCode == "protocol_failed" && missingManagedResources)
 		if (group.Status == domain.ProxyGroupReady && !assignmentDrift) || !refreshable || group.AimiliSlot < 0 || !strings.HasPrefix(group.ID, "agw-") {

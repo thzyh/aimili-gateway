@@ -1062,6 +1062,33 @@ class ManagedSlotFacadeTests(unittest.TestCase):
         self.assertFalse(result["candidate_rejected"])
         mark.assert_not_called()
 
+    def test_transient_slot_probe_does_not_clear_healthy_status(self):
+        manager.slot_egress_fail_counts.clear()
+        runtime = {2: {"node_id": "jp-live", "egress_ok": True, "exit_ip": "198.51.100.20"}}
+        with (
+            mock.patch.object(manager, "exit_slots", runtime),
+            mock.patch.object(manager, "_recovery_settings", return_value={"failureThreshold": 3}),
+        ):
+            self.assertFalse(manager.record_slot_egress_probe(2, False))
+            self.assertTrue(runtime[2]["egress_ok"])
+            self.assertFalse(manager.record_slot_egress_probe(2, False))
+            self.assertTrue(runtime[2]["egress_ok"])
+            self.assertTrue(manager.record_slot_egress_probe(2, False))
+            self.assertFalse(runtime[2]["egress_ok"])
+
+    def test_successful_slot_probe_resets_transient_failures(self):
+        manager.slot_egress_fail_counts.clear()
+        runtime = {2: {"node_id": "jp-live", "egress_ok": True, "exit_ip": "198.51.100.20"}}
+        with (
+            mock.patch.object(manager, "exit_slots", runtime),
+            mock.patch.object(manager, "_recovery_settings", return_value={"failureThreshold": 3}),
+        ):
+            self.assertFalse(manager.record_slot_egress_probe(2, False))
+            self.assertFalse(manager.record_slot_egress_probe(2, True, "203.0.113.20"))
+            self.assertEqual(manager.slot_egress_fail_counts[2], 0)
+            self.assertTrue(runtime[2]["egress_ok"])
+            self.assertEqual(runtime[2]["exit_ip"], "203.0.113.20")
+
     def test_check_managed_slot_repairs_once_when_tunnel_is_missing(self):
         snapshot = {
             "ok": True,
