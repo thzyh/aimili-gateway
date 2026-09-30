@@ -5852,11 +5852,33 @@ def assign_dedicated_standby(index: int, candidate_id: str) -> dict[str, Any]:
     if not operation_lock.acquire(blocking=False):
         return {"ok": False, "error_code": "operation_busy"}
     try:
+        candidate_id = str(candidate_id).strip()
+        node = next((row for row in read_nodes() if str(row.get("id") or "").strip() == candidate_id), None)
+        if node is None:
+            recovery_event(f"standby:{index}", "manual_rejected", reason="candidate_not_found")
+            return {"ok": False, "error_code": "candidate_not_found"}
+        used = reserved_slot_candidate_ids() | main_reserved_candidate_ids() | dedicated_standby_candidate_ids(exclude_index=index)
+        if candidate_conflicts_with_ids(node, used):
+            recovery_event(f"standby:{index}", "manual_rejected", reason="candidate_in_use")
+            return {"ok": False, "error_code": "candidate_in_use"}
+        if not any(str(row.get("id") or "").strip() == candidate_id
+                   for row in select_dedicated_standby_candidates(index, include_bad=True)):
+            recovery_event(f"standby:{index}", "manual_rejected", reason="candidate_unavailable")
+            return {"ok": False, "error_code": "candidate_unavailable"}
+        recovery_event(f"standby:{index}", "manual_started", country=node.get("country_short"))
         egress_repair_store.clear(f"standby:{index}")
-        if not provision_dedicated_standby(index, str(candidate_id).strip()):
-            egress_repair_store.require_manual(f"standby:{index}", "manual_candidate_failed", str(candidate_id).strip())
+        if not provision_dedicated_standby(index, candidate_id):
+            with dedicated_standby_lock:
+                old = dict(dedicated_standbys.get(index) or {})
+            process = old.get("process")
+            if process is not None and process.poll() is None and old.get("egress_ok"):
+                egress_repair_store.mark_healthy(f"standby:{index}", str(old.get("node_id") or ""))
+            else:
+                egress_repair_store.require_manual(f"standby:{index}", "manual_candidate_failed", candidate_id)
+            recovery_event(f"standby:{index}", "manual_failed", reason="candidate_validation_failed")
             write_dedicated_standby_state()
             return {"ok": False, "error_code": "candidate_unavailable"}
+        recovery_event(f"standby:{index}", "manual_ready", country=node.get("country_short"))
         standby = next((row for row in dedicated_standby_snapshot() if row["index"] == index), {})
         return {"ok": True, "standby": standby}
     finally:

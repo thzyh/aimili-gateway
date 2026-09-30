@@ -355,7 +355,25 @@ func (service *Service) AssignDedicatedStandby(ctx context.Context, index int, c
 	if !ok {
 		return aimili.DedicatedStandby{}, &Error{Code: "not_configured"}
 	}
-	result, err := source.AssignDedicatedStandby(ctx, index, candidateID)
+	// Pool IDs are opaque Gateway identities. The egress control API requires
+	// the native VPN candidate ID, as with active-exit replacement.
+	candidates, err := service.availableCandidates(ctx)
+	if err != nil {
+		return aimili.DedicatedStandby{}, err
+	}
+	requestedID := strings.TrimSpace(candidateID)
+	nativeID := ""
+	for _, candidate := range candidates {
+		identity, identityErr := domain.NewProxyGroupIdentity(candidate.CountryCode, domain.ProxyType(candidate.ProxyType), candidate.ID)
+		if identityErr == nil && (identity.ID == requestedID || candidate.ID == requestedID) {
+			nativeID = candidate.ID
+			break
+		}
+	}
+	if nativeID == "" {
+		return aimili.DedicatedStandby{}, &Error{Code: "candidate_not_found"}
+	}
+	result, err := source.AssignDedicatedStandby(ctx, index, nativeID)
 	if err != nil {
 		return aimili.DedicatedStandby{}, standbyError(err)
 	}
@@ -366,7 +384,7 @@ func standbyError(err error) error {
 	var adapterError *aimili.AdapterError
 	if errors.As(err, &adapterError) {
 		switch adapterError.Code {
-		case "invalid_request", "slot_not_found", "standby_disabled", "candidate_unavailable", "candidate_in_use", "operation_busy":
+		case "invalid_request", "slot_not_found", "standby_disabled", "candidate_not_found", "candidate_unavailable", "candidate_in_use", "operation_busy":
 			return &Error{Code: adapterError.Code}
 		}
 	}

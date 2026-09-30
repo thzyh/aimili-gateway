@@ -92,6 +92,25 @@ class DedicatedStandbyTests(unittest.TestCase):
             self.assertTrue(manager.reserve_candidate("jp-shared-b", set()))
             manager.release_candidate_reservation("jp-shared-b")
 
+    def test_missing_manual_candidate_preserves_healthy_standby_and_recovery(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repair = RepairStore(Path(temporary) / 'repair.json')
+            repair.mark_healthy('standby:0', 'old')
+            manager.dedicated_standbys[0] = {'node_id': 'old', 'process': FakeProcess(), 'egress_ok': True}
+            with (
+                mock.patch.object(manager, 'egress_repair_store', repair),
+                mock.patch.object(manager, 'standby_target_indices', return_value=[0]),
+                mock.patch.object(manager, 'dedicated_standby_config_snapshot', return_value=[{'index': 0, 'target': 'main', 'countries': []}]),
+                mock.patch.object(manager, 'read_nodes', return_value=[]),
+                mock.patch.object(manager, 'provision_dedicated_standby', return_value=False) as provision,
+                mock.patch.object(manager, 'write_dedicated_standby_state'),
+            ):
+                result = manager.assign_dedicated_standby(0, 'missing')
+            self.assertEqual(result.get('error_code'), 'candidate_not_found')
+            self.assertEqual(repair.get('standby:0')['status'], 'healthy')
+            self.assertTrue(manager.dedicated_standbys[0]['egress_ok'])
+            provision.assert_not_called()
+
     def test_four_configs_use_fixed_one_to_one_targets_and_no_country_scope(self):
         with tempfile.TemporaryDirectory() as temporary:
             data_dir = Path(temporary)
