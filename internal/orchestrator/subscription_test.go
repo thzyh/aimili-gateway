@@ -682,6 +682,67 @@ func TestCheckMainUsesStoredExitForFreshValidationWhenAimiliSnapshotIsTransientl
 	}
 }
 
+func TestSlotOperationsRefreshSubscriptionAfterPersistingCountry(t *testing.T) {
+	for _, operation := range []string{"check", "rotate"} {
+		for _, failRefresh := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/refresh_failure=%t", operation, failRefresh), func(t *testing.T) {
+				fixture := newFixture()
+				fixture.store.mainEgress = store.MainEgress{ResourceName: "agw-main", Enabled: true, PublicInboundID: 1, CountryName: "日本", UpdatedAt: fixture.now()}
+				fixture.xui.snapshot = xui.Snapshot{Inbounds: []xui.Inbound{{ID: 1, Tag: "aimili-reality", Remark: "Aimili Reality", Protocol: "vless", Port: 8443}}}
+				var target domain.ProxyGroup
+				for slot := 0; slot < 4; slot++ {
+					group, _ := domain.NewProxyGroupIdentity("VN", domain.ProxyTypeResidential, fmt.Sprintf("old-node-%d", slot))
+					group.CountryName = "越南"
+					group.Status, group.AimiliSlot = domain.ProxyGroupReady, slot
+					group.PublicInboundID, group.MixedInboundID = int64(slot+2), int64(slot+20)
+					group.PublicPort, group.MixedPort = 20000+slot, 30000+slot
+					group.ExitIP = fmt.Sprintf("203.0.113.%d", slot+10)
+					fixture.store.groups[group.ID] = group
+					fixture.store.protocolModes[group.ID] = domain.EgressProtocolMode{EgressID: group.ID, ActiveMode: domain.ProtocolVLESSTCPRealityVision, DesiredMode: domain.ProtocolVLESSTCPRealityVision, State: domain.ProtocolReady, Version: 1, UpdatedAt: fixture.now()}
+					fixture.xui.snapshot.Inbounds = append(fixture.xui.snapshot.Inbounds, xui.Inbound{ID: group.PublicInboundID, Tag: group.ResourceName + "-vless", Remark: "Aimili Gateway " + group.ResourceName + " VLESS", Protocol: "vless", Port: group.PublicPort})
+					if slot == 3 {
+						target = group
+					}
+				}
+				fixture.aimili.createdSlots = map[int]aimili.Slot{}
+				fixture.aimili.checkResults = []aimili.SlotCheck{{NodeID: "new-japan-node", Country: "JP", CountryName: "日本", ProxyType: "residential", Port: 17933, Status: "up", ExitIP: "203.0.113.40", EgressOK: true, CheckedAt: 1_700_000_030}}
+				if failRefresh {
+					// Public validation reads the old durable identity first; the
+					// post-save alias update must surface its own failure.
+					fixture.xui.ensureSubscriptionErrors = []error{nil, errors.New("alias write unavailable")}
+				}
+				o := fixture.orchestratorWithMax(t, 4)
+				var err error
+				if operation == "check" {
+					_, err = o.Check(context.Background(), target.ID)
+				} else {
+					_, err = o.Rotate(context.Background(), target.ID)
+				}
+				stored := fixture.store.groups[target.ID]
+				if stored.CountryCode != "JP" || stored.CountryName != "日本" || stored.CandidateID != "new-japan-node" || stored.Status != domain.ProxyGroupReady || stored.PublicPort != target.PublicPort || stored.PublicInboundID != target.PublicInboundID {
+					t.Fatalf("current slot identity or stable inbound lost: %+v", stored)
+				}
+				if failRefresh {
+					if err == nil {
+						t.Fatal("alias update failure was reported as success")
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := map[int64]string{1: "主连接_日本", 2: "出口位 1_越南", 3: "出口位 2_越南", 4: "出口位 3_越南", 5: "出口位 4_日本"}
+				if !reflect.DeepEqual(fixture.xui.subscriptionDesired.Aliases, want) {
+					t.Fatalf("subscription aliases = %#v, want %#v", fixture.xui.subscriptionDesired.Aliases, want)
+				}
+				if operation == "check" && contains(fixture.calls, "slot.rotate") {
+					t.Fatal("country synchronization rotated the active exit")
+				}
+			})
+		}
+	}
+}
+
 func TestCheckMainRefreshesDynamicSubscriptionAfterMainIdentityDrift(t *testing.T) {
 	fixture := newFixture()
 	fixture.store.mainEgress = store.MainEgress{ResourceName: "agw-main", CandidateID: "old-main", CountryCode: "US", CountryName: "美国", ProxyType: domain.ProxyTypeResidential, ExitIP: "203.0.113.10", PublicInboundID: 1, MixedInboundID: 98, PublicPort: 8443, MixedPort: 31000, Enabled: true, UpdatedAt: fixture.now()}

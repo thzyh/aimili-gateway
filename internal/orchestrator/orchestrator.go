@@ -599,6 +599,11 @@ func (o *Orchestrator) Check(ctx context.Context, id string) (domain.ProxyGroup,
 	if !checked.EgressOK {
 		return group, &Error{Code: group.LastErrorCode}
 	}
+	// Public-path validation reads the previous durable identity. Rebuild
+	// display aliases after saving a slot recovered through its hot standby.
+	if subscriptionErr := o.refreshDynamicSubscription(ctx); subscriptionErr != nil {
+		return group, subscriptionErr
+	}
 	return group, nil
 }
 
@@ -652,6 +657,9 @@ func (o *Orchestrator) Rotate(ctx context.Context, id string) (domain.ProxyGroup
 	}
 	if err != nil {
 		return group, operationError(err)
+	}
+	if subscriptionErr := o.refreshDynamicSubscription(ctx); subscriptionErr != nil {
+		return group, subscriptionErr
 	}
 	return group, nil
 }
