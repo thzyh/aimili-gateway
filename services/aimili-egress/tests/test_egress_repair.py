@@ -7,6 +7,21 @@ from egress_repair import RepairStore
 
 
 class RepairStoreTests(unittest.TestCase):
+    def test_old_failure_snapshot_cannot_overwrite_new_healthy_candidate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = RepairStore(Path(directory) / "repair.json", now=lambda: 20.0)
+            store.mark_healthy("main", "new-main")
+            self.assertFalse(store.wait_for_standby("main", "old-main", "JP"))
+            self.assertEqual(store.get("main")["candidate_id"], "new-main")
+            self.assertEqual(store.get("main")["status"], "healthy")
+
+    def test_confirmed_new_failure_of_same_candidate_enters_waiting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = RepairStore(Path(directory) / "repair.json", now=lambda: 20.0)
+            store.mark_healthy("main", "same-main")
+            self.assertTrue(store.wait_for_standby("main", "same-main", "JP"))
+            self.assertEqual(store.get("main")["status"], "waiting_standby")
+
     def test_same_failure_can_claim_only_one_automatic_repair(self):
         with tempfile.TemporaryDirectory() as directory:
             store = RepairStore(Path(directory) / "repair.json", now=lambda: 10.0)

@@ -92,6 +92,33 @@ class DedicatedStandbyTests(unittest.TestCase):
 
         self.assertEqual([call.args[0] for call in kill.call_args_list], [101, 101])
 
+    def test_promoted_main_process_is_not_reaped_as_standby_orphan(self):
+        """A promoted standby still has the standby marker in its argv."""
+        with tempfile.TemporaryDirectory() as directory:
+            proc_root = Path(directory)
+            net_root = proc_root / "net"
+            (net_root / "tun0").mkdir(parents=True)
+            path = proc_root / "999"
+            path.mkdir()
+            (path / "cmdline").write_bytes(
+                b"\0".join(part.encode() for part in [
+                    "/usr/sbin/openvpn", "--setenv", "AIMILI_STANDBY", "0",
+                    "--dev", "tun0",
+                ]) + b"\0"
+            )
+            with (
+                mock.patch.object(manager.sys, "platform", "linux"),
+                mock.patch.object(manager, "dedicated_standbys", {}),
+                mock.patch.object(manager, "exit_slots", {}),
+                mock.patch.object(manager, "active_openvpn_process", RegisteredProcess(999)),
+                mock.patch.object(manager, "active_openvpn_node_id", "main-node"),
+                mock.patch.object(manager, "active_openvpn_device", "tun0"),
+                mock.patch.object(manager.os, "kill") as kill,
+            ):
+                manager.kill_unregistered_standby_openvpn_processes(0, proc_root=proc_root, net_root=net_root)
+
+        kill.assert_not_called()
+
     def test_repeated_promotion_exchanges_active_and_standby_resources(self):
         index, slot = 3, 2
         active = {"device": manager.slot_device(slot), "table": manager.slot_table(slot),

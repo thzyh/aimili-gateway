@@ -4076,11 +4076,50 @@ def _repair_main_once_unlocked(failed_snapshot: dict[str, Any]) -> dict[str, Any
         return {"ok": False, "error_code": "operation_busy"}
     failed_id = str(failed_snapshot.get("candidate_id") or "")
     country = str(failed_snapshot.get("country") or "").upper()
+    # A delayed health-check/recovery callback must not roll a newer healthy
+    # main connection back into waiting_standby.  Both the live process and
+    # durable repair row are checked because promotion updates them in two
+    # small, serialized steps.
+    current_id = str(active_openvpn_node_id or "").strip()
+    live_main = active_openvpn_running()
+    current_repair = egress_repair_store.get("main")
+    current_repair_id = str(current_repair.get("candidate_id") or "").strip()
+    if (
+        live_main
+        and current_id
+        and current_id != failed_id
+        and bool(get_state().get("proxy_ok"))
+    ) or (
+        live_main
+        and current_repair.get("status") == "healthy"
+        and current_repair_id
+        and current_repair_id != failed_id
+    ):
+        if active_openvpn_running() and current_id:
+            egress_repair_store.mark_healthy("main", current_id)
+        return {"ok": True, "stale_ignored": True, "candidate_id": current_id or current_repair_id}
     if egress_repair_store.get("main").get("status") == "manual_required":
         return {"ok": False, "error_code": "manual_repair_required"}
     if failed_id:
         mark_main_bad_node(failed_id)
-    egress_repair_store.wait_for_standby("main", failed_id, country)
+    allow_healthy = (
+        current_repair.get("status") == "healthy"
+        and current_repair_id == failed_id
+    )
+    if allow_healthy:
+        waiting_started = egress_repair_store.wait_for_standby(
+            "main", failed_id, country, allow_healthy=True
+        )
+    else:
+        waiting_started = egress_repair_store.wait_for_standby("main", failed_id, country)
+    if not waiting_started and live_main:
+        current = egress_repair_store.get("main")
+        if (
+            current.get("status") == "healthy"
+            and str(current.get("candidate_id") or "").strip() != failed_id
+        ):
+            return {"ok": True, "stale_ignored": True,
+                    "candidate_id": str(current.get("candidate_id") or active_openvpn_node_id or "")}
     if promote_dedicated_standby_to_main():
         return {"ok": True, "candidate_id": str(active_openvpn_node_id or ""), "standby_promoted": True}
     set_state(proxy_ok=False, proxy_ip="-", last_check_message="主连接等待专属备用；后台按策略重试")
@@ -4090,11 +4129,22 @@ def _repair_main_once_unlocked(failed_snapshot: dict[str, Any]) -> dict[str, Any
 
 def repair_main_once(failed_snapshot: dict[str, Any]) -> dict[str, Any]:
     """Serialize background promotion with manual main assignment mutations."""
+    failed_id = str(failed_snapshot.get("candidate_id") or "")
+    # Preserve queueing while another mutation owns the runtime lease, but
+    # only for the exact candidate that is currently active.  Delayed
+    # callbacks for older candidates must not overwrite a newer healthy row.
+    if failed_id == str(active_openvpn_node_id or "") and main_mutation_allowed():
+        current = egress_repair_store.get("main")
+        wait_args = ("main", failed_id, str(failed_snapshot.get("country") or ""))
+        if (
+            current.get("status") == "healthy"
+            and str(current.get("candidate_id") or "").strip() == failed_id
+        ):
+            egress_repair_store.wait_for_standby(*wait_args, allow_healthy=True)
+        else:
+            egress_repair_store.wait_for_standby(*wait_args)
     # 先记下已确认的故障，再领取操作锁。否则持锁扫描看不到接管请求，
     # 而恢复线程又一直拿不到锁，直到整池扫描结束才可能恢复。
-    failed_id = str(failed_snapshot.get("candidate_id") or "")
-    if failed_id == str(active_openvpn_node_id or "") and main_mutation_allowed():
-        egress_repair_store.wait_for_standby("main", failed_id, str(failed_snapshot.get("country") or ""))
     if not main_recovery_lock.acquire(blocking=False):
         return {"ok": False, "error_code": "recovery_pending"}
     try:
@@ -4468,7 +4518,10 @@ def maintain_valid_nodes(
         msg = "节点维护任务正在运行，请稍后再试"
         set_state(last_check_message=msg)
         return msg
-    is_connecting = True
+    # Candidate-pool maintenance is background work. Keep a live main
+    # connection out of the UI's "processing" state; only a real recovery
+    # dial should set this flag.
+    is_connecting = not active_openvpn_running()
     maintenance_scan_active.set()
     with country_refresh_lock:
         all_refresh_started_at = (
@@ -4535,21 +4588,23 @@ def maintain_valid_nodes(
                             str(config.get("target") or "") == "main"
                             for config in dedicated_standby_config_snapshot()
                         )
-                        if has_active_id and main_standby_configured:
-                            # An exited tunnel must enter the same durable
-                            # repair queue as the health checker. Calling the
-                            # generic candidate switch here used to bypass a
-                            # ready dedicated standby and could leave the UI
-                            # in a fault state forever.
-                            recovery = repair_main_once(failed_snapshot)
-                            print(
-                                f"[维护线程] 主连接专属备用恢复结果: "
-                                f"{recovery.get('error_code') or ('ok' if recovery.get('ok') else 'unknown')}",
-                                flush=True,
+                        if main_standby_configured:
+                            # A configured main standby is the authoritative
+                            # recovery path. Never bypass it with a cold
+                            # candidate switch while tun0 is settling.
+                            recovery = (
+                                repair_main_once(failed_snapshot)
+                                if has_active_id
+                                else _restore_main_from_dedicated_standby()
                             )
+                            if isinstance(recovery, dict):
+                                recovery_label = recovery.get("error_code") or ("ok" if recovery.get("ok") else "unknown")
+                            else:
+                                recovery_label = "ok" if recovery else "recovery_pending"
+                            print(f"[maintenance] main standby recovery: {recovery_label}", flush=True)
                         elif has_active_id or has_cached_candidate:
                             auto_switch_node()
-                        is_connecting = True
+                        is_connecting = not active_openvpn_running()
 
         existing_nodes = read_nodes()
         try:
@@ -5185,6 +5240,23 @@ def kill_unregistered_standby_openvpn_processes(
     if not sys.platform.startswith("linux") or not proc_root.exists():
         return
     registered_pids: set[int] = set()
+    # A promoted standby keeps its AIMILI_STANDBY marker because OpenVPN's
+    # command line cannot be changed in place.  Once it becomes the main
+    # tunnel it is removed from ``dedicated_standbys``; register the global
+    # main process here as well so the next standby maintenance tick does not
+    # reap the live main connection as an orphan.
+    with lock:
+        active_process = active_openvpn_process
+        active_pid = getattr(active_process, "pid", None)
+        if (
+            index == 0
+            and bool(str(active_openvpn_node_id or "").strip())
+            and isinstance(active_pid, int)
+            and active_pid > 0
+            and active_process is not None
+            and active_process.poll() is None
+        ):
+            registered_pids.add(active_pid)
     with dedicated_standby_lock:
         runtime = dedicated_standbys.get(index, {})
         process = runtime.get("process")

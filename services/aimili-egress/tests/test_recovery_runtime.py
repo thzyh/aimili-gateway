@@ -10,6 +10,43 @@ from egress_repair import RepairStore
 
 
 class RecoveryRuntimeTests(unittest.TestCase):
+    def test_stale_main_failure_does_not_replace_new_live_main(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = RepairStore(Path(root) / "repair.json")
+            store.mark_healthy("main", "new-main")
+            with (
+                mock.patch.object(m, "egress_repair_store", store),
+                mock.patch.object(m, "active_openvpn_running", return_value=True),
+                mock.patch.object(m, "active_openvpn_node_id", "new-main"),
+                mock.patch.object(m, "get_state", return_value={"proxy_ok": True}),
+                mock.patch.object(m, "promote_dedicated_standby_to_main") as promote,
+                mock.patch.object(m, "mark_main_bad_node") as mark_bad,
+            ):
+                result = m._repair_main_once_unlocked({"candidate_id": "old-main", "country": "JP"})
+            self.assertTrue(result["stale_ignored"])
+            promote.assert_not_called()
+            mark_bad.assert_not_called()
+            self.assertEqual(store.get("main")["status"], "healthy")
+
+    def test_confirmed_live_tunnel_failure_is_not_hidden_by_healthy_metadata(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = RepairStore(Path(root) / "repair.json")
+            store.mark_healthy("main", "same-main")
+            with (
+                mock.patch.object(m, "egress_repair_store", store),
+                mock.patch.object(m, "active_openvpn_running", return_value=True),
+                mock.patch.object(m, "active_openvpn_node_id", "same-main"),
+                mock.patch.object(m, "get_state", return_value={"proxy_ok": False}),
+                mock.patch.object(m, "promote_dedicated_standby_to_main", return_value=False) as promote,
+                mock.patch.object(m, "mark_main_bad_node"),
+                mock.patch.object(m, "set_state"),
+                mock.patch.object(m, "recovery_event"),
+            ):
+                result = m._repair_main_once_unlocked({"candidate_id": "same-main", "country": "JP"})
+            self.assertEqual(result["error_code"], "recovery_pending")
+            promote.assert_called_once()
+            self.assertEqual(store.get("main")["status"], "waiting_standby")
+
     def test_resource_pressure_defers_without_dialing_or_stopping_active(self):
         with tempfile.TemporaryDirectory() as root, mock.patch.object(m, 'egress_repair_store', RepairStore(Path(root) / 'repair.json')), mock.patch.object(
             m, '_standby_enabled', return_value=True

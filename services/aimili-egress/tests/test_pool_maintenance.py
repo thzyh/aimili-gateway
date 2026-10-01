@@ -1235,12 +1235,14 @@ class PoolMaintenanceTests(unittest.TestCase):
                 "auto_switch_node",
                 side_effect=connect_cached_node,
             ) as auto_switch,
+            mock.patch.object(manager, "_restore_main_from_dedicated_standby", return_value=False) as restore,
             mock.patch.object(manager, "set_state"),
         ):
             message = manager.maintain_valid_nodes()
 
         self.assertIn("保留现有有效节点", message)
-        auto_switch.assert_called_once_with()
+        restore.assert_called_once_with()
+        auto_switch.assert_not_called()
 
     def test_unexpected_main_exit_uses_dedicated_standby_before_generic_switch(self):
         existing = [{"id": "jp-old", "country_short": "JP", "probe_status": "available"}]

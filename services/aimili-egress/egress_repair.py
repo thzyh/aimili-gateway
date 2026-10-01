@@ -85,19 +85,26 @@ class RepairStore:
             })
             self._write(document)
 
-    def wait_for_standby(self, egress: str, candidate_id: str, country: str) -> None:
+    def wait_for_standby(self, egress: str, candidate_id: str, country: str, *, allow_healthy: bool = False) -> bool:
         """幂等记录等待热备；周期检查不能重置故障时间预算。"""
         with self.lock:
             document = self._read()
             row = document['egresses'].get(egress, {})
             if row.get('status') in ('waiting_standby', 'manual_required'):
-                return
+                return False
+            if (
+                row.get('status') == 'healthy'
+                and not allow_healthy
+                and str(row.get('candidate_id') or '').strip() != str(candidate_id or '').strip()
+            ):
+                return False
             document['egresses'][egress] = dict(
                 status='waiting_standby', failed_candidate_id=candidate_id,
                 country=country, started_at=self.now(), attempt_count=0,
                 error_code='recovery_pending', recovery_version=2,
             )
             self._write(document)
+            return True
 
     def requeue_for_standby(self, egress: str, candidate_id: str, country: str) -> bool:
         """将旧版一次性失败状态安全转交给已经就绪的专属备用。"""
