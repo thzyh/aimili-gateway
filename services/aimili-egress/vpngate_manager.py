@@ -1006,7 +1006,13 @@ def get_state() -> dict[str, Any]:
 def safe_main_status() -> dict[str, Any]:
     """Return the non-secret main egress status for Gateway."""
     state = get_state()
-    active_id = str(active_openvpn_node_id or state.get("active_openvpn_node_id") or "")
+    # The state file is durable UI metadata, while the process object is the
+    # source of truth for a live main tunnel.  A failed reconnect can leave the
+    # previous ``proxy_ok`` value in state.json for a short time; exposing that
+    # value without a running process produced the contradictory API response
+    # ``active=false, egress_ok=true`` and made Gateway render a stale fault.
+    running = active_openvpn_running()
+    active_id = str(active_openvpn_node_id or "") if running else ""
     active = next((node for node in read_nodes() if str(node.get("id") or "") == active_id), {})
     # Catalog maintenance may evict a live node. Its dial-time identity belongs
     # to the running tunnel, not to the replenishable candidate catalog.
@@ -1018,10 +1024,10 @@ def safe_main_status() -> dict[str, Any]:
         "country": str(active.get("country_short") or active.get("country") or "").upper() if active else "",
         "country_name": str(active.get("country") or "") if active else "",
         "proxy_type": normalize_proxy_type(active.get("ip_type")) if active else "",
-        "exit_ip": str(state.get("proxy_ip") or "") if state.get("proxy_ok") else "",
+        "exit_ip": str(state.get("proxy_ip") or "") if running and state.get("proxy_ok") else "",
         "port": int(state.get("proxy_port") or LOCAL_PROXY_PORT),
-        "egress_ok": bool(state.get("proxy_ok")),
-        "active": bool(active_id) and active_openvpn_running(),
+        "egress_ok": bool(running and active_id and state.get("proxy_ok")),
+        "active": bool(running and active_id),
         "repair_status": repair.get("status", ""),
         "auto_repair_attempted": int(repair.get("attempt_count") or 0) > 0,
         "last_error_code": repair.get("error_code", ""),
@@ -1464,6 +1470,47 @@ def main_assignment_recovery_loop() -> None:
         time.sleep(5)
 
 
+def _restore_main_from_dedicated_standby() -> bool:
+    """Promote the main hot standby when startup has no live main process.
+
+    A service restart intentionally clears the in-memory runtime maps before
+    the standby supervisor is started.  Without this bootstrap path the
+    supervisor would dial ``standby:0`` successfully, but no code would ever
+    promote it, leaving Gateway with a ready tunnel that was not the main
+    connection.  Dial at most one main standby here; the normal supervisor
+    continues maintaining it after startup.
+    """
+    if active_openvpn_running():
+        return True
+    if not load_ui_config().get("connection_enabled", True):
+        return False
+    config = next(
+        (row for row in dedicated_standby_config_snapshot() if row.get("target") == "main"),
+        None,
+    )
+    if not config:
+        return False
+    index = int(config.get("index") or 0)
+    standby_repair = egress_repair_store.get(f"standby:{index}")
+    if standby_repair.get("status") == "manual_required":
+        return False
+    operation_lock = standby_operation_lock(index)
+    if not operation_lock.acquire(blocking=False):
+        return False
+    try:
+        with dedicated_standby_lock:
+            runtime = dict(dedicated_standbys.get(index) or {})
+        process = runtime.get("process")
+        if process is None or process.poll() is not None or not runtime.get("egress_ok"):
+            if not provision_dedicated_standby(index):
+                return False
+    finally:
+        operation_lock.release()
+    # Promotion acquires the same per-standby lock and must happen after the
+    # provisioning lock is released.
+    return promote_dedicated_standby_to_main()
+
+
 def bootstrap_main_connection() -> dict[str, Any]:
     """Recover a persisted transaction, then restore the last healthy main before pool maintenance."""
     global is_connecting
@@ -1498,8 +1545,14 @@ def bootstrap_main_connection() -> dict[str, Any]:
             return {"ok": True, "state": "connected"}
         except Exception as exc:
             log_to_json("WARNING", "VPN", f"启动时恢复旧主连接失败，将使用健康候选回退: {exc}")
+            if _restore_main_from_dedicated_standby():
+                return {"ok": True, "state": "connected"}
+    elif _restore_main_from_dedicated_standby():
+        return {"ok": True, "state": "connected"}
     auto_switch_node()
     connected = active_openvpn_running()
+    if not connected and _restore_main_from_dedicated_standby():
+        return {"ok": True, "state": "connected"}
     return {
         "ok": bool(connected),
         "state": "connected" if connected else "pending",
@@ -1511,9 +1564,13 @@ def safe_name(value: str) -> str:
 
 def clear_active_connection_state(message: str) -> None:
     global active_openvpn_process, active_openvpn_node_id
+    global active_openvpn_device, active_openvpn_table, active_openvpn_config_path
     stop_process(active_openvpn_process)
     active_openvpn_process = None
     active_openvpn_node_id = ""
+    active_openvpn_device = "tun0"
+    active_openvpn_table = 100
+    active_openvpn_config_path = ""
     with lock:
         nodes = read_nodes()
         for item in nodes:
@@ -1523,6 +1580,10 @@ def clear_active_connection_state(message: str) -> None:
         active_openvpn_node_id="",
         is_connecting=False,
         active_node_latency="无活动连接",
+        proxy_ok=False,
+        proxy_ip="",
+        proxy_latency_ms=0,
+        proxy_error=message,
         last_check_message=message,
     )
 
@@ -4170,7 +4231,14 @@ def auto_switch_node(attempt: int = 0) -> None:
             for item in nodes:
                 item["active"] = False
             write_json(NODES_FILE, sort_all_nodes(nodes))
-        set_state(active_openvpn_node_id="", last_check_message=msg)
+        set_state(
+            active_openvpn_node_id="",
+            proxy_ok=False,
+            proxy_ip="",
+            proxy_latency_ms=0,
+            proxy_error=msg,
+            last_check_message=msg,
+        )
 
         threading.Thread(target=_recover_main_after_pool_exhaustion, daemon=True).start()
 
@@ -4248,7 +4316,17 @@ def connect_node(node_id: str) -> str:
             write_json(NODES_FILE, persisted_nodes)
             log_to_json("ERROR", "VPN", f"连接节点 {node_id} 失败: {message}")
             print(f"[连接核心失败] 无法与 VPN 节点 {node_id} 建立隧道连接！详情: {message}", flush=True)
-            set_state(active_openvpn_node_id="", is_connecting=False, active_node_latency="无活动连接", last_check_message=f"连接失败: {message}")
+            failure_message = f"连接失败: {message}"
+            set_state(
+                active_openvpn_node_id="",
+                is_connecting=False,
+                active_node_latency="无活动连接",
+                proxy_ok=False,
+                proxy_ip="",
+                proxy_latency_ms=0,
+                proxy_error=failure_message,
+                last_check_message=failure_message,
+            )
             with lock:
                 active_openvpn_node_id = ""
             if failure_code:
@@ -4326,7 +4404,14 @@ def connect_node(node_id: str) -> str:
         if stopped_existing or (active_openvpn_node_id == node_id and not active_openvpn_running()):
             clear_active_connection_state(f"连接失败: {exc}")
         else:
-            set_state(is_connecting=False, last_check_message=f"连接失败: {exc}")
+            # Rejected input before stopping a healthy tunnel must not erase
+            # that tunnel's last verified egress. With no live tunnel, stale
+            # proxy metadata is cleared at the same failure boundary.
+            failure_state = {"is_connecting": False, "last_check_message": f"连接失败: {exc}"}
+            if not active_openvpn_running():
+                failure_state.update(proxy_ok=False, proxy_ip="", proxy_latency_ms=0,
+                                     proxy_error=f"连接失败: {exc}")
+            set_state(**failure_state)
         raise
     finally:
         with lock:
@@ -6098,6 +6183,15 @@ def _maintain_standby(config: dict) -> None:
             if ok:
                 dedicated_standby_fail_counts[index] = 0
                 egress_repair_store.mark_healthy(key, str(runtime.get("node_id") or ""))
+                # A service restart can bring the dedicated main standby up
+                # before bootstrap obtains a live main identity.  Leaving the
+                # standby in ``ready`` in that state creates a healthy tunnel
+                # which Gateway cannot expose as the main connection. Promote
+                # it at the same observation boundary once its egress probe
+                # has passed.
+                if config["target"] == "main" and not active_openvpn_running():
+                    if promote_dedicated_standby_to_main():
+                        recovery_event("main", "standby_promoted")
                 return
             dedicated_standby_fail_counts[index] = dedicated_standby_fail_counts.get(index, 0) + 1
             if dedicated_standby_fail_counts[index] < settings["standbyFailureThreshold"]:

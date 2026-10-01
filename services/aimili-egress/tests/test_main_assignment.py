@@ -877,6 +877,7 @@ class ManagerMainAssignmentTests(unittest.TestCase):
 
         with (
             mock.patch.object(manager, "read_nodes", return_value=self.nodes),
+            mock.patch.object(manager, "active_openvpn_running", return_value=True),
             mock.patch.object(
                 manager,
                 "get_state",
@@ -1047,6 +1048,7 @@ class ManagerMainAssignmentTests(unittest.TestCase):
     def test_safe_main_status_normalizes_real_node_ip_type(self):
         with (
             mock.patch.object(manager, "read_nodes", return_value=self.nodes),
+            mock.patch.object(manager, "active_openvpn_running", return_value=True),
             mock.patch.object(
                 manager,
                 "get_state",
