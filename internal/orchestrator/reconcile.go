@@ -479,7 +479,7 @@ func (o *Orchestrator) overlayLiveSlotSnapshots(ctx context.Context, groups []do
 	}
 	byNumber := make(map[int]aimili.Slot, len(slots))
 	for _, slot := range slots {
-		if slot.Number < 0 || !slot.EgressOK || (slot.Status != "up" && slot.Status != "ready") {
+		if slot.Number < 0 {
 			continue
 		}
 		byNumber[slot.Number] = slot
@@ -491,10 +491,55 @@ func (o *Orchestrator) overlayLiveSlotSnapshots(ctx context.Context, groups []do
 			continue
 		}
 		if slot, ok := byNumber[group.AimiliSlot]; ok {
+			// Overlay both healthy and recovering slots. Previously the read-only
+			// pool skipped every slot with EgressOK=false, so a group that had
+			// entered waiting_standby kept its old database status (often ready or
+			// a stale fault) until a later reconcile pass.
 			applySlotSnapshot(group, slot)
+			applyLiveSlotHealth(group, slot)
 		}
 	}
 	return result
+}
+
+// applyLiveSlotHealth keeps the pool response aligned with the egress repair
+// state without writing the store. A recovery in progress is a transitional
+// state and must not be presented as a terminal link failure. The protocol
+// mode pass runs after this helper and may still promote a real protocol error
+// to repair_required.
+func applyLiveSlotHealth(group *domain.ProxyGroup, slot aimili.Slot) {
+	if group == nil {
+		return
+	}
+	if slot.RepairStatus == "manual_required" {
+		group.Status = domain.ProxyGroupDegraded
+		group.LastErrorCode = strings.TrimSpace(slot.LastErrorCode)
+		if group.LastErrorCode == "" {
+			group.LastErrorCode = "manual_replacement_required"
+		}
+		return
+	}
+	if egressRecoveryInProgress(slot.RepairStatus, slot.LastErrorCode) {
+		group.Status = domain.ProxyGroupRotating
+		group.LastErrorCode = "recovery_pending"
+		group.ExitIP = ""
+		group.ExitIPCheckedAt = 0
+		return
+	}
+	if slot.EgressOK && (slot.Status == "up" || slot.Status == "ready") {
+		group.Status = domain.ProxyGroupReady
+		group.LastErrorCode = ""
+		return
+	}
+	if !slot.EgressOK {
+		group.Status = domain.ProxyGroupDegraded
+		group.LastErrorCode = strings.TrimSpace(slot.LastErrorCode)
+		if group.LastErrorCode == "" {
+			group.LastErrorCode = "egress_unavailable"
+		}
+		group.ExitIP = ""
+		group.ExitIPCheckedAt = 0
+	}
 }
 
 func (o *Orchestrator) attachProtocolModes(ctx context.Context, groups []domain.ProxyGroup) error {

@@ -137,6 +137,31 @@ class DedicatedStandbyTests(unittest.TestCase):
         manager.dedicated_standby_fail_counts.clear()
         manager.pending_candidate_ids.clear()
 
+    def test_promotion_probe_retries_transient_route_failure(self):
+        index = 0
+        manager.dedicated_standbys[index] = {
+            "process": FakeProcess(), "node_id": "standby-node",
+            "device": manager.standby_device(index),
+            "table": manager.standby_table(index),
+            "egress_ok": True,
+        }
+        with (
+            mock.patch.object(manager, "dedicated_standby_config_snapshot", return_value=[
+                {"index": index, "target": "slot:0", "countries": []},
+            ]),
+            mock.patch.object(manager, "ensure_policy_routing", return_value=True),
+            mock.patch.object(manager, "check_slot_egress", side_effect=[
+                (False, ""), (False, ""), (True, "198.51.100.50"),
+            ]) as probe,
+            mock.patch.object(manager.time, "sleep"),
+        ):
+            selected = manager._healthy_dedicated_standby_index("slot:0")
+
+        self.assertEqual(selected, index)
+        self.assertEqual(probe.call_count, 3)
+        self.assertTrue(manager.dedicated_standbys[index]["egress_ok"])
+        self.assertEqual(manager.dedicated_standbys[index]["exit_ip"], "198.51.100.50")
+
     def test_candidate_reservation_prevents_concurrent_duplicate_assignment(self):
         nodes = [
             {"id": "jp-shared-a", "exit_ip": "203.0.113.9"},

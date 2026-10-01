@@ -6225,8 +6225,23 @@ def _healthy_dedicated_standby_index(target: str) -> int | None:
             continue
         if not ensure_policy_routing(standby_device(index), standby_table(index)):
             continue
-        ok, exit_ip = check_slot_egress(standby_port(index))
+        # A standby is promoted during a live failure.  Its policy route can
+        # still be settling for a short time after OpenVPN reports ready, so a
+        # single probe would incorrectly discard a usable standby and leave
+        # the target waiting forever.  Use the same bounded confirmation for
+        # main and ordinary exits before declaring the standby unusable.
+        ok, exit_ip = False, ""
+        for validation_attempt in range(3):
+            ok, exit_ip = check_slot_egress(standby_port(index))
+            if ok:
+                break
+            if validation_attempt < 2:
+                time.sleep(1)
         if not ok:
+            with dedicated_standby_lock:
+                current = dedicated_standbys.get(index)
+                if current is not None:
+                    current.update(egress_ok=False, exit_ip="", checked_at=time.time(), status="degraded")
             continue
         with dedicated_standby_lock:
             current = dedicated_standbys.get(index)

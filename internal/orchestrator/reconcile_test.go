@@ -175,6 +175,78 @@ func TestPoolOverlaysHealthyRuntimeSlotAfterDedicatedStandbyPromotion(t *testing
 	}
 }
 
+func TestPoolShowsSlotRecoveryAsRotatingWhileWaitingForStandby(t *testing.T) {
+	fixture := newFixture()
+	group, err := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeResidential, "jp-old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	group.Status = domain.ProxyGroupReady
+	group.AimiliSlot = 0
+	group.PublicPort = 20000
+	group.MixedPort = 30000
+	group.ExitIP = "203.0.113.10"
+	fixture.store.groups[group.ID] = group
+	fixture.store.protocolModes[group.ID] = domain.EgressProtocolMode{
+		EgressID: group.ID, ActiveMode: domain.ProtocolVLESSTCPRealityVision,
+		DesiredMode: domain.ProtocolVLESSTCPRealityVision, State: domain.ProtocolReady,
+	}
+	fixture.aimili.candidates = []aimili.Candidate{{
+		ID: "jp-old", CountryCode: "JP", CountryName: "日本", IP: "198.51.100.10",
+		ProxyType: "residential", ProbeStatus: "available",
+	}}
+	fixture.aimili.createdSlots = map[int]aimili.Slot{
+		0: {Number: 0, Country: "JP", CountryName: "日本", ProxyType: "residential",
+			Status: "up", NodeID: "jp-old", EgressOK: false,
+			RepairStatus: "waiting_standby", LastErrorCode: "recovery_pending"},
+	}
+
+	pool, err := fixture.orchestratorWithMax(t, 2).Pool(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pool) != 1 || pool[0].Status != domain.ProxyGroupRotating || pool[0].LastErrorCode != "recovery_pending" {
+		t.Fatalf("slot standby recovery was reported as a terminal fault or stale ready state: %#v", pool)
+	}
+	if pool[0].ExitIP != "" {
+		t.Fatalf("recovering slot exposed stale exit IP: %#v", pool[0])
+	}
+}
+
+func TestPoolKeepsSlotManualRepairAsDegraded(t *testing.T) {
+	fixture := newFixture()
+	group, err := domain.NewProxyGroupIdentity("JP", domain.ProxyTypeResidential, "jp-old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	group.Status = domain.ProxyGroupReady
+	group.AimiliSlot = 0
+	group.PublicPort = 20000
+	group.MixedPort = 30000
+	fixture.store.groups[group.ID] = group
+	fixture.store.protocolModes[group.ID] = domain.EgressProtocolMode{
+		EgressID: group.ID, ActiveMode: domain.ProtocolVLESSTCPRealityVision,
+		DesiredMode: domain.ProtocolVLESSTCPRealityVision, State: domain.ProtocolReady,
+	}
+	fixture.aimili.candidates = []aimili.Candidate{{
+		ID: "jp-old", CountryCode: "JP", CountryName: "日本", IP: "198.51.100.10",
+		ProxyType: "residential", ProbeStatus: "available",
+	}}
+	fixture.aimili.createdSlots = map[int]aimili.Slot{
+		0: {Number: 0, Country: "JP", CountryName: "日本", ProxyType: "residential",
+			Status: "disconnected", NodeID: "jp-old", EgressOK: false,
+			RepairStatus: "manual_required", LastErrorCode: "no_usable_candidate"},
+	}
+
+	pool, err := fixture.orchestratorWithMax(t, 2).Pool(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pool) != 1 || pool[0].Status != domain.ProxyGroupDegraded || pool[0].LastErrorCode != "no_usable_candidate" {
+		t.Fatalf("manual repair state was not preserved: %#v", pool)
+	}
+}
+
 func TestActivateStandbyCandidateReplacesTheSingleActiveGroup(t *testing.T) {
 	fixture := newFixture()
 	fixture.aimili.candidates = []aimili.Candidate{
