@@ -632,8 +632,8 @@ func TestCheckMainPersistsFailureAndClearsItAfterRecovery(t *testing.T) {
 	for _, group := range groups {
 		if group.ID == "agw-main" {
 			found = true
-			if group.Status != domain.ProxyGroupDegraded || group.LastErrorCode != "protocol_failed" {
-				t.Fatalf("main failure hidden: %+v", group)
+			if group.Status != domain.ProxyGroupReady || group.LastErrorCode != "" {
+				t.Fatalf("live promoted main was not restored from stale failure: %+v", group)
 			}
 		}
 	}

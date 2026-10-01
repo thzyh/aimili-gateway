@@ -579,7 +579,10 @@ func (o *Orchestrator) Check(ctx context.Context, id string) (domain.ProxyGroup,
 	group.UpdatedAt = group.LastCheckedAt
 	if err != nil || !checked.EgressOK {
 		group.Status = domain.ProxyGroupDegraded
-		if strings.TrimSpace(checked.LastErrorCode) != "" {
+		if err == nil && egressRecoveryInProgress(checked.RepairStatus, checked.LastErrorCode) {
+			group.Status = domain.ProxyGroupRotating
+			group.LastErrorCode = "recovery_pending"
+		} else if strings.TrimSpace(checked.LastErrorCode) != "" {
 			group.LastErrorCode = strings.TrimSpace(checked.LastErrorCode)
 		} else if checked.RepairStatus == "manual_required" {
 			group.LastErrorCode = "manual_replacement_required"
@@ -613,6 +616,18 @@ func transientSlotCheckError(err error) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// egressRecoveryInProgress distinguishes a bounded automatic replacement from
+// a terminal failure. The egress service keeps this state durable while a
+// dedicated standby is being dialed or while the next retry is scheduled.
+func egressRecoveryInProgress(repairStatus, lastError string) bool {
+	switch strings.TrimSpace(repairStatus) {
+	case "waiting_standby", "repairing", "retry_wait", "recovery_pending":
+		return true
+	default:
+		return strings.TrimSpace(lastError) == "recovery_pending"
 	}
 }
 

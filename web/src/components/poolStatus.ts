@@ -18,6 +18,7 @@ export function poolStatusDetail(row: ProxyGroupPayload): string {
   if (row.protocolState === 'subscription_pending') return '订阅验证中'
   if (row.protocolState === 'rolling_back') return '正在恢复旧协议'
   if (row.protocolState === 'repair_required') return '协议需要修复'
+  if (row.lastErrorCode === 'recovery_pending') return '正在等待专属备用，后台会继续替换'
   if (row.status === 'repair_required') return '需要修复'
   if (row.lastErrorCode === 'manual_replacement_required') return '自动修复已失败，等待人工更换'
   if (row.status === 'degraded') return '链路检测失败'

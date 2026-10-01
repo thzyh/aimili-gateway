@@ -435,6 +435,30 @@ func TestCheckKeepsDisconnectedSlotVisibleForManualReplacement(t *testing.T) {
 	}
 }
 
+func TestCheckShowsSlotRecoveryAsRotatingWhileWaitingForStandby(t *testing.T) {
+	fixture := newFixture()
+	orchestrator := fixture.orchestrator(t)
+	created, err := orchestrator.Enable(context.Background(), EnableRequest{CountryCode: "JP", ProxyType: domain.ProxyTypeDatacenter})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.aimili.createdSlots = map[int]aimili.Slot{}
+	fixture.aimili.checkResults = []aimili.SlotCheck{{
+		Number: created.AimiliSlot, NodeID: created.CandidateID, Country: "JP", CountryName: "日本",
+		ProxyType: "datacenter", Port: 17928, Status: "disconnected", EgressOK: false,
+		RepairStatus: "waiting_standby", LastErrorCode: "recovery_pending",
+	}}
+
+	checked, err := orchestrator.Check(context.Background(), created.ID)
+	if codeOf(err) != "recovery_pending" || checked.Status != domain.ProxyGroupRotating {
+		t.Fatalf("standby recovery was reported as a fault: checked=%#v err=%v", checked, err)
+	}
+	persisted := fixture.store.groups[created.ID]
+	if persisted.Status != domain.ProxyGroupRotating || persisted.LastErrorCode != "recovery_pending" {
+		t.Fatalf("standby recovery state was not persisted: %#v", persisted)
+	}
+}
+
 func TestCheckReportsSuccessfulAutomaticRepairToTheCaller(t *testing.T) {
 	fixture := newFixture()
 	orchestrator := fixture.orchestrator(t)

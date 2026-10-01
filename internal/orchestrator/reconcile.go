@@ -430,6 +430,8 @@ func (o *Orchestrator) Pool(ctx context.Context) ([]domain.ProxyGroup, error) {
 		status, lastError := domain.ProxyGroupDegraded, "egress_unavailable"
 		if mainErr == nil && main.RepairStatus == "manual_required" {
 			lastError = "manual_replacement_required"
+		} else if mainErr == nil && egressRecoveryInProgress(main.RepairStatus, main.LastErrorCode) {
+			status, lastError = domain.ProxyGroupRotating, "recovery_pending"
 		} else if mainErr == nil && main.Active && main.EgressOK {
 			status, lastError = domain.ProxyGroupReady, ""
 		}
@@ -439,7 +441,14 @@ func (o *Orchestrator) Pool(ctx context.Context) ([]domain.ProxyGroup, error) {
 			mainGroup.VLESSLatencyMS = storedMain.VLESSLatencyMS
 			mainGroup.SOCKSLatencyMS = storedMain.SOCKSLatencyMS
 			mainGroup.LastCheckedAt = storedMain.LastCheckedAt
-			if storedMain.LastErrorCode != "" && lastError != "manual_replacement_required" {
+			// A persisted error belongs to the candidate that was last fully
+			// validated. Ignore it after a live standby promotion changed the
+			// candidate; otherwise a healthy runtime is shown as a permanent
+			// fault until a user manually clicks Check. Keep it when the live
+			// candidate is unchanged because that error may still describe a
+			// protocol path that MainStatus does not probe.
+			if storedMain.LastErrorCode != "" && lastError == "" &&
+				strings.TrimSpace(storedMain.CandidateID) == strings.TrimSpace(main.CandidateID) {
 				mainGroup.LastErrorCode = storedMain.LastErrorCode
 				mainGroup.Status = domain.ProxyGroupDegraded
 			}

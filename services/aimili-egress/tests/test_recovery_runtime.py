@@ -79,6 +79,23 @@ class RecoveryRuntimeTests(unittest.TestCase):
             connect.assert_not_called()
             self.assertEqual(m.egress_repair_store.get('main')['status'], 'waiting_standby')
 
+    def test_background_main_repair_is_allowed_after_assignment_repair_required(self):
+        with tempfile.TemporaryDirectory() as root, mock.patch.object(
+            m, 'egress_repair_store', RepairStore(Path(root) / 'repair.json')
+        ), mock.patch.object(
+            m.main_assignment_coordinator, 'background_mutation_allowed', return_value=True
+        ), mock.patch.object(
+            m, 'main_mutation_allowed', return_value=False
+        ), mock.patch.object(
+            m, 'promote_dedicated_standby_to_main', return_value=True
+        ), mock.patch.object(
+            m, 'mark_main_bad_node'
+        ), mock.patch.object(m, 'set_state'):
+            result = m._repair_main_once_unlocked({'candidate_id': 'broken', 'country': 'JP'})
+
+        self.assertTrue(result['ok'])
+        self.assertTrue(result['standby_promoted'])
+
     def test_legacy_manual_failure_promotes_ready_standby(self):
         with tempfile.TemporaryDirectory() as root, mock.patch.object(m, 'egress_repair_store', RepairStore(Path(root) / 'repair.json')), mock.patch.object(
             m, '_standby_enabled', return_value=True

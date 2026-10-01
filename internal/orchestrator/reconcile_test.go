@@ -7,6 +7,7 @@ import (
 
 	"github.com/thzyh/aimili-gateway/internal/adapters/aimili"
 	"github.com/thzyh/aimili-gateway/internal/domain"
+	"github.com/thzyh/aimili-gateway/internal/store"
 )
 
 func TestReserveAimiliSlotDoesNotExpandBoundedDeployment(t *testing.T) {
@@ -485,6 +486,34 @@ func TestReconcileRefreshesReadyGroupsAfterRuntimeCandidateSwap(t *testing.T) {
 	}
 	if !contains(fixture.calls, "slot.check") {
 		t.Fatalf("runtime-swapped groups were not checked: %#v", fixture.calls)
+	}
+}
+
+func TestPoolShowsMainRecoveryAsRotatingWhileWaitingForStandby(t *testing.T) {
+	fixture := newFixture()
+	fixture.store.mainEgress = store.MainEgress{
+		ResourceName: "agw-main", CountryCode: "JP", CountryName: "日本",
+		ProxyType: domain.ProxyTypeResidential, CandidateID: "jp-old", ExitIP: "203.0.113.20",
+		PublicInboundID: 1, MixedInboundID: 2, PublicPort: 8443, MixedPort: 31000,
+		Enabled: true, LastCheckedAt: fixture.now(), UpdatedAt: fixture.now(),
+	}
+	fixture.aimili.mainStatus = aimili.MainStatus{
+		CandidateID: "jp-old", Country: "JP", CountryName: "日本", ProxyType: "residential",
+		Port: 7928, Active: false, EgressOK: false, RepairStatus: "waiting_standby",
+		LastErrorCode: "recovery_pending",
+	}
+	fixture.store.protocolModes["agw-main"] = domain.EgressProtocolMode{
+		EgressID: "agw-main", ActiveMode: domain.ProtocolVLESSTCPRealityVision,
+		DesiredMode: domain.ProtocolVLESSTCPRealityVision, State: domain.ProtocolReady,
+		Version: 1, UpdatedAt: fixture.now(),
+	}
+
+	pool, err := fixture.orchestratorWithMax(t, 3).Pool(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pool) == 0 || pool[0].ID != "agw-main" || pool[0].Status != domain.ProxyGroupRotating || pool[0].LastErrorCode != "recovery_pending" {
+		t.Fatalf("main standby recovery was reported as a fault: %#v", pool)
 	}
 }
 

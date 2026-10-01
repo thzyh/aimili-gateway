@@ -1242,6 +1242,31 @@ class PoolMaintenanceTests(unittest.TestCase):
         self.assertIn("保留现有有效节点", message)
         auto_switch.assert_called_once_with()
 
+    def test_unexpected_main_exit_uses_dedicated_standby_before_generic_switch(self):
+        existing = [{"id": "jp-old", "country_short": "JP", "probe_status": "available"}]
+        original_active_id = manager.active_openvpn_node_id
+        manager.active_openvpn_node_id = "jp-old"
+        try:
+            with (
+                mock.patch.object(manager, "active_openvpn_running", return_value=False),
+                mock.patch.object(manager, "read_nodes", return_value=existing),
+                mock.patch.object(manager, "load_ui_config", return_value={"connection_enabled": True, "routing_mode": "auto"}),
+                mock.patch.object(manager, "dedicated_standby_config_snapshot", return_value=[{"index": 0, "target": "main"}]),
+                mock.patch.object(manager, "repair_main_once", return_value={"ok": False, "error_code": "recovery_pending"}) as repair,
+                mock.patch.object(manager, "auto_switch_node") as generic,
+                mock.patch.object(manager, "fetch_candidates", side_effect=RuntimeError("upstream unavailable")),
+                mock.patch.object(manager.vpn_utils, "check_and_fix_dns"),
+                mock.patch.object(manager.vpn_utils, "diagnose_api_failure", return_value=(1000, "upstream unavailable")),
+                mock.patch.object(manager, "set_state"),
+                mock.patch.object(manager, "log_to_json"),
+            ):
+                manager.maintain_valid_nodes()
+
+            repair.assert_called_once_with({"candidate_id": "jp-old", "country": "JP"})
+            generic.assert_not_called()
+        finally:
+            manager.active_openvpn_node_id = original_active_id
+
 
 class FetchCandidatesTests(unittest.TestCase):
     @staticmethod

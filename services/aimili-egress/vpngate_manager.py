@@ -4007,7 +4007,11 @@ def replenish_repair_country(country: str) -> dict[str, Any]:
 
 def _repair_main_once_unlocked(failed_snapshot: dict[str, Any]) -> dict[str, Any]:
     """只提升热备；没有热备时等待后台恢复。"""
-    if not main_mutation_allowed():
+    # repair_required is a terminal state for manual assignment, but it is
+    # explicitly allowed to be repaired by the background standby worker.
+    # Re-checking the stricter foreground predicate here used to reject the
+    # repair immediately after the runtime lease had already authorized it.
+    if not main_assignment_coordinator.background_mutation_allowed():
         return {"ok": False, "error_code": "operation_busy"}
     failed_id = str(failed_snapshot.get("candidate_id") or "")
     country = str(failed_snapshot.get("country") or "").upper()
@@ -4412,10 +4416,23 @@ def maintain_valid_nodes(
                             is_connecting = True
                 else:
                     has_active_id = False
+                    failed_snapshot: dict[str, Any] = {}
                     with lock:
                         if active_openvpn_node_id:
                             has_active_id = True
-                            stop_active_openvpn()
+                            active_node = next(
+                                (node for node in read_nodes()
+                                 if str(node.get("id") or "") == str(active_openvpn_node_id)),
+                                {},
+                            )
+                            failed_snapshot = {
+                                "candidate_id": str(active_openvpn_node_id),
+                                "country": str(
+                                    active_node.get("country_short")
+                                    or active_node.get("country")
+                                    or ""
+                                ).upper(),
+                            }
                     has_cached_candidate = any(
                         node.get("probe_status") == "available"
                         for node in read_nodes()
@@ -4429,7 +4446,24 @@ def maintain_valid_nodes(
                         )
                         print(f"[维护线程] 检测到{reason}，准备先恢复主连接", flush=True)
                         is_connecting = False
-                        auto_switch_node()
+                        main_standby_configured = any(
+                            str(config.get("target") or "") == "main"
+                            for config in dedicated_standby_config_snapshot()
+                        )
+                        if has_active_id and main_standby_configured:
+                            # An exited tunnel must enter the same durable
+                            # repair queue as the health checker. Calling the
+                            # generic candidate switch here used to bypass a
+                            # ready dedicated standby and could leave the UI
+                            # in a fault state forever.
+                            recovery = repair_main_once(failed_snapshot)
+                            print(
+                                f"[维护线程] 主连接专属备用恢复结果: "
+                                f"{recovery.get('error_code') or ('ok' if recovery.get('ok') else 'unknown')}",
+                                flush=True,
+                            )
+                        elif has_active_id or has_cached_candidate:
+                            auto_switch_node()
                         is_connecting = True
 
         existing_nodes = read_nodes()
@@ -6326,8 +6360,24 @@ def promote_dedicated_standby_to_main() -> bool:
                 node["active"] = str(node.get("id") or "") == node_id
             write_json(NODES_FILE, sort_all_nodes(nodes))
         reset_main_proxy_connections()
-        validation = check_proxy_health()
+        # The promoted tunnel has just changed policy routing and the local
+        # proxy may need one or two event-loop ticks before it can serve a
+        # request. A single immediate probe used to tear down a valid standby
+        # on a transient race and leave the main connection waiting forever.
+        validation: dict[str, Any] = {"ok": False}
+        for validation_attempt in range(3):
+            validation = check_proxy_health()
+            if validation.get("ok"):
+                break
+            if validation_attempt < 2:
+                time.sleep(1)
         if not validation.get("ok"):
+            log_to_json(
+                "WARNING",
+                "Standby",
+                f"主连接专属备用提升后连续验证失败，准备回收本次提升: "
+                f"{validation.get('error') or 'unknown'}",
+            )
             stop_active_openvpn()
             return False
         set_state(
@@ -10807,7 +10857,7 @@ def check_proxy_health() -> dict[str, Any]:
 
 def main_health_check_deferred() -> bool:
     return (main_connection_in_progress.is_set()
-            or not main_mutation_allowed()
+            or not main_assignment_coordinator.background_mutation_allowed()
             or (is_connecting and not maintenance_scan_active.is_set()))
 
 
@@ -10841,13 +10891,6 @@ def background_proxy_checker() -> None:
                 if active_openvpn_node_id:
                     print(f"[警告] {LOCAL_PROXY_PORT} 端口本地代理当前不可用！原因: {error_msg}", flush=True)
                     log_to_json("WARNING", "Proxy", f"代理不可用: {error_msg}")
-                set_state(
-                    proxy_ok=False,
-                    proxy_ip="-",
-                    proxy_latency_ms=0,
-                    proxy_error=error_msg
-                )
-
                 # If we intended to have an active VPN node but proxy failed, trigger auto-switch
                 if active_openvpn_node_id:
                     ui_cfg = load_ui_config()
@@ -10855,9 +10898,29 @@ def background_proxy_checker() -> None:
                     # 连续失败阈值：单次出口抖动不立即切换/重连，避免无谓漂移与下游频繁断连。
                     main_egress_fail_count += 1
                     if main_egress_fail_count < _recovery_settings()["failureThreshold"]:
+                        previous = get_state()
+                        previous_ok = bool(previous.get("proxy_ok"))
+                        set_state(
+                            # 保留上一次已确认的运行身份，避免一次探测抖动
+                            # 让 Gateway 立即把出口显示成最终故障。
+                            proxy_ok=previous_ok,
+                            proxy_ip=str(previous.get("proxy_ip") or "-") if previous_ok else "-",
+                            proxy_latency_ms=int(previous.get("proxy_latency_ms") or 0) if previous_ok else 0,
+                            proxy_error=error_msg,
+                            last_check_message=(
+                                f"主连接瞬时探测失败，正在进行第 {main_egress_fail_count} "
+                                f"/{_recovery_settings()['failureThreshold']} 次确认"
+                            ),
+                        )
                         recovery_event("main", "failure_observed", attempt=main_egress_fail_count)
                     else:
                         main_egress_fail_count = 0
+                        set_state(
+                            proxy_ok=False,
+                            proxy_ip="-",
+                            proxy_latency_ms=0,
+                            proxy_error=error_msg,
+                        )
                         with lock:
                             nodes = read_nodes()
                             active_node = next((n for n in nodes if n.get("id") == active_openvpn_node_id), None)
@@ -10880,6 +10943,13 @@ def background_proxy_checker() -> None:
                                 stop_active_openvpn()
                                 egress_repair_store.require_manual("main", "fixed_ip_failed")
                             print(f"[代理守护线程] 固定 IP 节点不可用，已停止自动重试，等待人工更换: {failed_id}", flush=True)
+                else:
+                    set_state(
+                        proxy_ok=False,
+                        proxy_ip="-",
+                        proxy_latency_ms=0,
+                        proxy_error=error_msg,
+                    )
         except Exception as e:
             print(f"[错误] 代理后台检测发生异常: {e}", flush=True)
             log_to_json("ERROR", "Proxy", f"检测守护线程发生异常: {e}")
