@@ -84,6 +84,6 @@ python -m unittest test_runtime_proxy_bridge -q
 
 16:02 正确提取控制 API `data` 后再次回读：主连接 `active=true / egress_ok=true / repair_status=healthy`；四个普通出口全部 `up / egress_ok=true`，错误码为空；五个专属备用全部 `ready / egress_ok=true`。首次读取脚本未展开 `data` 得到空提取结果，该空结果不作为状态证据。
 
-16:09 增量复测：curl HTTP/1.1 五条 Google 请求返回 204、gstatic 4/5 返回 204（出口 4 一次 TLS 后等待超时）。相同 `RealPingProbe` 第二组三轮为 14/15 成功：主连接第一轮两次 ConnectTimeout 后 -1，第二轮 300 ms，第三轮重试后 1062 ms；其余四出口三轮全部成功。对应时刻服务端日志无限流、DNS 失败、出口切换或 SOCKS 连接失败，不能将这一次失败归因为已修的 DNS/容量问题，整体端到端稳定性仍存在未定位限制。此前 15/15 是当时真实结果，不代表后续持续全部通过。
+16:09 增量复测：curl HTTP/1.1 五条 Google 请求返回 204、gstatic 4/5 返回 204（出口 4 一次 TLS 后等待超时）。相同 `RealPingProbe` 第二组三轮为 14/15 成功：主连接第一轮两次 ConnectTimeout 后 -1，第二轮 300 ms，第三轮重试后 1062 ms；其余四出口三轮全部成功。随后 16:20–16:21 只测主连接五轮，第三轮为 -1，前后轮恢复。对应时刻 jjs `aimilivpn` 日志出现 `TLS: soft reset sec=3600/3600` 以及随后完整证书重协商；承接代理没有 DNS 失败、限流、SOCKS 或 Gateway 错误。第一失败边界是活动主隧道 TLS 重协商期间的短暂数据面阻塞，而不是本次 DNS/容量修复。v2rayN 的检测器已经用两次请求，但在整个重协商窗口内仍可能两次失败；要让桌面界面不出现 -1，应单独给客户端检测增加遇到这类瞬时重协商时的有界退避重试，不能靠修改 Gateway 返回成功或关闭故障检测。Gateway 本轮不调整 OpenVPN 重协商参数，避免破坏现有会话。此前 15/15 是当时真实结果，不代表后续持续全部通过。
 
 本次无 UI 修改，未做内置浏览器 UI 验收。源码提交和远程同步以 Git 实际结果为准；本次未创建 Release、未发布签名包，现有正式发布入口保持不变。xjp、bj、ny 未部署本次代码。公开网络、上游 VPN 和网站仍可能产生新的故障，本次结果不构成永不超时的保证。
