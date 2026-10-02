@@ -9,6 +9,8 @@ import socket
 import threading
 import urllib.parse
 import time
+import ipaddress
+from pathlib import Path
 from typing import Any
 
 def parse_positive_int(value: str | None, default: int) -> int:
@@ -17,45 +19,159 @@ def parse_positive_int(value: str | None, default: int) -> int:
     except (TypeError, ValueError):
         return default
 
-MAX_PROXY_CONNECTIONS = parse_positive_int(os.environ.get("LOCAL_PROXY_MAX_CONNECTIONS"), 128)
+def parse_nonnegative_int(value: str | None, default: int) -> int:
+    try:
+        return max(0, int(value or default))
+    except (TypeError, ValueError):
+        return default
+
+def parse_positive_float(value: str | None, default: float) -> float:
+    try:
+        parsed = float(value or default)
+        return parsed if parsed > 0 else default
+    except (TypeError, ValueError):
+        return default
+
+MAX_PROXY_CONNECTIONS = parse_positive_int(os.environ.get("LOCAL_PROXY_MAX_CONNECTIONS"), 256)
 MAX_PROXY_CONNECTIONS_PER_LISTENER = parse_positive_int(
-    os.environ.get("LOCAL_PROXY_MAX_CONNECTIONS_PER_LISTENER"), 64
+    os.environ.get("LOCAL_PROXY_MAX_CONNECTIONS_PER_LISTENER"), 192
 )
+PROXY_ACQUIRE_WAIT_MS = parse_nonnegative_int(
+    os.environ.get("LOCAL_PROXY_ACQUIRE_WAIT_MS"), 250
+)
+
+
+def proxy_resource_headroom() -> int:
+    """Estimate safe additional threads, buffers and socket pairs; never use swap as RAM."""
+    # Each relay can retain two 256 KiB buffers. Budget 1 MiB including the
+    # Python thread/socket overhead, and leave 64 MiB for the rest of the VPS.
+    budgets = []
+    try:
+        info = dict(line.split(":", 1) for line in Path("/proc/meminfo").read_text().splitlines())
+        available = int(info["MemAvailable"].split()[0]) * 1024
+        budgets.append((available - 64 * 1024**2) // 1024**2)
+    except (OSError, ValueError, KeyError):
+        budgets.append(32)
+    try:
+        import resource
+        soft, _ = resource.getrlimit(resource.RLIMIT_NOFILE)
+        if soft != resource.RLIM_INFINITY:
+            budgets.append((soft - len(list(Path("/proc/self/fd").iterdir())) - 32) // 2)
+        group = next(line[3:] for line in Path("/proc/self/cgroup").read_text().splitlines() if line.startswith("0::"))
+        base = Path("/sys/fs/cgroup")
+        current = base / group.lstrip("/")
+        while current == base or base in current.parents:
+            for kind, reserve, cost in (("pids", 32, 1), ("memory", 32 * 1024**2, 1024**2)):
+                try:
+                    limit = (current / f"{kind}.max").read_text().strip()
+                    if limit != "max":
+                        used = int((current / f"{kind}.current").read_text().strip())
+                        budgets.append((int(limit) - used - reserve) // cost)
+                except (OSError, ValueError):
+                    pass
+            if current == base:
+                break
+            current = current.parent
+    except (ImportError, OSError, ValueError, StopIteration):
+        pass
+    return max(0, min(budgets))
 
 
 class ProxyCapacity:
-    """Apply a process-wide budget and an independent budget per listener."""
+    """Bound new connections by live resources and reserve space for other listeners."""
 
-    def __init__(self, global_limit: int, per_listener_limit: int) -> None:
+    def __init__(self, global_limit: int, per_listener_limit: int, *, resource_sampler: Any = None,
+                 wait_ms: int = PROXY_ACQUIRE_WAIT_MS, reserve_per_listener: int = 2) -> None:
+        self._configured_limit = max(1, global_limit)
         self.global_limit = max(1, global_limit)
         self.per_listener_limit = max(1, min(per_listener_limit, self.global_limit))
-        self._global = threading.BoundedSemaphore(self.global_limit)
-        self._listeners: dict[str, threading.BoundedSemaphore] = {}
-        self._lock = threading.Lock()
+        self._active = 0
+        self._listeners: dict[str, int] = {}
+        self._registered: set[str] = set()
+        self._condition = threading.Condition()
+        self._rejection = threading.local()
+        self._sampler = resource_sampler
+        self._sample_after = 0.0
+        self._wait_ms = max(0, wait_ms)
+        self._reserve = max(0, reserve_per_listener)
 
-    def _listener(self, listener_key: str) -> threading.BoundedSemaphore:
-        with self._lock:
-            return self._listeners.setdefault(
-                listener_key, threading.BoundedSemaphore(self.per_listener_limit)
-            )
+    def register_listener(self, listener_key: str) -> None:
+        with self._condition:
+            self._registered.add(listener_key)
+
+    def unregister_listener(self, listener_key: str) -> None:
+        with self._condition:
+            self._registered.discard(listener_key)
+            self._condition.notify_all()
+
+    def _refresh(self) -> None:
+        if self._sampler and time.monotonic() >= self._sample_after:
+            additional = max(0, int(self._sampler()))
+            self.global_limit = min(self._configured_limit, self._active + additional)
+            self._sample_after = time.monotonic() + 5.0
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._condition:
+            self._refresh()
+            return {"active": self._active, "global_limit": self.global_limit,
+                    "per_listener_limit": self.per_listener_limit, "listeners": dict(self._listeners)}
 
     def try_acquire(self, listener_key: str) -> bool:
-        listener = self._listener(listener_key)
-        if not listener.acquire(blocking=False):
-            return False
-        if self._global.acquire(blocking=False):
-            return True
-        listener.release()
-        return False
+        self._rejection.reason = ""
+        deadline = time.monotonic() + self._wait_ms / 1000
+        with self._condition:
+            while True:
+                self._refresh()
+                own = self._listeners.get(listener_key, 0)
+                reserved = sum(max(0, self._reserve - self._listeners.get(key, 0))
+                               for key in self._registered if key != listener_key)
+                # On a very small VPS permit at least one connection per
+                # listener to use available capacity instead of reserving it all.
+                reserved = min(reserved, max(0, self.global_limit - 1))
+                if own < self.per_listener_limit and self._active < self.global_limit - reserved:
+                    self._active += 1
+                    self._listeners[listener_key] = own + 1
+                    return True
+                self._rejection.reason = ("listener_limit" if own >= self.per_listener_limit else
+                                          "resource_pressure" if self.global_limit < self._configured_limit else
+                                          "global_limit")
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._condition.wait(remaining)
+
+    def rejection_reason(self) -> str:
+        return str(getattr(self._rejection, "reason", "unknown") or "unknown")
 
     def release(self, listener_key: str) -> None:
-        self._global.release()
-        self._listener(listener_key).release()
+        with self._condition:
+            if self._listeners.get(listener_key, 0) <= 0:
+                raise ValueError("released unowned proxy capacity")
+            self._listeners[listener_key] -= 1
+            if not self._listeners[listener_key]:
+                self._listeners.pop(listener_key)
+            self._active -= 1
+            self._condition.notify_all()
 
 
 proxy_capacity = ProxyCapacity(
-    MAX_PROXY_CONNECTIONS, MAX_PROXY_CONNECTIONS_PER_LISTENER
+    MAX_PROXY_CONNECTIONS, MAX_PROXY_CONNECTIONS_PER_LISTENER, resource_sampler=proxy_resource_headroom
 )
+
+_diagnostic_lock = threading.Lock()
+_diagnostic_next: dict[str, float] = {}
+
+
+def diagnostic(key: str, message: str) -> None:
+    """Rate limit recurring errors per tunnel/listener, not per visited URL."""
+    with _diagnostic_lock:
+        now = time.monotonic()
+        if now < _diagnostic_next.get(key, 0):
+            return
+        if len(_diagnostic_next) > 512:
+            _diagnostic_next.clear()
+        _diagnostic_next[key] = now + 10.0
+    print(message, flush=True)
 
 class ConnRegistry:
     """跟踪某个代理监听实例当前活跃的下游客户端连接，支持一次性强制断开。
@@ -107,9 +223,18 @@ def resolve_device(device: Any) -> str:
     normalized = str(value or "").strip()
     return normalized or "tun0"
 
-def recv_exact(sock: socket.socket, size: int) -> bytes:
+def set_remaining_timeout(sock: socket.socket, deadline: float) -> None:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise socket.timeout("DNS deadline exceeded")
+    sock.settimeout(remaining)
+
+
+def recv_exact(sock: socket.socket, size: int, deadline: float | None = None) -> bytes:
     data = b""
     while len(data) < size:
+        if deadline is not None:
+            set_remaining_timeout(sock, deadline)
         chunk = sock.recv(size - len(data))
         if not chunk:
             raise ConnectionError("Unexpected disconnect.")
@@ -166,9 +291,16 @@ def check_credentials(username: str | None, password: str | None) -> bool:
         return True
     return secrets.compare_digest(username or "", expected_user) and secrets.compare_digest(password or "", expected_pass)
 
+DNS_QUERY_TIMEOUT = parse_positive_float(os.environ.get("LOCAL_PROXY_DNS_TIMEOUT"), 1.0)
+DNS_TOTAL_TIMEOUT = parse_positive_float(os.environ.get("LOCAL_PROXY_DNS_TOTAL_TIMEOUT"), 2.5)
+
 def dns_query_over_tun0(host: str, qtype: int, dns_server: str, timeout: float, device: str = "tun0") -> str | None:
     import random
     sock = None
+    started = time.monotonic()
+    deadline = started + max(0.001, timeout)
+    udp_deadline = started + max(0.001, timeout) / 2
+    used_tcp = False
     try:
         tx_id = random.getrandbits(16).to_bytes(2, "big")
         flags = b"\x01\x00"
@@ -189,7 +321,6 @@ def dns_query_over_tun0(host: str, qtype: int, dns_server: str, timeout: float, 
         packet = tx_id + flags + questions + rrs + qname + qtype_qclass
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.settimeout(timeout)
         try:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, device.encode("utf-8"))
         except OSError as e:
@@ -199,22 +330,36 @@ def dns_query_over_tun0(host: str, qtype: int, dns_server: str, timeout: float, 
                 print(f"[DNS 绑定失败] [错误代码 3004] DNS 解析绑定 {device} 失败，网卡设备不存在，请检查 VPN 连接！", flush=True)
             return None
         try:
+            set_remaining_timeout(sock, udp_deadline)
             sock.sendto(packet, (dns_server, 53))
+            set_remaining_timeout(sock, udp_deadline)
             resp, _ = sock.recvfrom(4096)
         except OSError:
             resp = b""
         # UDP DNS can be dropped or truncated inside a working VPN. Retry over
         # TCP on the same tunnel; never send this fallback through the VPS uplink.
         if len(resp) < 12 or resp[:2] != tx_id or resp[2] & 0x02:
+            used_tcp = True
             sock.close()
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(timeout)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, device.encode("utf-8"))
+            set_remaining_timeout(sock, deadline)
             sock.connect((dns_server, 53))
+            set_remaining_timeout(sock, deadline)
             sock.sendall(len(packet).to_bytes(2, "big") + packet)
-            response_size = int.from_bytes(recv_exact(sock, 2), "big")
-            resp = recv_exact(sock, response_size)
-    except Exception:
+            response_size = int.from_bytes(recv_exact(sock, 2, deadline), "big")
+            resp = recv_exact(sock, response_size, deadline)
+        if used_tcp:
+            elapsed_ms = int((time.monotonic() - started) * 1000)
+            diagnostic(f"dns-tcp:{device}:{dns_server}",
+                f"[DNS回退] device={device} server={dns_server} qtype={qtype} "
+                f"UDP无有效响应，已尝试同隧道TCP，耗时={elapsed_ms}ms",
+            )
+    except Exception as exc:
+        diagnostic(f"dns-failed:{device}:{dns_server}",
+            f"[DNS失败] device={device} server={dns_server} qtype={qtype} "
+            f"阶段异常={type(exc).__name__} 耗时={int((time.monotonic()-started)*1000)}ms",
+        )
         return None
     finally:
         if sock is not None:
@@ -278,13 +423,50 @@ DNS_CACHE_TTL = parse_positive_int(os.environ.get("LOCAL_PROXY_DNS_TTL"), 300)
 DNS_CACHE_MAX = parse_positive_int(os.environ.get("LOCAL_PROXY_DNS_CACHE_MAX"), 4096)
 _dns_cache: dict[str, tuple[str, float]] = {}
 _dns_cache_lock = threading.Lock()
+_tun_dns_servers: dict[str, tuple[str, ...]] = {}
+_dns_pending: dict[str, threading.Event] = {}
+_dns_generation: dict[str, int] = {}
 
-def get_tun_dns_servers() -> list[str]:
+def register_tun_dns_servers(device: str, servers: list[str]) -> None:
+    """登记某条 OpenVPN 隧道 PUSH_REPLY 提供的 DNS，供该隧道优先使用。"""
+    normalized: list[str] = []
+    for raw in servers:
+        try:
+            address = str(ipaddress.IPv4Address(str(raw).strip()))
+        except ValueError:
+            continue
+        if address not in normalized:
+            normalized.append(address)
+    if not normalized or not device:
+        return
+    with _dns_cache_lock:
+        if _tun_dns_servers.get(device) == tuple(normalized):
+            return
+        _tun_dns_servers[device] = tuple(normalized)
+        _purge_dns_cache_locked(device)
+    print(f"[DNS登记] device={device} servers={','.join(normalized)}", flush=True)
+
+def clear_tun_dns_servers(device: str) -> None:
+    with _dns_cache_lock:
+        _tun_dns_servers.pop(device, None)
+        _purge_dns_cache_locked(device)
+
+def get_tun_dns_servers(device: str | None = None) -> list[str]:
     raw = os.environ.get("OPENVPN_TUN_DNS", "8.8.8.8,1.1.1.1")
-    servers = [s.strip() for s in raw.split(",") if s.strip()]
+    configured = [s.strip() for s in raw.split(",") if s.strip()]
+    with _dns_cache_lock:
+        registered = list(_tun_dns_servers.get(device or "", ()))
+    servers: list[str] = []
+    for server in registered + configured:
+        try:
+            server = str(ipaddress.IPv4Address(server))
+        except ValueError:
+            continue
+        if server not in servers:
+            servers.append(server)
     return servers or ["8.8.8.8"]
 
-def resolve_dns_over_tun0(host: str, dns_server: str | None = None, timeout: float = 3.0, device: str = "tun0", ipv4_only: bool = False) -> str | None:
+def resolve_dns_over_tun0(host: str, dns_server: str | None = None, timeout: float = DNS_TOTAL_TIMEOUT, device: str = "tun0", ipv4_only: bool = False) -> str | None:
     try:
         socket.inet_aton(host)
         return host
@@ -297,30 +479,66 @@ def resolve_dns_over_tun0(host: str, dns_server: str | None = None, timeout: flo
         pass
 
     now = time.time()
+    deadline = time.monotonic() + max(0.001, timeout)
     cache_key = f"{device}|{host}"
+    pending_key = f"{cache_key}|{dns_server or ''}|{'A' if ipv4_only else 'any'}"
     with _dns_cache_lock:
         cached = _dns_cache.get(cache_key)
         if cached and now - cached[1] < DNS_CACHE_TTL and not (ipv4_only and ":" in cached[0]):
             return cached[0]
+        pending = _dns_pending.get(pending_key)
+        owner = pending is None
+        if owner:
+            pending = _dns_pending[pending_key] = threading.Event()
+        generation = _dns_generation.get(device, 0)
+
+    # Concurrent requests for the same host on the same tunnel share one DNS
+    # exchange. Other tunnels remain independent, including failures.
+    if not owner:
+        pending.wait(max(0.0, deadline - time.monotonic()))
+        with _dns_cache_lock:
+            cached = _dns_cache.get(cache_key)
+            if (cached and time.time() - cached[1] < DNS_CACHE_TTL and
+                    generation == _dns_generation.get(device, 0) and
+                    not (ipv4_only and ":" in cached[0])):
+                return cached[0]
+        return None
 
     # Try every IPv4 resolver before considering IPv6. One failed resolver must
     # not hide a reachable IPv4 address behind an unroutable AAAA response.
-    servers = [dns_server] if dns_server else get_tun_dns_servers()
     resolved = None
-    for qtype in ([1] if ipv4_only else [1, 28]):
-        for server in servers:
-            resolved = dns_query_over_tun0(host, qtype, server, timeout, device)
+    try:
+        servers = [dns_server] if dns_server else get_tun_dns_servers(device)
+        for qtype in ([1] if ipv4_only else [1, 28]):
+            for server in servers:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                resolved = dns_query_over_tun0(host, qtype, server, min(DNS_QUERY_TIMEOUT, remaining), device)
+                if resolved:
+                    break
             if resolved:
                 break
-        if resolved:
-            break
-
-    if resolved:
+    finally:
         with _dns_cache_lock:
-            if len(_dns_cache) >= DNS_CACHE_MAX:
-                _dns_cache.clear()
-            _dns_cache[cache_key] = (resolved, now)
+            if generation != _dns_generation.get(device, 0):
+                resolved = None
+            if resolved:
+                if len(_dns_cache) >= DNS_CACHE_MAX:
+                    _dns_cache.clear()
+                _dns_cache[cache_key] = (resolved, time.time())
+            _dns_pending.pop(pending_key, None)
+            pending.set()
     return resolved
+
+
+def _purge_dns_cache_locked(device: str) -> int:
+    prefix = f"{device}|"
+    keys = [k for k in _dns_cache if k.startswith(prefix)]
+    for key in keys:
+        _dns_cache.pop(key, None)
+    _dns_generation[device] = _dns_generation.get(device, 0) + 1
+    return len(keys)
 
 def purge_dns_cache(device: str | None = None) -> int:
     """清理隧道内 DNS 解析缓存。device 给定时只清该设备(如 tun0)的条目，否则清空全部。
@@ -331,12 +549,10 @@ def purge_dns_cache(device: str | None = None) -> int:
         if device is None:
             n = len(_dns_cache)
             _dns_cache.clear()
+            for dev in set(_dns_generation) | set(_tun_dns_servers):
+                _dns_generation[dev] = _dns_generation.get(dev, 0) + 1
             return n
-        prefix = f"{device}|"
-        keys = [k for k in _dns_cache if k.startswith(prefix)]
-        for k in keys:
-            _dns_cache.pop(k, None)
-        return len(keys)
+        return _purge_dns_cache_locked(device)
 
 def create_connection(address: tuple[str, int], timeout: float = 20, device: str = "tun0") -> socket.socket:
     try:
@@ -364,11 +580,13 @@ def create_connection(address: tuple[str, int], timeout: float = 20, device: str
 def _create_connection(address: tuple[str, int], timeout: float, device: str, ipv4_only: bool = False) -> socket.socket:
     host, port = address
     resolved_ip = resolve_dns_over_tun0(host, device=device, ipv4_only=ipv4_only)
-    if resolved_ip:
-        host = resolved_ip
+    if not resolved_ip:
+        raise socket.gaierror(socket.EAI_AGAIN, f"[ERR_PROXY_DNS_FAILED] 隧道 {device} 内域名解析失败")
+    host = resolved_ip
 
     err = None
-    for res in socket.getaddrinfo(host, port, socket.AF_INET if ipv4_only else 0, socket.SOCK_STREAM):
+    for res in socket.getaddrinfo(host, port, socket.AF_INET if ipv4_only else 0,
+                                  socket.SOCK_STREAM, 0, socket.AI_NUMERICHOST):
         af, socktype, proto, canonname, sa = res
         sock = None
         try:
@@ -633,9 +851,16 @@ def start_proxy_client_thread(
             if registry is not None:
                 registry.add(client)
             proxy_client(client, address, resolve_device(device))
+        except Exception as exc:
+            diagnostic(f"proxy-client:{listener_key}",
+                       f"[代理处理失败] listener={listener_key} stage={type(exc).__name__}")
         finally:
             if registry is not None:
                 registry.discard(client)
+            try:
+                client.close()
+            except OSError:
+                pass
             capacity.release(listener_key)
 
     try:
@@ -646,6 +871,7 @@ def start_proxy_client_thread(
         except OSError:
             pass
         capacity.release(listener_key)
+        diagnostic(f"proxy-thread:{listener_key}", f"[代理线程失败] listener={listener_key}")
         return False
     return True
 
@@ -711,6 +937,8 @@ def start_proxy_server(host: str, port: int, device: Any = "tun0", stop_event: t
 
     capacity = capacity or proxy_capacity
     listener_key = f"{host}:{port}"
+    capacity.register_listener(listener_key)
+    print(f"[代理容量] listener={listener_key} {capacity.snapshot()}", flush=True)
     while True:
         if stop_event is not None and stop_event.is_set():
             try:
@@ -718,15 +946,16 @@ def start_proxy_server(host: str, port: int, device: Any = "tun0", stop_event: t
             except OSError:
                 pass
             print(f"[代理网关] 已停止监听 {host}:{port} ({resolve_device(device)})", flush=True)
+            capacity.unregister_listener(listener_key)
             return
         try:
             client, address = server.accept()
             if not start_proxy_client_thread(
                 client, address, device, listener_key, capacity, registry
             ):
-                print(
-                    f"[代理限流] {listener_key} 或全局连接数达到上限，拒绝客户端 {address}",
-                    flush=True,
+                diagnostic(f"proxy-limit:{listener_key}",
+                    f"[代理限流] listener={listener_key} reason={capacity.rejection_reason()} "
+                    f"wait_budget_ms={PROXY_ACQUIRE_WAIT_MS} {capacity.snapshot()}",
                 )
         except socket.timeout:
             continue
@@ -736,6 +965,7 @@ def start_proxy_server(host: str, port: int, device: Any = "tun0", stop_event: t
                     server.close()
                 except OSError:
                     pass
+                capacity.unregister_listener(listener_key)
                 return
             print(f"[ERROR] Proxy accept failed: {e}", flush=True)
             time.sleep(0.5)

@@ -2377,6 +2377,45 @@ def update_handshake_status(line_lower: str) -> None:
             set_state(active_node_latency=short_status, last_check_message=detailed_desc)
             break
 
+_openvpn_dns_lock = threading.Lock()
+_openvpn_dns_owners: dict[str, object] = {}
+
+
+def _begin_openvpn_dns_lifecycle(device: str) -> object:
+    owner = object()
+    with _openvpn_dns_lock:
+        _openvpn_dns_owners[device] = owner
+        proxy_server.clear_tun_dns_servers(device)
+    return owner
+
+
+def _end_openvpn_dns_lifecycle(device: str, owner: object) -> None:
+    with _openvpn_dns_lock:
+        if _openvpn_dns_owners.get(device) is not owner:
+            return
+        _openvpn_dns_owners.pop(device, None)
+        proxy_server.clear_tun_dns_servers(device)
+
+
+def register_pushed_dns(device: str, line: str, *, owner: object | None = None) -> None:
+    """只接收当前进程 PUSH_REPLY 的 DNS，旧 reader 不得改写新隧道。"""
+    if not device or "push_reply" not in line.lower():
+        return
+    servers = []
+    for raw in re.findall(r"dhcp-option\s+DNS\s+([^,\s']+)", line, flags=re.IGNORECASE):
+        try:
+            servers.append(str(ipaddress.IPv4Address(raw)))
+        except ipaddress.AddressValueError:
+            continue
+    with _openvpn_dns_lock:
+        if owner is not None and _openvpn_dns_owners.get(device) is not owner:
+            return
+        if servers:
+            proxy_server.register_tun_dns_servers(device, servers)
+        else:
+            # 重连后的 PUSH_REPLY 未再提供 IPv4 DNS，不能沿用旧服务端的 DNS。
+            proxy_server.clear_tun_dns_servers(device)
+
 
 def _openvpn_log_level(line: str, *, route_nopull: bool) -> str:
     """Classify OpenVPN output without treating rejected pushed routes as failures.
@@ -2406,6 +2445,7 @@ def run_openvpn_until_ready(config_file: str, keep_alive: bool, route_nopull: bo
     if not openvpn_capacity.acquire(timeout=max(1, limit + 5)):
         return False, "[错误代码 2010] [ERR_OVPN_CAPACITY] OpenVPN 进程已达到安全上限，请稍后重试。", None
     capacity_owned = True
+    dns_owner = _begin_openvpn_dns_lifecycle(dev)
     try:
         process = subprocess.Popen(
             openvpn_command(config_file, route_nopull, dev, extra_args),
@@ -2417,17 +2457,24 @@ def run_openvpn_until_ready(config_file: str, keep_alive: bool, route_nopull: bo
             cwd=str(ROOT_DIR),
         )
     except FileNotFoundError:
+        _end_openvpn_dns_lifecycle(dev, dns_owner)
         openvpn_capacity.release()
         return False, "[错误代码 2001] [ERR_OVPN_CMD_NOT_FOUND] 未找到 openvpn 命令。原因: 系统未安装 openvpn，或 PATH 环境变量不正确。", None
     except OSError as exc:
+        _end_openvpn_dns_lifecycle(dev, dns_owner)
         openvpn_capacity.release()
         return False, f"[错误代码 2002] [ERR_OVPN_START_FAILED] openvpn 启动失败: {exc}。原因: 系统权限不足或配置冲突。", None
+    except Exception:
+        _end_openvpn_dns_lifecycle(dev, dns_owner)
+        openvpn_capacity.release()
+        raise
 
-    def release_capacity_when_process_exits() -> None:
+    def release_capacity_when_process_exits(vpn_process=process) -> None:
         nonlocal capacity_owned
         try:
-            process.wait()
+            vpn_process.wait()
         finally:
+            _end_openvpn_dns_lifecycle(dev, dns_owner)
             if capacity_owned:
                 capacity_owned = False
                 openvpn_capacity.release()
@@ -2436,6 +2483,7 @@ def run_openvpn_until_ready(config_file: str, keep_alive: bool, route_nopull: bo
         threading.Thread(target=release_capacity_when_process_exits, daemon=True).start()
     except Exception as exc:
         stop_process(process)
+        _end_openvpn_dns_lifecycle(dev, dns_owner)
         if capacity_owned:
             capacity_owned = False
             openvpn_capacity.release()
@@ -2445,10 +2493,11 @@ def run_openvpn_until_ready(config_file: str, keep_alive: bool, route_nopull: bo
     startup_done = [False]
     openvpn_logs: list[str] = []
 
-    def reader() -> None:
-        assert process.stdout is not None
-        for line in process.stdout:
+    def reader(vpn_process=process) -> None:
+        assert vpn_process.stdout is not None
+        for line in vpn_process.stdout:
             line_str = line.rstrip()
+            register_pushed_dns(dev, line_str, owner=dns_owner)
             if not startup_done[0]:
                 openvpn_logs.append(line_str)
                 lines.put(line_str)
@@ -2464,6 +2513,7 @@ def run_openvpn_until_ready(config_file: str, keep_alive: bool, route_nopull: bo
         threading.Thread(target=reader, daemon=True).start()
     except Exception as exc:
         stop_process(process)
+        _end_openvpn_dns_lifecycle(dev, dns_owner)
         return False, f"OpenVPN log reader thread failed: {exc}", None
     started = time.time()
     tail: list[str] = []
@@ -2510,6 +2560,7 @@ def run_openvpn_until_ready(config_file: str, keep_alive: bool, route_nopull: bo
     startup_done[0] = True
     if not keep_alive or not ok:
         stop_process(process)
+        _end_openvpn_dns_lifecycle(dev, dns_owner)
         process = None
     return ok, message, process
 
