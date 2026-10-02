@@ -62,7 +62,7 @@ python -m unittest test_runtime_proxy_bridge -q
 
 ## 客户端真实配置验证
 
-从 v2rayN 只读 SQLite 持久配置复用 jjs 的 8443、20000–20003 五条 VLESS：主为 XHTTP/Reality，普通出口为 raw/Reality；UUID 使用 `ProfileItem.Password`，协议/传输扩展按 v2rayN 源码映射。身份材料只存在内存及自动清理的临时配置，未输出。独立临时 Xray 监听 24839–24843，结束后只终止自己的进程并清理临时文件。到 jjs 的路由仍经过现用 `qinshi` TUN，因此此测试包含当前 TUN 路径，不声称是物理直连。
+从 v2rayN 只读 SQLite 持久配置复用 jjs 的 8443、20000–20003 五条 VLESS：主为 XHTTP/Reality，普通出口为 raw/Reality；UUID 使用 `ProfileItem.Password`，协议/传输扩展按 v2rayN 源码映射。身份材料只存在内存及自动清理的临时配置，未输出。独立临时 Xray 监听 24839–24843，结束后只终止自己的进程并清理临时文件。15:17 读取到 jjs `/32` 路由使用 `qinshi`；16:08 最新读取时该接口已不存在，实际路由为 `singbox_tun` 的 `128.0.0.0/1`。本次未更改这些路由，无法声称两次隔离测试网络路径完全一致，也不声称是物理直连。
 
 北京时间 15:44–15:45，调用桌面修正版相同 `RealPingProbe` 代码并发检测三轮，15/15 成功，全部 HTTP 204：
 
@@ -83,5 +83,7 @@ python -m unittest test_runtime_proxy_bridge -q
 15:57 回读：Gateway `/healthz` HTTP 200；Gateway、出口引擎、x-ui、Xray、Caddy 均运行，原服务 PID 保持 3331802/3522960/3331799/3331837/16103，`NRestarts=0`。承接服务 PID 3544986，约 10.7 MiB，6 任务；主机 `MemAvailable` 154 MiB，Swap 使用 165 MiB。最后五分钟承接日志无新增限流、SOCKS 失败、线程失败或未识别设备。
 
 16:02 正确提取控制 API `data` 后再次回读：主连接 `active=true / egress_ok=true / repair_status=healthy`；四个普通出口全部 `up / egress_ok=true`，错误码为空；五个专属备用全部 `ready / egress_ok=true`。首次读取脚本未展开 `data` 得到空提取结果，该空结果不作为状态证据。
+
+16:09 增量复测：curl HTTP/1.1 五条 Google 请求返回 204、gstatic 4/5 返回 204（出口 4 一次 TLS 后等待超时）。相同 `RealPingProbe` 第二组三轮为 14/15 成功：主连接第一轮两次 ConnectTimeout 后 -1，第二轮 300 ms，第三轮重试后 1062 ms；其余四出口三轮全部成功。对应时刻服务端日志无限流、DNS 失败、出口切换或 SOCKS 连接失败，不能将这一次失败归因为已修的 DNS/容量问题，整体端到端稳定性仍存在未定位限制。此前 15/15 是当时真实结果，不代表后续持续全部通过。
 
 本次无 UI 修改，未做内置浏览器 UI 验收。源码提交和远程同步以 Git 实际结果为准；本次未创建 Release、未发布签名包，现有正式发布入口保持不变。xjp、bj、ny 未部署本次代码。公开网络、上游 VPN 和网站仍可能产生新的故障，本次结果不构成永不超时的保证。
