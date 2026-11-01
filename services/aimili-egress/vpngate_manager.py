@@ -5505,7 +5505,9 @@ def get_exit_slot_config() -> dict[str, Any]:
         "paused": sorted(get_paused_slots() & set(active)),
         "country": str(cfg.get("exit_slot_country", "") or "").strip().upper(),
         "isp": str(cfg.get("exit_slot_isp", "") or "").strip(),
-        "residential_only": bool(cfg.get("exit_slot_residential_only", True)),
+        # 未配置的普通出口与主连接/热备用一致：住宅优先、机房兜底。
+        # 管理员明确保存的 True 仍是严格限制，不能在初始化时绕过。
+        "residential_only": bool(cfg.get("exit_slot_residential_only", False)),
     }
 
 @_slot_mutation_guard({"ok": False, "error_code": "operation_busy"})
@@ -5886,6 +5888,9 @@ def select_slot_nodes(
             continue
         if n.get("probe_status") != "available":
             continue
+        # Gateway 的公开协议只接受住宅和机房两类；分类未知不能当作机房兜底。
+        if not normalize_proxy_type(n.get("ip_type")):
+            continue
         if residential_only and n.get("ip_type") not in ("residential", "mobile"):
             continue
         if normalized_type and normalize_proxy_type(n.get("ip_type")) != normalized_type:
@@ -5897,8 +5902,32 @@ def select_slot_nodes(
             if not any(kw in hay for kw in isp_kws):
                 continue
         pool.append(n)
-    pool.sort(key=node_quality_key)
+    pool.sort(key=lambda node: (
+        0 if normalize_proxy_type(node.get("ip_type")) == "residential" else 1,
+        node_quality_key(node),
+    ))
     return pool[:need]
+
+
+def promote_initial_slot_standby(slot: int) -> bool:
+    """空出口也可接管自己的备用，但不能绕过用户明确保存的筛选。"""
+    with dedicated_standby_lock:
+        node_id = str(dedicated_standbys.get(slot + 1, {}).get("node_id") or "")
+    if not node_id:
+        return False
+    pinned = get_slot_pin_map().get(str(slot))
+    if pinned and pinned != node_id:
+        return False
+    cfg = get_exit_slot_config()
+    proxy_type = per_slot_type(slot)
+    used = reserved_slot_candidate_ids(exclude_slot=slot) - {node_id}
+    eligible = select_slot_nodes(
+        used, MAX_EXIT_SLOTS * 1024, per_slot_country(slot),
+        cfg["residential_only"] and not proxy_type, per_slot_isp(slot), proxy_type,
+    )
+    if not any(node.get("id") == node_id for node in eligible):
+        return False
+    return promote_dedicated_standby_to_slot(slot)
 
 
 def _standby_target_profile(target: str) -> dict[str, str]:
@@ -6909,6 +6938,8 @@ def supervise_exit_slots_once() -> None:
                 if failed_runtime.get("node_id"):
                     repair_slot_once(i, failed_runtime, _lock_held=True)
                     continue
+                if promote_initial_slot_standby(i):
+                    continue
                 tear_down_slot(i, stop_proxy=False)  # 清理死进程/路由，保留已分配的代理端口
                 used = reserved_slot_candidate_ids(exclude_slot=i)
                 node = pick_slot_node(i, used)
@@ -6924,7 +6955,7 @@ def supervise_exit_slots_once() -> None:
                         )
                 else:
                     scope = per_slot_country(i) or "不限地区"
-                    mark_slot_pending(i, f"暂无可用住宅节点（{scope}），等待节点池补齐")
+                    mark_slot_pending(i, f"暂无满足类型/运营商限制且未被占用的节点（{scope}），等待节点池或专属备用补齐")
             finally:
                 operation_lock.release()
 
@@ -7504,6 +7535,19 @@ def exit_slots_loop() -> None:
             log_to_json("ERROR", "MultiExit", f"供给器循环异常: {e}")
         time.sleep(EXIT_SLOTS_CHECK_INTERVAL)
 
+def collector_retry_delay(result: str) -> int:
+    # 启动尚未交付时，分批预算耗尽不能沿用平稳期的十分钟退避。
+    # 资源压力与操作冲突仍保留原退避，探测批次预算也保持不变。
+    if "Stop: batch_budget" in result:
+        missing = not active_openvpn_running() or any(
+            not slot_process_alive(slot)
+            for slot in get_active_slots() if slot not in get_paused_slots()
+        )
+        if missing:
+            return min(COLLECTOR_BUSY_RETRY_SECONDS, COLLECTOR_FAILURE_BACKOFF_SECONDS)
+    return COLLECTOR_BUSY_RETRY_SECONDS
+
+
 def collector_loop() -> None:
     global last_collector_heartbeat
     if COLLECTOR_INITIAL_DELAY_SECONDS > 0:
@@ -7526,13 +7570,13 @@ def collector_loop() -> None:
 
         if res == "operation_busy" or "Stop: batch_budget" in res or "Stop: resource_pressure" in res:
             pool_resume_requested.clear()
-            sleep_time = COLLECTOR_BUSY_RETRY_SECONDS
+            sleep_time = collector_retry_delay(res)
         elif not active_openvpn_running() and not success:
             sleep_time = COLLECTOR_FAILURE_BACKOFF_SECONDS
         else:
             if pool_resume_requested.wait(CHECK_INTERVAL_SECONDS):
                 pool_resume_requested.clear()
-                time.sleep(COLLECTOR_BUSY_RETRY_SECONDS)
+                time.sleep(collector_retry_delay(res))
             continue
 
         time.sleep(sleep_time)

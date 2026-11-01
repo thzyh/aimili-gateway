@@ -279,6 +279,7 @@ class EgressLatencyTests(unittest.TestCase):
             {
                 "id": "fake-fast",
                 "probe_status": "available",
+                "ip_type": "hosting",
                 "latency_ms": 1,
                 "egress_latency_ms": 900,
                 "egress_latency_checked_at": 100,
@@ -286,6 +287,7 @@ class EgressLatencyTests(unittest.TestCase):
             {
                 "id": "real-fast",
                 "probe_status": "available",
+                "ip_type": "hosting",
                 "latency_ms": 50,
                 "egress_latency_ms": 200,
                 "egress_latency_checked_at": 100,

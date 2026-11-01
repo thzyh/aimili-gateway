@@ -21,6 +21,29 @@ class Clock:
 
 
 class EgressProgressTests(unittest.TestCase):
+    def test_timeout_distinguishes_reserved_pool_from_missing_candidates(self):
+        clock = Clock()
+
+        def control(path):
+            return {
+                "main": {"active": True, "egress_ok": True},
+                "slots": [{"slot": 0, "egress_ok": True}],
+                "candidates": [],
+                "capacity": {"currentValidNodeCount": 10},
+                "standbys": [{"status": "ready"}] * 5,
+            }[path]
+
+        with patch.object(installer, "control", side_effect=control), \
+             patch.object(installer, "load_json", return_value={"exit_slot_residential_only": True}), \
+             patch.object(installer, "say"), \
+             patch.object(installer.time, "monotonic", side_effect=clock.monotonic), \
+             patch.object(installer.time, "sleep", side_effect=clock.sleep):
+            with self.assertRaises(installer.InstallError) as raised:
+                installer.wait_egress(4)
+        message = str(raised.exception)
+        for expected in ["未占用候选 0", "有效缓存 10", "热备用就绪 5", "类型策略仅住宅", "未就绪出口位 2,3,4"]:
+            self.assertIn(expected, message)
+
     def test_wait_reports_elapsed_time_and_ready_slot_count(self):
         clock = Clock()
         messages = []

@@ -1,6 +1,7 @@
 param(
     [string]$Tag = 'v0.2.0-vps',
     [string]$XUISource = 'D:\CodexProject\Github\.tmp\3x-ui-v3.7.0',
+    [string]$XUIBinary = '',
     [string]$SigningKey = 'C:\Users\zyh\.codex\keys\aimili-vps-release-ed25519.pem',
     [string]$Output = 'D:\CodexProject\Github\.tmp\aimili-vps-release',
     [switch]$BridgeRelease
@@ -11,6 +12,12 @@ $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $source = (Resolve-Path $XUISource).Path
 $patch = Join-Path $PSScriptRoot '3x-ui-v3.7.0-alias.patch'
 $expected = 'f727d04f6522bb94a8fb52e8352fdcafb51c11e1'
+$expectedXUIHash = '34ba20cf408ccacf941a10d90a9daa154ec6f8e2c267d8a7e2d8697d82c2b758'
+if (-not $XUIBinary) { $XUIBinary = Join-Path $source 'x-ui-custom' }
+if (-not (Test-Path -LiteralPath $XUIBinary)) { throw 'Fixed 3x-ui release binary missing; provide -XUIBinary from v0.2.5-vps' }
+if ((Get-FileHash -LiteralPath $XUIBinary -Algorithm SHA256).Hash.ToLower() -ne $expectedXUIHash) {
+    throw '3x-ui binary differs from the immutable v0.2.5-vps asset; provide the verified asset using -XUIBinary'
+}
 $workerSource = Get-Content (Join-Path $root 'deploy\vps\project_update.py') -Raw
 if ($workerSource -notmatch '(?m)^UPDATER_VERSION = ([1-9][0-9]*)\r?$') { throw 'Updater version constant missing' }
 $updaterVersion = [int]$Matches[1]
@@ -58,9 +65,7 @@ Copy-Item -LiteralPath (Join-Path $root 'scripts\aimili_xui_protocol_transaction
 Get-ChildItem (Join-Path $root 'services\aimili-egress') -Filter '*.py' -File | Copy-Item -Destination (Join-Path $Output 'package\services\aimili-egress')
 tar -czf (Join-Path $Output 'aimili-vps-package.tar.gz') -C (Join-Path $Output 'package') .
 if ($LASTEXITCODE -ne 0) { throw 'package archive failed' }
-$xui = Join-Path $source 'x-ui-custom'
-if (-not (Test-Path $xui)) { throw 'custom 3x-ui binary missing' }
-Copy-Item -LiteralPath $xui -Destination (Join-Path $Output 'x-ui-custom-linux-amd64')
+Copy-Item -LiteralPath $XUIBinary -Destination (Join-Path $Output 'x-ui-custom-linux-amd64')
 Copy-Item -LiteralPath (Join-Path $root 'deploy\vps\project_update.py') -Destination (Join-Path $Output 'project-update-engine.py')
 $schema = (Get-ChildItem (Join-Path $root 'internal\store\migrations') -Filter '*.sql' | ForEach-Object { [int]$_.BaseName.Substring(0,3) } | Measure-Object -Maximum).Maximum
 $componentNames = @('gateway','aimili-egress','3x-ui','protocol-helper','account-helper')

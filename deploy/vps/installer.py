@@ -367,6 +367,13 @@ def domain_tls_ready(domain: str) -> bool:
         return False
 
 
+def ensure_slot_selection_policy(path: Path) -> None:
+    config = load_json(path)
+    if "exit_slot_residential_only" not in config:
+        config["exit_slot_residential_only"] = False
+        write_json(path, config)
+
+
 def install_egress(args: argparse.Namespace, slots: int, credentials: dict) -> None:
     say("正在初始化 aimili-egress 与 OpenVPN……")
     target = Path("/opt/aimili-gateway/services/aimili-egress")
@@ -393,6 +400,7 @@ def install_egress(args: argparse.Namespace, slots: int, credentials: dict) -> N
         active = load_json(ui).get("exit_slot_active")
         if active != list(range(slots)) and load_json(STATE).get("status") == "complete":
             raise InstallError(f"现有 egress 槽位 {active} 与目标 0–{slots-1} 不一致，安装器不会自动删除已交付的运行出口")
+    ensure_slot_selection_policy(ui)
     write(Path("/etc/default/aimilivpn"), f"MULTI_EXIT_SLOTS={slots}\n# 节点池与出口上限由 aimili-egress 按当前 VPS 资源自动计算\nOPENVPN_TEST_CONCURRENCY=4\nMAIN_EGRESS_FAIL_THRESHOLD=3\nSLOT_EGRESS_FAIL_THRESHOLD=3\nCOLLECTOR_BUSY_RETRY_SECONDS=600\nUI_HOST=127.0.0.1\n")
     copy_mode(unit_source, unit_target, 0o644)
     run(["systemctl", "daemon-reload"])
@@ -419,12 +427,22 @@ def control(path: str) -> dict | list:
         return json.load(response)["data"]
 
 
+def egress_supply_diagnostic() -> str:
+    candidate_count = len(control("candidates"))
+    cached = control("capacity").get("currentValidNodeCount", "未知")
+    standby_ready = sum(row.get("status") == "ready" for row in control("standbys"))
+    policy = load_json(EGRESS / "ui_auth.json").get("exit_slot_residential_only", False)
+    return (f"未占用候选 {candidate_count} 个；有效缓存 {cached} 个；热备用就绪 {standby_ready} 个；"
+            f"类型策略{'仅住宅' if policy else '住宅优先/机房兜底'}")
+
+
 def wait_egress(slots: int) -> None:
     say("正在验证主连接和普通出口真实出网；最长等待 20 分钟，每 30 秒报告进度。")
     started = time.monotonic()
     deadline = started + 1200
     next_report = started
     last_status = "尚未取得出口状态"
+    missing = []
     while time.monotonic() < deadline:
         try:
             main = control("main")
@@ -433,15 +451,18 @@ def wait_egress(slots: int) -> None:
             ready_slots = sum(any(s.get("slot") == number and s.get("egress_ok") for s in active)
                               for number in range(slots))
             last_status = f"主连接{'就绪' if main_ready else '未就绪'}；普通出口 {ready_slots}/{slots}"
+            missing = [str(number + 1) for number in range(slots)
+                       if not any(s.get("slot") == number and s.get("egress_ok") for s in active)]
             if main_ready and ready_slots == slots:
                 checkpoint("egress-ready")
                 return
             if time.monotonic() >= next_report:
                 try:
-                    candidate_count = len(control("candidates"))
-                    last_status += f"；候选池 {candidate_count} 个"
+                    last_status += "；" + egress_supply_diagnostic()
                 except Exception:
-                    last_status += "；候选池暂不可读"
+                    last_status += "；补充诊断暂不可读"
+                if missing:
+                    last_status += "；未就绪出口位 " + ",".join(missing)
                 elapsed = int(time.monotonic() - started)
                 say(f"已等待 {elapsed} 秒/最多 1200 秒；{last_status}；10 秒后再检查。")
                 next_report = time.monotonic() + 30
@@ -451,6 +472,12 @@ def wait_egress(slots: int) -> None:
                 say(f"已等待 {int(time.monotonic() - started)} 秒/最多 1200 秒；{last_status}；10 秒后再检查。")
                 next_report = time.monotonic() + 30
         time.sleep(min(10, max(0, deadline - time.monotonic())))
+    try:
+        last_status += "；" + egress_supply_diagnostic()
+    except Exception:
+        last_status += "；补充诊断暂不可读"
+    if missing:
+        last_status += "；未就绪出口位 " + ",".join(missing)
     raise InstallError(f"主连接与全部出口位未在 1200 秒内就绪；{last_status}；详见 {LOG}")
 
 
