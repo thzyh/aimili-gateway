@@ -27,6 +27,95 @@ download() {
     fi
 }
 
+configure_bbr() {
+    # 此步骤属于当前引导入口，不依赖签名包中安装器的版本。
+    python3 - <<'AIMILI_BBR'
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+
+ETC = Path('/etc')
+KEY = 'net.ipv4.tcp_congestion_control'
+
+
+def command(args):
+    result = subprocess.run(args, capture_output=True, text=True, timeout=15)
+    if result.returncode:
+        reason = (result.stderr or result.stdout).strip()[-600:]
+        raise RuntimeError(f"{' '.join(args)}：{reason or '退出码 '+str(result.returncode)}")
+    return result.stdout.strip()
+
+
+def atomic_write(path, body):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix='.' + path.name + '.', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(body)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(name, 0o644)
+        os.replace(name, path)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
+
+
+def enable_bbr():
+    print('正在检查并默认开启、持久化 BBR（供 3x-ui/Xray 的新 TCP 连接使用）……', flush=True)
+    previous = None
+    runtime_attempted = False
+    changed = []
+    try:
+        if 'bbr' not in command(['sysctl', '-n', 'net.ipv4.tcp_available_congestion_control']).split():
+            command(['modprobe', 'tcp_bbr'])
+        if 'bbr' not in command(['sysctl', '-n', 'net.ipv4.tcp_available_congestion_control']).split():
+            raise RuntimeError('当前内核加载 tcp_bbr 后仍未提供 BBR')
+        previous = command(['sysctl', '-n', KEY])
+        configs = {
+            ETC / 'modules-load.d/aimili-bbr.conf': b'tcp_bbr\n',
+            ETC / 'sysctl.d/zz-aimili-bbr.conf': b'# Aimili Gateway: default for new TCP connections\nnet.ipv4.tcp_congestion_control = bbr\n',
+        }
+        originals = {path: path.read_bytes() if path.exists() else None for path in configs}
+        runtime_attempted = True
+        command(['sysctl', '-w', KEY + '=bbr'])
+        if command(['sysctl', '-n', KEY]) != 'bbr':
+            raise RuntimeError('内核回读不是 bbr，拒绝报告启用成功')
+        for path, body in configs.items():
+            atomic_write(path, body)
+            changed.append(path)
+        print('已开启并持久化 BBR；新连接立即使用，旧连接保持原算法，无需重启代理。', flush=True)
+    except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+        rollback_errors = []
+        for path in reversed(changed):
+            try:
+                if originals[path] is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    atomic_write(path, originals[path])
+            except OSError as rollback_error:
+                rollback_errors.append(str(rollback_error))
+        if runtime_attempted and previous:
+            try:
+                command(['sysctl', '-w', KEY + '=' + previous])
+            except (OSError, RuntimeError, subprocess.TimeoutExpired) as rollback_error:
+                rollback_errors.append(str(rollback_error))
+        print(f'警告：BBR 未完成开启和持久化：{error}。继续安装，不把此项报告为成功。', flush=True)
+        if rollback_errors:
+            print('BBR 恢复未完全成功，请核对 sysctl 与受管配置：' + '；'.join(rollback_errors), flush=True)
+        print('处理路径：缺少命令时安装 Ubuntu 官方 procps/kmod；缺少 tcp_bbr 时检查当前内核对应的 '
+              'linux-modules-extra-$(uname -r)。受限容器须由宿主开启；无 BBR 的内核须经管理员确认后升级支持 BBR 的内核。'
+              '处理完成后按 docs/commands.md 的 BBR 章节重试，勿为此盲目重跑整套安装。', flush=True)
+        return False
+    return True
+
+
+if __name__ == '__main__':
+    enable_bbr()
+AIMILI_BBR
+}
+
 printf '正在下载并验证 Aimili Gateway 发布清单……\n'
 download "$public_key_url" "$cache/release-public.pem"
 [[ "$(sha256sum "$cache/release-public.pem" | cut -d' ' -f1)" == "$public_key_sha" ]] || { printf '发布公钥摘要不匹配。\n' >&2; exit 3; }
@@ -76,4 +165,15 @@ if [[ ! -s "$cache/bundle/deploy/vps/installer.py" || "$(cat "$cache/bundle-dige
     tar -xzf "$cache/$package_name" -C "$cache/bundle"
     printf '%s\n' "$package_digest" > "$cache/bundle-digest"
 fi
+# BBR_BOOTSTRAP_BEGIN
+configure_network=1
+for argument in "$@"; do
+    case "$argument" in
+        --status|--help|-h) configure_network=0 ;;
+    esac
+done
+if (( configure_network )); then
+    configure_bbr
+fi
+# BBR_BOOTSTRAP_END
 exec python3 "$cache/bundle/deploy/vps/installer.py" --asset-root "$cache/bundle" --xui-binary "$cache/$xui_name" "$@"

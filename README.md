@@ -22,6 +22,8 @@ curl -fsSL https://raw.githubusercontent.com/thzyh/aimili-gateway/main/deploy/vp
 
 安装器会用中文询问无域名或域名模式，并可重复执行。无域名模式使用本机公网 IP 与本地 CA；域名 A 记录生效后，再执行同一条命令并选择域名模式，保留 Gateway/3x-ui 数据库、账户、UUID、Reality 材料与出口位。非交互用法是在同一条命令末尾附加 `--no-domain --slots 4` 或 `--domain bj.zouyunhui.cc.cd --slots 4`。发布资产由固定的 Ed25519 公钥验证签名和 SHA-256；完整安装记录在 `/var/log/aimili-gateway/install.log`。只读状态检查使用同一入口：`curl -fsSL https://raw.githubusercontent.com/thzyh/aimili-gateway/main/deploy/vps/install.sh | sudo bash -s -- --status`。
 
+一键部署默认尝试开启并持久化 VPS 内核的 BBR，供 3x-ui/Xray 等程序的新 TCP 连接使用，不另设交互问题。脚本回读确认后写入模块加载和 sysctl 开机配置；已有连接保持原算法，不为启用 BBR 重启服务或修改网卡队列。此设置影响本机使用系统默认算法的新 TCP 连接，并非 3x-ui 专属开关。内核、容器权限或持久化不支持时，明确显示原因和[BBR 处理路径](docs/commands.md#bbr-默认启用与故障处理)，继续部署并保留原算法；不能把该警告当作已启用。`--status` 和帮助查询跳过此步骤。
+
 安装包含管理菜单的版本后，在 VPS 上只需运行 `aimili`：中文菜单可查看部署状态、版本、服务和日志，查看或管理统一账户、切换域名及确认后重启指定服务；日常项目更新仍由网页“高级设置 → 检测更新”完成。首次交互部署时，SOCKS5H 来源提示直接回车会关闭来源限制；输入客户端公网 IPv4 则开启限制。关闭来源限制后公网仍须使用正确的代理账号密码。脚本化只读入口为 `aimili status --json` 和 `aimili version --json`。菜单切换域名前会核对当前 Gateway 版本与安装入口固定版本，不一致时拒绝覆盖旧程序并提示升级路径。完整安装选项、管理操作及重复运行安装器的影响见[常用命令与管理菜单](docs/commands.md)。
 
 高级设置中的运行容量由 aimili-egress 按当前 VPS 资源动态计算。页面只调整一个“候选池容量”，它表示希望保留的已验证候选缓存数量；节点池页显示的“候选节点”是实际探测通过并保留的数量。系统结合总内存、当前可用内存、CPU、负载及同机其它项目的资源占用计算新增探测的安全极限，资源紧张时暂停新增拨号但不删除正在使用的出口或热备用。容量配置在 egress 数据目录持久化，服务重启后仍会恢复；当前普通出口位始终另加一个主连接。

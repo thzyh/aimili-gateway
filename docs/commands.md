@@ -9,6 +9,7 @@ curl -fsSL https://raw.githubusercontent.com/thzyh/aimili-gateway/main/deploy/vp
 ```
 
 1. **下载并验证发布包。** 引导脚本下载发布清单、签名、Gateway 完整包及定制 3x-ui 二进制，验证 Ed25519 签名和 SHA-256；这一阶段不会修改服务。
+   验签和解包完成后，当前引导脚本默认检查、开启并持久化 BBR，再交给签名包内的安装器，不另问选项。BBR 的成功或警告会直接显示在 SSH 终端，详见下节；只读 `--status` 和帮助查询不执行 BBR 设置。
 2. **选择部署模式。** `1 无域名` 是默认值，回车即可使用 VPS 公网 IP 和 Caddy 本地 CA。`2 使用域名` 会继续询问域名；域名的 A 记录必须已经指向本机公网 IPv4，且 80、443 端口可从公网访问，Caddy 才能申请公网证书。域名无需填写 `https://`。
 3. **选择 SOCKS5H 来源限制。** 直接回车表示关闭来源限制；输入**连接 SOCKS5H 的客户端公网 IPv4**则开启限制并仅允许该来源。这里不是 VPS IP、域名或出口节点 IP。关闭后 mixed/SOCKS5H 端口可从公网连接，仍需要正确的代理用户名和密码。已有部署在交互式重跑时也会重新询问，回车会关闭原有限制；`--domain` 等非交互命令不带来源参数时则沿用已有策略。
 4. **自动安装与验收。** 安装器检查平台与 DNS，备份已有状态；在 512 MiB VPS 上先创建并持久化 1 GiB Swap，再安装系统依赖、3x-ui/Xray、AimiliVPN/OpenVPN、Caddy 和 Gateway，设置受管防火墙、账户及更新入口；最后验收主连接、出口位、订阅、SOCKS5H 规则和数据库。普通出口位默认 `4`，交互部署不另设槽位选择；已有部署的槽位数量保持不变。出口探测最长等待 20 分钟，每 30 秒显示已等待时间、主连接、已就绪出口位和候选数量。完整日志在 `/var/log/aimili-gateway/install.log`。
@@ -21,6 +22,35 @@ curl -fsSL https://raw.githubusercontent.com/thzyh/aimili-gateway/main/deploy/vp
 ```
 
 需要开启限制时追加 `--allowed-source 你的客户端公网IPv4`；已有部署要明确关闭限制时追加 `--disable-source-limit`。不使用域名时把 `--domain ...` 换成 `--no-domain`。如安装中断，先查看安装日志和状态，再用同一目标参数续作。
+
+## BBR 默认启用与故障处理
+
+BBR 是 Linux 内核的 TCP 拥塞控制算法，不是需要额外编译的 3x-ui 功能。当前一键入口默认执行：检查可用算法 → 必要时加载已安装的 `tcp_bbr` 模块 → 将 `net.ipv4.tcp_congestion_control` 设为 `bbr` 并回读 → 原子写入开机配置。设置适用于采用系统默认算法的新 TCP 连接，包括 3x-ui/Xray 的相应连接；应用显式指定其他算法的连接仍按应用设置执行。
+
+受管文件为 `/etc/modules-load.d/aimili-bbr.conf` 和 `/etc/sysctl.d/zz-aimili-bbr.conf`。重复运行覆写同一份受管配置，不累积备份，不修改其他项目的 sysctl 文件，不运行全局 `sysctl --system`，也不重置 qdisc、路由、防火墙或代理服务。已有 TCP 连接保持原算法，所以新旧算法可能暂时并存；持久化仅确保开机加载配置，不会让当前设置延迟生效。管理员后续设置排序更靠后的冲突 sysctl 配置时，仍须自行核对。
+
+BBR 步骤失败时会输出具体命令错误或超时（单条命令最多 15 秒），恢复本次已修改的运行参数与受管文件，再继续安装；恢复本身失败也会明确提示。安装成功不代表 BBR 一定开启，应以该步骤的成功提示和实际回读为准。处理路径：
+
+1. **缺少 `sysctl` 或 `modprobe`：** 安装 Ubuntu 官方 `procps`、`kmod` 包。
+2. **找不到 `tcp_bbr` 模块：** 先检查 `uname -r`，再核对当前内核对应的 Ubuntu `linux-modules-extra-$(uname -r)` 包是否可用；自定义或不支持 BBR 的内核由管理员选择受支持内核并安排重启。引导脚本不会自动更换内核或重启 VPS。
+3. **权限拒绝或只读 sysctl：** 受限容器需由宿主提供 BBR 并允许该设置；普通 VPS 检查 root 权限和系统限制。配置落盘失败时检查 `/etc` 的权限、只读挂载与可用空间。
+4. **处理完成后：** 尚未部署完成的 VPS 按原参数续作；已经部署成功的 VPS 可执行下面的单项设置，不要仅为 BBR 重跑会重启服务的整套安装。
+
+```bash
+sudo bash -e <<'BBR'
+modprobe tcp_bbr
+sysctl -w net.ipv4.tcp_congestion_control=bbr
+install -d -m 0755 /etc/modules-load.d /etc/sysctl.d
+printf 'tcp_bbr\n' > /etc/modules-load.d/aimili-bbr.conf
+printf 'net.ipv4.tcp_congestion_control = bbr\n' > /etc/sysctl.d/zz-aimili-bbr.conf
+chmod 0644 /etc/modules-load.d/aimili-bbr.conf /etc/sysctl.d/zz-aimili-bbr.conf
+sysctl net.ipv4.tcp_congestion_control
+BBR
+```
+
+只读检查：`sysctl net.ipv4.tcp_congestion_control` 与 `ss -tin 'sport = :20000'`（出口 1 端口；其他入站替换为实际端口）。BBR 可以改善部分网络下的 TCP 传输，不能保证修复所有网站超时或 Cloudflare 验证失败。
+
+此功能放在 `main` 上的一键引导脚本，源码同步后即可用于新执行的一键命令，仍保留原签名包校验和固定版本。它不会自动修改已经运行的 VPS；网页更新也不会因源码推送而执行这项内核设置。
 
 ## 安装后的统一管理
 
