@@ -115,7 +115,7 @@ class CandidateExitIPTests(unittest.TestCase):
                 actual = manager._probe_one_node(node)
 
         self.assertEqual(actual["probe_status"], "unavailable")
-        self.assertEqual(actual["probe_message"], "公网出口检测失败")
+        self.assertEqual(actual["probe_message"], "OpenVPN 已连接，但公网出口 IP 校验失败")
         self.assertNotIn("exit_ip", actual)
         self.assertEqual(events, [("cleanup", 61_008), ("stop", process), ("release", 8)])
 

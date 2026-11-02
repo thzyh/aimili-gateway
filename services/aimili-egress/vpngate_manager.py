@@ -2110,7 +2110,9 @@ def row_to_node(row: dict[str, str], config_text: str) -> dict[str, Any]:
         "probed_at": 0,
     }
 
-def fetch_candidates(country: str = "", *, scan_limit: int | None = None) -> list[dict[str, Any]]:
+def fetch_candidates(
+    country: str = "", *, scan_limit: int | None = None, ignore_cooldown: bool = False,
+) -> list[dict[str, Any]]:
     blacklist = load_blacklist()
     candidates: list[dict[str, Any]] = []
     seen_ips = set()
@@ -2166,7 +2168,7 @@ def fetch_candidates(country: str = "", *, scan_limit: int | None = None) -> lis
                         log_to_json("WARNING", "Main", f"跳过损坏的节点配置记录: {row_exc}")
                         continue
                     entry = blacklist.get(node["id"])
-                    if entry and float(entry.get("until", 0) or 0) > time.time():
+                    if not ignore_cooldown and entry and float(entry.get("until", 0) or 0) > time.time():
                         continue
                     candidates.append(node)
                     seen_ips.add(ip)
@@ -3246,8 +3248,7 @@ def _probe_one_node(node: dict[str, Any]) -> dict[str, Any]:
                         message = str(egress_rounds[-1].get("message") or message)
                 else:
                     ok = False
-                    if not message or message == "OpenVPN connected":
-                        message = "公网出口检测失败"
+                    message = "OpenVPN 已连接，但公网出口 IP 校验失败"
     finally:
         if test_route_table is not None:
             cleanup_policy_routing(test_route_table)
@@ -3781,6 +3782,7 @@ def refresh_country_nodes(
         }
 
     try:
+        explicit_full_country_scan = target_size is None and max_probes is None
         manual_failed_ids = manual_required_candidate_ids()
         existing_nodes = [
             item
@@ -3788,7 +3790,7 @@ def refresh_country_nodes(
             if str(item.get("id") or "").strip() not in manual_failed_ids
         ]
         try:
-            candidates = fetch_candidates(normalized_country)
+            candidates = fetch_candidates(normalized_country, ignore_cooldown=explicit_full_country_scan)
             catalog = country_catalog_snapshot()
         except Exception:
             return {
@@ -3860,7 +3862,6 @@ def refresh_country_nodes(
         passed_ids: set[str] = set()
         failed_ids: set[str] = set()
         full_country_scan = target_size is None
-        explicit_full_country_scan = target_size is None and max_probes is None
         selection_limit = (
             MAX_VALID_POOL_SIZE
             if full_country_scan
@@ -3918,6 +3919,15 @@ def refresh_country_nodes(
                 if item.get("probe_status") == "available"
                 and str(item.get("id") or "").strip()
             )
+            for item in results:
+                node_id = str(item.get("id") or "").strip()
+                if item.get("probe_status") == "available":
+                    blacklist.pop(node_id, None)
+                log_to_json("INFO", "CountryRefresh", json.dumps({
+                    "country": normalized_country, "candidateId": node_id,
+                    "status": item.get("probe_status"),
+                    "reason": str(item.get("probe_message") or "")[:240],
+                }, ensure_ascii=False))
             selected, failed = node_pool.merge_probe_results(selected, results, selection_limit)
             for item in failed:
                 node_id = str(item.get("id") or "").strip()
@@ -3960,7 +3970,8 @@ def refresh_country_nodes(
         manual_ids = selected_available_ids - existing_country_available_ids
         metadata = load_pool_metadata()
         merged = node_pool.rebalance_valid_pool(
-            existing_nodes, selected, protected_ids, manual_ids, limit=MAX_VALID_POOL_SIZE
+            [item for item in existing_nodes if str(item.get("id") or "").strip() not in failed_ids],
+            selected, protected_ids, manual_ids, limit=MAX_VALID_POOL_SIZE
         )
         for item in merged:
             config_file = str(item.get("config_file") or "")
@@ -4016,6 +4027,10 @@ def refresh_country_nodes(
         metadata["manualProtectionExpiresRound"] = int(metadata.get("maintenanceRound") or 0) + 1
         metadata["lastRefresh"] = dict(result)
         store_pool_metadata(metadata)
+        log_to_json("INFO", "CountryRefresh", json.dumps({
+            **result, "beforeValidCount": len(existing_country_available_ids),
+            "removedCount": len(existing_country_available_ids - country_available_ids),
+        }, ensure_ascii=False))
         set_state(last_check_at=time.time(), last_check_message=f"国家 {normalized_country} 节点刷新完成")
         return result
     finally:

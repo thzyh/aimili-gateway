@@ -16,6 +16,11 @@ def node(node_id, status="not_checked", active=False):
 
 
 class NodePoolTests(unittest.TestCase):
+    def test_rebalance_uses_latest_probe_instead_of_stale_cached_identity(self):
+        old = dict(node("jp", "available"), country_short="JP", probed_at=1, exit_ip="192.0.2.1")
+        fresh = dict(old, probed_at=100, exit_ip="192.0.2.2")
+        self.assertEqual(rebalance_valid_pool([old], [fresh], set(), set()), [fresh])
+
     def test_rebalance_is_stable_keeps_country_anchors_and_never_exceeds_limit(self):
         existing = [
             {**node("jp-old", "available"), "country_short": "JP", "ip_type": "hosting", "latency_ms": 50},

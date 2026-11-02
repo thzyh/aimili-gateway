@@ -142,7 +142,8 @@ def rebalance_valid_pool(
     capacity = max(0, min(512, int(limit)))
     existing_ids = {_node_id(node) for node in existing_nodes}
     by_id: dict[str, Node] = {}
-    for item in [*refreshed_nodes, *existing_nodes]:
+    # 同一身份复检后的出口、类型与时间戳必须覆盖历史缓存。
+    for item in [*existing_nodes, *refreshed_nodes]:
         node_id = _node_id(item)
         if node_id:
             by_id[node_id] = item

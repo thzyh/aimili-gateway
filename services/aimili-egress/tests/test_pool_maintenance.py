@@ -31,6 +31,41 @@ def country_node(node_id, country, status="not_checked"):
 
 
 class PoolMaintenanceTests(unittest.TestCase):
+    def test_country_refresh_applies_fresh_results_and_clears_recovered_cooldown(self):
+        old = [dict(country_node("jp-good", "JP", "available"), probed_at=1),
+               country_node("jp-dead", "JP", "available"),
+               country_node("us", "US", "available")]
+        cooled = {"jp-recovered": {"until": time.time() + 3600},
+                  "us-cooled": {"until": time.time() + 3600}}
+        stored = {}
+        def probe(batch):
+            return [dict(x, probe_status="unavailable" if x["id"] == "jp-dead" else "available",
+                         probed_at=100, probe_message="AUTH_FAILED" if x["id"] == "jp-dead" else "ok") for x in batch]
+        with (
+            mock.patch.object(manager, "read_nodes", return_value=old),
+            mock.patch.object(manager, "fetch_candidates", return_value=[country_node(x, "JP") for x in ["jp-good", "jp-dead", "jp-recovered"]]) as fetch,
+            mock.patch.object(manager, "country_catalog_snapshot", return_value=[{"code": "JP", "candidateCount": 3}]),
+            mock.patch.object(manager, "reserved_slot_candidate_ids", return_value=set()),
+            mock.patch.object(manager.main_assignment_coordinator, "reserved_candidate_ids", return_value=set()),
+            mock.patch.object(manager, "probe_nodes", side_effect=probe),
+            mock.patch.object(manager, "load_blacklist", return_value=cooled),
+            mock.patch.object(manager, "load_pool_metadata", return_value=manager.default_pool_metadata()),
+            mock.patch.object(manager, "store_pool_metadata"),
+            mock.patch.object(manager, "write_json", side_effect=lambda p, d: stored.update({p: d})),
+            mock.patch.object(manager, "cleanup_unreferenced_node_configs"),
+            mock.patch.object(manager, "set_state"),
+            mock.patch.object(manager, "log_to_json"),
+        ):
+            result = manager.refresh_country_nodes("JP")
+        fetch.assert_called_once_with("JP", ignore_cooldown=True)
+        nodes = {x["id"]: x for x in stored[manager.NODES_FILE]}
+        self.assertEqual(set(nodes), {"jp-good", "jp-recovered", "us"})
+        self.assertEqual(nodes["jp-good"]["probed_at"], 100)
+        self.assertNotIn("jp-recovered", stored[manager.BLACKLIST_FILE])
+        self.assertIn("us-cooled", stored[manager.BLACKLIST_FILE])
+        self.assertEqual(result["countryValidCount"], 2)
+        self.assertEqual(result["failedCount"], 1)
+
     def setUp(self):
         # 测试主机是 Windows；探测预算使用明确的健康 VPS 采样。
         facts = manager.capacity.HostFacts(512 * 1048576, 160 * 1048576, 1, 0.2)
@@ -1271,6 +1306,22 @@ class PoolMaintenanceTests(unittest.TestCase):
 
 
 class FetchCandidatesTests(unittest.TestCase):
+    def test_manual_country_fetch_can_reprobe_cooldown_without_changing_background_policy(self):
+        text = self.api_text(1, ["JP"])
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.object(manager, "CONFIG_DIR", Path(directory)),
+            mock.patch.object(manager, "load_blacklist", return_value={"JP_198.51.100.1_443_tcp": {"until": time.time() + 3600}}),
+            mock.patch.object(manager, "cached_nodes", return_value=[]),
+            mock.patch.object(manager, "fetch_api_text", return_value=text),
+            mock.patch.object(manager, "set_state"),
+            mock.patch.object(manager, "log_to_json"),
+            mock.patch.object(manager, "store_country_catalog"),
+        ):
+            self.assertEqual(manager.fetch_candidates("JP"), [])
+            nodes = manager.fetch_candidates("JP", ignore_cooldown=True)
+        self.assertEqual(len(nodes), 1)
+
     @staticmethod
     def api_text(count, countries=None):
         header = (

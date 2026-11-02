@@ -237,7 +237,7 @@ class EgressLatencyTests(unittest.TestCase):
                 mock.patch.object(
                     manager,
                     "run_openvpn_until_ready",
-                    return_value=(True, "OpenVPN connected", process),
+                    return_value=(True, "OpenVPN connected in 4557 ms.", process),
                 ),
                 mock.patch.object(manager, "setup_policy_routing", return_value=True),
                 mock.patch.object(
@@ -271,7 +271,7 @@ class EgressLatencyTests(unittest.TestCase):
 
         self.assertEqual(result["probe_status"], "unavailable")
         self.assertEqual(result["egress_latency_ms"], 0)
-        self.assertEqual(result["probe_message"], "公网出口检测失败")
+        self.assertEqual(result["probe_message"], "OpenVPN 已连接，但公网出口 IP 校验失败")
         egress.assert_not_called()
 
     def test_slot_selection_uses_real_egress_latency(self):
