@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -41,19 +42,23 @@ func (s *server) authenticateRequest(request *http.Request) (requestSession, err
 	now := s.now().UTC()
 	stored, err := s.store.GetSession(request.Context(), tokenHash, now)
 	if errors.Is(err, store.ErrSessionNotFound) {
+		log.Printf("gateway authentication rejected: reason=session_not_found")
 		return requestSession{}, errUnauthenticated
 	}
 	if err != nil {
 		return requestSession{}, err
 	}
 	if subtle.ConstantTimeCompare(stored.CSRFTokenHash[:], csrfHash[:]) != 1 {
+		log.Printf("gateway authentication rejected: reason=session_csrf_mismatch")
 		return requestSession{}, errUnauthenticated
 	}
 	if !now.Before(stored.LastActiveAt.Add(sessionIdleTimeout)) {
+		log.Printf("gateway authentication rejected: reason=session_idle_timeout")
 		_ = s.store.RevokeSession(request.Context(), tokenHash)
 		return requestSession{}, errUnauthenticated
 	}
 	if err := s.store.TouchSession(request.Context(), stored.ID, now); err != nil {
+		log.Printf("gateway authentication session touch failed: %v", err)
 		if errors.Is(err, store.ErrSessionNotFound) {
 			return requestSession{}, errUnauthenticated
 		}

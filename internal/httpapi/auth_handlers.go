@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"errors"
+	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -102,6 +103,7 @@ func (s *server) handleLogin(response http.ResponseWriter, request *http.Request
 		LastActiveAt:  now,
 		ExpiresAt:     expiresAt,
 	}); err != nil {
+		log.Printf("gateway login session creation failed: %v", err)
 		writeAPIError(response, http.StatusInternalServerError, "internal_error")
 		return
 	}
